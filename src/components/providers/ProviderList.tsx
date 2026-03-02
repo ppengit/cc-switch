@@ -1,4 +1,4 @@
-import { CSS } from "@dnd-kit/utilities";
+﻿import { CSS } from "@dnd-kit/utilities";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -25,7 +25,7 @@ import {
   useOpenClawLiveProviderIds,
   useOpenClawDefaultModel,
 } from "@/hooks/useOpenClaw";
-// import { useStreamCheck } from "@/hooks/useStreamCheck"; // 测试功能已隐藏
+import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
@@ -58,10 +58,7 @@ interface ProviderListProps {
   onOpenTerminal?: (provider: Provider) => void;
   onCreate?: () => void;
   isLoading?: boolean;
-  isProxyRunning?: boolean; // 代理服务运行状态
-  isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管）
-  activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
-  onSetAsDefault?: (provider: Provider) => void; // OpenClaw: set as default model
+  isProxyRunning?: boolean; // 浠ｇ悊鏈嶅姟杩愯鐘舵€?  isProxyTakeover?: boolean; // 浠ｇ悊鎺ョ妯″紡锛圠ive閰嶇疆宸茶鎺ョ锛?  activeProviderId?: string; // 浠ｇ悊褰撳墠瀹為檯浣跨敤鐨勪緵搴斿晢 ID锛堢敤浜庢晠闅滆浆绉绘ā寮忎笅鏍囨敞缁胯壊杈规锛?  onSetAsDefault?: (provider: Provider) => void; // OpenClaw: set as default model
 }
 
 export function ProviderList({
@@ -97,12 +94,12 @@ export function ProviderList({
     enabled: appId === "opencode",
   });
 
-  // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
+  // OpenClaw: 鏌ヨ live 閰嶇疆涓殑渚涘簲鍟?ID 鍒楄〃锛岀敤浜庡垽鏂?isInConfig
   const { data: openclawLiveIds } = useOpenClawLiveProviderIds(
     appId === "openclaw",
   );
 
-  // 判断供应商是否已添加到配置（累加模式应用：OpenCode/OpenClaw）
+  // 鍒ゆ柇渚涘簲鍟嗘槸鍚﹀凡娣诲姞鍒伴厤缃紙绱姞妯″紡搴旂敤锛歄penCode/OpenClaw锛?
   const isProviderInConfig = useCallback(
     (providerId: string): boolean => {
       if (appId === "opencode") {
@@ -111,7 +108,7 @@ export function ProviderList({
       if (appId === "openclaw") {
         return openclawLiveIds?.includes(providerId) ?? false;
       }
-      return true; // 其他应用始终返回 true
+      return true; // 鍏朵粬搴旂敤濮嬬粓杩斿洖 true
     },
     [appId, opencodeLiveIds, openclawLiveIds],
   );
@@ -119,6 +116,15 @@ export function ProviderList({
   // OpenClaw: query default model to determine which provider is default
   const { data: openclawDefaultModel } = useOpenClawDefaultModel(
     appId === "openclaw",
+  );
+
+  const enableStreamCheck = appId !== "opencode" && appId !== "openclaw";
+  const { checkProvider, isChecking } = useStreamCheck(appId);
+  const handleTestProvider = useCallback(
+    (provider: Provider) => {
+      void checkProvider(provider.id, provider.name);
+    },
+    [checkProvider],
   );
 
   const isProviderDefaultModel = useCallback(
@@ -129,7 +135,7 @@ export function ProviderList({
     [appId, openclawDefaultModel],
   );
 
-  // 故障转移相关
+  // 鏁呴殰杞Щ鐩稿叧
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
@@ -306,7 +312,8 @@ export function ProviderList({
                 onConfigureUsage={onConfigureUsage}
                 onOpenWebsite={onOpenWebsite}
                 onOpenTerminal={onOpenTerminal}
-                isTesting={false} // isChecking(provider.id) - 测试功能已隐藏
+                onTest={enableStreamCheck ? handleTestProvider : undefined}
+                isTesting={enableStreamCheck ? isChecking(provider.id) : false}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
                 isAutoFailoverEnabled={isFailoverModeActive}
