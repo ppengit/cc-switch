@@ -3,6 +3,7 @@
 //! 提供请求生命周期的上下文管理，封装通用初始化逻辑
 
 use crate::app_config::AppType;
+use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::{
     extract_session_id,
@@ -57,6 +58,7 @@ pub struct RequestContext {
     pub app_type: AppType,
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
+    pub session_routing_active: bool,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -121,17 +123,29 @@ impl RequestContext {
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
-            .provider_router
-            .select_providers(app_type_str)
-            .await
-            .map_err(|e| match e {
-                crate::error::AppError::AllProvidersCircuitOpen => {
-                    ProxyError::AllProvidersCircuitOpen
-                }
-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                _ => ProxyError::DatabaseError(e.to_string()),
-            })?;
+        let session_routing_master_enabled = state
+            .db
+            .get_session_routing_master_enabled()
+            .unwrap_or(false);
+        let session_routing_active = session_routing_master_enabled
+            && app_config.session_routing_enabled
+            && session_result.client_provided;
+
+        let providers = if session_routing_active {
+            Self::select_providers_with_session_routing(
+                state,
+                app_type_str,
+                &session_id,
+                &app_config,
+            )
+            .await?
+        } else {
+            state
+                .provider_router
+                .select_providers(app_type_str)
+                .await
+                .map_err(Self::map_provider_selection_error)?
+        };
 
         let provider = providers
             .first()
@@ -139,12 +153,13 @@ impl RequestContext {
             .ok_or(ProxyError::NoAvailableProvider)?;
 
         log::debug!(
-            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}, sessionRouting: {}",
             tag,
             provider.name,
             request_model,
             providers.len(),
-            session_id
+            session_id,
+            session_routing_active
         );
 
         Ok(Self {
@@ -158,6 +173,7 @@ impl RequestContext {
             app_type_str,
             app_type,
             session_id,
+            session_routing_active,
             rectifier_config,
             optimizer_config,
         })
@@ -167,6 +183,92 @@ impl RequestContext {
     ///
     /// Gemini API 的模型名称在 URI 中，格式如：
     /// `/v1beta/models/gemini-pro:generateContent`
+    fn map_provider_selection_error(error: AppError) -> ProxyError {
+        match error {
+            AppError::AllProvidersCircuitOpen => ProxyError::AllProvidersCircuitOpen,
+            AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
+            _ => ProxyError::DatabaseError(error.to_string()),
+        }
+    }
+
+    async fn select_providers_with_session_routing(
+        state: &ProxyState,
+        app_type_str: &str,
+        session_id: &str,
+        app_config: &AppProxyConfig,
+    ) -> Result<Vec<Provider>, ProxyError> {
+        let providers = state
+            .provider_router
+            .select_providers(app_type_str)
+            .await
+            .map_err(Self::map_provider_selection_error)?;
+
+        if providers.is_empty() {
+            return Err(ProxyError::NoAvailableProvider);
+        }
+
+        let candidate_provider_ids: Vec<String> = providers.iter().map(|p| p.id.clone()).collect();
+        let binding = state
+            .db
+            .assign_session_provider_from_candidates(
+                app_type_str,
+                session_id,
+                &candidate_provider_ids,
+                app_config.session_routing_strategy.as_str(),
+                app_config.session_max_sessions_per_provider,
+                app_config.session_allow_shared_when_exhausted,
+                app_config.session_idle_ttl_minutes,
+            )
+            .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+
+        if let Some(binding) = binding {
+            if providers
+                .iter()
+                .any(|provider| provider.id == binding.provider_id)
+            {
+                return Ok(Self::reorder_providers_by_preferred(
+                    providers,
+                    binding.provider_id.as_str(),
+                ));
+            }
+
+            log::warn!(
+                "[{}] session binding provider not in available chain, fallback to chain head: session={}, provider={}",
+                app_type_str,
+                session_id,
+                binding.provider_id
+            );
+            return Ok(providers);
+        }
+
+        Err(ProxyError::NoAvailableProvider)
+    }
+
+    fn reorder_providers_by_preferred(
+        providers: Vec<Provider>,
+        preferred_provider_id: &str,
+    ) -> Vec<Provider> {
+        let mut preferred: Option<Provider> = None;
+        let mut rest = Vec::with_capacity(providers.len());
+
+        for provider in providers {
+            if preferred.is_none() && provider.id == preferred_provider_id {
+                preferred = Some(provider);
+            } else {
+                rest.push(provider);
+            }
+        }
+
+        if let Some(preferred_provider) = preferred {
+            let mut ordered = Vec::with_capacity(rest.len() + 1);
+            ordered.push(preferred_provider);
+            ordered.extend(rest);
+            ordered
+        } else {
+            rest
+        }
+    }
+
     pub fn with_model_from_uri(mut self, uri: &axum::http::Uri) -> Self {
         let endpoint = uri
             .path_and_query()
@@ -219,6 +321,7 @@ impl RequestContext {
             self.current_provider_id.clone(),
             first_byte_timeout,
             idle_timeout,
+            self.session_routing_active,
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
         )

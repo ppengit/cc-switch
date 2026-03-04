@@ -95,6 +95,7 @@ pub async fn handle_messages(
     };
 
     ctx.provider = result.provider;
+    sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
     // 检查是否需要格式转换（OpenRouter 等中转服务）
@@ -320,6 +321,7 @@ pub async fn handle_chat_completions(
     };
 
     ctx.provider = result.provider;
+    sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
     process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
@@ -361,6 +363,7 @@ pub async fn handle_responses(
     };
 
     ctx.provider = result.provider;
+    sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
@@ -456,9 +459,31 @@ pub async fn handle_gemini(
     };
 
     ctx.provider = result.provider;
+    sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
     process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await
+}
+
+fn sync_session_routing_binding(state: &ProxyState, ctx: &RequestContext) {
+    if !ctx.session_routing_active {
+        return;
+    }
+
+    if let Err(error) = state.db.sync_session_provider_after_success(
+        ctx.app_type_str,
+        &ctx.session_id,
+        &ctx.provider.id,
+        ctx.app_config.session_idle_ttl_minutes,
+    ) {
+        log::warn!(
+            "[{}] failed to sync session routing binding: session={}, provider={}, error={}",
+            ctx.app_type_str,
+            ctx.session_id,
+            ctx.provider.id,
+            error
+        );
+    }
 }
 
 // ============================================================================

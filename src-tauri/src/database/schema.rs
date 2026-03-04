@@ -122,6 +122,11 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            session_routing_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_strategy TEXT NOT NULL DEFAULT 'least_active',
+            session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
+            session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
+            session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -168,6 +173,29 @@ impl Database {
             PRIMARY KEY (provider_id, app_type),
             FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 9.1 Session Provider Bindings 表（会话级调度绑定）
+        conn.execute("CREATE TABLE IF NOT EXISTS session_provider_bindings (
+            app_type TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            PRIMARY KEY (app_type, session_id),
+            FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+        )", []).map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spb_provider ON session_provider_bindings(app_type, provider_id)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spb_last_seen ON session_provider_bindings(app_type, last_seen_at)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 10. Proxy Request Logs 表
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_request_logs (
@@ -297,6 +325,26 @@ impl Database {
         );
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN non_streaming_timeout INTEGER NOT NULL DEFAULT 600",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN session_routing_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN session_routing_strategy TEXT NOT NULL DEFAULT 'least_active'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30",
             [],
         );
 
@@ -714,6 +762,11 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            session_routing_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_strategy TEXT NOT NULL DEFAULT 'least_active',
+            session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
+            session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
+            session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", [])?;
 

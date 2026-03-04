@@ -96,6 +96,8 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    /// 是否抑制全局故障转移切换（仅保留内部路由切换，不改主界面当前 Provider）
+    suppress_global_failover_switch: bool,
     /// 整流器配置
     rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -116,6 +118,7 @@ impl RequestForwarder {
         current_provider_id_at_start: String,
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
+        suppress_global_failover_switch: bool,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
     ) -> Self {
@@ -126,6 +129,7 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            suppress_global_failover_switch,
             rectifier_config,
             optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
@@ -257,17 +261,18 @@ impl RequestForwarder {
                             self.current_provider_id_at_start.as_str() != provider.id.as_str();
                         if should_switch {
                             status.failover_count += 1;
+                            if !self.suppress_global_failover_switch {
+                                // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
+                                let fm = self.failover_manager.clone();
+                                let ah = self.app_handle.clone();
+                                let pid = provider.id.clone();
+                                let pname = provider.name.clone();
+                                let at = app_type_str.to_string();
 
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
-                            let fm = self.failover_manager.clone();
-                            let ah = self.app_handle.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
-                            let at = app_type_str.to_string();
-
-                            tokio::spawn(async move {
-                                let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
-                            });
+                                tokio::spawn(async move {
+                                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+                                });
+                            }
                         }
                         // 重新计算成功率
                         if status.total_requests > 0 {
@@ -388,19 +393,25 @@ impl RequestForwarder {
                                                     != provider.id.as_str();
                                             if should_switch {
                                                 status.failover_count += 1;
+                                                if !self.suppress_global_failover_switch {
+                                                    // 异步触发供应商切换，更新 UI/托盘
+                                                    let fm = self.failover_manager.clone();
+                                                    let ah = self.app_handle.clone();
+                                                    let pid = provider.id.clone();
+                                                    let pname = provider.name.clone();
+                                                    let at = app_type_str.to_string();
 
-                                                // 异步触发供应商切换，更新 UI/托盘
-                                                let fm = self.failover_manager.clone();
-                                                let ah = self.app_handle.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
-                                                let at = app_type_str.to_string();
-
-                                                tokio::spawn(async move {
-                                                    let _ = fm
-                                                        .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                        .await;
-                                                });
+                                                    tokio::spawn(async move {
+                                                        let _ = fm
+                                                            .try_switch(
+                                                                ah.as_ref(),
+                                                                &at,
+                                                                &pid,
+                                                                &pname,
+                                                            )
+                                                            .await;
+                                                    });
+                                                }
                                             }
                                             if status.total_requests > 0 {
                                                 status.success_rate = (status.success_requests
@@ -582,16 +593,18 @@ impl RequestForwarder {
                                                 != provider.id.as_str();
                                         if should_switch {
                                             status.failover_count += 1;
-                                            let fm = self.failover_manager.clone();
-                                            let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
-                                            let at = app_type_str.to_string();
-                                            tokio::spawn(async move {
-                                                let _ = fm
-                                                    .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                    .await;
-                                            });
+                                            if !self.suppress_global_failover_switch {
+                                                let fm = self.failover_manager.clone();
+                                                let ah = self.app_handle.clone();
+                                                let pid = provider.id.clone();
+                                                let pname = provider.name.clone();
+                                                let at = app_type_str.to_string();
+                                                tokio::spawn(async move {
+                                                    let _ = fm
+                                                        .try_switch(ah.as_ref(), &at, &pid, &pname)
+                                                        .await;
+                                                });
+                                            }
                                         }
                                         if status.total_requests > 0 {
                                             status.success_rate = (status.success_requests as f32

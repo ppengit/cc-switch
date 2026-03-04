@@ -192,6 +192,16 @@ pub struct AppProxyConfig {
     pub circuit_error_rate_threshold: f64,
     /// 计算错误率的最小请求数
     pub circuit_min_requests: u32,
+    /// 是否启用会话级粘性调度
+    pub session_routing_enabled: bool,
+    /// 会话调度策略：fixed / round_robin / least_active / priority
+    pub session_routing_strategy: String,
+    /// 单个供应商可绑定的最大并发会话数（0 表示不限制）
+    pub session_max_sessions_per_provider: u32,
+    /// 当全部供应商达到并发上限时，是否允许共享分配
+    pub session_allow_shared_when_exhausted: bool,
+    /// 会话空闲释放时间（分钟）
+    pub session_idle_ttl_minutes: u32,
 }
 
 /// 整流器配置
