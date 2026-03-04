@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -106,6 +106,7 @@ const formatDisplayVersion = (version?: string | null): string => {
 };
 
 const STORAGE_KEY = "cc-switch-last-app";
+const SESSION_APP_STORAGE_KEY = "cc-switch-last-session-app";
 const VALID_APPS: AppId[] = [
   "claude",
   "codex",
@@ -113,6 +114,16 @@ const VALID_APPS: AppId[] = [
   "opencode",
   "openclaw",
 ];
+const SESSION_SUPPORTED_APPS: AppId[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "opencode",
+  "openclaw",
+];
+
+const isSessionSupportedApp = (app: AppId): boolean =>
+  SESSION_SUPPORTED_APPS.includes(app);
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -120,6 +131,14 @@ const getInitialApp = (): AppId => {
     return saved;
   }
   return "claude";
+};
+
+const getStoredSessionApp = (): AppId | null => {
+  const saved = localStorage.getItem(SESSION_APP_STORAGE_KEY) as AppId | null;
+  if (saved && SESSION_SUPPORTED_APPS.includes(saved)) {
+    return saved;
+  }
+  return null;
 };
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
@@ -156,10 +175,15 @@ function App() {
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [displayVersion, setDisplayVersion] = useState<string>("-");
+  const sessionAppResolvedRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, activeApp);
+  }, [activeApp]);
 
   useEffect(() => {
     let active = true;
@@ -199,24 +223,50 @@ function App() {
     return "claude"; // fallback
   };
 
+  const getPreferredSessionApp = useCallback((): AppId => {
+    const savedSessionApp = getStoredSessionApp();
+    if (
+      savedSessionApp &&
+      visibleApps[savedSessionApp] &&
+      isSessionSupportedApp(savedSessionApp)
+    ) {
+      return savedSessionApp;
+    }
+    if (visibleApps[activeApp] && isSessionSupportedApp(activeApp)) {
+      return activeApp;
+    }
+    return getFirstVisibleApp();
+  }, [activeApp, visibleApps]);
+
   useEffect(() => {
     if (!visibleApps[activeApp]) {
       setActiveApp(getFirstVisibleApp());
     }
   }, [visibleApps, activeApp]);
 
+  useEffect(() => {
+    if (currentView !== "sessions") {
+      sessionAppResolvedRef.current = false;
+      return;
+    }
+    if (sessionAppResolvedRef.current) return;
+    sessionAppResolvedRef.current = true;
+    const preferredSessionApp = getPreferredSessionApp();
+    if (preferredSessionApp !== activeApp) {
+      setActiveApp(preferredSessionApp);
+    }
+  }, [activeApp, currentView, getPreferredSessionApp]);
+
   // Fallback from sessions view when switching to an app without session support
   useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini"
-    ) {
+    if (currentView === "sessions" && !isSessionSupportedApp(activeApp)) {
       setCurrentView("providers");
     }
+  }, [activeApp, currentView]);
+
+  useEffect(() => {
+    if (currentView !== "sessions" || !isSessionSupportedApp(activeApp)) return;
+    localStorage.setItem(SESSION_APP_STORAGE_KEY, activeApp);
   }, [activeApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
@@ -260,12 +310,7 @@ function App() {
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
   const hasSkillsSupport = true;
-  const hasSessionSupport =
-    activeApp === "claude" ||
-    activeApp === "codex" ||
-    activeApp === "opencode" ||
-    activeApp === "openclaw" ||
-    activeApp === "gemini";
+  const hasSessionSupport = isSessionSupportedApp(activeApp);
 
   const {
     addProvider,
@@ -723,6 +768,14 @@ function App() {
     }
   };
 
+  const handleOpenSessionsView = useCallback(() => {
+    const preferredSessionApp = getPreferredSessionApp();
+    if (preferredSessionApp !== activeApp) {
+      setActiveApp(preferredSessionApp);
+    }
+    setCurrentView("sessions");
+  }, [activeApp, getPreferredSessionApp]);
+
   const renderContent = () => {
     const content = (() => {
       switch (currentView) {
@@ -775,7 +828,7 @@ function App() {
           );
         case "universal":
           return (
-            <div className="px-6 pt-4">
+            <div className="px-6 pt-4 pb-8">
               <UniversalProviderPanel />
             </div>
           );
@@ -1193,7 +1246,7 @@ function App() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setCurrentView("sessions")}
+                                onClick={handleOpenSessionsView}
                                 className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                 title={t("sessionManager.title")}
                               >
@@ -1229,7 +1282,7 @@ function App() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setCurrentView("sessions")}
+                                onClick={handleOpenSessionsView}
                                 className={cn(
                                   "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
                                   "transition-all duration-200 ease-in-out overflow-hidden",
