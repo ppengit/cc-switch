@@ -9,6 +9,9 @@ fn merge_settings_for_save(
     if incoming.webdav_sync.is_none() {
         incoming.webdav_sync = existing.webdav_sync.clone();
     }
+    if incoming.main_window_size.is_none() {
+        incoming.main_window_size = existing.main_window_size.clone();
+    }
     incoming
 }
 
@@ -114,6 +117,23 @@ mod tests {
         assert_eq!(
             merged.webdav_sync.as_ref().map(|v| v.base_url.as_str()),
             Some("https://dav.new.example.com")
+        );
+    }
+
+    #[test]
+    fn save_settings_should_preserve_window_size_when_payload_omits_it() {
+        let mut existing = AppSettings::default();
+        existing.main_window_size = Some(crate::settings::WindowSize {
+            width: 1460,
+            height: 920,
+        });
+
+        let incoming = AppSettings::default();
+        let merged = merge_settings_for_save(incoming, &existing);
+
+        assert_eq!(
+            merged.main_window_size.as_ref().map(|v| (v.width, v.height)),
+            Some((1460, 920))
         );
     }
 }

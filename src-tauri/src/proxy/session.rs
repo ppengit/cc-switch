@@ -203,18 +203,31 @@ fn extract_session_from_headers(headers: &HeaderMap) -> Option<SessionIdResult> 
 }
 
 fn extract_codex_session(body: &serde_json::Value) -> Option<SessionIdResult> {
-    if let Some(session_id) = body
-        .get("metadata")
-        .and_then(|m| m.get("session_id"))
-        .and_then(|v| v.as_str())
-    {
-        let normalized = normalize_codex_session_id(session_id);
-        if !normalized.is_empty() {
-            return Some(SessionIdResult {
-                session_id: normalized,
-                source: SessionIdSource::MetadataSessionId,
-                client_provided: true,
-            });
+    if let Some(metadata) = body.get("metadata") {
+        // Prefer user_id-derived session for Codex when available.
+        // This avoids collapsing different conversations that may share metadata.session_id.
+        if let Some(user_id) = metadata.get("user_id").and_then(|v| v.as_str()) {
+            if let Some(session_id) = parse_session_from_user_id(user_id) {
+                let normalized = normalize_codex_session_id(&session_id);
+                if !normalized.is_empty() {
+                    return Some(SessionIdResult {
+                        session_id: normalized,
+                        source: SessionIdSource::MetadataUserId,
+                        client_provided: true,
+                    });
+                }
+            }
+        }
+
+        if let Some(session_id) = metadata.get("session_id").and_then(|v| v.as_str()) {
+            let normalized = normalize_codex_session_id(session_id);
+            if !normalized.is_empty() {
+                return Some(SessionIdResult {
+                    session_id: normalized,
+                    source: SessionIdSource::MetadataSessionId,
+                    client_provided: true,
+                });
+            }
         }
     }
 
@@ -449,6 +462,24 @@ mod tests {
 
         assert_eq!(result.session_id, "resp_abc123def456789");
         assert_eq!(result.source, SessionIdSource::PreviousResponseId);
+        assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_extract_session_from_codex_prefers_metadata_user_id_over_metadata_session_id() {
+        let headers = HeaderMap::new();
+        let body = json!({
+            "input": "Write a function",
+            "metadata": {
+                "session_id": "project-level-id",
+                "user_id": "u_demo_session_chat-001"
+            }
+        });
+
+        let result = extract_session_id(&headers, &body, "codex");
+
+        assert_eq!(result.session_id, "chat-001");
+        assert_eq!(result.source, SessionIdSource::MetadataUserId);
         assert!(result.client_provided);
     }
 

@@ -59,6 +59,64 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 
+const DEFAULT_MAIN_WINDOW_WIDTH: u32 = 1280;
+const DEFAULT_MAIN_WINDOW_HEIGHT: u32 = 800;
+const MIN_MAIN_WINDOW_WIDTH: u32 = 900;
+const MIN_MAIN_WINDOW_HEIGHT: u32 = 600;
+
+fn clamp_main_window_size(width: u32, height: u32) -> (u32, u32) {
+    (
+        width.max(MIN_MAIN_WINDOW_WIDTH),
+        height.max(MIN_MAIN_WINDOW_HEIGHT),
+    )
+}
+
+fn persist_main_window_size(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+
+    let (width, height) = clamp_main_window_size(size.width, size.height);
+    if let Err(err) = crate::settings::set_main_window_size(width, height) {
+        log::warn!("Failed to persist main window size: {err}");
+    }
+}
+
+fn apply_startup_window_size(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if let Some(saved) = crate::settings::get_main_window_size() {
+        let (width, height) = clamp_main_window_size(saved.width, saved.height);
+        if let Err(err) = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: width as f64,
+            height: height as f64,
+        })) {
+            log::warn!("Failed to restore main window size: {err}");
+        }
+        return;
+    }
+
+    // Keep existing startup fallback when no persisted size exists.
+    if let Ok(size) = window.inner_size() {
+        if size.width < DEFAULT_MAIN_WINDOW_WIDTH || size.height < DEFAULT_MAIN_WINDOW_HEIGHT {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: DEFAULT_MAIN_WINDOW_WIDTH as f64,
+                height: DEFAULT_MAIN_WINDOW_HEIGHT as f64,
+            }));
+        }
+    }
+}
+
 fn redact_url_for_log(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(url) => {
@@ -230,6 +288,7 @@ pub fn run() {
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                persist_main_window_size(&window.app_handle());
                 let settings = crate::settings::get_settings();
 
                 if settings.minimize_to_tray_on_close {
@@ -253,19 +312,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
-            // Ensure a larger default window size on startup (do not shrink).
-            if let Some(window) = app.get_webview_window("main") {
-                if let Ok(size) = window.inner_size() {
-                    let target_width: u32 = 1280;
-                    let target_height: u32 = 800;
-                    if size.width < target_width || size.height < target_height {
-                        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                            width: target_width as f64,
-                            height: target_height as f64,
-                        }));
-                    }
-                }
-            }
+            apply_startup_window_size(app.handle());
 
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
@@ -1127,6 +1174,7 @@ pub fn run() {
             }
 
             log::info!("收到用户主动退出请求 (code={code:?})，开始清理...");
+            persist_main_window_size(app_handle);
             api.prevent_exit();
 
             let app_handle = app_handle.clone();

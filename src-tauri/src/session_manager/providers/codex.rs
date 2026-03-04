@@ -84,7 +84,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
 fn parse_session(path: &Path) -> Option<SessionMeta> {
     let (head, tail) = read_head_tail_lines(path, 10, 30).ok()?;
 
-    let mut session_id: Option<String> = None;
+    let mut payload_session_id: Option<String> = None;
     let mut project_dir: Option<String> = None;
     let mut created_at: Option<i64> = None;
 
@@ -99,8 +99,8 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         }
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             if let Some(payload) = value.get("payload") {
-                if session_id.is_none() {
-                    session_id = payload
+                if payload_session_id.is_none() {
+                    payload_session_id = payload
                         .get("id")
                         .and_then(Value::as_str)
                         .map(|s| s.to_string());
@@ -145,7 +145,9 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         }
     }
 
-    let session_id = session_id.or_else(|| infer_session_id_from_filename(path));
+    // Prefer GUID from filename as stable conversation identifier.
+    // Some payload.id values are project/workspace level and can collapse multiple sessions.
+    let session_id = infer_session_id_from_filename(path).or(payload_session_id);
     let session_id = session_id?;
 
     let title = project_dir
@@ -190,5 +192,44 @@ fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             files.push(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn create_temp_jsonl_file(file_name: &str, lines: &[&str]) -> (TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join(file_name);
+        let content = lines.join("\n");
+        fs::write(&path, format!("{content}\n")).expect("write temp jsonl");
+        (dir, path)
+    }
+
+    #[test]
+    fn parse_session_prefers_filename_guid_over_payload_id() {
+        let file_name = "session-123e4567-e89b-12d3-a456-426614174000.jsonl";
+        let (_dir, path) = create_temp_jsonl_file(
+            file_name,
+            &[r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"project-shared-id","cwd":"/tmp/project-a"}}"#],
+        );
+
+        let meta = parse_session(&path).expect("parse session");
+        assert_eq!(meta.session_id, "123e4567-e89b-12d3-a456-426614174000");
+    }
+
+    #[test]
+    fn parse_session_falls_back_to_payload_id_when_filename_has_no_guid() {
+        let (_dir, path) = create_temp_jsonl_file(
+            "session-project-a.jsonl",
+            &[r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"payload-session-id","cwd":"/tmp/project-a"}}"#],
+        );
+
+        let meta = parse_session(&path).expect("parse session");
+        assert_eq!(meta.session_id, "payload-session-id");
     }
 }
