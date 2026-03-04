@@ -655,8 +655,7 @@ export function ProviderList({
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
-  const isFailoverModeActive =
-    isProxyTakeover === true && isAutoFailoverEnabled === true;
+  const isAutoFailoverActive = isAutoFailoverEnabled === true;
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -664,21 +663,21 @@ export function ProviderList({
 
   const getFailoverPriority = useCallback(
     (providerId: string): number | undefined => {
-      if (!isFailoverModeActive || !failoverQueue) return undefined;
+      if (!isAutoFailoverActive || !failoverQueue) return undefined;
       const index = failoverQueue.findIndex(
         (item) => item.providerId === providerId,
       );
       return index >= 0 ? index + 1 : undefined;
     },
-    [isFailoverModeActive, failoverQueue],
+    [isAutoFailoverActive, failoverQueue],
   );
 
   const isInFailoverQueue = useCallback(
     (providerId: string): boolean => {
-      if (!isFailoverModeActive || !failoverQueue) return false;
+      if (!isAutoFailoverActive || !failoverQueue) return false;
       return failoverQueue.some((item) => item.providerId === providerId);
     },
-    [isFailoverModeActive, failoverQueue],
+    [isAutoFailoverActive, failoverQueue],
   );
 
   const handleToggleFailover = useCallback(
@@ -695,7 +694,7 @@ export function ProviderList({
   const [isBulkFailoverToggling, setIsBulkFailoverToggling] = useState(false);
 
   const failoverCandidateProviderIds = useMemo(() => {
-    if (!isFailoverModeActive) return [];
+    if (!isAutoFailoverActive) return [];
     return sortedProviders
       .filter((provider) => {
         const isOmoCategory =
@@ -705,7 +704,7 @@ export function ProviderList({
         return !isAdditiveMode && !isOmoCategory;
       })
       .map((provider) => provider.id);
-  }, [appId, isFailoverModeActive, sortedProviders]);
+  }, [appId, isAutoFailoverActive, sortedProviders]);
 
   const failoverQueueSet = useMemo(
     () => new Set((failoverQueue ?? []).map((item) => item.providerId)),
@@ -1797,7 +1796,7 @@ export function ProviderList({
                 isProxyTakeover={isProxyTakeover}
                 viewMode={viewMode}
                 dragDisabled={!isManualSort}
-                isAutoFailoverEnabled={isFailoverModeActive}
+                isAutoFailoverEnabled={isAutoFailoverActive}
                 failoverPriority={getFailoverPriority(provider.id)}
                 isInFailoverQueue={isInFailoverQueue(provider.id)}
                 onToggleFailover={(enabled) =>
@@ -1933,7 +1932,7 @@ export function ProviderList({
               </div>
             )}
 
-            {isFailoverModeActive && (
+            {isAutoFailoverActive && (
               <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
                 <Switch
                   checked={allFailoverEnabled}

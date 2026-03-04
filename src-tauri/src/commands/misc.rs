@@ -53,6 +53,112 @@ pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+const UPSTREAM_RELEASE_REPO: &str = "farion1231/cc-switch";
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamReleaseInfo {
+    repo: String,
+    tag_name: Option<String>,
+    version: Option<String>,
+    name: Option<String>,
+    published_at: Option<String>,
+    html_url: Option<String>,
+    prerelease: bool,
+    draft: bool,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubLatestReleaseResponse {
+    tag_name: Option<String>,
+    name: Option<String>,
+    published_at: Option<String>,
+    html_url: Option<String>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+}
+
+#[tauri::command]
+pub async fn get_upstream_release_info() -> Result<UpstreamReleaseInfo, String> {
+    let client = crate::proxy::http_client::get();
+    let url = format!("https://api.github.com/repos/{UPSTREAM_RELEASE_REPO}/releases/latest");
+    let fallback_url = format!("https://github.com/{UPSTREAM_RELEASE_REPO}/releases/latest");
+
+    let response = match client
+        .get(&url)
+        .header("User-Agent", "cc-switch")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            return Ok(UpstreamReleaseInfo {
+                repo: UPSTREAM_RELEASE_REPO.to_string(),
+                tag_name: None,
+                version: None,
+                name: None,
+                published_at: None,
+                html_url: Some(fallback_url),
+                prerelease: false,
+                draft: false,
+                error: Some(err.to_string()),
+            });
+        }
+    };
+
+    if !response.status().is_success() {
+        return Ok(UpstreamReleaseInfo {
+            repo: UPSTREAM_RELEASE_REPO.to_string(),
+            tag_name: None,
+            version: None,
+            name: None,
+            published_at: None,
+            html_url: Some(fallback_url),
+            prerelease: false,
+            draft: false,
+            error: Some(format!("GitHub API returned status {}", response.status())),
+        });
+    }
+
+    let parsed = match response.json::<GithubLatestReleaseResponse>().await {
+        Ok(json) => json,
+        Err(err) => {
+            return Ok(UpstreamReleaseInfo {
+                repo: UPSTREAM_RELEASE_REPO.to_string(),
+                tag_name: None,
+                version: None,
+                name: None,
+                published_at: None,
+                html_url: Some(fallback_url),
+                prerelease: false,
+                draft: false,
+                error: Some(err.to_string()),
+            });
+        }
+    };
+
+    let version = parsed
+        .tag_name
+        .as_deref()
+        .map(|tag| tag.strip_prefix('v').unwrap_or(tag).to_string());
+
+    Ok(UpstreamReleaseInfo {
+        repo: UPSTREAM_RELEASE_REPO.to_string(),
+        tag_name: parsed.tag_name,
+        version,
+        name: parsed.name,
+        published_at: parsed.published_at,
+        html_url: parsed.html_url.or(Some(fallback_url)),
+        prerelease: parsed.prerelease,
+        draft: parsed.draft,
+        error: None,
+    })
+}
+
 /// 判断是否为便携版（绿色版）运行
 #[tauri::command]
 pub async fn is_portable_mode() -> Result<bool, String> {

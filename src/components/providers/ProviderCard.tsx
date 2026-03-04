@@ -305,11 +305,13 @@ export function ProviderCard({
   // - 累加模式应用（OpenCode 非 OMO / OpenClaw）：不存在"当前"概念，始终返回 false
   // - 故障转移模式：代理实际使用的供应商（activeProviderId）
   // - 普通模式：isCurrent
+  const isFailoverRoutingMode = isAutoFailoverEnabled && isProxyTakeover;
+
   const isActiveProvider = isAnyOmo
     ? isCurrent
     : appId === "opencode" || appId === "openclaw"
       ? false
-      : isAutoFailoverEnabled
+      : isFailoverRoutingMode
         ? activeProviderId === provider.id
         : isCurrent;
 

@@ -20,6 +20,18 @@ export interface WebDavSyncResult {
   status: string;
 }
 
+export interface UpstreamReleaseInfo {
+  repo: string;
+  tagName: string | null;
+  version: string | null;
+  name: string | null;
+  publishedAt: string | null;
+  htmlUrl: string | null;
+  prerelease: boolean;
+  draft: boolean;
+  error: string | null;
+}
+
 export const settingsApi = {
   async get(): Promise<Settings> {
     return await invoke("get_settings");
@@ -35,6 +47,10 @@ export const settingsApi = {
 
   async checkUpdates(): Promise<void> {
     await invoke("check_for_updates");
+  },
+
+  async getUpstreamReleaseInfo(): Promise<UpstreamReleaseInfo> {
+    return await invoke("get_upstream_release_info");
   },
 
   async isPortable(): Promise<boolean> {
