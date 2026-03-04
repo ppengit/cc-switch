@@ -212,6 +212,30 @@ impl Database {
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Ensure legacy databases always receive newly introduced columns for request logs.
+        Self::add_column_if_missing(conn, "proxy_request_logs", "request_model", "TEXT")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "provider_type", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "is_streaming",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "cost_multiplier",
+            "TEXT NOT NULL DEFAULT '1.0'",
+        )?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "session_routing_active",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
             .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON proxy_request_logs(created_at)", [])

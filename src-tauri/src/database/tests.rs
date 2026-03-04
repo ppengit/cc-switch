@@ -337,6 +337,51 @@ fn schema_migration_v4_adds_pricing_model_columns() {
 }
 
 #[test]
+fn schema_create_tables_repairs_legacy_proxy_request_logs_columns() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE proxy_request_logs (
+            request_id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            input_cost_usd TEXT NOT NULL DEFAULT '0',
+            output_cost_usd TEXT NOT NULL DEFAULT '0',
+            cache_read_cost_usd TEXT NOT NULL DEFAULT '0',
+            cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            latency_ms INTEGER NOT NULL,
+            status_code INTEGER NOT NULL,
+            error_message TEXT,
+            session_id TEXT,
+            created_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .expect("seed legacy proxy_request_logs");
+
+    Database::create_tables_on_conn(&conn).expect("create tables");
+
+    let session_routing_active =
+        get_column_info(&conn, "proxy_request_logs", "session_routing_active");
+    assert_eq!(session_routing_active.r#type, "INTEGER");
+    assert_eq!(session_routing_active.notnull, 1);
+    assert_eq!(
+        normalize_default(&session_routing_active.default).as_deref(),
+        Some("0")
+    );
+
+    let request_model = get_column_info(&conn, "proxy_request_logs", "request_model");
+    assert_eq!(request_model.r#type, "TEXT");
+    assert_eq!(request_model.notnull, 0);
+}
+
+#[test]
 fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
     let conn = Connection::open_in_memory().expect("open memory db");
 
