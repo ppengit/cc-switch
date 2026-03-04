@@ -1,17 +1,25 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, Settings } from "@/types";
+import type { AppProxyConfig } from "@/types/proxy";
 import {
   addProvider,
   deleteProvider,
-  deleteSession,
+  getAppProxyConfig,
   getCurrentProviderId,
-  getSessionMessages,
+  getProviderSessionOccupancy,
   getProviders,
+  getSessionProviderBinding,
+  getSessionRoutingMasterEnabledState,
   listProviders,
-  listSessions,
+  listSessionProviderBindings,
+  removeSessionProviderBinding,
   resetProviderState,
+  setAppProxyConfig,
   setCurrentProviderId,
+  setSessionProviderBindingPin,
+  setSessionRoutingMasterEnabledState,
+  switchSessionProviderBinding,
   updateProvider,
   updateSortOrder,
   getSettings,
@@ -40,9 +48,7 @@ const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
 export const handlers = [
   http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
-  http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>
-    success(null),
-  ),
+  http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () => success(null)),
   http.post(`${TAURI_ENDPOINT}/get_providers`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
     return success(getProviders(app));
@@ -109,25 +115,19 @@ export const handlers = [
   }),
 
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
-
-  http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
-
-  http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {
-    const { providerId, sourcePath } = await withJson<{
-      providerId: string;
-      sourcePath: string;
-    }>(request);
-    return success(getSessionMessages(providerId, sourcePath));
-  }),
-
-  http.post(`${TAURI_ENDPOINT}/delete_session`, async ({ request }) => {
-    const { providerId, sessionId, sourcePath } = await withJson<{
-      providerId: string;
-      sessionId: string;
-      sourcePath: string;
-    }>(request);
-    return success(deleteSession(providerId, sessionId, sourcePath));
-  }),
+  http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_stream_check_config`, () =>
+    success({
+      timeoutSecs: 45,
+      maxRetries: 2,
+      degradedThresholdMs: 6000,
+      claudeModel: "claude-haiku-4-5-20251001",
+      codexModel: "gpt-5.1-codex@low",
+      geminiModel: "gemini-3-pro-preview",
+      testPrompt: "Who are you?",
+    }),
+  ),
 
   // MCP APIs
   http.post(`${TAURI_ENDPOINT}/get_mcp_config`, async ({ request }) => {
@@ -202,13 +202,9 @@ export const handlers = [
     },
   ),
 
-  http.post(`${TAURI_ENDPOINT}/apply_claude_onboarding_skip`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/apply_claude_onboarding_skip`, () => success(true)),
 
-  http.post(`${TAURI_ENDPOINT}/clear_claude_onboarding_skip`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/clear_claude_onboarding_skip`, () => success(true)),
 
   http.post(`${TAURI_ENDPOINT}/get_config_dir`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
@@ -272,6 +268,79 @@ export const handlers = [
   ),
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
+  http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getAppProxyConfig(appType));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/update_proxy_config_for_app`, async ({ request }) => {
+    const { config } = await withJson<{ config: AppProxyConfig }>(request);
+    if (config?.appType) {
+      setAppProxyConfig(config.appType as AppId, config);
+    }
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_session_routing_master_enabled`, () =>
+    success(getSessionRoutingMasterEnabledState()),
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/set_session_routing_master_enabled`,
+    async ({ request }) => {
+      const { enabled } = await withJson<{ enabled: boolean }>(request);
+      setSessionRoutingMasterEnabledState(enabled === true);
+      return success(true);
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/list_session_provider_bindings`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(listSessionProviderBindings(appType));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+    }>(request);
+    return success(getSessionProviderBinding(appType, sessionId));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/switch_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId, providerId, pin } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+      providerId: string;
+      pin?: boolean;
+    }>(request);
+    return success(switchSessionProviderBinding(appType, sessionId, providerId, pin));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/set_session_provider_binding_pin`, async ({ request }) => {
+    const { appType, sessionId, pinned } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+      pinned: boolean;
+    }>(request);
+    setSessionProviderBindingPin(appType, sessionId, pinned);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/remove_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+    }>(request);
+    removeSessionProviderBinding(appType, sessionId);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_provider_session_occupancy`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getProviderSessionOccupancy(appType));
+  }),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_status`, () =>
     success({
       running: false,
@@ -308,9 +377,7 @@ export const handlers = [
     success([]),
   ),
   http.post(`${TAURI_ENDPOINT}/add_to_failover_queue`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/reorder_failover_queue`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/set_failover_item_enabled`, () => success(true)),
 

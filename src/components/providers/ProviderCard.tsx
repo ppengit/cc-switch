@@ -5,15 +5,15 @@ import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
 } from "@dnd-kit/core";
-import type { Provider } from "@/types";
+import type { Provider, TerminalTargetMode } from "@/types";
 import type { AppId } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { extractCodexModelName } from "@/utils/providerConfigUtils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import UsageFooter from "@/components/UsageFooter";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
-import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 
@@ -40,16 +40,25 @@ interface ProviderCardProps {
   onOpenWebsite: (url: string) => void;
   onDuplicate: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
-  onOpenTerminal?: (provider: Provider) => void;
+  onOpenTerminalWithMode?: (
+    provider: Provider,
+    mode: TerminalTargetMode,
+    path?: string,
+  ) => void;
+  recentTerminalTargets?: string[];
+  onClearRecentTerminals?: () => void;
   isTesting?: boolean;
   isProxyRunning: boolean;
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管，切换为热切换）
+  density?: "compact" | "comfortable";
+  viewMode?: "list" | "card";
   dragHandleProps?: DragHandleProps;
   isAutoFailoverEnabled?: boolean; // 是否开启自动故障转移
   failoverPriority?: number; // 故障转移优先级（1 = P1, 2 = P2, ...）
   isInFailoverQueue?: boolean; // 是否在故障转移队列中
   onToggleFailover?: (enabled: boolean) => void; // 切换故障转移队列
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
+  sessionOccupancyCount?: number;
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
@@ -77,9 +86,9 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
     const baseUrl = (config as Record<string, any>)?.config;
 
     if (typeof baseUrl === "string" && baseUrl.includes("base_url")) {
-      const extractedBaseUrl = extractCodexBaseUrl(baseUrl);
-      if (extractedBaseUrl) {
-        return extractedBaseUrl;
+      const match = baseUrl.match(/base_url\s*=\s*['"]([^'"]+)['"]/);
+      if (match?.[1]) {
+        return match[1];
       }
     }
   }
@@ -104,21 +113,49 @@ export function ProviderCard({
   onOpenWebsite,
   onDuplicate,
   onTest,
-  onOpenTerminal,
+  onOpenTerminalWithMode,
+  recentTerminalTargets,
+  onClearRecentTerminals,
   isTesting,
   isProxyRunning,
   isProxyTakeover = false,
+  density = "comfortable",
+  viewMode = "list",
   dragHandleProps,
   isAutoFailoverEnabled = false,
   failoverPriority,
   isInFailoverQueue = false,
   onToggleFailover,
   activeProviderId,
+  sessionOccupancyCount = 0,
   // OpenClaw: default model
   isDefaultModel,
   onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
+  const isCompact = density === "compact";
+  const containerPadding = isCompact ? "p-3" : "p-4";
+  const containerGap = isCompact ? "gap-3" : "gap-4";
+  const iconBoxSize = isCompact ? "h-7 w-7" : "h-8 w-8";
+  const iconSize = isCompact ? 18 : 20;
+  const titleSize = isCompact ? "text-sm" : "text-base";
+  const urlSize = isCompact ? "text-xs" : "text-sm";
+  const headerMinHeight = isCompact ? "min-h-6" : "min-h-7";
+  const actionGap = isCompact ? "gap-1" : "gap-1.5";
+  const actionPadding = isCompact ? "pl-2" : "pl-3";
+  const isCardView = viewMode === "card";
+  const actionOverlayPadding = isCardView ? "px-2 py-1" : actionPadding;
+  const actionOverlayBackground = isCardView
+    ? "rounded-lg border border-border/60 bg-slate-50/95 shadow-sm backdrop-blur dark:bg-slate-900/70"
+    : "";
+  const actionOverlayPosition = isCardView
+    ? "left-1/2 -translate-x-1/2"
+    : "right-0";
+  const actionOverlayMotion = isCardView
+    ? "scale-95 group-hover:scale-100 group-focus-within:scale-100"
+    : "translate-x-2 group-hover:translate-x-0 group-focus-within:translate-x-0";
+  const dragIconSize = isCompact ? "h-3.5 w-3.5" : "h-4 w-4";
+  const dragPadding = isCompact ? "p-1" : "p-1.5";
 
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
@@ -133,6 +170,79 @@ export function ProviderCard({
   const displayUrl = useMemo(() => {
     return extractApiUrl(provider, fallbackUrlText);
   }, [provider, fallbackUrlText]);
+
+  const modelSummary = useMemo(() => {
+    const config = provider.settingsConfig ?? {};
+    if (appId === "claude") {
+      const env = (config as Record<string, any>).env || {};
+      const items: Array<{ label: string; value: string }> = [];
+      const mainModel =
+        typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : "";
+      const reasoningModel =
+        typeof env.ANTHROPIC_REASONING_MODEL === "string"
+          ? env.ANTHROPIC_REASONING_MODEL
+          : "";
+      const haikuModel =
+        typeof env.ANTHROPIC_DEFAULT_HAIKU_MODEL === "string"
+          ? env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+          : "";
+      const sonnetModel =
+        typeof env.ANTHROPIC_DEFAULT_SONNET_MODEL === "string"
+          ? env.ANTHROPIC_DEFAULT_SONNET_MODEL
+          : "";
+      const opusModel =
+        typeof env.ANTHROPIC_DEFAULT_OPUS_MODEL === "string"
+          ? env.ANTHROPIC_DEFAULT_OPUS_MODEL
+          : "";
+
+      if (mainModel.trim()) items.push({ label: "主模型", value: mainModel });
+      if (reasoningModel.trim())
+        items.push({ label: "推理模型", value: reasoningModel });
+      if (haikuModel.trim()) items.push({ label: "Haiku", value: haikuModel });
+      if (sonnetModel.trim())
+        items.push({ label: "Sonnet", value: sonnetModel });
+      if (opusModel.trim()) items.push({ label: "Opus", value: opusModel });
+
+      if (items.length === 0) return "";
+      return items.map((item) => `${item.label}: ${item.value}`).join(" | ");
+    }
+
+    if (appId === "codex") {
+      const configText =
+        typeof (config as Record<string, any>).config === "string"
+          ? ((config as Record<string, any>).config as string)
+          : "";
+      const modelName = extractCodexModelName(configText) || "";
+      return modelName.trim() ? `模型: ${modelName}` : "";
+    }
+
+    if (appId === "gemini") {
+      const env = (config as Record<string, any>).env || {};
+      const model =
+        typeof env.GEMINI_MODEL === "string" ? env.GEMINI_MODEL : "";
+      return model.trim() ? `模型: ${model}` : "";
+    }
+
+    if (appId === "opencode") {
+      const models = (config as Record<string, any>).models;
+      if (models && typeof models === "object") {
+        const count = Object.keys(models).length;
+        if (count > 0) return `模型: ${count} 个`;
+      }
+      return "";
+    }
+
+    if (appId === "openclaw") {
+      const models = (config as Record<string, any>).models;
+      if (Array.isArray(models)) {
+        const count = models.length;
+        if (count > 0) return `模型: ${count} 个`;
+      }
+      return "";
+    }
+
+    return "";
+  }, [appId, provider.settingsConfig]);
 
   const isClickableUrl = useMemo(() => {
     if (provider.notes?.trim()) {
@@ -183,7 +293,7 @@ export function ProviderCard({
       window.addEventListener("resize", updateWidth);
       return () => window.removeEventListener("resize", updateWidth);
     }
-  }, [onTest, onOpenTerminal]); // 按钮数量可能变化时重新计算
+  }, [onTest, onOpenTerminalWithMode, recentTerminalTargets]);
 
   const handleOpenWebsite = () => {
     if (!isClickableUrl) {
@@ -197,11 +307,13 @@ export function ProviderCard({
   // - 累加模式应用（OpenCode 非 OMO / OpenClaw）：不存在"当前"概念，始终返回 false
   // - 故障转移模式：代理实际使用的供应商（activeProviderId）
   // - 普通模式：isCurrent
+  const isFailoverRoutingMode = isAutoFailoverEnabled && isProxyTakeover;
+
   const isActiveProvider = isAnyOmo
     ? isCurrent
     : appId === "opencode" || appId === "openclaw"
       ? false
-      : isAutoFailoverEnabled
+      : isFailoverRoutingMode
         ? activeProviderId === provider.id
         : isCurrent;
 
@@ -213,8 +325,9 @@ export function ProviderCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border border-border p-4 transition-all duration-300",
+        "relative overflow-hidden rounded-xl border border-border transition-all duration-300",
         "bg-card text-card-foreground group",
+        containerPadding,
         isAutoFailoverEnabled || isProxyTakeover
           ? "hover:border-emerald-500/50"
           : "hover:border-border-active",
@@ -235,34 +348,52 @@ export function ProviderCard({
           isActiveProvider ? "opacity-100" : "opacity-0",
         )}
       />
-      <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className={cn(
+          "relative flex flex-col sm:flex-row sm:items-center sm:justify-between",
+          containerGap,
+        )}
+      >
         <div className="flex flex-1 items-center gap-2">
-          <button
-            type="button"
-            className={cn(
-              "-ml-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing p-1.5",
-              "text-muted-foreground/50 hover:text-muted-foreground transition-colors",
-              dragHandleProps?.isDragging && "cursor-grabbing",
-            )}
-            aria-label={t("provider.dragHandle")}
-            {...(dragHandleProps?.attributes ?? {})}
-            {...(dragHandleProps?.listeners ?? {})}
-          >
-            <GripVertical className="h-4 w-4" />
-          </button>
+          {dragHandleProps && (
+            <button
+              type="button"
+              className={cn(
+                "-ml-1.5 flex-shrink-0 cursor-grab active:cursor-grabbing",
+                dragPadding,
+                "text-muted-foreground/50 hover:text-muted-foreground transition-colors",
+                dragHandleProps.isDragging && "cursor-grabbing",
+              )}
+              aria-label={t("provider.dragHandle")}
+              {...(dragHandleProps.attributes ?? {})}
+              {...(dragHandleProps.listeners ?? {})}
+            >
+              <GripVertical className={dragIconSize} />
+            </button>
+          )}
 
-          <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
+          <div
+            className={cn(
+              "rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300",
+              iconBoxSize,
+            )}
+          >
             <ProviderIcon
               icon={provider.icon}
               name={provider.name}
               color={provider.iconColor}
-              size={20}
+              size={iconSize}
             />
           </div>
 
           <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2 min-h-7">
-              <h3 className="text-base font-semibold leading-none">
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2",
+                headerMinHeight,
+              )}
+            >
+              <h3 className={cn("font-semibold leading-none", titleSize)}>
                 {provider.name}
               </h3>
 
@@ -290,6 +421,18 @@ export function ProviderCard({
                   <FailoverPriorityBadge priority={failoverPriority} />
                 )}
 
+              {sessionOccupancyCount > 0 && (
+                <span
+                  className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  title={t("proxy.sessionRouting.occupiedSessions", {
+                    defaultValue: "当前会话占用: {{count}}",
+                    count: sessionOccupancyCount,
+                  })}
+                >
+                  S:{sessionOccupancyCount}
+                </span>
+              )}
+
               {provider.category === "third_party" &&
                 provider.meta?.isPartner && (
                   <span
@@ -303,12 +446,25 @@ export function ProviderCard({
                 )}
             </div>
 
+            {modelSummary && (
+              <div
+                className={cn(
+                  "text-xs text-muted-foreground max-w-[360px] truncate",
+                  isCompact ? "max-w-[260px]" : "max-w-[360px]",
+                )}
+                title={modelSummary}
+              >
+                {modelSummary}
+              </div>
+            )}
+
             {displayUrl && (
               <button
                 type="button"
                 onClick={handleOpenWebsite}
                 className={cn(
-                  "inline-flex items-center text-sm max-w-[280px]",
+                  "inline-flex items-center max-w-[280px]",
+                  urlSize,
                   isClickableUrl
                     ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
                     : "text-muted-foreground cursor-default",
@@ -323,7 +479,10 @@ export function ProviderCard({
         </div>
 
         <div
-          className="relative flex items-center ml-auto min-w-0 gap-3"
+          className={cn(
+            "flex items-center ml-auto min-w-0 gap-3",
+            !isCardView && "relative",
+          )}
           style={
             {
               "--actions-width": `${actionsWidth || 320}px`,
@@ -331,7 +490,13 @@ export function ProviderCard({
           }
         >
           <div className="ml-auto">
-            <div className="flex items-center gap-1 transition-transform duration-200 group-hover:-translate-x-[var(--actions-width)] group-focus-within:-translate-x-[var(--actions-width)]">
+            <div
+              className={cn(
+                "flex items-center gap-1 transition-transform duration-200",
+                !isCardView &&
+                  "group-hover:-translate-x-[var(--actions-width)] group-focus-within:-translate-x-[var(--actions-width)]",
+              )}
+            >
               {hasMultiplePlans ? (
                 <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
                   <span className="font-medium">
@@ -377,7 +542,14 @@ export function ProviderCard({
 
           <div
             ref={actionsRef}
-            className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pl-3 opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-all duration-200 translate-x-2 group-hover:translate-x-0 group-focus-within:translate-x-0"
+            className={cn(
+              "absolute top-1/2 z-20 -translate-y-1/2 flex items-center opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-all duration-200",
+              actionOverlayPosition,
+              actionOverlayMotion,
+              actionGap,
+              actionOverlayPadding,
+              actionOverlayBackground,
+            )}
           >
             <ProviderActions
               appId={appId}
@@ -398,9 +570,13 @@ export function ProviderCard({
                   : undefined
               }
               onDisableOmo={handleDisableAnyOmo}
-              onOpenTerminal={
-                onOpenTerminal ? () => onOpenTerminal(provider) : undefined
+              onOpenTerminalWithMode={
+                onOpenTerminalWithMode
+                  ? (mode, path) => onOpenTerminalWithMode(provider, mode, path)
+                  : undefined
               }
+              recentTerminalTargets={recentTerminalTargets}
+              onClearRecentTerminals={onClearRecentTerminals}
               isAutoFailoverEnabled={isAutoFailoverEnabled}
               isInFailoverQueue={isInFailoverQueue}
               onToggleFailover={onToggleFailover}

@@ -160,18 +160,23 @@ export function AutoFailoverConfigPanel({
 
     try {
       await updateConfig.mutateAsync({
-        appType,
-        enabled: config.enabled,
-        autoFailoverEnabled: formData.autoFailoverEnabled,
-        maxRetries: raw.maxRetries,
-        streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
-        streamingIdleTimeout: raw.streamingIdleTimeout,
-        nonStreamingTimeout: raw.nonStreamingTimeout,
-        circuitFailureThreshold: raw.circuitFailureThreshold,
-        circuitSuccessThreshold: raw.circuitSuccessThreshold,
-        circuitTimeoutSeconds: raw.circuitTimeoutSeconds,
-        circuitErrorRateThreshold: raw.circuitErrorRateThreshold / 100,
-        circuitMinRequests: raw.circuitMinRequests,
+        config: {
+          ...config,
+          appType,
+          enabled: config.enabled,
+          autoFailoverEnabled: formData.autoFailoverEnabled,
+          maxRetries: raw.maxRetries,
+          streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
+          streamingIdleTimeout: raw.streamingIdleTimeout,
+          nonStreamingTimeout: raw.nonStreamingTimeout,
+          circuitFailureThreshold: raw.circuitFailureThreshold,
+          circuitSuccessThreshold: raw.circuitSuccessThreshold,
+          circuitTimeoutSeconds: raw.circuitTimeoutSeconds,
+          circuitErrorRateThreshold: raw.circuitErrorRateThreshold / 100,
+          circuitMinRequests: raw.circuitMinRequests,
+        },
+        skipSuccessToast: true,
+        skipErrorToast: true,
       });
       toast.success(
         t("proxy.autoFailover.configSaved", "自动故障转移配置已保存"),

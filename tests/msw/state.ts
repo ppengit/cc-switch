@@ -1,15 +1,16 @@
 import type { AppId } from "@/lib/api/types";
+import type { McpServer, Provider, Settings } from "@/types";
 import type {
-  McpServer,
-  Provider,
-  SessionMessage,
-  SessionMeta,
-  Settings,
-} from "@/types";
+  AppProxyConfig,
+  ProviderSessionOccupancy,
+  SessionProviderBinding,
+} from "@/types/proxy";
 
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
+type AppProxyConfigState = Record<AppId, AppProxyConfig>;
+type SessionBindingsState = Record<AppId, Record<string, SessionProviderBinding>>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -75,8 +76,47 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   openclaw: "",
 });
 
+const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
+  appType,
+  enabled: false,
+  autoFailoverEnabled: false,
+  maxRetries: 3,
+  streamingFirstByteTimeout: 30,
+  streamingIdleTimeout: 30,
+  nonStreamingTimeout: 60,
+  circuitFailureThreshold: 3,
+  circuitSuccessThreshold: 2,
+  circuitTimeoutSeconds: 60,
+  circuitErrorRateThreshold: 50,
+  circuitMinRequests: 5,
+  sessionRoutingEnabled: false,
+  sessionRoutingStrategy: "priority",
+  sessionMaxSessionsPerProvider: 1,
+  sessionAllowSharedWhenExhausted: false,
+  sessionIdleTtlMinutes: 30,
+});
+
+const createDefaultAppProxyConfigs = (): AppProxyConfigState => ({
+  claude: createDefaultAppProxyConfig("claude"),
+  codex: createDefaultAppProxyConfig("codex"),
+  gemini: createDefaultAppProxyConfig("gemini"),
+  opencode: createDefaultAppProxyConfig("opencode"),
+  openclaw: createDefaultAppProxyConfig("openclaw"),
+});
+
+const createDefaultSessionBindings = (): SessionBindingsState => ({
+  claude: {},
+  codex: {},
+  gemini: {},
+  opencode: {},
+  openclaw: {},
+});
+
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
+let appProxyConfigs = createDefaultAppProxyConfigs();
+let sessionRoutingMasterEnabled = false;
+let sessionBindings = createDefaultSessionBindings();
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -86,69 +126,13 @@ let settingsState: Settings = {
   language: "zh",
 };
 let appConfigDirOverride: string | null = null;
-const sessionMessageKey = (providerId: string, sourcePath: string) =>
-  `${providerId}:${sourcePath}`;
-
-const createDefaultSessions = (): SessionMeta[] => {
-  const now = Date.now();
-  return [
-    {
-      providerId: "codex",
-      sessionId: "codex-session-1",
-      title: "Codex Session One",
-      summary: "Codex summary",
-      projectDir: "/mock/codex",
-      createdAt: now - 2000,
-      lastActiveAt: now - 1000,
-      sourcePath: "/mock/codex/session-1.jsonl",
-      resumeCommand: "codex resume codex-session-1",
-    },
-    {
-      providerId: "claude",
-      sessionId: "claude-session-1",
-      title: "Claude Session One",
-      summary: "Claude summary",
-      projectDir: "/mock/claude",
-      createdAt: now - 4000,
-      lastActiveAt: now - 3000,
-      sourcePath: "/mock/claude/session-1.jsonl",
-      resumeCommand: "claude --resume claude-session-1",
-    },
-  ];
-};
-
-const createDefaultSessionMessages = (): Record<string, SessionMessage[]> => ({
-  [sessionMessageKey("codex", "/mock/codex/session-1.jsonl")]: [
-    {
-      role: "user",
-      content: "First codex message",
-      ts: Date.now() - 1000,
-    },
-  ],
-  [sessionMessageKey("claude", "/mock/claude/session-1.jsonl")]: [
-    {
-      role: "user",
-      content: "First claude message",
-      ts: Date.now() - 3000,
-    },
-  ],
-});
-
-let sessionsState = createDefaultSessions();
-let sessionMessagesState = createDefaultSessionMessages();
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
       id: "sample",
       name: "Sample Claude Server",
       enabled: true,
-      apps: {
-        claude: true,
-        codex: false,
-        gemini: false,
-        opencode: false,
-        openclaw: false,
-      },
+      apps: { claude: true, codex: false, gemini: false, opencode: false, openclaw: false },
       server: {
         type: "stdio",
         command: "claude-server",
@@ -160,13 +144,7 @@ let mcpConfigs: McpConfigState = {
       id: "httpServer",
       name: "HTTP Codex Server",
       enabled: false,
-      apps: {
-        claude: false,
-        codex: true,
-        gemini: false,
-        opencode: false,
-        openclaw: false,
-      },
+      apps: { claude: false, codex: true, gemini: false, opencode: false, openclaw: false },
       server: {
         type: "http",
         url: "http://localhost:3000",
@@ -184,8 +162,9 @@ const cloneProviders = (value: ProvidersByApp) =>
 export const resetProviderState = () => {
   providers = createDefaultProviders();
   current = createDefaultCurrent();
-  sessionsState = createDefaultSessions();
-  sessionMessagesState = createDefaultSessionMessages();
+  appProxyConfigs = createDefaultAppProxyConfigs();
+  sessionRoutingMasterEnabled = false;
+  sessionBindings = createDefaultSessionBindings();
   settingsState = {
     showInTray: true,
     minimizeToTrayOnClose: true,
@@ -201,13 +180,7 @@ export const resetProviderState = () => {
         id: "sample",
         name: "Sample Claude Server",
         enabled: true,
-        apps: {
-          claude: true,
-          codex: false,
-          gemini: false,
-          opencode: false,
-          openclaw: false,
-        },
+        apps: { claude: true, codex: false, gemini: false, opencode: false, openclaw: false },
         server: {
           type: "stdio",
           command: "claude-server",
@@ -219,13 +192,7 @@ export const resetProviderState = () => {
         id: "httpServer",
         name: "HTTP Codex Server",
         enabled: false,
-        apps: {
-          claude: false,
-          codex: true,
-          gemini: false,
-          opencode: false,
-          openclaw: false,
-        },
+        apps: { claude: false, codex: true, gemini: false, opencode: false, openclaw: false },
         server: {
           type: "http",
           url: "http://localhost:3000",
@@ -307,6 +274,104 @@ export const listProviders = (appType: AppId) =>
     Provider
   >;
 
+export const getSessionRoutingMasterEnabledState = () =>
+  sessionRoutingMasterEnabled;
+
+export const setSessionRoutingMasterEnabledState = (value: boolean) => {
+  sessionRoutingMasterEnabled = value;
+};
+
+export const getAppProxyConfig = (appType: AppId) =>
+  JSON.parse(JSON.stringify(appProxyConfigs[appType])) as AppProxyConfig;
+
+export const setAppProxyConfig = (appType: AppId, value: AppProxyConfig) => {
+  appProxyConfigs[appType] = JSON.parse(JSON.stringify(value)) as AppProxyConfig;
+};
+
+export const listSessionProviderBindings = (
+  appType: AppId,
+): SessionProviderBinding[] =>
+  Object.values(sessionBindings[appType] ?? {}).map(
+    (item) => JSON.parse(JSON.stringify(item)) as SessionProviderBinding,
+  );
+
+export const getSessionProviderBinding = (
+  appType: AppId,
+  sessionId: string,
+): SessionProviderBinding | null => {
+  const item = sessionBindings[appType]?.[sessionId];
+  if (!item) return null;
+  return JSON.parse(JSON.stringify(item)) as SessionProviderBinding;
+};
+
+export const switchSessionProviderBinding = (
+  appType: AppId,
+  sessionId: string,
+  providerId: string,
+  pin?: boolean,
+): SessionProviderBinding => {
+  const now = Date.now();
+  const currentBinding = sessionBindings[appType]?.[sessionId];
+  const providerName = providers[appType]?.[providerId]?.name ?? providerId;
+  const next: SessionProviderBinding = {
+    appType,
+    sessionId,
+    providerId,
+    providerName,
+    pinned: pin ?? currentBinding?.pinned ?? false,
+    createdAt: currentBinding?.createdAt ?? now,
+    updatedAt: now,
+    lastSeenAt: now,
+    isActive: true,
+  };
+
+  if (!sessionBindings[appType]) {
+    sessionBindings[appType] = {};
+  }
+  sessionBindings[appType][sessionId] = next;
+  return JSON.parse(JSON.stringify(next)) as SessionProviderBinding;
+};
+
+export const setSessionProviderBindingPin = (
+  appType: AppId,
+  sessionId: string,
+  pinned: boolean,
+) => {
+  const currentBinding = sessionBindings[appType]?.[sessionId];
+  if (!currentBinding) return;
+  sessionBindings[appType][sessionId] = {
+    ...currentBinding,
+    pinned,
+    updatedAt: Date.now(),
+  };
+};
+
+export const removeSessionProviderBinding = (appType: AppId, sessionId: string) => {
+  if (!sessionBindings[appType]) return;
+  delete sessionBindings[appType][sessionId];
+};
+
+export const getProviderSessionOccupancy = (
+  appType: AppId,
+): ProviderSessionOccupancy[] => {
+  const counts = new Map<string, number>();
+  const providerNames = new Map<string, string>();
+
+  for (const binding of Object.values(sessionBindings[appType] ?? {})) {
+    if (!binding.isActive) continue;
+    counts.set(binding.providerId, (counts.get(binding.providerId) ?? 0) + 1);
+    providerNames.set(binding.providerId, binding.providerName ?? binding.providerId);
+  }
+
+  return Array.from(counts.entries())
+    .map(([providerId, sessionCount]) => ({
+      providerId,
+      providerName: providerNames.get(providerId) ?? providerId,
+      sessionCount,
+    }))
+    .sort((a, b) => a.providerName.localeCompare(b.providerName));
+};
+
 export const getSettings = () =>
   JSON.parse(JSON.stringify(settingsState)) as Settings;
 
@@ -366,42 +431,4 @@ export const upsertMcpServer = (
 export const deleteMcpServer = (appType: AppId, id: string) => {
   if (!mcpConfigs[appType]) return;
   delete mcpConfigs[appType][id];
-};
-
-export const listSessions = () =>
-  JSON.parse(JSON.stringify(sessionsState)) as SessionMeta[];
-
-export const getSessionMessages = (providerId: string, sourcePath: string) =>
-  JSON.parse(
-    JSON.stringify(
-      sessionMessagesState[sessionMessageKey(providerId, sourcePath)] ?? [],
-    ),
-  ) as SessionMessage[];
-
-export const deleteSession = (
-  providerId: string,
-  sessionId: string,
-  sourcePath: string,
-) => {
-  sessionsState = sessionsState.filter(
-    (session) =>
-      !(
-        session.providerId === providerId &&
-        session.sessionId === sessionId &&
-        session.sourcePath === sourcePath
-      ),
-  );
-  delete sessionMessagesState[sessionMessageKey(providerId, sourcePath)];
-  return true;
-};
-
-export const setSessionFixtures = (
-  sessions: SessionMeta[],
-  messages: Record<string, SessionMessage[]>,
-) => {
-  sessionsState = JSON.parse(JSON.stringify(sessions)) as SessionMeta[];
-  sessionMessagesState = JSON.parse(JSON.stringify(messages)) as Record<
-    string,
-    SessionMessage[]
-  >;
 };

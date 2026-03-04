@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -7,19 +8,23 @@ import {
   RefreshCw,
   Search,
   Play,
-  Trash2,
   MessageSquare,
   Clock,
   FolderOpen,
+  Lock,
+  Unlock,
   X,
 } from "lucide-react";
+import { useSessionMessagesQuery, useSessionsQuery } from "@/lib/query";
 import {
-  useDeleteSessionMutation,
-  useSessionMessagesQuery,
-  useSessionsQuery,
-} from "@/lib/query";
+  useAppProxyConfig,
+  useRemoveSessionProviderBinding,
+  useSessionProviderBinding,
+  useSetSessionProviderBindingPin,
+  useSwitchSessionProviderBinding,
+} from "@/lib/query/proxy";
 import { sessionsApi } from "@/lib/api";
-import type { SessionMeta } from "@/types";
+import { providersApi } from "@/lib/api/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -28,10 +33,10 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Tooltip,
   TooltipContent,
@@ -44,6 +49,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
 import { SessionTocDialog, SessionTocSidebar } from "./SessionToc";
+import type { AppId } from "@/lib/api";
 import {
   formatSessionTitle,
   formatTimestamp,
@@ -68,12 +74,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const detailRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const activeMessageTimerRef = useRef<number | null>(null);
   const [activeMessageIndex, setActiveMessageIndex] = useState<number | null>(
     null,
   );
   const [tocDialogOpen, setTocDialogOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [search, setSearch] = useState("");
@@ -82,7 +88,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  // 使用 FlexSearch 全文搜索
+  // 娴ｈ法鏁?FlexSearch 閸忋劍鏋冮幖婊呭偍
   const { search: searchSessions } = useSessionSearch({
     sessions,
     providerFilter,
@@ -116,18 +122,124 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   }, [filteredSessions, selectedKey]);
 
+  const selectedSessionAppType = selectedSession?.providerId;
+  const { data: selectedAppProxyConfig } = useAppProxyConfig(
+    selectedSessionAppType ?? appId,
+  );
+  const isSessionRoutingEnabledForSelection =
+    selectedSession != null &&
+    selectedAppProxyConfig?.sessionRoutingEnabled === true;
+
+  const { data: sessionBinding, isLoading: isLoadingSessionBinding } =
+    useSessionProviderBinding(
+      selectedSessionAppType,
+      selectedSession?.sessionId,
+      selectedAppProxyConfig?.sessionIdleTtlMinutes,
+    );
+  const switchSessionProviderBinding = useSwitchSessionProviderBinding();
+  const removeSessionProviderBinding = useRemoveSessionProviderBinding();
+  const setSessionProviderBindingPin = useSetSessionProviderBindingPin();
+  const { data: providersMap = {} } = useQuery({
+    queryKey: ["providers", selectedSessionAppType, "session-manager"],
+    queryFn: () => providersApi.getAll(selectedSessionAppType as AppId),
+    enabled: Boolean(selectedSessionAppType),
+    staleTime: 30 * 1000,
+  });
+  const providerOptions = useMemo(() => {
+    return Object.values(providersMap).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
+  }, [providersMap]);
+
+  const handleSwitchSessionProvider = async (providerId: string) => {
+    if (!selectedSessionAppType || !selectedSession?.sessionId) return;
+    try {
+      await switchSessionProviderBinding.mutateAsync({
+        appType: selectedSessionAppType,
+        sessionId: selectedSession.sessionId,
+        providerId,
+        pin: sessionBinding?.pinned ?? false,
+      });
+      toast.success(
+        t("sessionManager.bindingSwitchSuccess", {
+          defaultValue: "会话绑定已切换",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.bindingSwitchFailed", {
+            defaultValue: "切换会话绑定失败",
+          }),
+      );
+    }
+  };
+
+  const handleToggleSessionPin = async () => {
+    if (
+      !selectedSessionAppType ||
+      !selectedSession?.sessionId ||
+      !sessionBinding
+    )
+      return;
+    try {
+      await setSessionProviderBindingPin.mutateAsync({
+        appType: selectedSessionAppType,
+        sessionId: selectedSession.sessionId,
+        pinned: !sessionBinding.pinned,
+      });
+      toast.success(
+        !sessionBinding.pinned
+          ? t("sessionManager.bindingPinned", {
+              defaultValue: "会话绑定已锁定",
+            })
+          : t("sessionManager.bindingAuto", {
+              defaultValue: "会话绑定已切回自动",
+            }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.bindingPinFailed", {
+            defaultValue: "更新会话绑定状态失败",
+          }),
+      );
+    }
+  };
+
+  const handleRemoveSessionBinding = async () => {
+    if (!selectedSessionAppType || !selectedSession?.sessionId) return;
+    try {
+      await removeSessionProviderBinding.mutateAsync({
+        appType: selectedSessionAppType,
+        sessionId: selectedSession.sessionId,
+      });
+      toast.success(
+        t("sessionManager.bindingRemoved", {
+          defaultValue: "会话绑定已解绑",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.bindingRemoveFailed", {
+            defaultValue: "解绑会话绑定失败",
+          }),
+      );
+    }
+  };
+
   const { data: messages = [], isLoading: isLoadingMessages } =
     useSessionMessagesQuery(
       selectedSession?.providerId,
       selectedSession?.sourcePath,
     );
-  const deleteSessionMutation = useDeleteSessionMutation();
 
-  // 提取用户消息用于目录
+  // 閹绘劕褰囬悽銊﹀煕濞戝牊浼呴悽銊ょ艾閻╊喖缍?
   const userMessagesToc = useMemo(() => {
     return messages
       .map((msg, index) => ({ msg, index }))
-      .filter(({ msg }) => msg.role.toLowerCase() === "user")
+      .filter(({ msg }) => (msg.role ?? "").toLowerCase() === "user")
       .map(({ msg, index }) => ({
         index,
         preview:
@@ -141,19 +253,23 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       setActiveMessageIndex(index);
-      setTocDialogOpen(false); // 关闭弹窗
-      // 清除高亮状态
-      setTimeout(() => setActiveMessageIndex(null), 2000);
+      setTocDialogOpen(false);
+
+      if (activeMessageTimerRef.current !== null) {
+        window.clearTimeout(activeMessageTimerRef.current);
+      }
+      activeMessageTimerRef.current = window.setTimeout(() => {
+        setActiveMessageIndex(null);
+        activeMessageTimerRef.current = null;
+      }, 2000);
     }
   };
 
-  // 清理定时器
   useEffect(() => {
     return () => {
-      // 这里的 setTimeout 其实无法直接清理，因为它在函数闭包里。
-      // 如果要严格清理，需要用 useRef 存 timer id。
-      // 但对于 2秒的高亮清除，通常不清理也没大问题。
-      // 为了代码规范，我们在组件卸载时将 activeMessageIndex 重置 (虽然 React 会处理)
+      if (activeMessageTimerRef.current !== null) {
+        window.clearTimeout(activeMessageTimerRef.current);
+      }
     };
   }, []);
 
@@ -193,26 +309,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     }
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!deleteTarget?.sourcePath || deleteSessionMutation.isPending) {
-      return;
-    }
-
-    setDeleteTarget(null);
-    await deleteSessionMutation.mutateAsync({
-      providerId: deleteTarget.providerId,
-      sessionId: deleteTarget.sessionId,
-      sourcePath: deleteTarget.sourcePath,
-    });
-  };
-
   return (
     <TooltipProvider>
       <div className="mx-auto px-4 sm:px-6 flex flex-col h-[calc(100vh-8rem)]">
         <div className="flex-1 overflow-hidden flex flex-col gap-4">
-          {/* 主内容区域 - 左右分栏 */}
+          {/* 娑撹鍞寸€圭懓灏崺?- 瀹革箑褰搁崚鍡樼埉 */}
           <div className="flex-1 overflow-hidden grid gap-4 md:grid-cols-[320px_1fr]">
-            {/* 左侧会话列表 */}
+            {/* 瀹革缚鏅舵导姘崇樈閸掓銆?*/}
             <Card className="flex flex-col overflow-hidden">
               <CardHeader className="py-2 px-3 border-b">
                 {isSearchOpen ? (
@@ -424,7 +527,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
               </CardContent>
             </Card>
 
-            {/* 右侧会话详情 */}
+            {/* 閸欏厖鏅舵导姘崇樈鐠囷附鍎?*/}
             <Card
               className="flex flex-col overflow-hidden min-h-0"
               ref={detailRef}
@@ -436,10 +539,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 </div>
               ) : (
                 <>
-                  {/* 详情头部 */}
+                  {/* 鐠囷附鍎忔径鎾劥 */}
                   <CardHeader className="py-3 px-4 border-b shrink-0">
                     <div className="flex items-start justify-between gap-4">
-                      {/* 左侧：会话信息 */}
+                      {/* 瀹革缚鏅堕敍姘窗鐠囨繀淇婇幁?*/}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 mb-1">
                           <Tooltip>
@@ -463,7 +566,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           </h2>
                         </div>
 
-                        {/* 元信息 */}
+                        {/* 閸忓啩淇婇幁?*/}
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1">
                             <Clock className="size-3" />
@@ -507,9 +610,157 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             </Tooltip>
                           )}
                         </div>
+
+                        <div className="mt-3 rounded-lg border border-border/70 bg-muted/20 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-medium">
+                              {t("sessionManager.bindingSectionTitle", {
+                                defaultValue: "会话路由绑定",
+                              })}
+                            </span>
+                            <Badge
+                              variant={
+                                selectedAppProxyConfig?.sessionRoutingEnabled ===
+                                true
+                                  ? "default"
+                                  : "secondary"
+                              }
+                              className="text-[11px]"
+                            >
+                              {t("sessionManager.bindingAppStatus", {
+                                defaultValue: "应用：{{status}}",
+                                status:
+                                  selectedAppProxyConfig?.sessionRoutingEnabled ===
+                                  true
+                                    ? t("common.enabled", {
+                                        defaultValue: "启用",
+                                      })
+                                    : t("common.disabled", {
+                                        defaultValue: "停用",
+                                      }),
+                              })}
+                            </Badge>
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={
+                                sessionBinding?.isActive
+                                  ? "default"
+                                  : "secondary"
+                              }
+                              className="text-[11px]"
+                            >
+                              {isLoadingSessionBinding
+                                ? t("sessionManager.bindingLoading", {
+                                    defaultValue: "绑定读取中...",
+                                  })
+                                : t("sessionManager.bindingProvider", {
+                                    defaultValue: "绑定：{{provider}}",
+                                    provider:
+                                      sessionBinding?.providerName ??
+                                      sessionBinding?.providerId ??
+                                      t("sessionManager.bindingNone", {
+                                        defaultValue: "未分配",
+                                      }),
+                                  })}
+                            </Badge>
+
+                            {isSessionRoutingEnabledForSelection ? (
+                              <>
+                                <Select
+                                  value={sessionBinding?.providerId ?? "__none"}
+                                  onValueChange={(value) => {
+                                    if (value !== "__none") {
+                                      void handleSwitchSessionProvider(value);
+                                    }
+                                  }}
+                                  disabled={
+                                    switchSessionProviderBinding.isPending ||
+                                    providerOptions.length === 0
+                                  }
+                                >
+                                  <SelectTrigger className="h-7 w-[220px] text-xs">
+                                    <SelectValue
+                                      placeholder={t(
+                                        "sessionManager.bindingSwitchPlaceholder",
+                                        {
+                                          defaultValue: "选择提供商",
+                                        },
+                                      )}
+                                    />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__none" disabled>
+                                      {t("sessionManager.bindingNone", {
+                                        defaultValue: "未分配",
+                                      })}
+                                    </SelectItem>
+                                    {providerOptions.map((provider) => (
+                                      <SelectItem
+                                        key={provider.id}
+                                        value={provider.id}
+                                      >
+                                        {provider.name}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2 text-xs gap-1"
+                                  onClick={() => void handleToggleSessionPin()}
+                                  disabled={
+                                    !sessionBinding ||
+                                    setSessionProviderBindingPin.isPending
+                                  }
+                                >
+                                  {sessionBinding?.pinned ? (
+                                    <Lock className="size-3.5" />
+                                  ) : (
+                                    <Unlock className="size-3.5" />
+                                  )}
+                                  {sessionBinding?.pinned
+                                    ? t("sessionManager.bindingPinnedShort", {
+                                        defaultValue: "已锁定",
+                                      })
+                                    : t("sessionManager.bindingAutoShort", {
+                                        defaultValue: "自动",
+                                      })}
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-xs gap-1"
+                                  onClick={() =>
+                                    void handleRemoveSessionBinding()
+                                  }
+                                  disabled={
+                                    !sessionBinding ||
+                                    removeSessionProviderBinding.isPending
+                                  }
+                                >
+                                  <X className="size-3.5" />
+                                  {t("sessionManager.bindingRemove", {
+                                    defaultValue: "解绑",
+                                  })}
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-[11px] text-muted-foreground">
+                                {t("sessionManager.bindingDisabled", {
+                                  defaultValue: "当前应用未启用会话路由",
+                                })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
 
-                      {/* 右侧：操作按钮组 */}
+                      {/* 閸欏厖鏅堕敍姘惙娴ｆ粍瀵滈柦顔剧矋 */}
                       <div className="flex items-center gap-2 shrink-0">
                         {isMac() && (
                           <Tooltip>
@@ -534,45 +785,15 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                     defaultValue: "在终端中恢复此会话",
                                   })
                                 : t("sessionManager.noResumeCommand", {
-                                    defaultValue: "此会话无法恢复",
+                                    defaultValue: "此会话暂无恢复命令",
                                   })}
                             </TooltipContent>
                           </Tooltip>
                         )}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              className="gap-1.5"
-                              onClick={() => setDeleteTarget(selectedSession)}
-                              disabled={
-                                !selectedSession.sourcePath ||
-                                deleteSessionMutation.isPending
-                              }
-                            >
-                              <Trash2 className="size-3.5" />
-                              <span className="hidden sm:inline">
-                                {deleteSessionMutation.isPending
-                                  ? t("sessionManager.deleting", {
-                                      defaultValue: "删除中...",
-                                    })
-                                  : t("sessionManager.delete", {
-                                      defaultValue: "删除会话",
-                                    })}
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {t("sessionManager.deleteTooltip", {
-                              defaultValue: "永久删除此本地会话记录",
-                            })}
-                          </TooltipContent>
-                        </Tooltip>
                       </div>
                     </div>
 
-                    {/* 恢复命令预览 */}
+                    {/* 閹垹顦查崨鎴掓姢妫板嫯顫?*/}
                     {selectedSession.resumeCommand && (
                       <div className="mt-3 flex items-center gap-2">
                         <div className="flex-1 rounded-md bg-muted/60 px-3 py-1.5 font-mono text-xs text-muted-foreground truncate">
@@ -604,10 +825,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                     )}
                   </CardHeader>
 
-                  {/* 消息列表区域 */}
+                  {/* 濞戝牊浼呴崚妤勩€冮崠鍝勭厵 */}
                   <CardContent className="flex-1 overflow-hidden p-0">
                     <div className="flex h-full">
-                      {/* 消息列表 */}
+                      {/* 濞戝牊浼呴崚妤勩€?*/}
                       <ScrollArea className="flex-1">
                         <div className="p-4">
                           <div className="flex items-center gap-2 mb-3">
@@ -648,7 +869,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                     handleCopy(
                                       content,
                                       t("sessionManager.messageCopied", {
-                                        defaultValue: "已复制消息内容",
+                                        defaultValue: "消息内容已复制",
                                       }),
                                     )
                                   }
@@ -660,14 +881,14 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         </div>
                       </ScrollArea>
 
-                      {/* 右侧目录 - 类似少数派 (大屏幕) */}
+                      {/* 閸欏厖鏅堕惄顔肩秿 - 缁鎶€鐏忔垶鏆熷ú?(婢堆冪潌楠? */}
                       <SessionTocSidebar
                         items={userMessagesToc}
                         onItemClick={scrollToMessage}
                       />
                     </div>
 
-                    {/* 浮动目录按钮 (小屏幕) */}
+                    {/* 濞搭喖濮╅惄顔肩秿閹稿鎸?(鐏忓繐鐫嗛獮? */}
                     <SessionTocDialog
                       items={userMessagesToc}
                       onItemClick={scrollToMessage}
@@ -681,33 +902,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           </div>
         </div>
       </div>
-      <ConfirmDialog
-        isOpen={Boolean(deleteTarget)}
-        title={t("sessionManager.deleteConfirmTitle", {
-          defaultValue: "删除会话",
-        })}
-        message={
-          deleteTarget
-            ? t("sessionManager.deleteConfirmMessage", {
-                defaultValue:
-                  "将永久删除本地会话“{{title}}”\nSession ID: {{sessionId}}\n\n此操作不可恢复。",
-                title: formatSessionTitle(deleteTarget),
-                sessionId: deleteTarget.sessionId,
-              })
-            : ""
-        }
-        confirmText={t("sessionManager.deleteConfirmAction", {
-          defaultValue: "删除会话",
-        })}
-        cancelText={t("common.cancel", { defaultValue: "取消" })}
-        variant="destructive"
-        onConfirm={() => void handleDeleteConfirm()}
-        onCancel={() => {
-          if (!deleteSessionMutation.isPending) {
-            setDeleteTarget(null);
-          }
-        }}
-      />
     </TooltipProvider>
   );
 }

@@ -164,6 +164,7 @@ command = "say"
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -901,3 +902,4 @@ fn provider_service_delete_current_provider_returns_error() {
         other => panic!("expected Config/Message error, got {other:?}"),
     }
 }
+

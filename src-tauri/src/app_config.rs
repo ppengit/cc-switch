@@ -876,6 +876,7 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     struct TempHome {
@@ -883,6 +884,8 @@ mod tests {
         dir: TempDir,
         original_home: Option<String>,
         original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+        original_app_config_override: Option<PathBuf>,
     }
 
     impl TempHome {
@@ -890,14 +893,20 @@ mod tests {
             let dir = TempDir::new().expect("failed to create temp home");
             let original_home = env::var("HOME").ok();
             let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+            let original_app_config_override = crate::app_store::get_app_config_dir_override();
 
             env::set_var("HOME", dir.path());
             env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::app_store::set_app_config_dir_override_for_tests(None);
 
             Self {
                 dir,
                 original_home,
                 original_userprofile,
+                original_test_home,
+                original_app_config_override,
             }
         }
     }
@@ -913,6 +922,15 @@ mod tests {
                 Some(value) => env::set_var("USERPROFILE", value),
                 None => env::remove_var("USERPROFILE"),
             }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+
+            crate::app_store::set_app_config_dir_override_for_tests(
+                self.original_app_config_override.clone(),
+            );
         }
     }
 

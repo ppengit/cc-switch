@@ -513,6 +513,7 @@ fn log_forward_error(
         ctx.latency_ms(),
         is_streaming,
         Some(ctx.session_id.clone()),
+        ctx.session_routing_active,
         None,
     ) {
         log::warn!("记录失败请求日志失败: {e}");
@@ -560,6 +561,7 @@ async fn log_usage(
         first_token_ms,
         status_code,
         None,
+        false,
         None, // provider_type
         is_streaming,
     ) {
