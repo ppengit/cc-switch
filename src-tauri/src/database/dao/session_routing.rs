@@ -534,25 +534,29 @@ impl Database {
         }
 
         let strategy = strategy.trim().to_ascii_lowercase();
+        let choose_least_active = |pool: &[String]| -> String {
+            let mut chosen = pool[0].clone();
+            let mut min_count = active_counts.get(&chosen).copied().unwrap_or(0);
+            for provider_id in pool.iter().skip(1) {
+                let current = active_counts.get(provider_id).copied().unwrap_or(0);
+                if current < min_count {
+                    min_count = current;
+                    chosen = provider_id.clone();
+                }
+            }
+            chosen
+        };
         let chosen_provider_id = match strategy.as_str() {
             "round_robin" => {
                 let cursor = get_and_increment_session_round_robin_cursor_on_conn(&conn, app_type)?;
                 let index = (cursor as usize) % target_pool.len();
                 target_pool[index].clone()
             }
-            "least_active" => {
-                let mut chosen = target_pool[0].clone();
-                let mut min_count = active_counts.get(&chosen).copied().unwrap_or(0);
-                for provider_id in target_pool.iter().skip(1) {
-                    let current = active_counts.get(provider_id).copied().unwrap_or(0);
-                    if current < min_count {
-                        min_count = current;
-                        chosen = provider_id.clone();
-                    }
-                }
-                chosen
-            }
-            "fixed" | "priority" => target_pool[0].clone(),
+            "least_active" => choose_least_active(&target_pool),
+            // Priority should still avoid immediate sharing when there are idle providers.
+            // We keep queue order as tie-breaker by scanning in target_pool order.
+            "priority" => choose_least_active(&target_pool),
+            "fixed" => target_pool[0].clone(),
             _ => target_pool[0].clone(),
         };
 
@@ -1027,6 +1031,95 @@ mod tests {
             .expect("binding exists");
 
         assert_eq!(binding.provider_id, "b");
+    }
+
+    #[test]
+    fn assign_session_provider_priority_prefers_idle_provider_before_sharing() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let first = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "priority-s1",
+                &candidates,
+                "priority",
+                2,
+                true,
+                30,
+            )
+            .expect("assign first")
+            .expect("binding first");
+        let second = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "priority-s2",
+                &candidates,
+                "priority",
+                2,
+                true,
+                30,
+            )
+            .expect("assign second")
+            .expect("binding second");
+
+        assert_eq!(first.provider_id, "a");
+        assert_eq!(second.provider_id, "b");
+    }
+
+    #[test]
+    fn assign_session_provider_priority_shares_only_when_pool_exhausted() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let first = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "priority-e1",
+                &candidates,
+                "priority",
+                1,
+                true,
+                30,
+            )
+            .expect("assign first")
+            .expect("binding first");
+        let second = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "priority-e2",
+                &candidates,
+                "priority",
+                1,
+                true,
+                30,
+            )
+            .expect("assign second")
+            .expect("binding second");
+        let third = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "priority-e3",
+                &candidates,
+                "priority",
+                1,
+                true,
+                30,
+            )
+            .expect("assign third")
+            .expect("binding third");
+
+        assert_eq!(first.provider_id, "a");
+        assert_eq!(second.provider_id, "b");
+        assert!(third.provider_id == "a" || third.provider_id == "b");
     }
 
     #[test]

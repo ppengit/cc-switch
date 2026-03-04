@@ -194,7 +194,7 @@ impl RequestContext {
     ) -> Result<Vec<Provider>, ProxyError> {
         let providers = state
             .provider_router
-            .select_providers(app_type_str)
+            .select_session_routing_providers(app_type_str)
             .await
             .map_err(Self::map_provider_selection_error)?;
 
@@ -217,6 +217,14 @@ impl RequestContext {
             .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
 
         if let Some(binding) = binding {
+            log::debug!(
+                "[{}] session routing assigned: session={}, strategy={}, preferred_provider={}, candidates={}",
+                app_type_str,
+                session_id,
+                app_config.session_routing_strategy,
+                binding.provider_id,
+                candidate_provider_ids.join(",")
+            );
             if providers
                 .iter()
                 .any(|provider| provider.id == binding.provider_id)
@@ -236,6 +244,15 @@ impl RequestContext {
             return Ok(providers);
         }
 
+        log::warn!(
+            "[{}] session routing assignment failed: session={}, strategy={}, candidates={}, max_sessions={}, allow_shared={}",
+            app_type_str,
+            session_id,
+            app_config.session_routing_strategy,
+            candidate_provider_ids.join(","),
+            app_config.session_max_sessions_per_provider,
+            app_config.session_allow_shared_when_exhausted
+        );
         Err(ProxyError::NoAvailableProvider)
     }
 

@@ -17,6 +17,33 @@ type OmoProviderRow = (
 );
 
 impl Database {
+    pub fn list_provider_ids_for_session_routing(
+        &self,
+        app_type: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id
+                 FROM providers
+                 WHERE app_type = ?1
+                 ORDER BY
+                   CASE WHEN in_failover_queue = 1 THEN 0 ELSE 1 END,
+                   COALESCE(sort_index, 999999),
+                   created_at ASC,
+                   id ASC",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let ids = stmt
+            .query_map(params![app_type], |row| row.get::<_, String>(0))
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(ids)
+    }
+
     pub fn get_all_providers(
         &self,
         app_type: &str,

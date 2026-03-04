@@ -110,6 +110,31 @@ pub struct WebDavSyncSettings {
     pub status: WebDavSyncStatus,
 }
 
+/// 终端目标偏好设置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalTargetPreference {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>, // "current" | "recent" | "custom"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSortPreference {
+    pub by: String,    // "manual" | "name" | "createdAt"
+    pub order: String, // "asc" | "desc"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
 impl Default for WebDavSyncSettings {
     fn default() -> Self {
         Self {
@@ -207,6 +232,10 @@ pub struct AppSettings {
     pub failover_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_window_size: Option<WindowSize>,
 
     // ===== 主页面显示的应用 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,6 +324,8 @@ impl Default for AppSettings {
             enable_failover_toggle: false,
             failover_confirmed: None,
             language: None,
+            theme: None,
+            main_window_size: None,
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,
@@ -684,6 +715,15 @@ pub fn get_preferred_terminal() -> Option<String> {
         })
         .preferred_terminal
         .clone()
+}
+pub fn get_main_window_size() -> Option<WindowSize> {
+    settings_store().read().ok()?.main_window_size.clone()
+}
+
+pub fn set_main_window_size(width: u32, height: u32) -> Result<(), AppError> {
+    mutate_settings(|current| {
+        current.main_window_size = Some(WindowSize { width, height });
+    })
 }
 
 // ===== WebDAV 同步设置管理函数 =====

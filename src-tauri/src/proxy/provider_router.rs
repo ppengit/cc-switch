@@ -108,6 +108,52 @@ impl ProviderRouter {
         Ok(result)
     }
 
+    /// 会话路由候选提供商选择
+    ///
+    /// 与普通故障转移选择不同：
+    /// - 始终基于“该应用下全部提供商”构建候选集（优先队列内，再补充其余）
+    /// - 不依赖 auto_failover_enabled 开关，避免会话路由被“仅当前提供商”限制
+    /// - 仍遵循熔断器可用性过滤，保护不可用上游
+    pub async fn select_session_routing_providers(
+        &self,
+        app_type: &str,
+    ) -> Result<Vec<Provider>, AppError> {
+        let all_providers = self.db.get_all_providers(app_type)?;
+        let ordered_provider_ids = self.db.list_provider_ids_for_session_routing(app_type)?;
+
+        if ordered_provider_ids.is_empty() {
+            return Err(AppError::NoProvidersConfigured);
+        }
+
+        let mut result = Vec::new();
+        let mut total_providers = 0usize;
+        let mut circuit_open_count = 0usize;
+
+        for provider_id in ordered_provider_ids {
+            let Some(provider) = all_providers.get(&provider_id).cloned() else {
+                continue;
+            };
+            total_providers += 1;
+
+            let circuit_key = format!("{app_type}:{}", provider.id);
+            let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+            if breaker.is_available().await {
+                result.push(provider);
+            } else {
+                circuit_open_count += 1;
+            }
+        }
+
+        if result.is_empty() {
+            if total_providers > 0 && circuit_open_count == total_providers {
+                return Err(AppError::AllProvidersCircuitOpen);
+            }
+            return Err(AppError::NoProvidersConfigured);
+        }
+
+        Ok(result)
+    }
+
     /// 请求执行前获取熔断器“放行许可”
     ///
     /// - Closed：直接放行
@@ -446,6 +492,34 @@ mod tests {
         assert_eq!(providers.len(), 2);
 
         assert!(router.allow_provider_request("b", "claude").await.allowed);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_routing_uses_all_providers_even_when_failover_disabled() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_routing_providers("codex")
+            .await
+            .unwrap();
+
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].id, "a");
+        assert_eq!(providers[1].id, "b");
     }
 
     #[tokio::test]
