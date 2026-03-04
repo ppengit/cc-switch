@@ -134,4 +134,9 @@ export interface AppProxyConfig {
   circuitTimeoutSeconds: number;
   circuitErrorRateThreshold: number;
   circuitMinRequests: number;
+  sessionRoutingEnabled: boolean;
+  sessionRoutingStrategy: string;
+  sessionMaxSessionsPerProvider: number;
+  sessionAllowSharedWhenExhausted: boolean;
+  sessionIdleTtlMinutes: number;
 }

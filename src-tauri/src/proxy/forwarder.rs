@@ -1,7 +1,5 @@
-//! 请求转发器
-//!
-//! 负责将请求转发到上游Provider，支持故障转移
-
+﻿//! 璇锋眰杞彂鍣?//!
+//! 璐熻矗灏嗚姹傝浆鍙戝埌涓婃父Provider锛屾敮鎸佹晠闅滆浆绉?
 use super::{
     body_filter::filter_private_params_with_whitelist,
     error::*,
@@ -21,30 +19,26 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Headers 黑名单 - 不透传到上游的 Headers
+/// Headers 榛戝悕鍗?- 涓嶉€忎紶鍒颁笂娓哥殑 Headers
 ///
-/// 精简版黑名单，只过滤必须覆盖或可能导致问题的 header
-/// 参考成功透传的请求，保留更多原始 header
+/// 绮剧畝鐗堥粦鍚嶅崟锛屽彧杩囨护蹇呴』瑕嗙洊鎴栧彲鑳藉鑷撮棶棰樼殑 header
+/// 鍙傝€冩垚鍔熼€忎紶鐨勮姹傦紝淇濈暀鏇村鍘熷 header
 ///
-/// 注意：客户端 IP 类（x-forwarded-for, x-real-ip）默认透传
+/// 娉ㄦ剰锛氬鎴风 IP 绫伙紙x-forwarded-for, x-real-ip锛夐粯璁ら€忎紶
 const HEADER_BLACKLIST: &[&str] = &[
-    // 认证类（会被覆盖）
-    "authorization",
+    // 璁よ瘉绫伙紙浼氳瑕嗙洊锛?    "authorization",
     "x-api-key",
     "x-goog-api-key",
-    // 连接类（由 HTTP 客户端管理）
+    // 杩炴帴绫伙紙鐢?HTTP 瀹㈡埛绔鐞嗭級
     "host",
     "content-length",
     "transfer-encoding",
-    // 编码类（会被覆盖为 identity）
-    "accept-encoding",
-    // 代理转发类（保留 x-forwarded-for 和 x-real-ip）
-    "x-forwarded-host",
+    // 缂栫爜绫伙紙浼氳瑕嗙洊涓?identity锛?    "accept-encoding",
+    // 浠ｇ悊杞彂绫伙紙淇濈暀 x-forwarded-for 鍜?x-real-ip锛?    "x-forwarded-host",
     "x-forwarded-port",
     "x-forwarded-proto",
     "forwarded",
-    // CDN/云服务商特定头
-    "cf-connecting-ip",
+    // CDN/浜戞湇鍔″晢鐗瑰畾澶?    "cf-connecting-ip",
     "cf-ipcountry",
     "cf-ray",
     "cf-visitor",
@@ -55,8 +49,7 @@ const HEADER_BLACKLIST: &[&str] = &[
     "x-azure-ref",
     "akamai-origin-hop",
     "x-akamai-config-log-detail",
-    // 请求追踪类
-    "x-request-id",
+    // 璇锋眰杩借釜绫?    "x-request-id",
     "x-correlation-id",
     "x-trace-id",
     "x-amzn-trace-id",
@@ -66,11 +59,10 @@ const HEADER_BLACKLIST: &[&str] = &[
     "x-b3-sampled",
     "traceparent",
     "tracestate",
-    // anthropic 特定头单独处理，避免重复
+    // anthropic 鐗瑰畾澶村崟鐙鐞嗭紝閬垮厤閲嶅
     "anthropic-beta",
     "anthropic-version",
-    // 客户端 IP 单独处理（默认透传）
-    "x-forwarded-for",
+    // 瀹㈡埛绔?IP 鍗曠嫭澶勭悊锛堥粯璁ら€忎紶锛?    "x-forwarded-for",
     "x-real-ip",
 ];
 
@@ -85,19 +77,17 @@ pub struct ForwardError {
 }
 
 pub struct RequestForwarder {
-    /// 共享的 ProviderRouter（持有熔断器状态）
+    /// 鍏变韩鐨?ProviderRouter锛堟寔鏈夌啍鏂櫒鐘舵€侊級
     router: Arc<ProviderRouter>,
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
-    /// 故障转移切换管理器
-    failover_manager: Arc<FailoverSwitchManager>,
-    /// AppHandle，用于发射事件和更新托盘
+    /// 鏁呴殰杞Щ鍒囨崲绠＄悊鍣?    failover_manager: Arc<FailoverSwitchManager>,
+    /// AppHandle锛岀敤浜庡彂灏勪簨浠跺拰鏇存柊鎵樼洏
     app_handle: Option<tauri::AppHandle>,
-    /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
-    current_provider_id_at_start: String,
-    /// 整流器配置
-    rectifier_config: RectifierConfig,
-    /// 非流式请求超时（秒）
+    /// 璇锋眰寮€濮嬫椂鐨?褰撳墠渚涘簲鍟?ID"锛堢敤浜庡垽鏂槸鍚﹂渶瑕佸悓姝?UI/鎵樼洏锛?    current_provider_id_at_start: String,
+    suppress_global_failover_switch: bool,
+    /// 鏁存祦鍣ㄩ厤缃?    rectifier_config: RectifierConfig,
+    /// 闈炴祦寮忚姹傝秴鏃讹紙绉掞級
     non_streaming_timeout: std::time::Duration,
 }
 
@@ -113,6 +103,7 @@ impl RequestForwarder {
         current_provider_id_at_start: String,
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
+        suppress_global_failover_switch: bool,
         rectifier_config: RectifierConfig,
     ) -> Self {
         Self {
@@ -122,20 +113,17 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            suppress_global_failover_switch,
             rectifier_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
         }
     }
 
-    /// 转发请求（带故障转移）
-    ///
+    /// 杞彂璇锋眰锛堝甫鏁呴殰杞Щ锛?    ///
     /// # Arguments
-    /// * `app_type` - 应用类型
-    /// * `endpoint` - API 端点
-    /// * `body` - 请求体
-    /// * `headers` - 请求头
-    /// * `providers` - 已选择的 Provider 列表（由 RequestContext 提供，避免重复调用 select_providers）
-    pub async fn forward_with_retry(
+    /// * `app_type` - 搴旂敤绫诲瀷
+    /// * `endpoint` - API 绔偣
+    /// * `body` - 璇锋眰浣?    /// * `headers` - 璇锋眰澶?    /// * `providers` - 宸查€夋嫨鐨?Provider 鍒楄〃锛堢敱 RequestContext 鎻愪緵锛岄伩鍏嶉噸澶嶈皟鐢?select_providers锛?    pub async fn forward_with_retry(
         &self,
         app_type: &AppType,
         endpoint: &str,
@@ -143,8 +131,7 @@ impl RequestForwarder {
         headers: axum::http::HeaderMap,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
-        // 获取适配器
-        let adapter = get_adapter(app_type);
+        // 鑾峰彇閫傞厤鍣?        let adapter = get_adapter(app_type);
         let app_type_str = app_type.as_str();
 
         if providers.is_empty() {
@@ -158,18 +145,15 @@ impl RequestForwarder {
         let mut last_provider = None;
         let mut attempted_providers = 0usize;
 
-        // 整流器重试标记：确保整流最多触发一次
-        let mut rectifier_retried = false;
+        // 鏁存祦鍣ㄩ噸璇曟爣璁帮細纭繚鏁存祦鏈€澶氳Е鍙戜竴娆?        let mut rectifier_retried = false;
         let mut budget_rectifier_retried = false;
 
-        // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
+        // 鍗?Provider 鍦烘櫙涓嬭烦杩囩啍鏂櫒妫€鏌ワ紙鏁呴殰杞Щ鍏抽棴鏃讹級
         let bypass_circuit_breaker = providers.len() == 1;
 
-        // 依次尝试每个供应商
-        for provider in providers.iter() {
-            // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
-            // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
-            let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
+        // 渚濇灏濊瘯姣忎釜渚涘簲鍟?        for provider in providers.iter() {
+            // 鍙戣捣璇锋眰鍓嶅厛鑾峰彇鐔旀柇鍣ㄦ斁琛岃鍙紙HalfOpen 浼氬崰鐢ㄦ帰娴嬪悕棰濓級
+            // 鍗?Provider 鍦烘櫙涓嬭烦杩囨妫€鏌ワ紝閬垮厤鐔旀柇鍣ㄩ樆濉炴墍鏈夎姹?            let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
                 (true, false)
             } else {
                 let permit = self
@@ -185,7 +169,7 @@ impl RequestForwarder {
 
             attempted_providers += 1;
 
-            // 更新状态中的当前Provider信息
+            // 鏇存柊鐘舵€佷腑鐨勫綋鍓峆rovider淇℃伅
             {
                 let mut status = self.status.write().await;
                 status.current_provider = Some(provider.name.clone());
@@ -194,14 +178,12 @@ impl RequestForwarder {
                 status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
             }
 
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            match self
+            // 杞彂璇锋眰锛堟瘡涓?Provider 鍙皾璇曚竴娆★紝閲嶈瘯鐢卞鎴风鎺у埗锛?            match self
                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                 .await
             {
                 Ok(response) => {
-                    // 成功：记录成功并更新熔断器
-                    let _ = self
+                    // 鎴愬姛锛氳褰曟垚鍔熷苟鏇存柊鐔旀柇鍣?                    let _ = self
                         .router
                         .record_result(
                             &provider.id,
@@ -212,7 +194,7 @@ impl RequestForwarder {
                         )
                         .await;
 
-                    // 更新当前应用类型使用的 provider
+                    // 鏇存柊褰撳墠搴旂敤绫诲瀷浣跨敤鐨?provider
                     {
                         let mut current_providers = self.current_providers.write().await;
                         current_providers.insert(
@@ -221,7 +203,7 @@ impl RequestForwarder {
                         );
                     }
 
-                    // 更新成功统计
+                    // 鏇存柊鎴愬姛缁熻
                     {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
@@ -230,20 +212,20 @@ impl RequestForwarder {
                             self.current_provider_id_at_start.as_str() != provider.id.as_str();
                         if should_switch {
                             status.failover_count += 1;
+                            if !self.suppress_global_failover_switch {
+                                // 寮傛瑙﹀彂渚涘簲鍟嗗垏鎹紝鏇存柊 UI/鎵樼洏锛屽苟鎶娾€滃綋鍓嶄緵搴斿晢鈥濆悓姝ヤ负瀹為檯浣跨敤鐨?provider
+                                let fm = self.failover_manager.clone();
+                                let ah = self.app_handle.clone();
+                                let pid = provider.id.clone();
+                                let pname = provider.name.clone();
+                                let at = app_type_str.to_string();
 
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
-                            let fm = self.failover_manager.clone();
-                            let ah = self.app_handle.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
-                            let at = app_type_str.to_string();
-
-                            tokio::spawn(async move {
-                                let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
-                            });
+                                tokio::spawn(async move {
+                                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
+                                });
+                            }
                         }
-                        // 重新计算成功率
-                        if status.total_requests > 0 {
+                        // 閲嶆柊璁＄畻鎴愬姛鐜?                        if status.total_requests > 0 {
                             status.success_rate = (status.success_requests as f32
                                 / status.total_requests as f32)
                                 * 100.0;
@@ -256,7 +238,7 @@ impl RequestForwarder {
                     });
                 }
                 Err(e) => {
-                    // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
+                    // 妫€娴嬫槸鍚﹂渶瑕佽Е鍙戞暣娴佸櫒锛堜粎 Claude/ClaudeAuth 渚涘簲鍟嗭級
                     let provider_type = ProviderType::from_app_type_and_config(app_type, provider);
                     let is_anthropic_provider = matches!(
                         provider_type,
@@ -270,10 +252,9 @@ impl RequestForwarder {
                             error_message.as_deref(),
                             &self.rectifier_config,
                         ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if rectifier_retried {
-                                log::warn!("[{app_type_str}] [RECT-005] 整流器已触发过，不再重试");
-                                // 释放 HalfOpen permit（不记录熔断器，这是客户端兼容性问题）
+                            // 宸茬粡閲嶈瘯杩囷細鐩存帴杩斿洖閿欒锛堜笉鍙噸璇曞鎴风閿欒锛?                            if rectifier_retried {
+                                log::warn!("[{app_type_str}] [RECT-005] 鏁存祦鍣ㄥ凡瑙﹀彂杩囷紝涓嶅啀閲嶈瘯");
+                                // 閲婃斁 HalfOpen permit锛堜笉璁板綍鐔旀柇鍣紝杩欐槸瀹㈡埛绔吋瀹规€ч棶棰橈級
                                 self.router
                                     .release_permit_neutral(
                                         &provider.id,
@@ -295,35 +276,34 @@ impl RequestForwarder {
                                 });
                             }
 
-                            // 首次触发：整流请求体
+                            // 棣栨瑙﹀彂锛氭暣娴佽姹備綋
                             let rectified = rectify_anthropic_request(&mut body);
 
-                            // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
+                            // 鏁存祦鏈敓鏁堬細缁х画灏濊瘯 budget 鏁存祦璺緞锛岄伩鍏嶈鍒ゅ悗鐭矾
                             if !rectified.applied {
                                 log::warn!(
-                                    "[{app_type_str}] [RECT-006] thinking 签名整流器触发但无可整流内容，继续检查 budget；若 budget 也未命中则按客户端错误返回"
+                                    "[{app_type_str}] [RECT-006] thinking 绛惧悕鏁存祦鍣ㄨЕ鍙戜絾鏃犲彲鏁存祦鍐呭锛岀户缁鏌?budget锛涜嫢 budget 涔熸湭鍛戒腑鍒欐寜瀹㈡埛绔敊璇繑鍥?
                                 );
                                 signature_rectifier_non_retryable_client_error = true;
                             } else {
                                 log::info!(
-                                    "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
+                                    "[{}] [RECT-001] thinking 绛惧悕鏁存祦鍣ㄨЕ鍙? 绉婚櫎 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
                                     app_type_str,
                                     rectified.removed_thinking_blocks,
                                     rectified.removed_redacted_thinking_blocks,
                                     rectified.removed_signature_fields
                                 );
 
-                                // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
+                                // 鏍囪宸查噸璇曪紙褰撳墠閫昏緫涓嬮噸璇曞悗蹇呭畾 return锛屼繚鐣欐爣璁颁互澶囧皢鏉ユ墿灞曪級
                                 let _ = std::mem::replace(&mut rectifier_retried, true);
 
-                                // 使用同一供应商重试（不计入熔断器）
-                                match self
+                                // 浣跨敤鍚屼竴渚涘簲鍟嗛噸璇曪紙涓嶈鍏ョ啍鏂櫒锛?                                match self
                                     .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                                     .await
                                 {
                                     Ok(response) => {
-                                        log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
-                                        // 记录成功
+                                        log::info!("[{app_type_str}] [RECT-002] 鏁存祦閲嶈瘯鎴愬姛");
+                                        // 璁板綍鎴愬姛
                                         let _ = self
                                             .router
                                             .record_result(
@@ -335,7 +315,7 @@ impl RequestForwarder {
                                             )
                                             .await;
 
-                                        // 更新当前应用类型使用的 provider
+                                        // 鏇存柊褰撳墠搴旂敤绫诲瀷浣跨敤鐨?provider
                                         {
                                             let mut current_providers =
                                                 self.current_providers.write().await;
@@ -345,7 +325,7 @@ impl RequestForwarder {
                                             );
                                         }
 
-                                        // 更新成功统计
+                                        // 鏇存柊鎴愬姛缁熻
                                         {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
@@ -355,19 +335,25 @@ impl RequestForwarder {
                                                     != provider.id.as_str();
                                             if should_switch {
                                                 status.failover_count += 1;
+                                                if !self.suppress_global_failover_switch {
+                                                    // 寮傛瑙﹀彂渚涘簲鍟嗗垏鎹紝鏇存柊 UI/鎵樼洏
+                                                    let fm = self.failover_manager.clone();
+                                                    let ah = self.app_handle.clone();
+                                                    let pid = provider.id.clone();
+                                                    let pname = provider.name.clone();
+                                                    let at = app_type_str.to_string();
 
-                                                // 异步触发供应商切换，更新 UI/托盘
-                                                let fm = self.failover_manager.clone();
-                                                let ah = self.app_handle.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
-                                                let at = app_type_str.to_string();
-
-                                                tokio::spawn(async move {
-                                                    let _ = fm
-                                                        .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                        .await;
-                                                });
+                                                    tokio::spawn(async move {
+                                                        let _ = fm
+                                                            .try_switch(
+                                                                ah.as_ref(),
+                                                                &at,
+                                                                &pid,
+                                                                &pname,
+                                                            )
+                                                            .await;
+                                                    });
+                                                }
                                             }
                                             if status.total_requests > 0 {
                                                 status.success_rate = (status.success_requests
@@ -383,12 +369,11 @@ impl RequestForwarder {
                                         });
                                     }
                                     Err(retry_err) => {
-                                        // 整流重试仍失败：区分错误类型决定是否记录熔断器
-                                        log::warn!(
-                                            "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
+                                        // 鏁存祦閲嶈瘯浠嶅け璐ワ細鍖哄垎閿欒绫诲瀷鍐冲畾鏄惁璁板綍鐔旀柇鍣?                                        log::warn!(
+                                            "[{app_type_str}] [RECT-003] 鏁存祦閲嶈瘯浠嶅け璐? {retry_err}"
                                         );
 
-                                        // 区分错误类型：Provider 问题记录失败，客户端问题仅释放 permit
+                                        // 鍖哄垎閿欒绫诲瀷锛歅rovider 闂璁板綍澶辫触锛屽鎴风闂浠呴噴鏀?permit
                                         let is_provider_error = match &retry_err {
                                             ProxyError::Timeout(_)
                                             | ProxyError::ForwardFailed(_) => true,
@@ -399,8 +384,7 @@ impl RequestForwarder {
                                         };
 
                                         if is_provider_error {
-                                            // Provider 问题：记录失败到熔断器
-                                            let _ = self
+                                            // Provider 闂锛氳褰曞け璐ュ埌鐔旀柇鍣?                                            let _ = self
                                                 .router
                                                 .record_result(
                                                     &provider.id,
@@ -411,8 +395,7 @@ impl RequestForwarder {
                                                 )
                                                 .await;
                                         } else {
-                                            // 客户端问题：仅释放 permit，不记录熔断器
-                                            self.router
+                                            // 瀹㈡埛绔棶棰橈細浠呴噴鏀?permit锛屼笉璁板綍鐔旀柇鍣?                                            self.router
                                                 .release_permit_neutral(
                                                     &provider.id,
                                                     app_type_str,
@@ -439,17 +422,16 @@ impl RequestForwarder {
                         }
                     }
 
-                    // 检测是否需要触发 budget 整流器（仅 Claude/ClaudeAuth 供应商）
+                    // 妫€娴嬫槸鍚﹂渶瑕佽Е鍙?budget 鏁存祦鍣紙浠?Claude/ClaudeAuth 渚涘簲鍟嗭級
                     if is_anthropic_provider {
                         let error_message = extract_error_message(&e);
                         if should_rectify_thinking_budget(
                             error_message.as_deref(),
                             &self.rectifier_config,
                         ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if budget_rectifier_retried {
+                            // 宸茬粡閲嶈瘯杩囷細鐩存帴杩斿洖閿欒锛堜笉鍙噸璇曞鎴风閿欒锛?                            if budget_rectifier_retried {
                                 log::warn!(
-                                    "[{app_type_str}] [RECT-013] budget 整流器已触发过，不再重试"
+                                    "[{app_type_str}] [RECT-013] budget 鏁存祦鍣ㄥ凡瑙﹀彂杩囷紝涓嶅啀閲嶈瘯"
                                 );
                                 self.router
                                     .release_permit_neutral(
@@ -475,7 +457,7 @@ impl RequestForwarder {
                             let budget_rectified = rectify_thinking_budget(&mut body);
                             if !budget_rectified.applied {
                                 log::warn!(
-                                    "[{app_type_str}] [RECT-014] budget 整流器触发但无可整流内容，不做无意义重试"
+                                    "[{app_type_str}] [RECT-014] budget 鏁存祦鍣ㄨЕ鍙戜絾鏃犲彲鏁存祦鍐呭锛屼笉鍋氭棤鎰忎箟閲嶈瘯"
                                 );
                                 self.router
                                     .release_permit_neutral(
@@ -499,7 +481,7 @@ impl RequestForwarder {
                             }
 
                             log::info!(
-                                "[{}] [RECT-010] thinking budget 整流器触发, before={:?}, after={:?}",
+                                "[{}] [RECT-010] thinking budget 鏁存祦鍣ㄨЕ鍙? before={:?}, after={:?}",
                                 app_type_str,
                                 budget_rectified.before,
                                 budget_rectified.after
@@ -507,13 +489,12 @@ impl RequestForwarder {
 
                             let _ = std::mem::replace(&mut budget_rectifier_retried, true);
 
-                            // 使用同一供应商重试（不计入熔断器）
-                            match self
+                            // 浣跨敤鍚屼竴渚涘簲鍟嗛噸璇曪紙涓嶈鍏ョ啍鏂櫒锛?                            match self
                                 .forward(provider, endpoint, &body, &headers, adapter.as_ref())
                                 .await
                             {
                                 Ok(response) => {
-                                    log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
+                                    log::info!("[{app_type_str}] [RECT-011] budget 鏁存祦閲嶈瘯鎴愬姛");
                                     let _ = self
                                         .router
                                         .record_result(
@@ -543,16 +524,23 @@ impl RequestForwarder {
                                                 != provider.id.as_str();
                                         if should_switch {
                                             status.failover_count += 1;
-                                            let fm = self.failover_manager.clone();
-                                            let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
-                                            let at = app_type_str.to_string();
-                                            tokio::spawn(async move {
-                                                let _ = fm
-                                                    .try_switch(ah.as_ref(), &at, &pid, &pname)
-                                                    .await;
-                                            });
+                                            if !self.suppress_global_failover_switch {
+                                                let fm = self.failover_manager.clone();
+                                                let ah = self.app_handle.clone();
+                                                let pid = provider.id.clone();
+                                                let pname = provider.name.clone();
+                                                let at = app_type_str.to_string();
+                                                tokio::spawn(async move {
+                                                    let _ = fm
+                                                        .try_switch(
+                                                            ah.as_ref(),
+                                                            &at,
+                                                            &pid,
+                                                            &pname,
+                                                        )
+                                                        .await;
+                                                });
+                                            }
                                         }
                                         if status.total_requests > 0 {
                                             status.success_rate = (status.success_requests as f32
@@ -568,7 +556,7 @@ impl RequestForwarder {
                                 }
                                 Err(retry_err) => {
                                     log::warn!(
-                                        "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
+                                        "[{app_type_str}] [RECT-012] budget 鏁存祦閲嶈瘯浠嶅け璐? {retry_err}"
                                     );
 
                                     let is_provider_error = match &retry_err {
@@ -639,8 +627,7 @@ impl RequestForwarder {
                         });
                     }
 
-                    // 失败：记录失败并更新熔断器
-                    let _ = self
+                    // 澶辫触锛氳褰曞け璐ュ苟鏇存柊鐔旀柇鍣?                    let _ = self
                         .router
                         .record_result(
                             &provider.id,
@@ -651,20 +638,20 @@ impl RequestForwarder {
                         )
                         .await;
 
-                    // 分类错误
+                    // 鍒嗙被閿欒
                     let category = self.categorize_proxy_error(&e);
 
                     match category {
                         ErrorCategory::Retryable => {
-                            // 可重试：更新错误信息，继续尝试下一个供应商
+                            // 鍙噸璇曪細鏇存柊閿欒淇℃伅锛岀户缁皾璇曚笅涓€涓緵搴斿晢
                             {
                                 let mut status = self.status.write().await;
                                 status.last_error =
-                                    Some(format!("Provider {} 失败: {}", provider.name, e));
+                                    Some(format!("Provider {} 澶辫触: {}", provider.name, e));
                             }
 
                             log::warn!(
-                                "[{}] [FWD-001] Provider {} 失败，切换下一个 ({}/{})",
+                                "[{}] [FWD-001] Provider {} 澶辫触锛屽垏鎹笅涓€涓?({}/{})",
                                 app_type_str,
                                 provider.name,
                                 attempted_providers,
@@ -673,12 +660,11 @@ impl RequestForwarder {
 
                             last_error = Some(e);
                             last_provider = Some(provider.clone());
-                            // 继续尝试下一个供应商
+                            // 缁х画灏濊瘯涓嬩竴涓緵搴斿晢
                             continue;
                         }
                         ErrorCategory::NonRetryable | ErrorCategory::ClientAbort => {
-                            // 不可重试：直接返回错误
-                            {
+                            // 涓嶅彲閲嶈瘯锛氱洿鎺ヨ繑鍥為敊璇?                            {
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
                                 status.last_error = Some(e.to_string());
@@ -699,11 +685,11 @@ impl RequestForwarder {
         }
 
         if attempted_providers == 0 {
-            // providers 列表非空，但全部被熔断器拒绝（典型：HalfOpen 探测名额被占用）
+            // providers 鍒楄〃闈炵┖锛屼絾鍏ㄩ儴琚啍鏂櫒鎷掔粷锛堝吀鍨嬶細HalfOpen 鎺㈡祴鍚嶉琚崰鐢級
             {
                 let mut status = self.status.write().await;
                 status.failed_requests += 1;
-                status.last_error = Some("所有供应商暂时不可用（熔断器限制）".to_string());
+                status.last_error = Some("鎵€鏈変緵搴斿晢鏆傛椂涓嶅彲鐢紙鐔旀柇鍣ㄩ檺鍒讹級".to_string());
                 if status.total_requests > 0 {
                     status.success_rate =
                         (status.success_requests as f32 / status.total_requests as f32) * 100.0;
@@ -715,18 +701,18 @@ impl RequestForwarder {
             });
         }
 
-        // 所有供应商都失败了
+        // 鎵€鏈変緵搴斿晢閮藉け璐ヤ簡
         {
             let mut status = self.status.write().await;
             status.failed_requests += 1;
-            status.last_error = Some("所有供应商都失败".to_string());
+            status.last_error = Some("鎵€鏈変緵搴斿晢閮藉け璐?.to_string());
             if status.total_requests > 0 {
                 status.success_rate =
                     (status.success_requests as f32 / status.total_requests as f32) * 100.0;
             }
         }
 
-        log::warn!("[{app_type_str}] [FWD-002] 所有 Provider 均失败");
+        log::warn!("[{app_type_str}] [FWD-002] 鎵€鏈?Provider 鍧囧け璐?);
 
         Err(ForwardError {
             error: last_error.unwrap_or(ProxyError::MaxRetriesExceeded),
@@ -734,7 +720,7 @@ impl RequestForwarder {
         })
     }
 
-    /// 转发单个请求（使用适配器）
+    /// 杞彂鍗曚釜璇锋眰锛堜娇鐢ㄩ€傞厤鍣級
     async fn forward(
         &self,
         provider: &Provider,
@@ -743,11 +729,10 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         adapter: &dyn ProviderAdapter,
     ) -> Result<Response, ProxyError> {
-        // 使用适配器提取 base_url
+        // 浣跨敤閫傞厤鍣ㄦ彁鍙?base_url
         let base_url = adapter.extract_base_url(provider)?;
 
-        // 检查是否需要格式转换
-        let needs_transform = adapter.needs_transform(provider);
+        // 妫€鏌ユ槸鍚﹂渶瑕佹牸寮忚浆鎹?        let needs_transform = adapter.needs_transform(provider);
 
         let effective_endpoint =
             if needs_transform && adapter.name() == "Claude" && endpoint == "/v1/messages" {
@@ -756,40 +741,36 @@ impl RequestForwarder {
                 endpoint
             };
 
-        // 使用适配器构建 URL
+        // 浣跨敤閫傞厤鍣ㄦ瀯寤?URL
         let url = adapter.build_url(&base_url, effective_endpoint);
 
-        // 应用模型映射（独立于格式转换）
-        let (mapped_body, _original_model, _mapped_model) =
+        // 搴旂敤妯″瀷鏄犲皠锛堢嫭绔嬩簬鏍煎紡杞崲锛?        let (mapped_body, _original_model, _mapped_model) =
             super::model_mapper::apply_model_mapping(body.clone(), provider);
 
-        // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
-        let mapped_body = normalize_thinking_type(mapped_body);
+        // 涓?CCH 瀵归綈锛氳姹傚墠涓嶅仛 thinking 涓诲姩鏀瑰啓锛堜粎淇濈暀鍏煎鍏ュ彛锛?        let mapped_body = normalize_thinking_type(mapped_body);
 
-        // 转换请求体（如果需要）
+        // 杞崲璇锋眰浣擄紙濡傛灉闇€瑕侊級
         let request_body = if needs_transform {
             adapter.transform_request(mapped_body, provider)?
         } else {
             mapped_body
         };
 
-        // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
-        // 默认使用空白名单，过滤所有 _ 前缀字段
+        // 杩囨护绉佹湁鍙傛暟锛堜互 `_` 寮€澶寸殑瀛楁锛夛紝闃叉鍐呴儴淇℃伅娉勯湶鍒颁笂娓?        // 榛樿浣跨敤绌虹櫧鍚嶅崟锛岃繃婊ゆ墍鏈?_ 鍓嶇紑瀛楁
         let filtered_body = filter_private_params_with_whitelist(request_body, &[]);
 
-        // 获取 HTTP 客户端：优先使用供应商单独代理配置，否则使用全局客户端
-        let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
+        // 鑾峰彇 HTTP 瀹㈡埛绔細浼樺厛浣跨敤渚涘簲鍟嗗崟鐙唬鐞嗛厤缃紝鍚﹀垯浣跨敤鍏ㄥ眬瀹㈡埛绔?        let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
         let client = super::http_client::get_for_provider(proxy_config);
         let mut request = client.post(&url);
 
-        // 只有当 timeout > 0 时才设置请求超时
-        // Duration::ZERO 在 reqwest 中表示"立刻超时"而不是"禁用超时"
-        // 故障转移关闭时会传入 0，此时应该使用 client 的默认超时（600秒）
+        // 鍙湁褰?timeout > 0 鏃舵墠璁剧疆璇锋眰瓒呮椂
+        // Duration::ZERO 鍦?reqwest 涓〃绀?绔嬪埢瓒呮椂"鑰屼笉鏄?绂佺敤瓒呮椂"
+        // 鏁呴殰杞Щ鍏抽棴鏃朵細浼犲叆 0锛屾鏃跺簲璇ヤ娇鐢?client 鐨勯粯璁よ秴鏃讹紙600绉掞級
         if !self.non_streaming_timeout.is_zero() {
             request = request.timeout(self.non_streaming_timeout);
         }
 
-        // 过滤黑名单 Headers，保护隐私并避免冲突
+        // 杩囨护榛戝悕鍗?Headers锛屼繚鎶ら殣绉佸苟閬垮厤鍐茬獊
         for (key, value) in headers {
             if HEADER_BLACKLIST
                 .iter()
@@ -800,31 +781,28 @@ impl RequestForwarder {
             request = request.header(key, value);
         }
 
-        // 处理 anthropic-beta Header（仅 Claude）
-        // 关键：确保包含 claude-code-20250219 标记，这是上游服务验证请求来源的依据
-        // 如果客户端发送的 beta 标记中没有包含 claude-code-20250219，需要补充
-        if adapter.name() == "Claude" {
+        // 澶勭悊 anthropic-beta Header锛堜粎 Claude锛?        // 鍏抽敭锛氱‘淇濆寘鍚?claude-code-20250219 鏍囪锛岃繖鏄笂娓告湇鍔￠獙璇佽姹傛潵婧愮殑渚濇嵁
+        // 濡傛灉瀹㈡埛绔彂閫佺殑 beta 鏍囪涓病鏈夊寘鍚?claude-code-20250219锛岄渶瑕佽ˉ鍏?        if adapter.name() == "Claude" {
             const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
             let beta_value = if let Some(beta) = headers.get("anthropic-beta") {
                 if let Ok(beta_str) = beta.to_str() {
-                    // 检查是否已包含 claude-code-20250219
+                    // 妫€鏌ユ槸鍚﹀凡鍖呭惈 claude-code-20250219
                     if beta_str.contains(CLAUDE_CODE_BETA) {
                         beta_str.to_string()
                     } else {
-                        // 补充 claude-code-20250219
+                        // 琛ュ厖 claude-code-20250219
                         format!("{CLAUDE_CODE_BETA},{beta_str}")
                     }
                 } else {
                     CLAUDE_CODE_BETA.to_string()
                 }
             } else {
-                // 如果客户端没有发送，使用默认值
-                CLAUDE_CODE_BETA.to_string()
+                // 濡傛灉瀹㈡埛绔病鏈夊彂閫侊紝浣跨敤榛樿鍊?                CLAUDE_CODE_BETA.to_string()
             };
             request = request.header("anthropic-beta", &beta_value);
         }
 
-        // 客户端 IP 透传（默认开启）
+        // 瀹㈡埛绔?IP 閫忎紶锛堥粯璁ゅ紑鍚級
         if let Some(xff) = headers.get("x-forwarded-for") {
             if let Ok(xff_str) = xff.to_str() {
                 request = request.header("x-forwarded-for", xff_str);
@@ -836,17 +814,15 @@ impl RequestForwarder {
             }
         }
 
-        // 禁用压缩，避免 gzip 流式响应解析错误
-        // 参考 CCH: undici 在连接提前关闭时会对不完整的 gzip 流抛出错误
-        request = request.header("accept-encoding", "identity");
+        // 绂佺敤鍘嬬缉锛岄伩鍏?gzip 娴佸紡鍝嶅簲瑙ｆ瀽閿欒
+        // 鍙傝€?CCH: undici 鍦ㄨ繛鎺ユ彁鍓嶅叧闂椂浼氬涓嶅畬鏁寸殑 gzip 娴佹姏鍑洪敊璇?        request = request.header("accept-encoding", "identity");
 
-        // 使用适配器添加认证头
+        // 浣跨敤閫傞厤鍣ㄦ坊鍔犺璇佸ご
         if let Some(auth) = adapter.extract_auth(provider) {
             request = adapter.add_auth_headers(request, &auth);
         }
 
-        // anthropic-version 统一处理（仅 Claude）：优先使用客户端的版本号，否则使用默认值
-        // 注意：只设置一次，避免重复
+        // anthropic-version 缁熶竴澶勭悊锛堜粎 Claude锛夛細浼樺厛浣跨敤瀹㈡埛绔殑鐗堟湰鍙凤紝鍚﹀垯浣跨敤榛樿鍊?        // 娉ㄦ剰锛氬彧璁剧疆涓€娆★紝閬垮厤閲嶅
         if adapter.name() == "Claude" {
             let version_str = headers
                 .get("anthropic-version")
@@ -855,34 +831,32 @@ impl RequestForwarder {
             request = request.header("anthropic-version", version_str);
         }
 
-        // 输出请求信息日志
+        // 杈撳嚭璇锋眰淇℃伅鏃ュ織
         let tag = adapter.name();
         let request_model = filtered_body
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求 URL: {url} (model={request_model})");
+        log::info!("[{tag}] >>> 璇锋眰 URL: {url} (model={request_model})");
         if let Ok(body_str) = serde_json::to_string(&filtered_body) {
             log::debug!(
-                "[{tag}] >>> 请求体内容 ({}字节): {}",
+                "[{tag}] >>> 璇锋眰浣撳唴瀹?({}瀛楄妭): {}",
                 body_str.len(),
                 body_str
             );
         }
 
-        // 发送请求
-        let response = request.json(&filtered_body).send().await.map_err(|e| {
+        // 鍙戦€佽姹?        let response = request.json(&filtered_body).send().await.map_err(|e| {
             if e.is_timeout() {
-                ProxyError::Timeout(format!("请求超时: {e}"))
+                ProxyError::Timeout(format!("璇锋眰瓒呮椂: {e}"))
             } else if e.is_connect() {
-                ProxyError::ForwardFailed(format!("连接失败: {e}"))
+                ProxyError::ForwardFailed(format!("杩炴帴澶辫触: {e}"))
             } else {
                 ProxyError::ForwardFailed(e.to_string())
             }
         })?;
 
-        // 检查响应状态
-        let status = response.status();
+        // 妫€鏌ュ搷搴旂姸鎬?        let status = response.status();
 
         if status.is_success() {
             Ok(response)
@@ -899,31 +873,30 @@ impl RequestForwarder {
 
     fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
         match error {
-            // 网络和上游错误：都应该尝试下一个供应商
+            // 缃戠粶鍜屼笂娓搁敊璇細閮藉簲璇ュ皾璇曚笅涓€涓緵搴斿晢
             ProxyError::Timeout(_) => ErrorCategory::Retryable,
             ProxyError::ForwardFailed(_) => ErrorCategory::Retryable,
             ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
-            // 上游 HTTP 错误：无论状态码如何，都尝试下一个供应商
-            // 原因：不同供应商有不同的限制和认证，一个供应商的 4xx 错误
-            // 不代表其他供应商也会失败
+            // 涓婃父 HTTP 閿欒锛氭棤璁虹姸鎬佺爜濡備綍锛岄兘灏濊瘯涓嬩竴涓緵搴斿晢
+            // 鍘熷洜锛氫笉鍚屼緵搴斿晢鏈変笉鍚岀殑闄愬埗鍜岃璇侊紝涓€涓緵搴斿晢鐨?4xx 閿欒
+            // 涓嶄唬琛ㄥ叾浠栦緵搴斿晢涔熶細澶辫触
             ProxyError::UpstreamError { .. } => ErrorCategory::Retryable,
-            // Provider 级配置/转换问题：换一个 Provider 可能就能成功
+            // Provider 绾ч厤缃?杞崲闂锛氭崲涓€涓?Provider 鍙兘灏辫兘鎴愬姛
             ProxyError::ConfigError(_) => ErrorCategory::Retryable,
             ProxyError::TransformError(_) => ErrorCategory::Retryable,
             ProxyError::AuthError(_) => ErrorCategory::Retryable,
             ProxyError::StreamIdleTimeout(_) => ErrorCategory::Retryable,
-            // 无可用供应商：所有供应商都试过了，无法重试
-            ProxyError::NoAvailableProvider => ErrorCategory::NonRetryable,
-            // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
-            _ => ErrorCategory::NonRetryable,
+            // 鏃犲彲鐢ㄤ緵搴斿晢锛氭墍鏈変緵搴斿晢閮借瘯杩囦簡锛屾棤娉曢噸璇?            ProxyError::NoAvailableProvider => ErrorCategory::NonRetryable,
+            // 鍏朵粬閿欒锛堟暟鎹簱/鍐呴儴閿欒绛夛級锛氫笉鏄崲渚涘簲鍟嗚兘瑙ｅ喅鐨勯棶棰?            _ => ErrorCategory::NonRetryable,
         }
     }
 }
 
-/// 从 ProxyError 中提取错误消息
-fn extract_error_message(error: &ProxyError) -> Option<String> {
+/// 浠?ProxyError 涓彁鍙栭敊璇秷鎭?fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
         ProxyError::UpstreamError { body, .. } => body.clone(),
         _ => Some(error.to_string()),
     }
 }
+
+

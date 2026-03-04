@@ -3,6 +3,7 @@
 //! 提供前端调用的 API 接口
 
 use crate::error::AppError;
+use crate::database::{ProviderSessionOccupancy, SessionProviderBinding};
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
@@ -115,8 +116,189 @@ pub async fn update_proxy_config_for_app(
     config: AppProxyConfig,
 ) -> Result<(), String> {
     let db = &state.db;
-    db.update_proxy_config_for_app(config)
+    let previous = db
+        .get_proxy_config_for_app(&config.app_type)
         .await
+        .map_err(|e| e.to_string())?;
+
+    db.update_proxy_config_for_app(config.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if previous.session_routing_enabled != config.session_routing_enabled {
+        db.clear_session_provider_bindings_for_app(&config.app_type)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_session_routing_master_enabled(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    state
+        .db
+        .get_session_routing_master_enabled()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_session_routing_master_enabled(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let previous = state
+        .db
+        .get_session_routing_master_enabled()
+        .map_err(|e| e.to_string())?;
+
+    state
+        .db
+        .set_session_routing_master_enabled(enabled)
+        .map_err(|e| e.to_string())?;
+
+    if previous != enabled {
+        state
+            .db
+            .clear_all_session_provider_bindings()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_session_provider_bindings(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<SessionProviderBinding>, String> {
+    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    state
+        .db
+        .cleanup_expired_session_provider_bindings(&app_type, ttl)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .list_session_provider_bindings(&app_type, ttl)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_session_provider_binding(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Option<SessionProviderBinding>, String> {
+    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    state
+        .db
+        .cleanup_expired_session_provider_bindings(&app_type, ttl)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .get_session_provider_binding(&app_type, &session_id, ttl)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn switch_session_provider_binding(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+    provider_id: String,
+    pin: Option<bool>,
+) -> Result<SessionProviderBinding, String> {
+    if state
+        .db
+        .get_provider_by_id(&provider_id, &app_type)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err(format!(
+            "provider not found for app_type={app_type}, provider_id={provider_id}"
+        ));
+    }
+
+    let ttl = resolve_session_idle_ttl(&state, &app_type, None).await?;
+    let existing = state
+        .db
+        .get_session_provider_binding(&app_type, &session_id, ttl)
+        .map_err(|e| e.to_string())?;
+    let pinned = pin.unwrap_or_else(|| existing.as_ref().map(|item| item.pinned).unwrap_or(false));
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    state
+        .db
+        .upsert_session_provider_binding(&app_type, &session_id, &provider_id, pinned, now_ms)
+        .map_err(|e| e.to_string())?;
+
+    state
+        .db
+        .get_session_provider_binding(&app_type, &session_id, ttl)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "failed to read session binding after switch".to_string())
+}
+
+#[tauri::command]
+pub async fn set_session_provider_binding_pin(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    state
+        .db
+        .set_session_provider_binding_pin(&app_type, &session_id, pinned, now_ms)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_session_provider_binding(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .remove_session_provider_binding(&app_type, &session_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_provider_session_occupancy(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<ProviderSessionOccupancy>, String> {
+    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    state
+        .db
+        .cleanup_expired_session_provider_bindings(&app_type, ttl)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .get_provider_session_occupancy(&app_type, ttl)
+        .map_err(|e| e.to_string())
+}
+
+async fn resolve_session_idle_ttl(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<u32, String> {
+    if let Some(value) = idle_ttl_minutes {
+        return Ok(value.max(1));
+    }
+
+    state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map(|config| config.session_idle_ttl_minutes.max(1))
         .map_err(|e| e.to_string())
 }
 

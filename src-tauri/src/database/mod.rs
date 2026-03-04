@@ -33,6 +33,7 @@ mod tests;
 
 // DAO 类型导出供外部使用
 pub use dao::FailoverQueueItem;
+pub use dao::{ProviderSessionOccupancy, SessionProviderBinding};
 
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
