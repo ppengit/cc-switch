@@ -14,6 +14,8 @@ import {
   Lock,
   Unlock,
   X,
+  Check,
+  ChevronsUpDown,
 } from "lucide-react";
 import { useSessionMessagesQuery, useSessionsQuery } from "@/lib/query";
 import {
@@ -33,8 +35,19 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -80,6 +93,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   );
   const [tocDialogOpen, setTocDialogOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [bindingProviderPickerOpen, setBindingProviderPickerOpen] =
+    useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [search, setSearch] = useState("");
@@ -174,6 +189,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       );
     }
   };
+
+  useEffect(() => {
+    setBindingProviderPickerOpen(false);
+  }, [selectedKey]);
 
   const handleToggleSessionPin = async () => {
     if (
@@ -668,44 +687,97 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
                             {isSessionRoutingEnabledForSelection ? (
                               <>
-                                <Select
-                                  value={sessionBinding?.providerId ?? "__none"}
-                                  onValueChange={(value) => {
-                                    if (value !== "__none") {
-                                      void handleSwitchSessionProvider(value);
+                                <Popover
+                                  open={bindingProviderPickerOpen}
+                                  onOpenChange={(open) => {
+                                    if (
+                                      switchSessionProviderBinding.isPending ||
+                                      providerOptions.length === 0
+                                    ) {
+                                      return;
                                     }
+                                    setBindingProviderPickerOpen(open);
                                   }}
-                                  disabled={
-                                    switchSessionProviderBinding.isPending ||
-                                    providerOptions.length === 0
-                                  }
                                 >
-                                  <SelectTrigger className="h-7 w-[220px] text-xs">
-                                    <SelectValue
-                                      placeholder={t(
-                                        "sessionManager.bindingSwitchPlaceholder",
-                                        {
-                                          defaultValue: "选择提供商",
-                                        },
-                                      )}
-                                    />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="__none" disabled>
-                                      {t("sessionManager.bindingNone", {
-                                        defaultValue: "未分配",
-                                      })}
-                                    </SelectItem>
-                                    {providerOptions.map((provider) => (
-                                      <SelectItem
-                                        key={provider.id}
-                                        value={provider.id}
-                                      >
-                                        {provider.name}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
+                                  <PopoverTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      role="combobox"
+                                      aria-expanded={bindingProviderPickerOpen}
+                                      className="h-7 w-[220px] justify-between px-2 text-xs font-normal"
+                                      disabled={
+                                        switchSessionProviderBinding.isPending ||
+                                        providerOptions.length === 0
+                                      }
+                                    >
+                                      <span className="truncate text-left">
+                                        {sessionBinding?.providerName ??
+                                          providerOptions.find(
+                                            (provider) =>
+                                              provider.id ===
+                                              sessionBinding?.providerId,
+                                          )?.name ??
+                                          t(
+                                            "sessionManager.bindingSwitchPlaceholder",
+                                            {
+                                              defaultValue: "选择提供商",
+                                            },
+                                          )}
+                                      </span>
+                                      <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent
+                                    className="w-[320px] p-0"
+                                    align="start"
+                                  >
+                                    <Command>
+                                      <CommandInput
+                                        placeholder={t(
+                                          "sessionManager.bindingSwitchPlaceholder",
+                                          {
+                                            defaultValue: "搜索提供商",
+                                          },
+                                        )}
+                                        className="h-8 text-xs"
+                                      />
+                                      <CommandList className="max-h-64 overflow-y-auto">
+                                        <CommandEmpty>
+                                          {t("sessionManager.bindingNone", {
+                                            defaultValue: "无可用提供商",
+                                          })}
+                                        </CommandEmpty>
+                                        {providerOptions.map((provider) => (
+                                          <CommandItem
+                                            key={provider.id}
+                                            value={`${provider.name} ${provider.id}`}
+                                            onSelect={() => {
+                                              setBindingProviderPickerOpen(
+                                                false,
+                                              );
+                                              if (
+                                                provider.id !==
+                                                sessionBinding?.providerId
+                                              ) {
+                                                void handleSwitchSessionProvider(
+                                                  provider.id,
+                                                );
+                                              }
+                                            }}
+                                          >
+                                            <Check
+                                              className={`size-3.5 ${provider.id === sessionBinding?.providerId ? "opacity-100" : "opacity-0"}`}
+                                            />
+                                            <span className="truncate">
+                                              {provider.name}
+                                            </span>
+                                          </CommandItem>
+                                        ))}
+                                      </CommandList>
+                                    </Command>
+                                  </PopoverContent>
+                                </Popover>
 
                                 <Button
                                   size="sm"
