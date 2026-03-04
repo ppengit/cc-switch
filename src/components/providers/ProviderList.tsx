@@ -692,6 +692,107 @@ export function ProviderList({
     [appId, addToQueue, removeFromQueue],
   );
 
+  const [isBulkFailoverToggling, setIsBulkFailoverToggling] = useState(false);
+
+  const failoverCandidateProviderIds = useMemo(() => {
+    if (!isFailoverModeActive) return [];
+    return sortedProviders
+      .filter((provider) => {
+        const isOmoCategory =
+          provider.category === "omo" || provider.category === "omo-slim";
+        const isAdditiveMode =
+          (appId === "opencode" && !isOmoCategory) || appId === "openclaw";
+        return !isAdditiveMode && !isOmoCategory;
+      })
+      .map((provider) => provider.id);
+  }, [appId, isFailoverModeActive, sortedProviders]);
+
+  const failoverQueueSet = useMemo(
+    () => new Set((failoverQueue ?? []).map((item) => item.providerId)),
+    [failoverQueue],
+  );
+
+  const enabledFailoverCount = useMemo(
+    () =>
+      failoverCandidateProviderIds.filter((id) => failoverQueueSet.has(id))
+        .length,
+    [failoverCandidateProviderIds, failoverQueueSet],
+  );
+
+  const allFailoverEnabled =
+    failoverCandidateProviderIds.length > 0 &&
+    enabledFailoverCount === failoverCandidateProviderIds.length;
+
+  const failoverBulkSwitchDisabled =
+    isBulkFailoverToggling ||
+    addToQueue.isPending ||
+    removeFromQueue.isPending ||
+    failoverCandidateProviderIds.length === 0;
+
+  const handleToggleAllFailover = useCallback(
+    async (enabled: boolean) => {
+      if (failoverCandidateProviderIds.length === 0) return;
+
+      const targetProviderIds = enabled
+        ? failoverCandidateProviderIds.filter((id) => !failoverQueueSet.has(id))
+        : failoverCandidateProviderIds.filter((id) => failoverQueueSet.has(id));
+
+      if (targetProviderIds.length === 0) return;
+
+      const mutate = enabled
+        ? addToQueue.mutateAsync
+        : removeFromQueue.mutateAsync;
+      setIsBulkFailoverToggling(true);
+      try {
+        const results = await Promise.allSettled(
+          targetProviderIds.map((providerId) =>
+            mutate({ appType: appId, providerId }),
+          ),
+        );
+        const failedCount = results.filter(
+          (result) => result.status === "rejected",
+        ).length;
+
+        if (failedCount > 0) {
+          toast.error(
+            t("failover.bulkTogglePartialFailed", {
+              failedCount,
+              totalCount: targetProviderIds.length,
+              defaultValue:
+                "部分操作失败：{{failedCount}} / {{totalCount}} 个供应商未更新",
+            }),
+          );
+          return;
+        }
+
+        toast.success(
+          enabled
+            ? t("failover.bulkEnableSuccess", {
+                count: targetProviderIds.length,
+                defaultValue: "已将 {{count}} 个供应商加入故障转移队列",
+              })
+            : t("failover.bulkDisableSuccess", {
+                count: targetProviderIds.length,
+                defaultValue: "已将 {{count}} 个供应商移出故障转移队列",
+              }),
+          { closeButton: true },
+        );
+      } finally {
+        setIsBulkFailoverToggling(false);
+      }
+    },
+    [
+      addToQueue.mutateAsync,
+      addToQueue,
+      appId,
+      failoverCandidateProviderIds,
+      failoverQueueSet,
+      removeFromQueue.mutateAsync,
+      removeFromQueue,
+      t,
+    ],
+  );
+
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1828,6 +1929,34 @@ export function ProviderList({
                       </span>
                     )}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {isFailoverModeActive && (
+              <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+                <Switch
+                  checked={allFailoverEnabled}
+                  onCheckedChange={(checked) =>
+                    void handleToggleAllFailover(checked)
+                  }
+                  disabled={failoverBulkSwitchDisabled}
+                  aria-label={t("failover.bulkToggleAll", {
+                    defaultValue: "全部启用/禁用故障转移",
+                  })}
+                />
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="font-medium">
+                    {t("failover.bulkToggleAllLabel", {
+                      defaultValue: "全部启用",
+                    })}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {enabledFailoverCount}/{failoverCandidateProviderIds.length}
+                  </span>
+                  {isBulkFailoverToggling && (
+                    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
                 </div>
               </div>
             )}
