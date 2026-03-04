@@ -95,7 +95,10 @@ export const providersApi = {
     });
   },
 
-  async openAppTerminal(appId: AppId, options?: { cwd?: string }): Promise<boolean> {
+  async openAppTerminal(
+    appId: AppId,
+    options?: { cwd?: string },
+  ): Promise<boolean> {
     return await invoke("open_app_terminal", {
       app: appId,
       cwd: options?.cwd,

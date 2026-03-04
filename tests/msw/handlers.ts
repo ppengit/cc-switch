@@ -104,6 +104,19 @@ export const handlers = [
   }),
 
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_stream_check_config`, () =>
+    success({
+      timeoutSecs: 45,
+      maxRetries: 2,
+      degradedThresholdMs: 6000,
+      claudeModel: "claude-haiku-4-5-20251001",
+      codexModel: "gpt-5.1-codex@low",
+      geminiModel: "gemini-3-pro-preview",
+      testPrompt: "Who are you?",
+    }),
+  ),
 
   // MCP APIs
   http.post(`${TAURI_ENDPOINT}/get_mcp_config`, async ({ request }) => {

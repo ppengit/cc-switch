@@ -44,7 +44,7 @@ export function generateThirdPartyConfig(
 ): string {
   // 清理供应商名称，确保符合TOML键名规范
   const cleanProviderName =
-    providerName
+    (providerName || "custom")
       .toLowerCase()
       .replace(/[^a-z0-9_]/g, "_")
       .replace(/^_+|_+$/g, "") || "custom";

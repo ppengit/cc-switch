@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider } from "@/types";
@@ -140,10 +141,20 @@ export function EditProviderDialog({
 
       // 注意：values.settingsConfig 已经是最终的配置字符串
       // ProviderForm 已经为不同的 app 类型（Claude/Codex/Gemini）正确组装了配置
-      const parsedConfig = JSON.parse(values.settingsConfig) as Record<
-        string,
-        unknown
-      >;
+      let parsedConfig: Record<string, unknown>;
+      try {
+        parsedConfig = JSON.parse(values.settingsConfig) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        toast.error(
+          t("providerForm.invalidConfigJson", {
+            defaultValue: "配置 JSON 格式错误，请检查后重试",
+          }),
+        );
+        return;
+      }
 
       const updatedProvider: Provider = {
         ...provider,
@@ -161,7 +172,7 @@ export function EditProviderDialog({
       await onSubmit(updatedProvider);
       onOpenChange(false);
     },
-    [onSubmit, onOpenChange, provider],
+    [onSubmit, onOpenChange, provider, t],
   );
 
   if (!provider || !initialData) {

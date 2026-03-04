@@ -34,9 +34,35 @@ const nsisInstaller =
       )
     : "";
 
+const resolveNsisInstaller = async () => {
+  if (!nsisInstaller) return "";
+  try {
+    await fs.access(nsisInstaller);
+    return nsisInstaller;
+  } catch {
+    const nsisDir = path.join(
+      root,
+      "src-tauri",
+      "target",
+      "release",
+      "bundle",
+      "nsis",
+    );
+    try {
+      const entries = await fs.readdir(nsisDir);
+      const candidates = entries
+        .filter((name) => /^CC Switch_.*_x64-setup\.exe$/i.test(name))
+        .map((name) => path.join(nsisDir, name));
+      return candidates.at(-1) ?? "";
+    } catch {
+      return "";
+    }
+  }
+};
+
 await fs.mkdir(distDir, { recursive: true });
 
-const outputs = [exePath, nsisInstaller].filter(Boolean);
+const outputs = [exePath, await resolveNsisInstaller()].filter(Boolean);
 for (const src of outputs) {
   try {
     await fs.access(src);

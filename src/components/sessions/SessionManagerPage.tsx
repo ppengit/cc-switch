@@ -118,7 +118,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const userMessagesToc = useMemo(() => {
     return messages
       .map((msg, index) => ({ msg, index }))
-      .filter(({ msg }) => msg.role.toLowerCase() === "user")
+      .filter(({ msg }) => (msg.role ?? "").toLowerCase() === "user")
       .map(({ msg, index }) => ({
         index,
         preview:

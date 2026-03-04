@@ -85,11 +85,19 @@ export function useGeminiCommonConfig({
       try {
         parsed = JSON.parse(trimmed);
       } catch {
-        return { env: {}, config: {}, error: t("geminiConfig.invalidJsonFormat") };
+        return {
+          env: {},
+          config: {},
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
       }
 
       if (!isPlainObject(parsed)) {
-        return { env: {}, config: {}, error: t("geminiConfig.invalidJsonFormat") };
+        return {
+          env: {},
+          config: {},
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
       }
 
       const parsedObj = parsed as Record<string, unknown>;
@@ -103,11 +111,17 @@ export function useGeminiCommonConfig({
       const env: Record<string, string> = {};
       if (envSource !== undefined && envSource !== null) {
         if (!isPlainObject(envSource)) {
-          return { env: {}, config: {}, error: t("geminiConfig.invalidJsonFormat") };
+          return {
+            env: {},
+            config: {},
+            error: t("geminiConfig.invalidJsonFormat"),
+          };
         }
         const keys = Object.keys(envSource);
         const forbiddenKeys = keys.filter((key) =>
-          GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(key as GeminiForbiddenEnvKey),
+          GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(
+            key as GeminiForbiddenEnvKey,
+          ),
         );
         if (forbiddenKeys.length > 0) {
           return {
@@ -136,7 +150,11 @@ export function useGeminiCommonConfig({
       const config: Record<string, unknown> = {};
       if (configSource !== undefined && configSource !== null) {
         if (!isPlainObject(configSource)) {
-          return { env: {}, config: {}, error: t("geminiConfig.invalidJsonFormat") };
+          return {
+            env: {},
+            config: {},
+            error: t("geminiConfig.invalidJsonFormat"),
+          };
         }
         Object.assign(config, configSource as Record<string, unknown>);
       }
@@ -646,7 +664,14 @@ export function useGeminiCommonConfig({
     } finally {
       setIsExtracting(false);
     }
-  }, [envStringToObj, envValue, parseSnippet, t, configValue, parseConfigValue]);
+  }, [
+    envStringToObj,
+    envValue,
+    parseSnippet,
+    t,
+    configValue,
+    parseConfigValue,
+  ]);
 
   return {
     useCommonConfig,

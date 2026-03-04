@@ -36,11 +36,14 @@ const iconMappings = {
 /**
  * 根据预设名称推断图标
  */
-export function inferIconForPreset(presetName: string): {
+export function inferIconForPreset(presetName?: string | null): {
   icon?: string;
   iconColor?: string;
 } {
-  const nameLower = presetName.toLowerCase();
+  const nameLower = (presetName ?? "").toLowerCase();
+  if (!nameLower) {
+    return {};
+  }
 
   // 精确匹配或模糊匹配
   for (const [key, config] of Object.entries(iconMappings)) {

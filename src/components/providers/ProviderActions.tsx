@@ -305,7 +305,9 @@ export function ProviderActions({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[220px]">
-              <DropdownMenuItem onClick={() => onOpenTerminalWithMode("manual")}>
+              <DropdownMenuItem
+                onClick={() => onOpenTerminalWithMode("manual")}
+              >
                 {t("provider.terminalTargetManual", {
                   defaultValue: "手动选择",
                 })}

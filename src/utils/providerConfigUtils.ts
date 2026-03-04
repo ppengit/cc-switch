@@ -1,4 +1,4 @@
-// 供应商配置处理工具函数
+﻿// 供应商配置处理工具函数
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import { normalizeQuotes } from "@/utils/textNormalization";
@@ -359,8 +359,23 @@ export interface UpdateTomlCommonConfigResult {
   error?: string;
 }
 
-// 保存之前的通用配置片段，用于替换操作
-let previousCommonSnippet = "";
+const COMMON_SNIPPET_START = "# cc-switch common config start";
+const COMMON_SNIPPET_END = "# cc-switch common config end";
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const COMMON_SNIPPET_REGEX = new RegExp(
+  `${escapeRegExp(COMMON_SNIPPET_START)}[\\s\\S]*?${escapeRegExp(
+    COMMON_SNIPPET_END,
+  )}\\s*\\n?`,
+  "g",
+);
+
+const normalizeWhitespace = (str: string) => str.replace(/\s+/g, " ").trim();
+
+const buildCommonSnippetBlock = (snippet: string) =>
+  `${COMMON_SNIPPET_START}\n${snippet.trim()}\n${COMMON_SNIPPET_END}\n\n`;
 
 // 将通用配置片段写入/移除 TOML 配置
 export const updateTomlCommonConfigSnippet = (
@@ -375,44 +390,29 @@ export const updateTomlCommonConfigSnippet = (
     };
   }
 
+  const stripped = tomlString.replace(COMMON_SNIPPET_REGEX, "");
+  const trimmedSnippet = snippetString.trim();
+  const cleaned = trimmedSnippet
+    ? stripped.replace(
+        new RegExp(`${escapeRegExp(trimmedSnippet)}\\s*\\n?`, "g"),
+        "",
+      )
+    : stripped;
+
   if (enabled) {
-    // 添加通用配置
-    // 先移除旧的通用配置（如果有）
-    let updatedConfig = tomlString;
-    if (previousCommonSnippet && tomlString.includes(previousCommonSnippet)) {
-      updatedConfig = tomlString.replace(previousCommonSnippet, "");
-    }
-
-    // 在文件末尾添加新的通用配置
-    // 确保有适当的换行
-    const needsNewline = updatedConfig && !updatedConfig.endsWith("\n");
-    updatedConfig =
-      updatedConfig + (needsNewline ? "\n\n" : "\n") + snippetString;
-
-    // 保存当前通用配置片段
-    previousCommonSnippet = snippetString;
-
+    // 添加通用配置（始终插入到文件开头，避免落在表格内造成重复 key）
+    const block = buildCommonSnippetBlock(snippetString);
+    const trimmed = cleaned.trimStart();
     return {
-      updatedConfig: updatedConfig.trim() + "\n",
-    };
-  } else {
-    // 移除通用配置
-    if (tomlString.includes(snippetString)) {
-      const updatedConfig = tomlString.replace(snippetString, "");
-      // 清理多余的空行
-      const cleaned = updatedConfig.replace(/\n{3,}/g, "\n\n").trim();
-
-      // 清空保存的状态
-      previousCommonSnippet = "";
-
-      return {
-        updatedConfig: cleaned ? cleaned + "\n" : "",
-      };
-    }
-    return {
-      updatedConfig: tomlString,
+      updatedConfig: trimmed ? block + trimmed : block.trimEnd() + "\n",
     };
   }
+
+  return {
+    updatedConfig: cleaned.replace(/\n{3,}/g, "\n\n").trim()
+      ? cleaned.replace(/\n{3,}/g, "\n\n").trim() + "\n"
+      : "",
+  };
 };
 
 // 检查 TOML 配置是否已包含通用配置片段
@@ -422,9 +422,14 @@ export const hasTomlCommonConfigSnippet = (
 ): boolean => {
   if (!snippetString.trim()) return false;
 
-  // 简单检查配置是否包含片段内容
-  // 去除空白字符后比较，避免格式差异影响
-  const normalizeWhitespace = (str: string) => str.replace(/\s+/g, " ").trim();
+  const match = tomlString.match(COMMON_SNIPPET_REGEX);
+  if (match && match[0]) {
+    const block = match[0]
+      .replace(COMMON_SNIPPET_START, "")
+      .replace(COMMON_SNIPPET_END, "")
+      .trim();
+    return normalizeWhitespace(block) === normalizeWhitespace(snippetString);
+  }
 
   return normalizeWhitespace(tomlString).includes(
     normalizeWhitespace(snippetString),

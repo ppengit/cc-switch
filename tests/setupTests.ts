@@ -7,8 +7,12 @@ import { server } from "./msw/server";
 import { resetProviderState } from "./msw/state";
 import "./msw/tauriMocks";
 
+const consoleDebugSpy = vi
+  .spyOn(console, "debug")
+  .mockImplementation(() => {});
+
 beforeAll(async () => {
-  server.listen({ onUnhandledRequest: "warn" });
+  server.listen({ onUnhandledRequest: "error" });
   await i18n.use(initReactI18next).init({
     lng: "zh",
     fallbackLng: "zh",
@@ -30,5 +34,6 @@ afterEach(() => {
 });
 
 afterAll(() => {
+  consoleDebugSpy.mockRestore();
   server.close();
 });

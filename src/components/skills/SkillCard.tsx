@@ -54,9 +54,10 @@ export function SkillCard({ skill, onInstall, onUninstall }: SkillCardProps) {
     }
   };
 
+  const normalizedDirectory = (skill.directory ?? "").trim().toLowerCase();
+  const normalizedName = (skill.name ?? "").trim().toLowerCase();
   const showDirectory =
-    Boolean(skill.directory) &&
-    skill.directory.trim().toLowerCase() !== skill.name.trim().toLowerCase();
+    normalizedDirectory.length > 0 && normalizedDirectory !== normalizedName;
 
   return (
     <Card className="glass-card flex flex-col h-full transition-all duration-300 hover:shadow-lg group relative overflow-hidden">

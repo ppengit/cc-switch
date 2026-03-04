@@ -33,7 +33,7 @@ export function useSettingsMetadata(): UseSettingsMetadataResult {
 
         setIsPortable(portable);
       } catch (error) {
-        console.error("[useSettingsMetadata] Failed to load metadata", error);
+        console.debug("[useSettingsMetadata] Failed to load metadata", error);
       } finally {
         if (active) {
           setIsLoading(false);

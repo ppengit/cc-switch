@@ -72,6 +72,9 @@ const createSettingsFormMock = (overrides: Record<string, unknown> = {}) => ({
     skipClaudeOnboarding: true,
     claudeConfigDir: "/claude",
     codexConfigDir: "/codex",
+    geminiConfigDir: "/gemini",
+    opencodeConfigDir: "/opencode",
+    openclawConfigDir: "/openclaw",
     language: "zh",
   },
   isLoading: false,
@@ -90,6 +93,9 @@ const createDirectorySettingsMock = (
     appConfig: "/home/mock/.cc-switch",
     claude: "/default/claude",
     codex: "/default/codex",
+    gemini: "/default/gemini",
+    opencode: "/default/opencode",
+    openclaw: "/default/openclaw",
   },
   isLoading: false,
   initialAppConfigDir: undefined,
@@ -382,6 +388,7 @@ describe("useSettings hook", () => {
       undefined,
       undefined, // geminiConfigDir
       undefined, // opencodeConfigDir
+      undefined, // openclawConfigDir
     );
     expect(metadataMock.setRequiresRestart).toHaveBeenCalledWith(false);
   });

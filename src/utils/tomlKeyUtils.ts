@@ -16,14 +16,20 @@ export const upsertTomlStringValue = (
   key: string,
   value: string,
 ): string => {
-  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`, "m");
   const nextLine = `${key} = "${value}"`;
-  if (pattern.test(tomlText)) {
-    return tomlText.replace(pattern, nextLine);
-  }
-  const trimmed = tomlText.trimEnd();
+  const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$\\n?`, "gm");
+  const cleaned = tomlText.replace(pattern, "").replace(/\n{3,}/g, "\n\n");
+  const trimmed = cleaned.trimEnd();
   if (!trimmed) {
     return `${nextLine}\n`;
+  }
+  const tableMatch = trimmed.match(/^\s*\[.+?\]/m);
+  if (tableMatch && tableMatch.index !== undefined) {
+    const insertAt = tableMatch.index;
+    const prefix = trimmed.slice(0, insertAt).trimEnd();
+    const suffix = trimmed.slice(insertAt);
+    const leading = prefix ? `${prefix}\n\n` : "";
+    return `${leading}${nextLine}\n${suffix}\n`;
   }
   return `${trimmed}\n${nextLine}\n`;
 };

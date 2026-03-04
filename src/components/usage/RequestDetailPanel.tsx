@@ -1,35 +1,83 @@
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { X } from "lucide-react";
 import { useRequestDetail } from "@/lib/query/usage";
+import type { RequestLog } from "@/types/usage";
 
 interface RequestDetailPanelProps {
   requestId: string;
   onClose: () => void;
+  initialRequest?: RequestLog | null;
 }
 
 export function RequestDetailPanel({
   requestId,
   onClose,
+  initialRequest = null,
 }: RequestDetailPanelProps) {
   const { t, i18n } = useTranslation();
-  const { data: request, isLoading } = useRequestDetail(requestId);
+  const {
+    data: requestData,
+    isLoading,
+    isError,
+    error,
+  } = useRequestDetail(requestId);
+  const request = requestData ?? initialRequest ?? null;
   const dateLocale =
     i18n.language === "zh"
       ? "zh-CN"
       : i18n.language === "ja"
         ? "ja-JP"
         : "en-US";
+  const title = t("usage.requestDetail", "请求详情");
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      onClose();
+    }
+  };
+
+  const renderHeader = () => (
+    <DialogHeader className="flex-row items-center justify-between space-y-0">
+      <DialogTitle>{title}</DialogTitle>
+      <DialogClose asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+          aria-label={t("common.close", "关闭")}
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </DialogClose>
+    </DialogHeader>
+  );
 
   if (isLoading) {
     return (
-      <Dialog open onOpenChange={onClose}>
+      <Dialog open onOpenChange={handleOpenChange}>
         <DialogContent className="max-w-2xl">
-          <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+          {renderHeader()}
+          <div className="h-[400px] animate-pulse rounded bg-muted/60" />
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  if (isError && !request) {
+    return (
+      <Dialog open onOpenChange={handleOpenChange}>
+        <DialogContent className="max-w-2xl">
+          {renderHeader()}
+          <div className="text-center text-sm text-red-600 dark:text-red-400">
+            {String(error ?? t("common.error", "错误"))}
+          </div>
         </DialogContent>
       </Dialog>
     );
@@ -37,11 +85,9 @@ export function RequestDetailPanel({
 
   if (!request) {
     return (
-      <Dialog open onOpenChange={onClose}>
+      <Dialog open onOpenChange={handleOpenChange}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
-          </DialogHeader>
+          {renderHeader()}
           <div className="text-center text-muted-foreground">
             {t("usage.requestNotFound", "请求未找到")}
           </div>
@@ -51,11 +97,9 @@ export function RequestDetailPanel({
   }
 
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
-        </DialogHeader>
+        {renderHeader()}
 
         <div className="space-y-4">
           {/* 基本信息 */}
@@ -113,8 +157,8 @@ export function RequestDetailPanel({
                   <span
                     className={`inline-flex rounded-full px-2 py-1 text-xs ${
                       request.statusCode >= 200 && request.statusCode < 300
-                        ? "bg-green-100 text-green-800"
-                        : "bg-red-100 text-red-800"
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
+                        : "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200"
                     }`}
                   >
                     {request.statusCode}
@@ -232,7 +276,7 @@ export function RequestDetailPanel({
                     <dt className="text-muted-foreground">
                       {t("usage.costMultiplier", "成本倍率")}
                     </dt>
-                    <dd className="font-mono">×{request.costMultiplier}</dd>
+                    <dd className="font-mono">x{request.costMultiplier}</dd>
                   </div>
                 )}
               <div
@@ -271,11 +315,13 @@ export function RequestDetailPanel({
 
           {/* 错误信息 */}
           {request.errorMessage && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-              <h3 className="mb-2 font-semibold text-red-800">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-950/30">
+              <h3 className="mb-2 font-semibold text-red-800 dark:text-red-200">
                 {t("usage.errorMessage", "错误信息")}
               </h3>
-              <p className="text-sm text-red-700">{request.errorMessage}</p>
+              <p className="text-sm text-red-700 dark:text-red-300">
+                {request.errorMessage}
+              </p>
             </div>
           )}
 

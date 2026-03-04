@@ -244,10 +244,12 @@ export function getGeminiPresetByName(
 export function getGeminiPresetByUrl(
   url: string,
 ): GeminiProviderPreset | undefined {
-  if (!url) return undefined;
+  if (typeof url !== "string") return undefined;
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) return undefined;
   return geminiProviderPresets.find(
     (preset) =>
-      preset.baseURL &&
-      url.toLowerCase().includes(preset.baseURL.toLowerCase()),
+      typeof preset.baseURL === "string" &&
+      normalizedUrl.toLowerCase().includes(preset.baseURL.toLowerCase()),
   );
 }

@@ -66,7 +66,9 @@ export function useSessionSearch({
   // 搜索函数
   const search = useCallback(
     (query: string): SessionMeta[] => {
-      const needle = query.trim().toLowerCase();
+      const needle = (typeof query === "string" ? query : "")
+        .trim()
+        .toLowerCase();
 
       // 先按 provider 过滤
       let filtered = sessions;

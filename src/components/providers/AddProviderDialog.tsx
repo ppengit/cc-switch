@@ -82,10 +82,20 @@ export function AddProviderDialog({
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
-      const parsedConfig = JSON.parse(values.settingsConfig) as Record<
-        string,
-        unknown
-      >;
+      let parsedConfig: Record<string, unknown>;
+      try {
+        parsedConfig = JSON.parse(values.settingsConfig) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        toast.error(
+          t("providerForm.invalidConfigJson", {
+            defaultValue: "配置 JSON 格式错误，请检查后重试",
+          }),
+        );
+        return;
+      }
 
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {
@@ -232,7 +242,7 @@ export function AddProviderDialog({
       await onSubmit(providerData);
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, onOpenChange, t],
   );
 
   const footer =

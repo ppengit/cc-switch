@@ -56,7 +56,7 @@ export function useImportExport(
         setErrorMessage(null);
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to open file dialog", error);
+      console.debug("[useImportExport] Failed to open file dialog", error);
       toast.error(
         t("settings.selectFileFailed", {
           defaultValue: "选择文件失败",
@@ -120,7 +120,7 @@ export function useImportExport(
           { closeButton: true },
         );
       } else {
-        console.error(
+        console.debug(
           "[useImportExport] Failed to sync live config",
           syncResult.error,
         );
@@ -133,7 +133,7 @@ export function useImportExport(
         );
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to import config", error);
+      console.debug("[useImportExport] Failed to import config", error);
       setStatus("error");
       const message =
         error instanceof Error ? error.message : String(error ?? "");
@@ -183,7 +183,6 @@ export function useImportExport(
           toast.warning(result.warning, { closeButton: true });
         }
       } else {
-
         toast.error(
           t("settings.exportFailed", {
             defaultValue: "导出配置失败",
@@ -191,7 +190,7 @@ export function useImportExport(
         );
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to export config", error);
+      console.debug("[useImportExport] Failed to export config", error);
       toast.error(
         t("settings.exportFailedError", {
           defaultValue: "导出配置失败: {{message}}",

@@ -25,7 +25,7 @@ const UpdateContext = createContext<UpdateContextValue | undefined>(undefined);
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const DISMISSED_VERSION_KEY = "ccswitch:update:dismissedVersion";
-  const LEGACY_DISMISSED_KEY = "dismissedUpdateVersion"; // 鍏煎鏃ч敭
+  const LEGACY_DISMISSED_KEY = "dismissedUpdateVersion"; // backward compatible legacy key
 
   const [hasUpdate, setHasUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -34,12 +34,12 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
 
-  // 浠?localStorage 璇诲彇宸插叧闂殑鐗堟湰
+  // Read dismissed version from localStorage.
   useEffect(() => {
     const current = updateInfo?.availableVersion;
     if (!current) return;
 
-    // 璇诲彇鏂伴敭锛涜嫢涓嶅瓨鍦紝灏濊瘯杩佺Щ鏃ч敭
+    // Read new key first. If missing, migrate from legacy key.
     let dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
     if (!dismissedVersion) {
       const legacy = localStorage.getItem(LEGACY_DISMISSED_KEY);
@@ -69,7 +69,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         setUpdateInfo(result.info);
         setUpdateHandle(result.update);
 
-        // 妫€鏌ユ槸鍚﹀凡缁忓叧闂繃杩欎釜鐗堟湰鐨勬彁閱?
+        // Check whether this available version has been dismissed.
         let dismissedVersion = localStorage.getItem(DISMISSED_VERSION_KEY);
         if (!dismissedVersion) {
           const legacy = localStorage.getItem(LEGACY_DISMISSED_KEY);
@@ -81,19 +81,18 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         }
         setIsDismissed(dismissedVersion === result.info.availableVersion);
         return true; // 有更新
-
       } else {
         setHasUpdate(false);
         setUpdateInfo(null);
         setUpdateHandle(null);
         setIsDismissed(false);
-        return false; // 宸叉槸鏈€鏂?
+        return false; // already latest
       }
     } catch (err) {
-      console.error("妫€鏌ユ洿鏂板け璐?", err);
+      console.error("Update check failed", err);
       setError(err instanceof Error ? err.message : "Update check failed");
       setHasUpdate(false);
-      throw err; // 鎶涘嚭閿欒璁╄皟鐢ㄦ柟澶勭悊
+      throw err; // rethrow to caller
     } finally {
       setIsChecking(false);
       isCheckingRef.current = false;
@@ -104,7 +103,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     setIsDismissed(true);
     if (updateInfo?.availableVersion) {
       localStorage.setItem(DISMISSED_VERSION_KEY, updateInfo.availableVersion);
-      // 娓呯悊鏃ч敭
+      // clean legacy key
       localStorage.removeItem(LEGACY_DISMISSED_KEY);
     }
   }, [updateInfo?.availableVersion]);
@@ -114,7 +113,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(DISMISSED_VERSION_KEY);
     localStorage.removeItem(LEGACY_DISMISSED_KEY);
   }, []);
-
 
   const value: UpdateContextValue = {
     hasUpdate,
@@ -140,4 +138,3 @@ export function useUpdate() {
   }
   return context;
 }
-

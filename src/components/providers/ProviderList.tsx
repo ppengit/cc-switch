@@ -171,8 +171,11 @@ export function ProviderList({
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const { data: settingsData } = useSettingsQuery();
-  const { sortedProviders: manualSortedProviders, sensors, handleDragEnd } =
-    useDragSort(providers, appId);
+  const {
+    sortedProviders: manualSortedProviders,
+    sensors,
+    handleDragEnd,
+  } = useDragSort(providers, appId);
   const locale = i18n.language === "zh" ? "zh-CN" : "en-US";
   const providerSortPreference = useMemo(() => {
     const stored = settingsData?.providerSort?.[appId];
@@ -271,12 +274,12 @@ export function ProviderList({
     enabled: appId === "opencode",
   });
 
-  // OpenClaw: 鏌ヨ live 閰嶇疆涓殑渚涘簲鍟?ID 鍒楄〃锛岀敤浜庡垽鏂?isInConfig
+  // OpenClaw: query provider IDs in live config for isInConfig.
   const { data: openclawLiveIds } = useOpenClawLiveProviderIds(
     appId === "openclaw",
   );
 
-  // 鍒ゆ柇渚涘簲鍟嗘槸鍚﹀凡娣诲姞鍒伴厤缃紙绱姞妯″紡搴旂敤锛歄penCode/OpenClaw锛?
+  // Determine whether provider is included in config for additive apps.
   const isProviderInConfig = useCallback(
     (providerId: string): boolean => {
       if (appId === "opencode") {
@@ -285,7 +288,7 @@ export function ProviderList({
       if (appId === "openclaw") {
         return openclawLiveIds?.includes(providerId) ?? false;
       }
-      return true; // 鍏朵粬搴旂敤濮嬬粓杩斿洖 true
+      return true; // other apps always return true
     },
     [appId, opencodeLiveIds, openclawLiveIds],
   );
@@ -309,7 +312,6 @@ export function ProviderList({
   const [showScrollTop, setShowScrollTop] = useState(false);
   const listScrollRef = useRef<HTMLDivElement>(null);
 
-
   const getTerminalTargetKey = useCallback(
     (providerId?: string) =>
       providerId ? `${appId}:provider:${providerId}` : `${appId}:global`,
@@ -318,18 +320,18 @@ export function ProviderList({
 
   const normalizeRecentPaths = useCallback(
     (paths?: Array<string | null | undefined>) => {
-    const seen = new Set<string>();
-    const normalized: string[] = [];
-    for (const raw of paths ?? []) {
-      const value = typeof raw === "string" ? raw.trim() : "";
-      if (!value) continue;
-      const key = isWindows() ? value.toLowerCase() : value;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      normalized.push(value);
-      if (normalized.length >= 10) break;
-    }
-    return normalized;
+      const seen = new Set<string>();
+      const normalized: string[] = [];
+      for (const raw of paths ?? []) {
+        const value = typeof raw === "string" ? raw.trim() : "";
+        if (!value) continue;
+        const key = isWindows() ? value.toLowerCase() : value;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(value);
+        if (normalized.length >= 10) break;
+      }
+      return normalized;
     },
     [],
   );
@@ -370,7 +372,11 @@ export function ProviderList({
         ...normalizeTerminalTarget(settingsData?.terminalTargets?.[key]),
       };
     },
-    [getTerminalTargetKey, normalizeTerminalTarget, settingsData?.terminalTargets],
+    [
+      getTerminalTargetKey,
+      normalizeTerminalTarget,
+      settingsData?.terminalTargets,
+    ],
   );
 
   const saveTerminalTarget = useCallback(
@@ -411,7 +417,10 @@ export function ProviderList({
     [appId, queryClient, settingsData],
   );
 
-  const appTerminalTarget = useMemo(() => getTerminalTarget(), [getTerminalTarget]);
+  const appTerminalTarget = useMemo(
+    () => getTerminalTarget(),
+    [getTerminalTarget],
+  );
   const appRecentTerminalTargets = appTerminalTarget.recentCwds ?? [];
   const hasAppRecentTargets = appRecentTerminalTargets.length > 0;
 
@@ -455,10 +464,7 @@ export function ProviderList({
         cwd = picked;
       } else {
         cwd =
-          selectedPath ??
-          target.recentCwds?.[0] ??
-          target.lastCwd ??
-          undefined;
+          selectedPath ?? target.recentCwds?.[0] ?? target.lastCwd ?? undefined;
         if (!cwd) return;
       }
 
@@ -500,10 +506,7 @@ export function ProviderList({
         cwd = picked;
       } else {
         cwd =
-          selectedPath ??
-          target.recentCwds?.[0] ??
-          target.lastCwd ??
-          undefined;
+          selectedPath ?? target.recentCwds?.[0] ?? target.lastCwd ?? undefined;
         if (!cwd) return;
       }
 
@@ -570,7 +573,10 @@ export function ProviderList({
         setStreamConfig(config);
         setTestModel(config[modelKey] || "");
       } catch (error) {
-        console.error("[ProviderList] Failed to load stream check config", error);
+        console.error(
+          "[ProviderList] Failed to load stream check config",
+          error,
+        );
       }
     };
 
@@ -594,7 +600,10 @@ export function ProviderList({
         if (!active) return;
         setCommonConfigSnippet(snippet || "");
       } catch (error) {
-        console.error("[ProviderList] Failed to load common config snippet", error);
+        console.error(
+          "[ProviderList] Failed to load common config snippet",
+          error,
+        );
       } finally {
         if (active) {
           setIsCommonConfigLoading(false);
@@ -640,7 +649,7 @@ export function ProviderList({
     [appId, openclawDefaultModel],
   );
 
-  // 鏁呴殰杞Щ鐩稿叧
+  // Failover related state.
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
@@ -691,7 +700,11 @@ export function ProviderList({
   const parseGeminiSnippet = useCallback(
     (
       snippetString: string,
-    ): { env: Record<string, string>; config: Record<string, unknown>; error?: string } => {
+    ): {
+      env: Record<string, string>;
+      config: Record<string, unknown>;
+      error?: string;
+    } => {
       const trimmed = snippetString.trim();
       if (!trimmed) {
         return { env: {}, config: {} };
@@ -728,7 +741,11 @@ export function ProviderList({
       const envSource = hasStructured ? parsedObj.env : parsedObj;
       const configSource = hasStructured ? parsedObj.config : undefined;
 
-      if (envSource !== undefined && envSource !== null && !isPlainObject(envSource)) {
+      if (
+        envSource !== undefined &&
+        envSource !== null &&
+        !isPlainObject(envSource)
+      ) {
         return {
           env: {},
           config: {},
@@ -742,7 +759,9 @@ export function ProviderList({
       if (envSource && isPlainObject(envSource)) {
         const keys = Object.keys(envSource);
         const forbiddenKeys = keys.filter((key) =>
-          GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(key as GeminiForbiddenEnvKey),
+          GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(
+            key as GeminiForbiddenEnvKey,
+          ),
         );
         if (forbiddenKeys.length > 0) {
           return {
@@ -1313,7 +1332,10 @@ export function ProviderList({
         }),
       );
     } catch (error) {
-      console.error("[ProviderList] Failed to save common config snippet", error);
+      console.error(
+        "[ProviderList] Failed to save common config snippet",
+        error,
+      );
       const message = String(error);
       setCommonConfigError(message);
       toast.error(message);
@@ -1478,9 +1500,7 @@ export function ProviderList({
               defaultValue: "通用配置批量更新失败",
             }),
             {
-              description: first
-                ? `${first.name}: ${first.reason}`
-                : undefined,
+              description: first ? `${first.name}: ${first.reason}` : undefined,
             },
           );
         } else {
@@ -1534,7 +1554,7 @@ export function ProviderList({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase();
+      const key = (event.key ?? "").toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
         setIsSearchOpen(true);
@@ -1582,13 +1602,14 @@ export function ProviderList({
   }, []);
 
   const filteredProviders = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = (searchTerm ?? "").trim().toLowerCase();
     if (!keyword) return sortedProviders;
     return sortedProviders.filter((provider) => {
       const fields = [provider.name, provider.notes, provider.websiteUrl];
-      return fields.some((field) =>
-        field?.toString().toLowerCase().includes(keyword),
-      );
+      return fields.some((field) => {
+        const text = field?.toString();
+        return text ? text.toLowerCase().includes(keyword) : false;
+      });
     });
   }, [searchTerm, sortedProviders]);
 
@@ -1696,11 +1717,11 @@ export function ProviderList({
     </DndContext>
   );
 
-    return (
-      <div className="flex flex-col h-full min-h-0 gap-4">
-        <AnimatePresence>
-          {isSearchOpen && (
-            <motion.div
+  return (
+    <div className="flex flex-col h-full min-h-0 gap-4">
+      <AnimatePresence>
+        {isSearchOpen && (
+          <motion.div
             key="provider-search"
             initial={{ opacity: 0, y: -8, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1762,7 +1783,7 @@ export function ProviderList({
         )}
       </AnimatePresence>
 
-      <div className="sticky top-0 z-20 -mx-1 px-1 py-2 bg-slate-50/95 dark:bg-background/95 backdrop-blur-md border-b border-border/60">
+      <div className="sticky top-0 z-20 -mx-1 px-1 py-2 bg-background/95 backdrop-blur-md border-b border-border/60">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {supportsCommonConfig && (
@@ -1900,7 +1921,7 @@ export function ProviderList({
                   variant="ghost"
                   size="sm"
                   title={t("provider.sortTitle", { defaultValue: "排序" })}
-                  className="h-7 px-2 text-xs bg-muted/60 text-foreground hover:bg-muted"
+                  className="h-7 px-2 text-xs bg-muted/60 text-foreground hover:bg-muted hover:text-foreground dark:hover:text-foreground"
                 >
                   <ArrowUpDown className="h-3.5 w-3.5 mr-1" />
                   {sortByLabel}
@@ -1943,9 +1964,6 @@ export function ProviderList({
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            <span className="text-xs text-muted-foreground">
-              {t("provider.viewMode", { defaultValue: "显示模式" })}
-            </span>
             <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
               <Button
                 type="button"
@@ -2087,7 +2105,10 @@ export function ProviderList({
                         })}
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" className="min-w-[220px]">
+                    <DropdownMenuContent
+                      align="start"
+                      className="min-w-[220px]"
+                    >
                       <DropdownMenuItem
                         onClick={() =>
                           void handleOpenAppTerminalWithMode("manual")
@@ -2292,7 +2313,10 @@ export function ProviderList({
                               </span>
                             ) : (
                               <span
-                                className={cn("text-sm font-medium", statusClass)}
+                                className={cn(
+                                  "text-sm font-medium",
+                                  statusClass,
+                                )}
                                 title={statusDetail || undefined}
                               >
                                 {statusLabel}
@@ -2503,10 +2527,7 @@ export function ProviderList({
                     type="checkbox"
                     checked={claudeSnippetToggleStates.teammates}
                     onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "teammates",
-                        e.target.checked,
-                      )
+                      handleClaudeSnippetToggle("teammates", e.target.checked)
                     }
                     className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
                   />

@@ -147,7 +147,7 @@ export function ProviderCard({
     ? "rounded-lg border border-border/60 bg-slate-50/95 shadow-sm backdrop-blur dark:bg-slate-900/70"
     : "";
   const actionOverlayPosition = isCardView
-    ? "left-1/2 right-auto -translate-x-1/2"
+    ? "left-1/2 -translate-x-1/2"
     : "right-0";
   const actionOverlayMotion = isCardView
     ? "translate-y-2 group-hover:translate-y-0 group-focus-within:translate-y-0"
@@ -197,7 +197,8 @@ export function ProviderCard({
       if (reasoningModel.trim())
         items.push({ label: "推理模型", value: reasoningModel });
       if (haikuModel.trim()) items.push({ label: "Haiku", value: haikuModel });
-      if (sonnetModel.trim()) items.push({ label: "Sonnet", value: sonnetModel });
+      if (sonnetModel.trim())
+        items.push({ label: "Sonnet", value: sonnetModel });
       if (opusModel.trim()) items.push({ label: "Opus", value: opusModel });
 
       if (items.length === 0) return "";
@@ -274,7 +275,7 @@ export function ProviderCard({
   const actionsRef = useRef<HTMLDivElement>(null);
   const [actionsWidth, setActionsWidth] = useState(0);
 
-      useEffect(() => {
+  useEffect(() => {
     if (hasMultiplePlans) {
       setIsExpanded(true);
     }
@@ -382,7 +383,12 @@ export function ProviderCard({
           </div>
 
           <div className="space-y-1">
-            <div className={cn("flex flex-wrap items-center gap-2", headerMinHeight)}>
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2",
+                headerMinHeight,
+              )}
+            >
               <h3 className={cn("font-semibold leading-none", titleSize)}>
                 {provider.name}
               </h3>
@@ -465,7 +471,13 @@ export function ProviderCard({
           }
         >
           <div className="ml-auto">
-            <div className="flex items-center gap-1 transition-transform duration-200 group-hover:-translate-x-[var(--actions-width)] group-focus-within:-translate-x-[var(--actions-width)]">
+            <div
+              className={cn(
+                "flex items-center gap-1 transition-transform duration-200",
+                !isCardView &&
+                  "group-hover:-translate-x-[var(--actions-width)] group-focus-within:-translate-x-[var(--actions-width)]",
+              )}
+            >
               {hasMultiplePlans ? (
                 <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
                   <span className="font-medium">

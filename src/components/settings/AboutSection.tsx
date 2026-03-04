@@ -85,6 +85,15 @@ npm i -g @google/gemini-cli@latest
 # OpenCode
 curl -fsSL https://opencode.ai/install | bash`;
 
+const formatAppVersionForDisplay = (version?: string | null): string => {
+  if (!version) return "";
+  const [core, build] = version.split("+");
+  if (build && /^\d+$/.test(build)) {
+    return `${core}.${build}`;
+  }
+  return version;
+};
+
 export function AboutSection({ isPortable }: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
@@ -257,7 +266,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     }
   }, [t]);
 
-  const displayVersion = version ?? t("common.unknown");
+  const displayVersion =
+    formatAppVersionForDisplay(version) || t("common.unknown");
 
   return (
     <motion.section
@@ -313,9 +323,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
       <div className="space-y-3">
         <div className="flex items-center justify-between px-1">
-          <h3 className="text-sm font-medium">
-            {t("settings.localEnvCheck")}
-          </h3>
+          <h3 className="text-sm font-medium">{t("settings.localEnvCheck")}</h3>
           <Button
             size="sm"
             variant="outline"
@@ -385,7 +393,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="auto">{t("common.auto")}</SelectItem>
+                          <SelectItem value="auto">
+                            {t("common.auto")}
+                          </SelectItem>
                           {WSL_SHELL_OPTIONS.map((shell) => (
                             <SelectItem key={shell} value={shell}>
                               {shell}
@@ -407,7 +417,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="auto">{t("common.auto")}</SelectItem>
+                          <SelectItem value="auto">
+                            {t("common.auto")}
+                          </SelectItem>
                           {WSL_SHELL_FLAG_OPTIONS.map((flag) => (
                             <SelectItem key={flag} value={flag}>
                               {flag}

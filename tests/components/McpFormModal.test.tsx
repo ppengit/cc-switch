@@ -68,7 +68,13 @@ vi.mock("@/components/ui/input", () => ({
 }));
 
 vi.mock("@/components/ui/textarea", () => ({
-  Textarea: ({ value, onChange, ...rest }: any) => (
+  Textarea: ({
+    value,
+    onChange,
+    darkMode: _darkMode,
+    showValidation: _showValidation,
+    ...rest
+  }: any) => (
     <textarea
       value={value}
       onChange={(event) =>
@@ -80,7 +86,14 @@ vi.mock("@/components/ui/textarea", () => ({
 }));
 
 vi.mock("@/components/JsonEditor", () => ({
-  default: ({ value, onChange, placeholder, ...rest }: any) => (
+  default: ({
+    value,
+    onChange,
+    placeholder,
+    darkMode: _darkMode,
+    showValidation: _showValidation,
+    ...rest
+  }: any) => (
     <textarea
       value={value}
       placeholder={placeholder}

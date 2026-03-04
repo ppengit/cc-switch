@@ -52,11 +52,12 @@ export const GeminiCommonConfigModal: React.FC<
         return { env: {}, config: {} };
       }
       const hasStructured = "env" in parsed || "config" in parsed;
-      const env = hasStructured && parsed.env && typeof parsed.env === "object"
-        ? (parsed.env as Record<string, unknown>)
-        : !hasStructured
-          ? (parsed as Record<string, unknown>)
-          : {};
+      const env =
+        hasStructured && parsed.env && typeof parsed.env === "object"
+          ? (parsed.env as Record<string, unknown>)
+          : !hasStructured
+            ? (parsed as Record<string, unknown>)
+            : {};
       const config =
         hasStructured && parsed.config && typeof parsed.config === "object"
           ? (parsed.config as Record<string, unknown>)

@@ -69,12 +69,20 @@ export const icons: Record<string, string> = {
 
 export const iconList = Object.keys(icons);
 
-export function getIcon(name: string): string {
-  return icons[name.toLowerCase()] || "";
+const normalizeIconName = (name: unknown): string => {
+  if (typeof name !== "string") return "";
+  const normalized = name.trim().toLowerCase();
+  return normalized;
+};
+
+export function getIcon(name?: string | null): string {
+  const normalized = normalizeIconName(name);
+  return normalized ? icons[normalized] || "" : "";
 }
 
-export function hasIcon(name: string): boolean {
-  return name.toLowerCase() in icons;
+export function hasIcon(name?: string | null): boolean {
+  const normalized = normalizeIconName(name);
+  return normalized ? normalized in icons : false;
 }
 
 export { getIconMetadata } from "./metadata";

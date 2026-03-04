@@ -221,6 +221,8 @@ export interface Settings {
   usageConfirmed?: boolean;
   // 首选语言（可选，默认中文）
   language?: "en" | "zh" | "ja";
+  // Theme preference
+  theme?: "light" | "dark" | "system";
 
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;

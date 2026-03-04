@@ -227,19 +227,11 @@ async fn get_single_tool_version_impl(
     let (local_version, local_error) = if let Some(distro) = wsl_distro.as_deref() {
         try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag)
     } else {
-        #[cfg(target_os = "windows")]
-        {
-            try_get_version_windows_safe(tool)
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let direct_result = try_get_version(tool);
-            if direct_result.0.is_some() {
-                direct_result
-            } else {
-                scan_cli_version(tool)
-            }
+        let direct_result = try_get_version(tool);
+        if direct_result.0.is_some() {
+            direct_result
+        } else {
+            scan_cli_version(tool)
         }
     };
 
@@ -334,65 +326,6 @@ fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
             .arg(format!("{tool} --version"))
             .output()
     };
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if out.status.success() {
-                let raw = if stdout.is_empty() { &stderr } else { &stdout };
-                if raw.is_empty() {
-                    (None, Some("not installed or not executable".to_string()))
-                } else {
-                    (Some(extract_version(raw)), None)
-                }
-            } else {
-                let err = if stderr.is_empty() { stdout } else { stderr };
-                (
-                    None,
-                    Some(if err.is_empty() {
-                        "not installed or not executable".to_string()
-                    } else {
-                        err
-                    }),
-                )
-            }
-        }
-        Err(e) => (None, Some(e.to_string())),
-    }
-}
-
-/// Windows: safe version detection by resolving executable path first.
-/// This avoids invoking protocol handlers when the CLI isn't installed.
-#[cfg(target_os = "windows")]
-fn try_get_version_windows_safe(tool: &str) -> (Option<String>, Option<String>) {
-    use std::process::Command;
-
-    let output = Command::new("where")
-        .arg(tool)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-
-    let output = match output {
-        Ok(out) if out.status.success() => out,
-        _ => return (None, Some("not installed or not executable".to_string())),
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let first_path = stdout
-        .lines()
-        .map(|line| line.trim())
-        .find(|line| !line.is_empty());
-
-    let Some(path) = first_path else {
-        return (None, Some("not installed or not executable".to_string()));
-    };
-
-    let command = format!("\"{}\" --version", path.replace('"', "\"\""));
-    let output = Command::new("cmd")
-        .args(["/C", &command])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
 
     match output {
         Ok(out) => {

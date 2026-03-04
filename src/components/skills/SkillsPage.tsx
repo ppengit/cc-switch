@@ -72,9 +72,10 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       return new Set(
         installedSkills.map((s) => {
           // 构建唯一 key：directory + repoOwner + repoName
+          const directory = (s.directory ?? "").toLowerCase();
           const owner = s.repoOwner?.toLowerCase() || "";
           const name = s.repoName?.toLowerCase() || "";
-          return `${s.directory.toLowerCase()}:${owner}:${name}`;
+          return `${directory}:${owner}:${name}`;
         }),
       );
     }, [installedSkills]);
@@ -98,11 +99,14 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       if (!discoverableSkills) return [];
       return discoverableSkills.map((d) => {
         // 同时处理 / 和 \ 路径分隔符（兼容 Windows 和 Unix）
+        const directory = d.directory ?? "";
+        const repoOwner = d.repoOwner?.toLowerCase() || "";
+        const repoName = d.repoName?.toLowerCase() || "";
         const installName =
-          d.directory.split(/[/\\]/).pop()?.toLowerCase() ||
-          d.directory.toLowerCase();
+          directory.split(/[/\\]/).pop()?.toLowerCase() ||
+          directory.toLowerCase();
         // 使用 directory + repoOwner + repoName 组合判断是否已安装
-        const key = `${installName}:${d.repoOwner.toLowerCase()}:${d.repoName.toLowerCase()}`;
+        const key = `${installName}:${repoOwner}:${repoName}`;
         return {
           ...d,
           installed: installedKeys.has(key),

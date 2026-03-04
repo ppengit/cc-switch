@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -93,8 +94,16 @@ interface WebDavSyncStatusUpdatedPayload {
 
 const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
-const DISPLAY_VERSION = "v3.11.1-PJ";
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
+
+const formatDisplayVersion = (version?: string | null): string => {
+  if (!version) return "-";
+  const [core, build] = version.split("+");
+  if (build && /^\d+$/.test(build)) {
+    return `${core}.${build}`;
+  }
+  return version;
+};
 
 const STORAGE_KEY = "cc-switch-last-app";
 const VALID_APPS: AppId[] = [
@@ -146,10 +155,31 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(getInitialView);
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [displayVersion, setDisplayVersion] = useState<string>("-");
 
   useEffect(() => {
     localStorage.setItem(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
+
+  useEffect(() => {
+    let active = true;
+    const loadVersion = async () => {
+      try {
+        const version = await getVersion();
+        if (active) {
+          setDisplayVersion(formatDisplayVersion(version));
+        }
+      } catch {
+        if (active) {
+          setDisplayVersion("-");
+        }
+      }
+    };
+    void loadVersion();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const { data: settingsData } = useSettingsQuery();
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
@@ -778,7 +808,9 @@ function App() {
                     appId={activeApp}
                     isLoading={isLoading}
                     isProxyRunning={isProxyRunning}
-                    isProxyTakeover={isProxyRunning && isCurrentAppTakeoverActive}
+                    isProxyTakeover={
+                      isProxyRunning && isCurrentAppTakeoverActive
+                    }
                     activeProviderId={activeProviderId}
                     onSwitch={switchProvider}
                     onEdit={(provider) => {
@@ -838,7 +870,7 @@ function App() {
 
   return (
     <div
-      className="flex flex-col h-screen overflow-hidden bg-slate-50 text-foreground dark:bg-background selection:bg-primary/30"
+      className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30"
       style={{ overflowX: "hidden", paddingTop: CONTENT_TOP_OFFSET }}
     >
       <div
@@ -978,7 +1010,7 @@ function App() {
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
             <div className="text-xs text-muted-foreground whitespace-nowrap pr-2">
-              CC Switch {DISPLAY_VERSION}
+              {`CC Switch v${displayVersion}`}
             </div>
             {currentView === "providers" &&
               activeApp !== "opencode" &&

@@ -64,16 +64,8 @@ export const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
       switch (toggleKey) {
         case "fullAccess":
           nextValue = checked
-            ? upsertTomlStringValue(
-                value,
-                "sandbox_mode",
-                "danger-full-access",
-              )
-            : removeTomlKeyIfMatch(
-                value,
-                "sandbox_mode",
-                "danger-full-access",
-              );
+            ? upsertTomlStringValue(value, "sandbox_mode", "danger-full-access")
+            : removeTomlKeyIfMatch(value, "sandbox_mode", "danger-full-access");
           break;
       }
       onChange(nextValue);

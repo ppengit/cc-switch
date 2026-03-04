@@ -217,6 +217,8 @@ pub struct AppSettings {
     pub usage_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 
     // ===== 主页面显示的应用 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -312,6 +314,7 @@ impl Default for AppSettings {
             proxy_confirmed: None,
             usage_confirmed: None,
             language: None,
+            theme: None,
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,
@@ -387,6 +390,13 @@ impl AppSettings {
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| matches!(*s, "en" | "zh" | "ja"))
+            .map(|s| s.to_string());
+
+        self.theme = self
+            .theme
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| matches!(*s, "light" | "dark" | "system"))
             .map(|s| s.to_string());
 
         if let Some(sync) = &mut self.webdav_sync {

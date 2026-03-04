@@ -64,7 +64,7 @@ export const getProviderIconName = (providerId: string) => {
 };
 
 export const getRoleTone = (role: string) => {
-  const normalized = role.toLowerCase();
+  const normalized = (role ?? "").toLowerCase();
   if (normalized === "assistant") return "text-blue-500";
   if (normalized === "user") return "text-emerald-500";
   if (normalized === "system") return "text-amber-500";
@@ -73,7 +73,7 @@ export const getRoleTone = (role: string) => {
 };
 
 export const getRoleLabel = (role: string, t: (key: string) => string) => {
-  const normalized = role.toLowerCase();
+  const normalized = (role ?? "").toLowerCase();
   if (normalized === "assistant") return "AI";
   if (normalized === "user") return t("sessionManager.roleUser");
   if (normalized === "system") return t("sessionManager.roleSystem");
