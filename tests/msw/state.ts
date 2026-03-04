@@ -1,9 +1,16 @@
 import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, Settings } from "@/types";
+import type {
+  AppProxyConfig,
+  ProviderSessionOccupancy,
+  SessionProviderBinding,
+} from "@/types/proxy";
 
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
+type AppProxyConfigState = Record<AppId, AppProxyConfig>;
+type SessionBindingsState = Record<AppId, Record<string, SessionProviderBinding>>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -69,8 +76,47 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   openclaw: "",
 });
 
+const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
+  appType,
+  enabled: false,
+  autoFailoverEnabled: false,
+  maxRetries: 3,
+  streamingFirstByteTimeout: 30,
+  streamingIdleTimeout: 30,
+  nonStreamingTimeout: 60,
+  circuitFailureThreshold: 3,
+  circuitSuccessThreshold: 2,
+  circuitTimeoutSeconds: 60,
+  circuitErrorRateThreshold: 50,
+  circuitMinRequests: 5,
+  sessionRoutingEnabled: false,
+  sessionRoutingStrategy: "priority",
+  sessionMaxSessionsPerProvider: 1,
+  sessionAllowSharedWhenExhausted: false,
+  sessionIdleTtlMinutes: 30,
+});
+
+const createDefaultAppProxyConfigs = (): AppProxyConfigState => ({
+  claude: createDefaultAppProxyConfig("claude"),
+  codex: createDefaultAppProxyConfig("codex"),
+  gemini: createDefaultAppProxyConfig("gemini"),
+  opencode: createDefaultAppProxyConfig("opencode"),
+  openclaw: createDefaultAppProxyConfig("openclaw"),
+});
+
+const createDefaultSessionBindings = (): SessionBindingsState => ({
+  claude: {},
+  codex: {},
+  gemini: {},
+  opencode: {},
+  openclaw: {},
+});
+
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
+let appProxyConfigs = createDefaultAppProxyConfigs();
+let sessionRoutingMasterEnabled = false;
+let sessionBindings = createDefaultSessionBindings();
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -116,6 +162,9 @@ const cloneProviders = (value: ProvidersByApp) =>
 export const resetProviderState = () => {
   providers = createDefaultProviders();
   current = createDefaultCurrent();
+  appProxyConfigs = createDefaultAppProxyConfigs();
+  sessionRoutingMasterEnabled = false;
+  sessionBindings = createDefaultSessionBindings();
   settingsState = {
     showInTray: true,
     minimizeToTrayOnClose: true,
@@ -224,6 +273,104 @@ export const listProviders = (appType: AppId) =>
     string,
     Provider
   >;
+
+export const getSessionRoutingMasterEnabledState = () =>
+  sessionRoutingMasterEnabled;
+
+export const setSessionRoutingMasterEnabledState = (value: boolean) => {
+  sessionRoutingMasterEnabled = value;
+};
+
+export const getAppProxyConfig = (appType: AppId) =>
+  JSON.parse(JSON.stringify(appProxyConfigs[appType])) as AppProxyConfig;
+
+export const setAppProxyConfig = (appType: AppId, value: AppProxyConfig) => {
+  appProxyConfigs[appType] = JSON.parse(JSON.stringify(value)) as AppProxyConfig;
+};
+
+export const listSessionProviderBindings = (
+  appType: AppId,
+): SessionProviderBinding[] =>
+  Object.values(sessionBindings[appType] ?? {}).map(
+    (item) => JSON.parse(JSON.stringify(item)) as SessionProviderBinding,
+  );
+
+export const getSessionProviderBinding = (
+  appType: AppId,
+  sessionId: string,
+): SessionProviderBinding | null => {
+  const item = sessionBindings[appType]?.[sessionId];
+  if (!item) return null;
+  return JSON.parse(JSON.stringify(item)) as SessionProviderBinding;
+};
+
+export const switchSessionProviderBinding = (
+  appType: AppId,
+  sessionId: string,
+  providerId: string,
+  pin?: boolean,
+): SessionProviderBinding => {
+  const now = Date.now();
+  const currentBinding = sessionBindings[appType]?.[sessionId];
+  const providerName = providers[appType]?.[providerId]?.name ?? providerId;
+  const next: SessionProviderBinding = {
+    appType,
+    sessionId,
+    providerId,
+    providerName,
+    pinned: pin ?? currentBinding?.pinned ?? false,
+    createdAt: currentBinding?.createdAt ?? now,
+    updatedAt: now,
+    lastSeenAt: now,
+    isActive: true,
+  };
+
+  if (!sessionBindings[appType]) {
+    sessionBindings[appType] = {};
+  }
+  sessionBindings[appType][sessionId] = next;
+  return JSON.parse(JSON.stringify(next)) as SessionProviderBinding;
+};
+
+export const setSessionProviderBindingPin = (
+  appType: AppId,
+  sessionId: string,
+  pinned: boolean,
+) => {
+  const currentBinding = sessionBindings[appType]?.[sessionId];
+  if (!currentBinding) return;
+  sessionBindings[appType][sessionId] = {
+    ...currentBinding,
+    pinned,
+    updatedAt: Date.now(),
+  };
+};
+
+export const removeSessionProviderBinding = (appType: AppId, sessionId: string) => {
+  if (!sessionBindings[appType]) return;
+  delete sessionBindings[appType][sessionId];
+};
+
+export const getProviderSessionOccupancy = (
+  appType: AppId,
+): ProviderSessionOccupancy[] => {
+  const counts = new Map<string, number>();
+  const providerNames = new Map<string, string>();
+
+  for (const binding of Object.values(sessionBindings[appType] ?? {})) {
+    if (!binding.isActive) continue;
+    counts.set(binding.providerId, (counts.get(binding.providerId) ?? 0) + 1);
+    providerNames.set(binding.providerId, binding.providerName ?? binding.providerId);
+  }
+
+  return Array.from(counts.entries())
+    .map(([providerId, sessionCount]) => ({
+      providerId,
+      providerName: providerNames.get(providerId) ?? providerId,
+      sessionCount,
+    }))
+    .sort((a, b) => a.providerName.localeCompare(b.providerName));
+};
 
 export const getSettings = () =>
   JSON.parse(JSON.stringify(settingsState)) as Settings;

@@ -5,7 +5,6 @@ export interface ProxyConfig {
   request_timeout: number;
   enable_logging: boolean;
   live_takeover_active?: boolean;
-  // 超时配置
   streaming_first_byte_timeout: number;
   streaming_idle_timeout: number;
   non_streaming_timeout: number;
@@ -60,7 +59,6 @@ export interface ProviderHealth {
   updated_at: string;
 }
 
-// 熔断器相关类型
 export interface CircuitBreakerConfig {
   failureThreshold: number;
   successThreshold: number;
@@ -79,7 +77,6 @@ export interface CircuitBreakerStats {
   failedRequests: number;
 }
 
-// 供应商健康状态枚举
 export enum ProviderHealthStatus {
   Healthy = "healthy",
   Degraded = "degraded",
@@ -87,7 +84,6 @@ export enum ProviderHealthStatus {
   Unknown = "unknown",
 }
 
-// 扩展 ProviderHealth 以包含前端计算的状态
 export interface ProviderHealthWithStatus extends ProviderHealth {
   status: ProviderHealthStatus;
   circuitState?: CircuitState;
@@ -105,14 +101,36 @@ export interface ProxyUsageRecord {
   timestamp: string;
 }
 
-// 故障转移队列条目
+export type SessionRoutingStrategy =
+  | "least_active"
+  | "round_robin"
+  | "fixed"
+  | "priority";
+
+export interface SessionProviderBinding {
+  appType: string;
+  sessionId: string;
+  providerId: string;
+  providerName?: string;
+  pinned: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  isActive: boolean;
+}
+
+export interface ProviderSessionOccupancy {
+  providerId: string;
+  providerName: string;
+  sessionCount: number;
+}
+
 export interface FailoverQueueItem {
   providerId: string;
   providerName: string;
   sortIndex?: number;
 }
 
-// 全局代理配置（统一字段，三行镜像）
 export interface GlobalProxyConfig {
   proxyEnabled: boolean;
   listenAddress: string;
@@ -120,7 +138,6 @@ export interface GlobalProxyConfig {
   enableLogging: boolean;
 }
 
-// 应用级代理配置（每个 app 独立）
 export interface AppProxyConfig {
   appType: string;
   enabled: boolean;
@@ -135,7 +152,7 @@ export interface AppProxyConfig {
   circuitErrorRateThreshold: number;
   circuitMinRequests: number;
   sessionRoutingEnabled: boolean;
-  sessionRoutingStrategy: string;
+  sessionRoutingStrategy: SessionRoutingStrategy;
   sessionMaxSessionsPerProvider: number;
   sessionAllowSharedWhenExhausted: boolean;
   sessionIdleTtlMinutes: number;

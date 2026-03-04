@@ -249,7 +249,7 @@ impl Database {
                     circuit_error_rate_threshold: 0.6,
                     circuit_min_requests: 10,
                     session_routing_enabled: false,
-                    session_routing_strategy: "least_active".to_string(),
+                    session_routing_strategy: "priority".to_string(),
                     session_max_sessions_per_provider: 1,
                     session_allow_shared_when_exhausted: true,
                     session_idle_ttl_minutes: 30,
@@ -337,7 +337,7 @@ impl Database {
                 circuit_error_rate_threshold, circuit_min_requests,
                 session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
                 session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, 0, 'least_active', 1, 1, 30)",
+            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, 0, 'priority', 1, 1, 30)",
             rusqlite::params![
                 app_type,
                 retries,
@@ -371,7 +371,7 @@ impl Database {
                 circuit_error_rate_threshold, circuit_min_requests,
                 session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
                 session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15, 0, 'least_active', 1, 1, 30)",
+            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15, 0, 'priority', 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -385,7 +385,7 @@ impl Database {
                 circuit_error_rate_threshold, circuit_min_requests,
                 session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
                 session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'least_active', 1, 1, 30)",
+            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -399,7 +399,7 @@ impl Database {
                 circuit_error_rate_threshold, circuit_min_requests,
                 session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
                 session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'least_active', 1, 1, 30)",
+            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;

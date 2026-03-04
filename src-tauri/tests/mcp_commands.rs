@@ -216,6 +216,7 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -280,6 +281,7 @@ fn enabling_codex_mcp_skips_when_codex_dir_missing() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -324,6 +326,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -357,6 +360,7 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -489,6 +493,7 @@ fn enabling_gemini_mcp_skips_when_gemini_dir_missing() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -543,6 +548,7 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -560,3 +566,4 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
         "~/.claude.json should still not exist after skipped sync"
     );
 }
+

@@ -292,6 +292,7 @@ fn create_usage_collector(
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
     let session_id = ctx.session_id.clone();
+    let session_routing_active = ctx.session_routing_active;
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
         if let Some(usage) = stream_parser(&events) {
@@ -316,6 +317,7 @@ fn create_usage_collector(
                     true, // is_streaming
                     status_code,
                     Some(session_id),
+                    session_routing_active,
                 )
                 .await;
             });
@@ -340,6 +342,7 @@ fn create_usage_collector(
                     true, // is_streaming
                     status_code,
                     Some(session_id),
+                    session_routing_active,
                 )
                 .await;
             });
@@ -365,6 +368,7 @@ fn spawn_log_usage(
     let request_model = request_model.to_string();
     let latency_ms = ctx.latency_ms();
     let session_id = ctx.session_id.clone();
+    let session_routing_active = ctx.session_routing_active;
 
     tokio::spawn(async move {
         log_usage_internal(
@@ -379,6 +383,7 @@ fn spawn_log_usage(
             is_streaming,
             status_code,
             Some(session_id),
+            session_routing_active,
         )
         .await;
     });
@@ -398,6 +403,7 @@ async fn log_usage_internal(
     is_streaming: bool,
     status_code: u16,
     session_id: Option<String>,
+    session_routing_active: bool,
 ) {
     use super::usage::logger::UsageLogger;
 
@@ -434,6 +440,7 @@ async fn log_usage_internal(
         first_token_ms,
         status_code,
         session_id,
+        session_routing_active,
         None, // provider_type
         is_streaming,
     ) {
@@ -659,6 +666,7 @@ mod tests {
             false,
             200,
             None,
+            false,
         )
         .await;
 
@@ -718,6 +726,7 @@ mod tests {
             false,
             200,
             None,
+            false,
         )
         .await;
 

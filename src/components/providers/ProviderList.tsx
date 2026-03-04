@@ -71,6 +71,11 @@ import {
   useRemoveFromFailoverQueue,
 } from "@/lib/query/failover";
 import {
+  useAppProxyConfig,
+  useProviderSessionOccupancy,
+  useUpdateAppProxyConfig,
+} from "@/lib/query/proxy";
+import {
   useCurrentOmoProviderId,
   useCurrentOmoSlimProviderId,
 } from "@/lib/query/omo";
@@ -79,6 +84,14 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import JsonEditor from "@/components/JsonEditor";
 import { cn } from "@/lib/utils";
@@ -100,6 +113,7 @@ import {
   removeTomlKeyIfMatch,
   upsertTomlStringValue,
 } from "@/utils/tomlKeyUtils";
+import type { SessionRoutingStrategy } from "@/types/proxy";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -128,8 +142,34 @@ type ProviderViewMode = "list" | "card";
 type ProviderDensity = "compact" | "comfortable";
 type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
 
-const VIEW_MODE_STORAGE_KEY = "cc-switch:provider-view-mode";
-const DENSITY_STORAGE_KEY = "cc-switch:provider-density";
+const VIEW_MODE_STORAGE_KEY = "cc-switch:provider-view-mode-v2";
+const DENSITY_STORAGE_KEY = "cc-switch:provider-density-v2";
+const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
+  value: SessionRoutingStrategy;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "priority",
+    label: "故障转移优先级",
+    description: "按照故障转移队列优先级（P1→P2→...）进行分配。",
+  },
+  {
+    value: "least_active",
+    label: "最少占用优先",
+    description: "优先选择当前绑定会话最少的提供商，适合均衡分配。",
+  },
+  {
+    value: "round_robin",
+    label: "轮询分配",
+    description: "按顺序轮流分配提供商，分布更均匀。",
+  },
+  {
+    value: "fixed",
+    label: "固定首选",
+    description: "优先使用首选提供商，只有不可用时才切换到其他提供商。",
+  },
+];
 
 const GEMINI_COMMON_ENV_FORBIDDEN_KEYS = [
   "GOOGLE_GEMINI_BASE_URL",
@@ -194,7 +234,7 @@ export function ProviderList({
       case "createdAt":
         return t("provider.sortByCreatedAt", { defaultValue: "加入时间" });
       default:
-        return t("provider.sortByManual", { defaultValue: "手动" });
+        return t("provider.sortByManual", { defaultValue: "故障转移优先级" });
     }
   }, [providerSortPreference.by, t]);
   const sortOrderLabel = useMemo(
@@ -242,20 +282,18 @@ export function ProviderList({
   ]);
 
   const [viewMode, setViewMode] = useState<ProviderViewMode>(() => {
-    if (typeof window === "undefined") return "list";
+    if (typeof window === "undefined") return "card";
     const saved = window.localStorage.getItem(
       VIEW_MODE_STORAGE_KEY,
     ) as ProviderViewMode | null;
-    return saved === "card" || saved === "list" ? saved : "list";
+    return saved === "card" || saved === "list" ? saved : "card";
   });
   const [density, setDensity] = useState<ProviderDensity>(() => {
-    if (typeof window === "undefined") return "comfortable";
+    if (typeof window === "undefined") return "compact";
     const saved = window.localStorage.getItem(
       DENSITY_STORAGE_KEY,
     ) as ProviderDensity | null;
-    return saved === "compact" || saved === "comfortable"
-      ? saved
-      : "comfortable";
+    return saved === "compact" || saved === "comfortable" ? saved : "compact";
   });
 
   useEffect(() => {
@@ -791,6 +829,122 @@ export function ProviderList({
       t,
     ],
   );
+
+  const { data: appProxyConfig } = useAppProxyConfig(appId);
+  const updateAppProxyConfig = useUpdateAppProxyConfig();
+  const { data: providerSessionOccupancy = [] } = useProviderSessionOccupancy(
+    appId,
+    appProxyConfig?.sessionIdleTtlMinutes,
+  );
+  const sessionOccupancyMap = useMemo(() => {
+    return new Map(
+      providerSessionOccupancy.map((item) => [
+        item.providerId,
+        item.sessionCount,
+      ]),
+    );
+  }, [providerSessionOccupancy]);
+  const activeSessionCount = useMemo(
+    () =>
+      providerSessionOccupancy.reduce(
+        (total, item) => total + item.sessionCount,
+        0,
+      ),
+    [providerSessionOccupancy],
+  );
+  const occupiedProviderCount = useMemo(
+    () =>
+      providerSessionOccupancy.filter((item) => item.sessionCount > 0).length,
+    [providerSessionOccupancy],
+  );
+
+  const [isSessionRoutingDialogOpen, setIsSessionRoutingDialogOpen] =
+    useState(false);
+  const [sessionRoutingForm, setSessionRoutingForm] = useState({
+    enabled: false,
+    strategy: "priority" as SessionRoutingStrategy,
+    maxSessionsPerProvider: "1",
+    allowSharedWhenExhausted: false,
+    idleTtlMinutes: "30",
+  });
+
+  useEffect(() => {
+    if (!appProxyConfig) return;
+    setSessionRoutingForm({
+      enabled: appProxyConfig.sessionRoutingEnabled,
+      strategy: appProxyConfig.sessionRoutingStrategy,
+      maxSessionsPerProvider: String(
+        appProxyConfig.sessionMaxSessionsPerProvider,
+      ),
+      allowSharedWhenExhausted: appProxyConfig.sessionAllowSharedWhenExhausted,
+      idleTtlMinutes: String(appProxyConfig.sessionIdleTtlMinutes),
+    });
+  }, [appProxyConfig]);
+
+  const sessionRoutingDirty = useMemo(() => {
+    if (!appProxyConfig) return false;
+    return (
+      sessionRoutingForm.enabled !== appProxyConfig.sessionRoutingEnabled ||
+      sessionRoutingForm.strategy !== appProxyConfig.sessionRoutingStrategy ||
+      Number(sessionRoutingForm.maxSessionsPerProvider || 0) !==
+        appProxyConfig.sessionMaxSessionsPerProvider ||
+      sessionRoutingForm.allowSharedWhenExhausted !==
+        appProxyConfig.sessionAllowSharedWhenExhausted ||
+      Number(sessionRoutingForm.idleTtlMinutes || 0) !==
+        appProxyConfig.sessionIdleTtlMinutes
+    );
+  }, [appProxyConfig, sessionRoutingForm]);
+
+  const selectedSessionRoutingStrategy = useMemo(
+    () =>
+      SESSION_ROUTING_STRATEGY_OPTIONS.find(
+        (option) => option.value === sessionRoutingForm.strategy,
+      ) ?? SESSION_ROUTING_STRATEGY_OPTIONS[0],
+    [sessionRoutingForm.strategy],
+  );
+
+  const handleSaveSessionRoutingConfig = useCallback(async () => {
+    if (!appProxyConfig) return;
+
+    const maxSessions = Number.parseInt(
+      sessionRoutingForm.maxSessionsPerProvider,
+      10,
+    );
+    const idleTtl = Number.parseInt(sessionRoutingForm.idleTtlMinutes, 10);
+
+    if (!Number.isFinite(maxSessions) || maxSessions < 1 || maxSessions > 99) {
+      toast.error(
+        t("proxy.sessionRouting.validation.maxSessions", {
+          defaultValue: "每个提供商最大会话数需为 1-99 的整数",
+        }),
+      );
+      return;
+    }
+
+    if (!Number.isFinite(idleTtl) || idleTtl < 1 || idleTtl > 1440) {
+      toast.error(
+        t("proxy.sessionRouting.validation.idleTtl", {
+          defaultValue: "会话空闲释放时间需为 1-1440 分钟",
+        }),
+      );
+      return;
+    }
+
+    await updateAppProxyConfig.mutateAsync({
+      config: {
+        ...appProxyConfig,
+        sessionRoutingEnabled: sessionRoutingForm.enabled,
+        sessionRoutingStrategy: sessionRoutingForm.strategy,
+        sessionMaxSessionsPerProvider: maxSessions,
+        sessionAllowSharedWhenExhausted:
+          sessionRoutingForm.allowSharedWhenExhausted,
+        sessionIdleTtlMinutes: idleTtl,
+      },
+      successMessage: t("proxy.sessionRouting.configSaved", {
+        defaultValue: "会话路由配置已保存",
+      }),
+    });
+  }, [appProxyConfig, sessionRoutingForm, t, updateAppProxyConfig]);
 
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -1804,6 +1958,9 @@ export function ProviderList({
                 }
                 activeProviderId={activeProviderId}
                 density={density}
+                sessionOccupancyCount={
+                  sessionOccupancyMap.get(provider.id) ?? 0
+                }
                 // OpenClaw: default model
                 isDefaultModel={isProviderDefaultModel(provider.id)}
                 onSetAsDefault={
@@ -1913,7 +2070,7 @@ export function ProviderList({
                   <div className="text-xs">
                     <span className="font-medium">
                       {t("provider.commonConfigApplyAll", {
-                        defaultValue: "应用到全部",
+                        defaultValue: "通用配置",
                       })}
                     </span>
                     <span className="ml-1 text-muted-foreground">
@@ -1941,13 +2098,13 @@ export function ProviderList({
                   }
                   disabled={failoverBulkSwitchDisabled}
                   aria-label={t("failover.bulkToggleAll", {
-                    defaultValue: "全部启用/禁用故障转移",
+                    defaultValue: "启用/禁用故障转移",
                   })}
                 />
                 <div className="flex items-center gap-1 text-xs">
                   <span className="font-medium">
                     {t("failover.bulkToggleAllLabel", {
-                      defaultValue: "全部启用",
+                      defaultValue: "启用",
                     })}
                   </span>
                   <span className="text-muted-foreground">
@@ -1958,6 +2115,40 @@ export function ProviderList({
                   )}
                 </div>
               </div>
+            )}
+
+            {appProxyConfig && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 gap-2 border-border/70 bg-background/80 hover:bg-muted/70 hover:text-foreground dark:hover:bg-muted/50 dark:hover:text-foreground"
+                onClick={() => setIsSessionRoutingDialogOpen(true)}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {t("proxy.sessionRouting.title", {
+                  defaultValue: "会话路由",
+                })}
+                <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                  {t("proxy.sessionRouting.activeSessions", {
+                    defaultValue: "活跃会话",
+                  })}
+                  : {activeSessionCount}
+                </span>
+                <span
+                  className={cn(
+                    "rounded-md px-1.5 py-0.5 text-[11px]",
+                    appProxyConfig.sessionRoutingEnabled
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {t("proxy.sessionRouting.app", { defaultValue: "当前应用" })}:{" "}
+                  {appProxyConfig.sessionRoutingEnabled
+                    ? t("common.enabled", { defaultValue: "开" })
+                    : t("common.disabled", { defaultValue: "关" })}
+                </span>
+              </Button>
             )}
 
             {enableStreamCheck && (
@@ -2065,7 +2256,9 @@ export function ProviderList({
                   }
                 >
                   <DropdownMenuRadioItem value="manual">
-                    {t("provider.sortByManual", { defaultValue: "手动" })}
+                    {t("provider.sortByManual", {
+                      defaultValue: "故障转移优先级",
+                    })}
                   </DropdownMenuRadioItem>
                   <DropdownMenuRadioItem value="name">
                     {t("provider.sortByName", { defaultValue: "名称" })}
@@ -2171,7 +2364,7 @@ export function ProviderList({
         ref={listScrollRef}
         className="flex-1 overflow-y-auto overflow-x-hidden scroll-visible px-1"
       >
-        <div className="space-y-4 pb-1">
+        <div className="space-y-4 pb-4">
           {filteredProviders.length === 0 ? (
             <div className="px-6 py-8 text-sm text-center border border-dashed rounded-lg border-border text-muted-foreground">
               {t("provider.noSearchResults", {
@@ -2183,6 +2376,216 @@ export function ProviderList({
           )}
         </div>
       </div>
+
+      {appProxyConfig && (
+        <Dialog
+          open={isSessionRoutingDialogOpen}
+          onOpenChange={setIsSessionRoutingDialogOpen}
+        >
+          <DialogContent className="sm:max-w-[640px]">
+            <DialogHeader>
+              <DialogTitle>
+                {t("proxy.sessionRouting.title", { defaultValue: "会话路由" })}
+              </DialogTitle>
+              <DialogDescription>
+                {t("proxy.sessionRouting.dialogHint", {
+                  defaultValue:
+                    "按会话维度固定提供商，提升并发下的缓存命中与稳定性。仅在当前应用生效。",
+                })}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="max-h-[70vh] space-y-4 overflow-y-auto px-4 py-1">
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-medium">
+                    {t("proxy.sessionRouting.activeSessions", {
+                      defaultValue: "活跃会话",
+                    })}
+                    : {activeSessionCount}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {t("proxy.sessionRouting.occupiedProviders", {
+                      defaultValue: "占用提供商",
+                    })}
+                    : {occupiedProviderCount}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {t("proxy.sessionRouting.capacityHint", {
+                      defaultValue:
+                        "建议会话上限与提供商数量匹配，避免频繁共享切换。",
+                    })}
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {t("proxy.sessionRouting.app", {
+                        defaultValue: "当前应用开关",
+                      })}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t("proxy.sessionRouting.appHint", {
+                        defaultValue:
+                          "仅控制当前应用（如 Codex/Claude/Gemini）是否启用会话路由。",
+                      })}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={sessionRoutingForm.enabled}
+                    onCheckedChange={(checked) =>
+                      setSessionRoutingForm((current) => ({
+                        ...current,
+                        enabled: checked,
+                      }))
+                    }
+                    disabled={updateAppProxyConfig.isPending}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  {t("proxy.sessionRouting.strategy", {
+                    defaultValue: "分配策略",
+                  })}
+                </Label>
+                <select
+                  value={sessionRoutingForm.strategy}
+                  onChange={(event) =>
+                    setSessionRoutingForm((current) => ({
+                      ...current,
+                      strategy: event.target.value as SessionRoutingStrategy,
+                    }))
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  disabled={updateAppProxyConfig.isPending}
+                >
+                  {SESSION_ROUTING_STRATEGY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {selectedSessionRoutingStrategy.description}
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    {t("proxy.sessionRouting.maxSessions", {
+                      defaultValue: "每个提供商最大会话数",
+                    })}
+                  </Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={99}
+                    step={1}
+                    inputMode="numeric"
+                    value={sessionRoutingForm.maxSessionsPerProvider}
+                    onChange={(event) =>
+                      setSessionRoutingForm((current) => ({
+                        ...current,
+                        maxSessionsPerProvider: event.target.value,
+                      }))
+                    }
+                    className="h-9 text-sm"
+                    disabled={updateAppProxyConfig.isPending}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    {t("proxy.sessionRouting.idleTtl", {
+                      defaultValue: "会话空闲释放时间（分钟）",
+                    })}
+                  </Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    step={1}
+                    inputMode="numeric"
+                    value={sessionRoutingForm.idleTtlMinutes}
+                    onChange={(event) =>
+                      setSessionRoutingForm((current) => ({
+                        ...current,
+                        idleTtlMinutes: event.target.value,
+                      }))
+                    }
+                    className="h-9 text-sm"
+                    disabled={updateAppProxyConfig.isPending}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {t("proxy.sessionRouting.share", {
+                        defaultValue: "资源耗尽时允许共享",
+                      })}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t("proxy.sessionRouting.shareHint", {
+                        defaultValue:
+                          "当所有提供商都达到会话上限时，允许新会话临时复用已占用提供商。",
+                      })}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={sessionRoutingForm.allowSharedWhenExhausted}
+                    onCheckedChange={(checked) =>
+                      setSessionRoutingForm((current) => ({
+                        ...current,
+                        allowSharedWhenExhausted: checked,
+                      }))
+                    }
+                    disabled={updateAppProxyConfig.isPending}
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                {t("proxy.sessionRouting.activeSessions", {
+                  defaultValue: "当前活跃会话",
+                })}
+                : {activeSessionCount}
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsSessionRoutingDialogOpen(false)}
+              >
+                {t("common.close", { defaultValue: "关闭" })}
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSaveSessionRoutingConfig()}
+                disabled={
+                  !sessionRoutingDirty || updateAppProxyConfig.isPending
+                }
+              >
+                {updateAppProxyConfig.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  t("common.save", { defaultValue: "保存" })
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {enableStreamCheck && (
         <FullScreenPanel
@@ -2492,7 +2895,7 @@ export function ProviderList({
               <div className="text-xs text-muted-foreground">
                 <span className="font-medium">
                   {t("provider.commonConfigApplyAll", {
-                    defaultValue: "应用到全部",
+                    defaultValue: "通用配置",
                   })}
                 </span>
                 <span className="ml-1">
@@ -2760,6 +3163,7 @@ interface SortableProviderCardProps {
   isCurrent: boolean;
   appId: AppId;
   density: ProviderDensity;
+  sessionOccupancyCount: number;
   isInConfig: boolean;
   isOmo: boolean;
   isOmoSlim: boolean;
@@ -2800,6 +3204,7 @@ function SortableProviderCard({
   isCurrent,
   appId,
   density,
+  sessionOccupancyCount,
   isInConfig,
   isOmo,
   isOmoSlim,
@@ -2886,6 +3291,7 @@ function SortableProviderCard({
         isInFailoverQueue={isInFailoverQueue}
         onToggleFailover={onToggleFailover}
         activeProviderId={activeProviderId}
+        sessionOccupancyCount={sessionOccupancyCount}
         // OpenClaw: default model
         isDefaultModel={isDefaultModel}
         onSetAsDefault={onSetAsDefault}

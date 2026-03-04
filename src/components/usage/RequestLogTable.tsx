@@ -350,6 +350,9 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                   <TableHead className="whitespace-nowrap">
                     {t("usage.provider")}
                   </TableHead>
+                  <TableHead className="min-w-[180px] whitespace-nowrap">
+                    {t("usage.sessionRouting", "会话路由")}
+                  </TableHead>
                   <TableHead className="min-w-[200px] whitespace-nowrap">
                     {t("usage.billingModel")}
                   </TableHead>
@@ -383,7 +386,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={11}
+                      colSpan={12}
                       className="text-center text-muted-foreground"
                     >
                       {t("usage.noData")}
@@ -401,6 +404,27 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                       </TableCell>
                       <TableCell>
                         {log.providerName || t("usage.unknownProvider")}
+                      </TableCell>
+                      <TableCell className="max-w-[180px]">
+                        <div className="space-y-1">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] ${
+                              log.sessionRoutingActive
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
+                                : "bg-muted text-muted-foreground"
+                            }`}
+                          >
+                            {log.sessionRoutingActive
+                              ? t("usage.sessionRoutingActive", "已启用")
+                              : t("usage.sessionRoutingInactive", "未启用")}
+                          </span>
+                          <div
+                            className="truncate font-mono text-[10px] text-muted-foreground"
+                            title={log.sessionId ?? "-"}
+                          >
+                            {log.sessionId || "-"}
+                          </div>
+                        </div>
                       </TableCell>
                       <TableCell className="font-mono text-xs max-w-[200px]">
                         <div

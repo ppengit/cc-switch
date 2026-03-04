@@ -58,6 +58,7 @@ interface ProviderCardProps {
   isInFailoverQueue?: boolean; // 是否在故障转移队列中
   onToggleFailover?: (enabled: boolean) => void; // 切换故障转移队列
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
+  sessionOccupancyCount?: number;
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
@@ -126,6 +127,7 @@ export function ProviderCard({
   isInFailoverQueue = false,
   onToggleFailover,
   activeProviderId,
+  sessionOccupancyCount = 0,
   // OpenClaw: default model
   isDefaultModel,
   onSetAsDefault,
@@ -150,7 +152,7 @@ export function ProviderCard({
     ? "left-1/2 -translate-x-1/2"
     : "right-0";
   const actionOverlayMotion = isCardView
-    ? "translate-y-2 group-hover:translate-y-0 group-focus-within:translate-y-0"
+    ? "scale-95 group-hover:scale-100 group-focus-within:scale-100"
     : "translate-x-2 group-hover:translate-x-0 group-focus-within:translate-x-0";
   const dragIconSize = isCompact ? "h-3.5 w-3.5" : "h-4 w-4";
   const dragPadding = isCompact ? "p-1" : "p-1.5";
@@ -419,6 +421,18 @@ export function ProviderCard({
                   <FailoverPriorityBadge priority={failoverPriority} />
                 )}
 
+              {sessionOccupancyCount > 0 && (
+                <span
+                  className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  title={t("proxy.sessionRouting.occupiedSessions", {
+                    defaultValue: "当前会话占用: {{count}}",
+                    count: sessionOccupancyCount,
+                  })}
+                >
+                  S:{sessionOccupancyCount}
+                </span>
+              )}
+
               {provider.category === "third_party" &&
                 provider.meta?.isPartner && (
                   <span
@@ -465,7 +479,10 @@ export function ProviderCard({
         </div>
 
         <div
-          className="relative flex items-center ml-auto min-w-0 gap-3"
+          className={cn(
+            "flex items-center ml-auto min-w-0 gap-3",
+            !isCardView && "relative",
+          )}
           style={
             {
               "--actions-width": `${actionsWidth || 320}px`,
@@ -526,7 +543,7 @@ export function ProviderCard({
           <div
             ref={actionsRef}
             className={cn(
-              "absolute top-1/2 -translate-y-1/2 flex items-center opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-all duration-200",
+              "absolute top-1/2 z-20 -translate-y-1/2 flex items-center opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-all duration-200",
               actionOverlayPosition,
               actionOverlayMotion,
               actionGap,

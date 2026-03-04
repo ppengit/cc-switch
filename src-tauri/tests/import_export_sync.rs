@@ -555,6 +555,7 @@ command = "echo"
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -683,6 +684,7 @@ fn import_from_claude_merges_into_config() {
                 gemini: false,
                 opencode: false,
             },
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -1074,3 +1076,4 @@ fn import_sql_accepts_cc_switch_exported_backup() {
         "imported providers should contain test-provider"
     );
 }
+

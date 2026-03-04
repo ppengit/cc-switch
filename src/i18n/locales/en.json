@@ -151,7 +151,7 @@
       }
     },
     "sortTitle": "Sort",
-    "sortByManual": "Manual",
+    "sortByManual": "Failover Priority",
     "sortByName": "Name",
     "sortByCreatedAt": "Added time",
     "sortOrderAsc": "Ascending",

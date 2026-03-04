@@ -123,7 +123,7 @@ impl Database {
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
-            session_routing_strategy TEXT NOT NULL DEFAULT 'least_active',
+            session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
             session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
             session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
@@ -207,6 +207,7 @@ impl Database {
             cache_read_cost_usd TEXT NOT NULL DEFAULT '0', cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
+            session_routing_active INTEGER NOT NULL DEFAULT 0,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
@@ -311,7 +312,7 @@ impl Database {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN session_routing_strategy TEXT NOT NULL DEFAULT 'least_active'",
+            "ALTER TABLE proxy_config ADD COLUMN session_routing_strategy TEXT NOT NULL DEFAULT 'priority'",
             [],
         );
         let _ = conn.execute(
@@ -584,6 +585,7 @@ impl Database {
             cache_read_cost_usd TEXT NOT NULL DEFAULT '0', cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
             total_cost_usd TEXT NOT NULL DEFAULT '0', latency_ms INTEGER NOT NULL, first_token_ms INTEGER,
             duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
+            session_routing_active INTEGER NOT NULL DEFAULT 0,
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
         )", [])?;
@@ -604,6 +606,12 @@ impl Database {
         )?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
         Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "session_routing_active",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         // model_pricing 表
         conn.execute(
@@ -737,7 +745,7 @@ impl Database {
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
-            session_routing_strategy TEXT NOT NULL DEFAULT 'least_active',
+            session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
             session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
             session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,

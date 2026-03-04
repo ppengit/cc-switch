@@ -23,6 +23,7 @@ pub struct RequestLog {
     pub status_code: u16,
     pub error_message: Option<String>,
     pub session_id: Option<String>,
+    pub session_routing_active: bool,
     /// 供应商类型 (claude, claude_auth, codex, gemini, gemini_cli, openrouter)
     pub provider_type: Option<String>,
     /// 是否为流式请求
@@ -77,9 +78,9 @@ impl<'a> UsageLogger<'a> {
                 request_id, provider_id, app_type, model, request_model,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-                latency_ms, first_token_ms, status_code, error_message, session_id,
+                latency_ms, first_token_ms, status_code, error_message, session_id, session_routing_active,
                 provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 log.request_id,
                 log.provider_id,
@@ -100,6 +101,7 @@ impl<'a> UsageLogger<'a> {
                 log.status_code as i64,
                 log.error_message,
                 log.session_id,
+                if log.session_routing_active { 1 } else { 0 },
                 log.provider_type,
                 log.is_streaming as i64,
                 log.cost_multiplier,
@@ -139,6 +141,7 @@ impl<'a> UsageLogger<'a> {
             status_code,
             error_message: Some(error_message),
             session_id: None,
+            session_routing_active: false,
             provider_type: None,
             is_streaming: false,
             cost_multiplier: "1.0".to_string(),
@@ -162,6 +165,7 @@ impl<'a> UsageLogger<'a> {
         latency_ms: u64,
         is_streaming: bool,
         session_id: Option<String>,
+        session_routing_active: bool,
         provider_type: Option<String>,
     ) -> Result<(), AppError> {
         let request_model = model.clone();
@@ -178,6 +182,7 @@ impl<'a> UsageLogger<'a> {
             status_code,
             error_message: Some(error_message),
             session_id,
+            session_routing_active,
             provider_type,
             is_streaming,
             cost_multiplier: "1.0".to_string(),
@@ -298,6 +303,7 @@ impl<'a> UsageLogger<'a> {
         first_token_ms: Option<u64>,
         status_code: u16,
         session_id: Option<String>,
+        session_routing_active: bool,
         provider_type: Option<String>,
         is_streaming: bool,
     ) -> Result<(), AppError> {
@@ -322,6 +328,7 @@ impl<'a> UsageLogger<'a> {
             status_code,
             error_message: None,
             session_id,
+            session_routing_active,
             provider_type,
             is_streaming,
             cost_multiplier: cost_multiplier.to_string(),
@@ -373,6 +380,7 @@ mod tests {
             None,
             200,
             None,
+            false,
             Some("claude".to_string()),
             false,
         )?;

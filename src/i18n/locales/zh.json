@@ -151,7 +151,7 @@
       }
     },
     "sortTitle": "排序",
-    "sortByManual": "手动",
+    "sortByManual": "故障转移优先级",
     "sortByName": "名称",
     "sortByCreatedAt": "加入时间",
     "sortOrderAsc": "正序",

@@ -48,9 +48,22 @@ impl Database {
         session_id: &str,
         idle_ttl_minutes: u32,
     ) -> Result<Option<SessionProviderBinding>, AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let conn = lock_conn!(self.conn);
-        let mut stmt = conn
-            .prepare(
+        let mut stmt = if legacy_session_id.is_some() {
+            conn.prepare(
+                "SELECT b.app_type, b.session_id, b.provider_id, p.name, b.pinned,
+                        b.created_at, b.updated_at, b.last_seen_at
+                 FROM session_provider_bindings b
+                 LEFT JOIN providers p ON p.id = b.provider_id AND p.app_type = b.app_type
+                 WHERE b.app_type = ?1 AND (b.session_id = ?2 OR b.session_id = ?3)
+                 ORDER BY CASE WHEN b.session_id = ?2 THEN 0 ELSE 1 END
+                 LIMIT 1",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?
+        } else {
+            conn.prepare(
                 "SELECT b.app_type, b.session_id, b.provider_id, p.name, b.pinned,
                         b.created_at, b.updated_at, b.last_seen_at
                  FROM session_provider_bindings b
@@ -58,19 +71,26 @@ impl Database {
                  WHERE b.app_type = ?1 AND b.session_id = ?2
                  LIMIT 1",
             )
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .map_err(|e| AppError::Database(e.to_string()))?
+        };
 
-        let mut rows = stmt
-            .query(params![app_type, session_id])
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut rows = if let Some(legacy_id) = legacy_session_id.as_ref() {
+            stmt.query(params![app_type, canonical_session_id, legacy_id])
+                .map_err(|e| AppError::Database(e.to_string()))?
+        } else {
+            stmt.query(params![app_type, canonical_session_id])
+                .map_err(|e| AppError::Database(e.to_string()))?
+        };
 
         if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
             let last_seen_at: i64 = row.get(7).map_err(|e| AppError::Database(e.to_string()))?;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
+            let stored_session_id: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            let display_session_id = normalize_session_id_for_app(app_type, &stored_session_id);
             Ok(Some(SessionProviderBinding {
                 app_type: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
-                session_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
+                session_id: display_session_id,
                 provider_id: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
                 provider_name: row.get(3).ok(),
                 pinned: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
@@ -107,9 +127,11 @@ impl Database {
         let rows = stmt
             .query_map(params![app_type], |row| {
                 let last_seen_at: i64 = row.get(7)?;
+                let raw_session_id: String = row.get(1)?;
+                let normalized_session_id = normalize_session_id_for_app(app_type, &raw_session_id);
                 Ok(SessionProviderBinding {
                     app_type: row.get(0)?,
-                    session_id: row.get(1)?,
+                    session_id: normalized_session_id,
                     provider_id: row.get(2)?,
                     provider_name: row.get(3).ok(),
                     pinned: row.get(4)?,
@@ -136,7 +158,18 @@ impl Database {
         pinned: bool,
         timestamp_ms: i64,
     ) -> Result<(), AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let conn = lock_conn!(self.conn);
+        if let Some(legacy_id) = legacy_session_id.as_ref() {
+            migrate_legacy_binding_id_on_conn(
+                &conn,
+                app_type,
+                legacy_id,
+                canonical_session_id.as_str(),
+                timestamp_ms,
+            )?;
+        }
         conn.execute(
             "INSERT INTO session_provider_bindings
              (app_type, session_id, provider_id, pinned, created_at, updated_at, last_seen_at)
@@ -148,7 +181,7 @@ impl Database {
                last_seen_at = excluded.last_seen_at",
             params![
                 app_type,
-                session_id,
+                canonical_session_id,
                 provider_id,
                 if pinned { 1 } else { 0 },
                 timestamp_ms
@@ -164,14 +197,26 @@ impl Database {
         session_id: &str,
         timestamp_ms: i64,
     ) -> Result<(), AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let conn = lock_conn!(self.conn);
-        conn.execute(
-            "UPDATE session_provider_bindings
-             SET last_seen_at = ?3, updated_at = ?3
-             WHERE app_type = ?1 AND session_id = ?2",
-            params![app_type, session_id, timestamp_ms],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        if let Some(legacy_id) = legacy_session_id.as_ref() {
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET last_seen_at = ?4, updated_at = ?4
+                 WHERE app_type = ?1 AND (session_id = ?2 OR session_id = ?3)",
+                params![app_type, canonical_session_id, legacy_id, timestamp_ms],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET last_seen_at = ?3, updated_at = ?3
+                 WHERE app_type = ?1 AND session_id = ?2",
+                params![app_type, canonical_session_id, timestamp_ms],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -182,14 +227,32 @@ impl Database {
         pinned: bool,
         timestamp_ms: i64,
     ) -> Result<(), AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let conn = lock_conn!(self.conn);
-        conn.execute(
-            "UPDATE session_provider_bindings
-             SET pinned = ?3, updated_at = ?4
-             WHERE app_type = ?1 AND session_id = ?2",
-            params![app_type, session_id, if pinned { 1 } else { 0 }, timestamp_ms],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        if let Some(legacy_id) = legacy_session_id.as_ref() {
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET pinned = ?4, updated_at = ?5
+                 WHERE app_type = ?1 AND (session_id = ?2 OR session_id = ?3)",
+                params![
+                    app_type,
+                    canonical_session_id,
+                    legacy_id,
+                    if pinned { 1 } else { 0 },
+                    timestamp_ms
+                ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET pinned = ?3, updated_at = ?4
+                 WHERE app_type = ?1 AND session_id = ?2",
+                params![app_type, canonical_session_id, if pinned { 1 } else { 0 }, timestamp_ms],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -198,12 +261,23 @@ impl Database {
         app_type: &str,
         session_id: &str,
     ) -> Result<(), AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let conn = lock_conn!(self.conn);
-        conn.execute(
-            "DELETE FROM session_provider_bindings WHERE app_type = ?1 AND session_id = ?2",
-            params![app_type, session_id],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        if let Some(legacy_id) = legacy_session_id.as_ref() {
+            conn.execute(
+                "DELETE FROM session_provider_bindings
+                 WHERE app_type = ?1 AND (session_id = ?2 OR session_id = ?3)",
+                params![app_type, canonical_session_id, legacy_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            conn.execute(
+                "DELETE FROM session_provider_bindings WHERE app_type = ?1 AND session_id = ?2",
+                params![app_type, canonical_session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -334,18 +408,33 @@ impl Database {
             return Ok(None);
         }
 
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
         let conn = lock_conn!(self.conn);
 
-        conn.execute(
-            "DELETE FROM session_provider_bindings
-             WHERE app_type = ?1 AND last_seen_at < ?2",
-            params![app_type, cutoff],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let existing = query_binding_on_conn(&conn, app_type, canonical_session_id.as_str())?;
+        if let Some(binding) = existing.as_ref() {
+            if binding.session_id != canonical_session_id {
+                migrate_legacy_binding_id_on_conn(
+                    &conn,
+                    app_type,
+                    binding.session_id.as_str(),
+                    canonical_session_id.as_str(),
+                    now_ms,
+                )?;
+            }
+        } else if let Some(legacy_id) = legacy_session_id.as_ref() {
+            migrate_legacy_binding_id_on_conn(
+                &conn,
+                app_type,
+                legacy_id,
+                canonical_session_id.as_str(),
+                now_ms,
+            )?;
+        }
 
-        let existing = query_binding_on_conn(&conn, app_type, session_id)?;
         if let Some(binding) = existing.clone() {
             let in_candidates = candidate_provider_ids
                 .iter()
@@ -356,13 +445,13 @@ impl Database {
                     "UPDATE session_provider_bindings
                      SET last_seen_at = ?3, updated_at = ?3
                      WHERE app_type = ?1 AND session_id = ?2",
-                    params![app_type, session_id, now_ms],
+                    params![app_type, canonical_session_id, now_ms],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;
 
                 return Ok(Some(SessionProviderBinding {
                     app_type: app_type.to_string(),
-                    session_id: session_id.to_string(),
+                    session_id: canonical_session_id.clone(),
                     provider_id: binding.provider_id,
                     provider_name: None,
                     pinned: binding.pinned,
@@ -378,13 +467,13 @@ impl Database {
                     "UPDATE session_provider_bindings
                      SET last_seen_at = ?3, updated_at = ?3
                      WHERE app_type = ?1 AND session_id = ?2",
-                    params![app_type, session_id, now_ms],
+                    params![app_type, canonical_session_id, now_ms],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;
 
                 return Ok(Some(SessionProviderBinding {
                     app_type: app_type.to_string(),
-                    session_id: session_id.to_string(),
+                    session_id: canonical_session_id.clone(),
                     provider_id: binding.provider_id,
                     provider_name: None,
                     pinned: true,
@@ -483,7 +572,7 @@ impl Database {
                last_seen_at = excluded.last_seen_at",
             params![
                 app_type,
-                session_id,
+                canonical_session_id,
                 chosen_provider_id,
                 if pinned { 1 } else { 0 },
                 created_at,
@@ -494,7 +583,7 @@ impl Database {
 
         Ok(Some(SessionProviderBinding {
             app_type: app_type.to_string(),
-            session_id: session_id.to_string(),
+            session_id: canonical_session_id,
             provider_id: chosen_provider_id,
             provider_name: None,
             pinned,
@@ -510,27 +599,41 @@ impl Database {
         app_type: &str,
         session_id: &str,
         actual_provider_id: &str,
-        idle_ttl_minutes: u32,
+        _idle_ttl_minutes: u32,
     ) -> Result<(), AppError> {
+        let (canonical_session_id, legacy_session_id) =
+            build_session_id_candidates(app_type, session_id);
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
         let conn = lock_conn!(self.conn);
 
-        conn.execute(
-            "DELETE FROM session_provider_bindings
-             WHERE app_type = ?1 AND last_seen_at < ?2",
-            params![app_type, cutoff],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let existing = query_binding_on_conn(&conn, app_type, canonical_session_id.as_str())?;
+        if let Some(binding) = existing.as_ref() {
+            if binding.session_id != canonical_session_id {
+                migrate_legacy_binding_id_on_conn(
+                    &conn,
+                    app_type,
+                    binding.session_id.as_str(),
+                    canonical_session_id.as_str(),
+                    now_ms,
+                )?;
+            }
+        } else if let Some(legacy_id) = legacy_session_id.as_ref() {
+            migrate_legacy_binding_id_on_conn(
+                &conn,
+                app_type,
+                legacy_id,
+                canonical_session_id.as_str(),
+                now_ms,
+            )?;
+        }
 
-        let existing = query_binding_on_conn(&conn, app_type, session_id)?;
         if let Some(binding) = existing {
             if binding.pinned && binding.provider_id != actual_provider_id {
                 conn.execute(
                     "UPDATE session_provider_bindings
                      SET last_seen_at = ?3, updated_at = ?3
                      WHERE app_type = ?1 AND session_id = ?2",
-                    params![app_type, session_id, now_ms],
+                    params![app_type, canonical_session_id, now_ms],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;
                 return Ok(());
@@ -540,7 +643,7 @@ impl Database {
                 "UPDATE session_provider_bindings
                  SET provider_id = ?3, updated_at = ?4, last_seen_at = ?4
                  WHERE app_type = ?1 AND session_id = ?2",
-                params![app_type, session_id, actual_provider_id, now_ms],
+                params![app_type, canonical_session_id, actual_provider_id, now_ms],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
             return Ok(());
@@ -550,7 +653,7 @@ impl Database {
             "INSERT INTO session_provider_bindings
              (app_type, session_id, provider_id, pinned, created_at, updated_at, last_seen_at)
              VALUES (?1, ?2, ?3, 0, ?4, ?4, ?4)",
-            params![app_type, session_id, actual_provider_id, now_ms],
+            params![app_type, canonical_session_id, actual_provider_id, now_ms],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -560,6 +663,7 @@ impl Database {
 
 #[derive(Debug, Clone)]
 struct BindingRow {
+    session_id: String,
     provider_id: String,
     pinned: bool,
     created_at: i64,
@@ -570,26 +674,112 @@ fn query_binding_on_conn(
     app_type: &str,
     session_id: &str,
 ) -> Result<Option<BindingRow>, AppError> {
-    let result = conn.query_row(
-        "SELECT provider_id, pinned, created_at
-         FROM session_provider_bindings
-         WHERE app_type = ?1 AND session_id = ?2
-         LIMIT 1",
-        params![app_type, session_id],
-        |row| {
-            Ok(BindingRow {
-                provider_id: row.get(0)?,
-                pinned: row.get::<_, i32>(1)? != 0,
-                created_at: row.get(2)?,
-            })
-        },
-    );
+    let (canonical_session_id, legacy_session_id) = build_session_id_candidates(app_type, session_id);
+    let result = if let Some(legacy_id) = legacy_session_id.as_ref() {
+        conn.query_row(
+            "SELECT session_id, provider_id, pinned, created_at
+             FROM session_provider_bindings
+             WHERE app_type = ?1 AND (session_id = ?2 OR session_id = ?3)
+             ORDER BY CASE WHEN session_id = ?2 THEN 0 ELSE 1 END
+             LIMIT 1",
+            params![app_type, canonical_session_id, legacy_id],
+            |row| {
+                Ok(BindingRow {
+                    session_id: row.get(0)?,
+                    provider_id: row.get(1)?,
+                    pinned: row.get::<_, i32>(2)? != 0,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+    } else {
+        conn.query_row(
+            "SELECT session_id, provider_id, pinned, created_at
+             FROM session_provider_bindings
+             WHERE app_type = ?1 AND session_id = ?2
+             LIMIT 1",
+            params![app_type, canonical_session_id],
+            |row| {
+                Ok(BindingRow {
+                    session_id: row.get(0)?,
+                    provider_id: row.get(1)?,
+                    pinned: row.get::<_, i32>(2)? != 0,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+    };
 
     match result {
         Ok(row) => Ok(Some(row)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(AppError::Database(e.to_string())),
     }
+}
+
+fn normalize_session_id_for_app(app_type: &str, session_id: &str) -> String {
+    if app_type.eq_ignore_ascii_case("codex") {
+        if let Some(stripped) = session_id.strip_prefix("codex_") {
+            if !stripped.is_empty() {
+                return stripped.to_string();
+            }
+        }
+    }
+    session_id.to_string()
+}
+
+fn build_session_id_candidates(app_type: &str, session_id: &str) -> (String, Option<String>) {
+    let canonical = normalize_session_id_for_app(app_type, session_id);
+    if app_type.eq_ignore_ascii_case("codex") {
+        let legacy = format!("codex_{canonical}");
+        if legacy != canonical {
+            return (canonical, Some(legacy));
+        }
+    }
+    (canonical, None)
+}
+
+fn migrate_legacy_binding_id_on_conn(
+    conn: &Connection,
+    app_type: &str,
+    from_session_id: &str,
+    to_session_id: &str,
+    timestamp_ms: i64,
+) -> Result<(), AppError> {
+    if from_session_id == to_session_id {
+        return Ok(());
+    }
+
+    let target_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM session_provider_bindings
+                WHERE app_type = ?1 AND session_id = ?2
+            )",
+            params![app_type, to_session_id],
+            |row| row.get::<_, i32>(0),
+        )
+        .map(|v| v != 0)
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    if target_exists {
+        conn.execute(
+            "DELETE FROM session_provider_bindings
+             WHERE app_type = ?1 AND session_id = ?2",
+            params![app_type, from_session_id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        return Ok(());
+    }
+
+    conn.execute(
+        "UPDATE session_provider_bindings
+         SET session_id = ?3, updated_at = ?4
+         WHERE app_type = ?1 AND session_id = ?2",
+        params![app_type, from_session_id, to_session_id, timestamp_ms],
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(())
 }
 
 fn get_and_increment_session_round_robin_cursor_on_conn(
@@ -619,9 +809,9 @@ fn get_and_increment_session_round_robin_cursor_on_conn(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::database::Database;
     use crate::provider::Provider;
+    use rusqlite::params;
 
     fn build_provider(id: &str, name: &str) -> Provider {
         Provider::with_id(
@@ -702,5 +892,186 @@ mod tests {
 
         assert!(first.is_some());
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn get_session_provider_binding_supports_legacy_codex_prefix() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let conn = db.conn.lock().expect("lock db connection");
+            conn.execute(
+                "INSERT INTO session_provider_bindings
+                 (app_type, session_id, provider_id, pinned, created_at, updated_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?4, ?4)",
+                params!["codex", "codex_test-session", "a", now_ms],
+            )
+            .expect("insert legacy binding");
+        }
+
+        let binding = db
+            .get_session_provider_binding("codex", "test-session", 30)
+            .expect("query binding")
+            .expect("binding exists");
+
+        assert_eq!(binding.session_id, "test-session");
+        assert_eq!(binding.provider_id, "a");
+    }
+
+    #[test]
+    fn upsert_session_provider_binding_migrates_legacy_codex_prefix() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let conn = db.conn.lock().expect("lock db connection");
+            conn.execute(
+                "INSERT INTO session_provider_bindings
+                 (app_type, session_id, provider_id, pinned, created_at, updated_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?4, ?4)",
+                params!["codex", "codex_test-session", "a", now_ms],
+            )
+            .expect("insert legacy binding");
+        }
+
+        db.upsert_session_provider_binding("codex", "test-session", "b", false, now_ms + 1000)
+            .expect("upsert canonical binding");
+
+        let bindings = db
+            .list_session_provider_bindings("codex", 30)
+            .expect("list bindings");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].session_id, "test-session");
+        assert_eq!(bindings[0].provider_id, "b");
+    }
+
+    #[test]
+    fn assign_session_provider_prefers_existing_binding_even_after_idle_expired() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let stale_ms = now_ms - 120 * 60 * 1000;
+        {
+            let conn = db.conn.lock().expect("lock db connection");
+            conn.execute(
+                "INSERT INTO session_provider_bindings
+                 (app_type, session_id, provider_id, pinned, created_at, updated_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?4, ?4)",
+                params!["codex", "sticky-session", "a", stale_ms],
+            )
+            .expect("insert stale binding");
+        }
+
+        let counts_before = db
+            .get_active_session_counts_map("codex", 30)
+            .expect("counts before");
+        assert_eq!(counts_before.get("a").copied().unwrap_or(0), 0);
+
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let binding = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "sticky-session",
+                &candidates,
+                "least_active",
+                1,
+                false,
+                30,
+            )
+            .expect("assign sticky")
+            .expect("binding exists");
+
+        assert_eq!(binding.provider_id, "a");
+
+        let counts_after = db
+            .get_active_session_counts_map("codex", 30)
+            .expect("counts after");
+        assert_eq!(counts_after.get("a").copied().unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn assign_session_provider_reassigns_when_existing_not_in_candidates() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "switch-session", "a", false, now_ms)
+            .expect("seed binding");
+
+        let candidates = vec!["b".to_string()];
+        let binding = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "switch-session",
+                &candidates,
+                "priority",
+                1,
+                false,
+                30,
+            )
+            .expect("assign switched")
+            .expect("binding exists");
+
+        assert_eq!(binding.provider_id, "b");
+    }
+
+    #[test]
+    fn sync_session_provider_after_success_updates_unpinned_binding() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "sync-session", "a", false, now_ms)
+            .expect("seed binding");
+
+        db.sync_session_provider_after_success("codex", "sync-session", "b", 30)
+            .expect("sync after success");
+
+        let binding = db
+            .get_session_provider_binding("codex", "sync-session", 30)
+            .expect("query binding")
+            .expect("binding exists");
+        assert_eq!(binding.provider_id, "b");
+        assert!(!binding.pinned);
+    }
+
+    #[test]
+    fn sync_session_provider_after_success_keeps_pinned_binding_provider() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "pinned-session", "a", true, now_ms)
+            .expect("seed pinned binding");
+
+        db.sync_session_provider_after_success("codex", "pinned-session", "b", 30)
+            .expect("sync after success");
+
+        let binding = db
+            .get_session_provider_binding("codex", "pinned-session", 30)
+            .expect("query binding")
+            .expect("binding exists");
+        assert_eq!(binding.provider_id, "a");
+        assert!(binding.pinned);
     }
 }

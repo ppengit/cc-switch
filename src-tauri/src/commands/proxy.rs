@@ -177,10 +177,6 @@ pub async fn list_session_provider_bindings(
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
     state
         .db
-        .cleanup_expired_session_provider_bindings(&app_type, ttl)
-        .map_err(|e| e.to_string())?;
-    state
-        .db
         .list_session_provider_bindings(&app_type, ttl)
         .map_err(|e| e.to_string())
 }
@@ -193,10 +189,6 @@ pub async fn get_session_provider_binding(
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Option<SessionProviderBinding>, String> {
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
-    state
-        .db
-        .cleanup_expired_session_provider_bindings(&app_type, ttl)
-        .map_err(|e| e.to_string())?;
     state
         .db
         .get_session_provider_binding(&app_type, &session_id, ttl)
@@ -275,10 +267,6 @@ pub async fn get_provider_session_occupancy(
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Vec<ProviderSessionOccupancy>, String> {
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
-    state
-        .db
-        .cleanup_expired_session_provider_bindings(&app_type, ttl)
-        .map_err(|e| e.to_string())?;
     state
         .db
         .get_provider_session_occupancy(&app_type, ttl)

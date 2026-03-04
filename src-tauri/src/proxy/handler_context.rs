@@ -120,13 +120,8 @@ impl RequestContext {
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let session_routing_master_enabled = state
-            .db
-            .get_session_routing_master_enabled()
-            .unwrap_or(false);
-        let session_routing_active = session_routing_master_enabled
-            && app_config.session_routing_enabled
-            && session_result.client_provided;
+        let session_routing_active =
+            app_config.session_routing_enabled && session_result.client_provided;
 
         let providers = if session_routing_active {
             Self::select_providers_with_session_routing(

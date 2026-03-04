@@ -1,14 +1,25 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, Settings } from "@/types";
+import type { AppProxyConfig } from "@/types/proxy";
 import {
   addProvider,
   deleteProvider,
+  getAppProxyConfig,
   getCurrentProviderId,
+  getProviderSessionOccupancy,
   getProviders,
+  getSessionProviderBinding,
+  getSessionRoutingMasterEnabledState,
   listProviders,
+  listSessionProviderBindings,
+  removeSessionProviderBinding,
   resetProviderState,
+  setAppProxyConfig,
   setCurrentProviderId,
+  setSessionProviderBindingPin,
+  setSessionRoutingMasterEnabledState,
+  switchSessionProviderBinding,
   updateProvider,
   updateSortOrder,
   getSettings,
@@ -257,6 +268,79 @@ export const handlers = [
   ),
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
+  http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getAppProxyConfig(appType));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/update_proxy_config_for_app`, async ({ request }) => {
+    const { config } = await withJson<{ config: AppProxyConfig }>(request);
+    if (config?.appType) {
+      setAppProxyConfig(config.appType as AppId, config);
+    }
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_session_routing_master_enabled`, () =>
+    success(getSessionRoutingMasterEnabledState()),
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/set_session_routing_master_enabled`,
+    async ({ request }) => {
+      const { enabled } = await withJson<{ enabled: boolean }>(request);
+      setSessionRoutingMasterEnabledState(enabled === true);
+      return success(true);
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/list_session_provider_bindings`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(listSessionProviderBindings(appType));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+    }>(request);
+    return success(getSessionProviderBinding(appType, sessionId));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/switch_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId, providerId, pin } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+      providerId: string;
+      pin?: boolean;
+    }>(request);
+    return success(switchSessionProviderBinding(appType, sessionId, providerId, pin));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/set_session_provider_binding_pin`, async ({ request }) => {
+    const { appType, sessionId, pinned } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+      pinned: boolean;
+    }>(request);
+    setSessionProviderBindingPin(appType, sessionId, pinned);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/remove_session_provider_binding`, async ({ request }) => {
+    const { appType, sessionId } = await withJson<{
+      appType: AppId;
+      sessionId: string;
+    }>(request);
+    removeSessionProviderBinding(appType, sessionId);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_provider_session_occupancy`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getProviderSessionOccupancy(appType));
+  }),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_status`, () =>
     success({
       running: false,
