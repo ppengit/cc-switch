@@ -47,7 +47,6 @@ import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
@@ -94,6 +93,7 @@ interface WebDavSyncStatusUpdatedPayload {
 
 const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
+const DISPLAY_VERSION = "v3.11.1-PJ";
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
 
 const STORAGE_KEY = "cc-switch-last-app";
@@ -631,9 +631,12 @@ function App() {
     await addProvider(duplicatedProvider);
   };
 
-  const handleOpenTerminal = async (provider: Provider) => {
+  const handleOpenTerminal = async (
+    provider: Provider,
+    options?: { cwd?: string },
+  ) => {
     try {
-      await providersApi.openTerminal(provider.id, activeApp);
+      await providersApi.openTerminal(provider.id, activeApp, options);
       toast.success(
         t("provider.terminalOpened", {
           defaultValue: "终端已打开",
@@ -641,6 +644,25 @@ function App() {
       );
     } catch (error) {
       console.error("[App] Failed to open terminal", error);
+      const errorMessage = extractErrorMessage(error);
+      toast.error(
+        t("provider.terminalOpenFailed", {
+          defaultValue: "打开终端失败",
+        }) + (errorMessage ? `: ${errorMessage}` : ""),
+      );
+    }
+  };
+
+  const handleOpenAppTerminal = async (options?: { cwd?: string }) => {
+    try {
+      await providersApi.openAppTerminal(activeApp, options);
+      toast.success(
+        t("provider.terminalOpened", {
+          defaultValue: "终端已打开",
+        }),
+      );
+    } catch (error) {
+      console.error("[App] Failed to open app terminal", error);
       const errorMessage = extractErrorMessage(error);
       toast.error(
         t("provider.terminalOpenFailed", {
@@ -740,62 +762,59 @@ function App() {
           return <AgentsDefaultsPanel />;
         default:
           return (
-            <div className="px-6 flex flex-col h-[calc(100vh-8rem)] overflow-hidden">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeApp}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <ProviderList
-                      providers={providers}
-                      currentProviderId={currentProviderId}
-                      appId={activeApp}
-                      isLoading={isLoading}
-                      isProxyRunning={isProxyRunning}
-                      isProxyTakeover={
-                        isProxyRunning && isCurrentAppTakeoverActive
-                      }
-                      activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
-                      onDelete={(provider) =>
-                        setConfirmAction({ provider, action: "delete" })
-                      }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" || activeApp === "openclaw"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
-                      onDuplicate={handleDuplicateProvider}
-                      onConfigureUsage={setUsageProvider}
-                      onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
-                      onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw" ? setAsDefaultModel : undefined
-                      }
-                    />
-                  </motion.div>
-                </AnimatePresence>
-              </div>
+            <div className="px-6 flex flex-col h-full min-h-0 overflow-hidden">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeApp}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex-1 min-h-0"
+                >
+                  <ProviderList
+                    providers={providers}
+                    currentProviderId={currentProviderId}
+                    appId={activeApp}
+                    isLoading={isLoading}
+                    isProxyRunning={isProxyRunning}
+                    isProxyTakeover={isProxyRunning && isCurrentAppTakeoverActive}
+                    activeProviderId={activeProviderId}
+                    onSwitch={switchProvider}
+                    onEdit={(provider) => {
+                      setEditingProvider(provider);
+                    }}
+                    onDelete={(provider) =>
+                      setConfirmAction({ provider, action: "delete" })
+                    }
+                    onRemoveFromConfig={
+                      activeApp === "opencode" || activeApp === "openclaw"
+                        ? (provider) =>
+                            setConfirmAction({ provider, action: "remove" })
+                        : undefined
+                    }
+                    onDisableOmo={
+                      activeApp === "opencode" ? handleDisableOmo : undefined
+                    }
+                    onDisableOmoSlim={
+                      activeApp === "opencode"
+                        ? handleDisableOmoSlim
+                        : undefined
+                    }
+                    onDuplicate={handleDuplicateProvider}
+                    onConfigureUsage={setUsageProvider}
+                    onOpenWebsite={handleOpenWebsite}
+                    onOpenTerminal={
+                      activeApp === "claude" ? handleOpenTerminal : undefined
+                    }
+                    onOpenAppTerminal={handleOpenAppTerminal}
+                    onCreate={() => setIsAddOpen(true)}
+                    onSetAsDefault={
+                      activeApp === "openclaw" ? setAsDefaultModel : undefined
+                    }
+                  />
+                </motion.div>
+              </AnimatePresence>
             </div>
           );
       }
@@ -819,7 +838,7 @@ function App() {
 
   return (
     <div
-      className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30"
+      className="flex flex-col h-screen overflow-hidden bg-slate-50 text-foreground dark:bg-background selection:bg-primary/30"
       style={{ overflowX: "hidden", paddingTop: CONTENT_TOP_OFFSET }}
     >
       <div
@@ -916,13 +935,13 @@ function App() {
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
-                      "text-xl font-semibold transition-colors",
+                      "flex flex-col leading-tight transition-colors",
                       isProxyRunning && isCurrentAppTakeoverActive
                         ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
                         : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
                     )}
                   >
-                    CC Switch
+                    <span className="text-xl font-semibold">CC Switch</span>
                   </a>
                 </div>
                 <Button
@@ -937,12 +956,6 @@ function App() {
                 >
                   <Settings className="w-4 h-4" />
                 </Button>
-                <UpdateBadge
-                  onClick={() => {
-                    setSettingsDefaultTab("about");
-                    setCurrentView("settings");
-                  }}
-                />
                 {isCurrentAppTakeoverActive && (
                   <Button
                     variant="ghost"
@@ -964,6 +977,9 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
+            <div className="text-xs text-muted-foreground whitespace-nowrap pr-2">
+              CC Switch {DISPLAY_VERSION}
+            </div>
             {currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&

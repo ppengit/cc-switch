@@ -95,6 +95,15 @@ export function useImportExport(
         return;
       }
 
+      if (result.settingsPath) {
+        toast.info(`设置文件已导入：\n${result.settingsPath}`, {
+          closeButton: true,
+        });
+      }
+      if (result.warning) {
+        toast.warning(result.warning, { closeButton: true });
+      }
+
       setBackupId(result.backupId ?? null);
       // 导入成功后立即触发外部刷新（与 live 同步结果解耦）
       // - 避免 sync 失败时 UI 不刷新
@@ -158,13 +167,23 @@ export function useImportExport(
       const result = await settingsApi.exportConfigToFile(destination);
       if (result.success) {
         const displayPath = result.filePath ?? destination;
+        const extraLines: string[] = [];
+        if (result.settingsPath) {
+          extraLines.push(`设置文件：${result.settingsPath}`);
+        }
         toast.success(
           t("settings.configExported", {
-            defaultValue: "配置已导出",
-          }) + `\n${displayPath}`,
+            defaultValue: "配置已导出到：",
+          }) +
+            `\n${displayPath}` +
+            (extraLines.length ? `\n${extraLines.join("\n")}` : ""),
           { closeButton: true },
         );
+        if (result.warning) {
+          toast.warning(result.warning, { closeButton: true });
+        }
       } else {
+
         toast.error(
           t("settings.exportFailed", {
             defaultValue: "导出配置失败",

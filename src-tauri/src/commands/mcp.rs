@@ -1,13 +1,14 @@
 #![allow(non_snake_case)]
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use tauri::State;
 
-use crate::app_config::AppType;
+use crate::app_config::{AppType, McpApps};
 use crate::claude_mcp;
+use crate::gemini_mcp;
 use crate::services::McpService;
 use crate::store::AppState;
 
@@ -110,6 +111,7 @@ pub async fn upsert_mcp_server_in_config(
             name,
             server: spec,
             apps,
+            configured_apps: None,
             description: None,
             homepage: None,
             docs: None,
@@ -164,7 +166,59 @@ use crate::app_config::McpServer;
 pub async fn get_mcp_servers(
     state: State<'_, AppState>,
 ) -> Result<IndexMap<String, McpServer>, String> {
-    McpService::get_all_servers(&state).map_err(|e| e.to_string())
+    let mut servers = McpService::get_all_servers(&state).map_err(|e| e.to_string())?;
+
+    let claude_ids = claude_mcp::read_mcp_servers_map()
+        .map(|map| map.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    let codex_ids = read_codex_mcp_server_ids();
+    let gemini_ids = gemini_mcp::read_mcp_servers_map()
+        .map(|map| map.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    let opencode_ids = crate::opencode_config::get_mcp_servers()
+        .map(|map| map.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+
+    for server in servers.values_mut() {
+        server.configured_apps = Some(McpApps {
+            claude: claude_ids.contains(&server.id),
+            codex: codex_ids.contains(&server.id),
+            gemini: gemini_ids.contains(&server.id),
+            opencode: opencode_ids.contains(&server.id),
+        });
+    }
+
+    Ok(servers)
+}
+
+fn read_codex_mcp_server_ids() -> HashSet<String> {
+    let text = match crate::codex_config::read_and_validate_codex_config_text() {
+        Ok(t) => t,
+        Err(_) => return HashSet::new(),
+    };
+
+    if text.trim().is_empty() {
+        return HashSet::new();
+    }
+
+    let root: toml::Table = match toml::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return HashSet::new(),
+    };
+
+    let mut ids = HashSet::new();
+
+    if let Some(mcp_val) = root.get("mcp").and_then(|v| v.as_table()) {
+        if let Some(servers_val) = mcp_val.get("servers").and_then(|v| v.as_table()) {
+            ids.extend(servers_val.keys().cloned());
+        }
+    }
+
+    if let Some(servers_val) = root.get("mcp_servers").and_then(|v| v.as_table()) {
+        ids.extend(servers_val.keys().cloned());
+    }
+
+    ids
 }
 
 /// 添加或更新 MCP 服务器

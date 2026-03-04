@@ -484,6 +484,8 @@ export function ProviderForm({
   } = useGeminiCommonConfig({
     envValue: geminiEnv,
     onEnvChange: handleGeminiEnvChange,
+    configValue: geminiConfig,
+    onConfigChange: handleGeminiConfigChange,
     envStringToObj,
     envObjToString,
     initialData: appId === "gemini" ? initialData : undefined,

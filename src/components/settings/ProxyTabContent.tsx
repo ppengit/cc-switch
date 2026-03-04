@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Server, Activity, Zap, Globe } from "lucide-react";
+import { Server, Activity, FlaskConical, Zap, Globe } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
@@ -15,6 +15,7 @@ import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPa
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
+import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import type { SettingsFormState } from "@/hooks/useSettings";
@@ -215,6 +216,29 @@ export function ProxyTabContent({
                 </TabsContent>
               </Tabs>
             </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* Model Test Config */}
+        <AccordionItem
+          value="modelTest"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <FlaskConical className="h-5 w-5 text-emerald-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("settings.advanced.modelTest.title")}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("settings.advanced.modelTest.description")}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+            <ModelTestConfigPanel />
           </AccordionContent>
         </AccordionItem>
 

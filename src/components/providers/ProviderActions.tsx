@@ -3,19 +3,30 @@ import {
   Check,
   Copy,
   Edit,
-  // Loader2, // Hidden: stream check feature disabled
+  Loader2,
   Minus,
   Play,
   Plus,
   Terminal,
-  // TestTube2, // Hidden: stream check feature disabled
+  TestTube2,
   Trash2,
   Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { AppId } from "@/lib/api";
+import type { TerminalTargetMode } from "@/types";
 
 interface ProviderActionsProps {
   appId?: AppId;
@@ -32,7 +43,9 @@ interface ProviderActionsProps {
   onDelete: () => void;
   onRemoveFromConfig?: () => void;
   onDisableOmo?: () => void;
-  onOpenTerminal?: () => void;
+  onOpenTerminalWithMode?: (mode: TerminalTargetMode, path?: string) => void;
+  recentTerminalTargets?: string[];
+  onClearRecentTerminals?: () => void;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
@@ -45,18 +58,20 @@ export function ProviderActions({
   appId,
   isCurrent,
   isInConfig = false,
-  isTesting: _isTesting, // Hidden: stream check feature disabled
+  isTesting,
   isProxyTakeover = false,
   isOmo = false,
   onSwitch,
   onEdit,
   onDuplicate,
-  onTest: _onTest, // Hidden: stream check feature disabled
+  onTest,
   onConfigureUsage,
   onDelete,
   onRemoveFromConfig,
   onDisableOmo,
-  onOpenTerminal,
+  onOpenTerminalWithMode,
+  recentTerminalTargets,
+  onClearRecentTerminals,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
   onToggleFailover,
@@ -66,6 +81,7 @@ export function ProviderActions({
 }: ProviderActionsProps) {
   const { t } = useTranslation();
   const iconButtonClass = "h-8 w-8 p-1";
+  const hasRecentTargets = (recentTerminalTargets?.length ?? 0) > 0;
 
   // 累加模式应用（OpenCode 非 OMO 和 OpenClaw）
   const isAdditiveMode =
@@ -246,7 +262,6 @@ export function ProviderActions({
           <Copy className="h-4 w-4" />
         </Button>
 
-        {/* Hidden: stream check feature disabled
         {onTest && (
           <Button
             size="icon"
@@ -263,7 +278,6 @@ export function ProviderActions({
             )}
           </Button>
         )}
-        */}
 
         <Button
           size="icon"
@@ -275,19 +289,65 @@ export function ProviderActions({
           <BarChart3 className="h-4 w-4" />
         </Button>
 
-        {onOpenTerminal && (
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onOpenTerminal}
-            title={t("provider.openTerminal", "打开终端")}
-            className={cn(
-              iconButtonClass,
-              "hover:text-emerald-600 dark:hover:text-emerald-400",
-            )}
-          >
-            <Terminal className="h-4 w-4" />
-          </Button>
+        {onOpenTerminalWithMode && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                title={t("provider.openTerminal", "打开终端")}
+                className={cn(
+                  iconButtonClass,
+                  "hover:text-emerald-600 dark:hover:text-emerald-400",
+                )}
+              >
+                <Terminal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[220px]">
+              <DropdownMenuItem onClick={() => onOpenTerminalWithMode("manual")}>
+                {t("provider.terminalTargetManual", {
+                  defaultValue: "手动选择",
+                })}
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  {t("provider.terminalTargetRecentOpened", {
+                    defaultValue: "最近打开",
+                  })}
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-[260px]">
+                  {hasRecentTargets ? (
+                    recentTerminalTargets?.map((path) => (
+                      <DropdownMenuItem
+                        key={path}
+                        title={path}
+                        onClick={() => onOpenTerminalWithMode("recent", path)}
+                      >
+                        <span className="truncate">{path}</span>
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled>
+                      {t("provider.terminalTargetRecentEmpty", {
+                        defaultValue: "空",
+                      })}
+                    </DropdownMenuItem>
+                  )}
+                  {hasRecentTargets && onClearRecentTerminals && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={onClearRecentTerminals}>
+                        {t("provider.terminalTargetRecentClear", {
+                          defaultValue: "清除最近打开",
+                        })}
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
         <Button

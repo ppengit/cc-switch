@@ -62,7 +62,9 @@
     "saveFailed": "保存に失敗しました: {{error}}",
     "hideAttribution": "AI署名を非表示",
     "alwaysThinking": "拡張思考",
-    "enableTeammates": "Teammates モード"
+    "enableTeammates": "Teammates モード",
+    "skipAllPermissions": "すべての権限をスキップ",
+    "fastMode": "高速モード"
   },
   "header": {
     "viewOnGithub": "GitHub で見る",
@@ -117,6 +119,10 @@
     "configureUsage": "利用状況を設定",
     "officialPartner": "公式パートナー",
     "openTerminal": "ターミナルを開く",
+    "terminalTargetManual": "手動選択",
+    "terminalTargetRecentOpened": "最近開いた",
+    "terminalTargetRecentEmpty": "空",
+    "terminalTargetRecentClear": "最近開いた項目をクリア",
     "terminalOpened": "ターミナルを開きました",
     "terminalOpenFailed": "ターミナルを開けませんでした",
     "name": "プロバイダー名",
@@ -143,7 +149,13 @@
         "oauthHint": "Google 公式は OAuth 個人認証を使用するため API Key は不要です。初回利用時にブラウザが開きます。",
         "apiKeyPlaceholder": "Gemini API Key を入力"
       }
-    }
+    },
+    "sortTitle": "????",
+    "sortByManual": "??",
+    "sortByName": "??",
+    "sortByCreatedAt": "????",
+    "sortOrderAsc": "??",
+    "sortOrderDesc": "??"
   },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
@@ -504,6 +516,12 @@
     "oneClickInstall": "ワンクリックインストール",
     "oneClickInstallHint": "Claude Code / Codex / Gemini CLI / OpenCode をインストール",
     "localEnvCheck": "ローカル環境チェック",
+    "toolLocalVersion": "ローカル",
+    "toolLatestVersion": "公式",
+    "updateTool": "更新",
+    "updatingTool": "更新中",
+    "toolUpdateStarted": "更新を開始しました。ターミナル出力を確認してください",
+    "toolUpdateFailed": "更新に失敗しました。ログを確認してください",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -904,7 +922,8 @@
     "costBreakdown": "コスト明細",
     "performance": "パフォーマンス",
     "latency": "レイテンシー",
-    "errorMessage": "エラーメッセージ"
+    "errorMessage": "エラーメッセージ",
+    "allFields": "全フィールド"
   },
   "usageScript": {
     "title": "利用状況を設定",

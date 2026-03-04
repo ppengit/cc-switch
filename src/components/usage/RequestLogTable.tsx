@@ -21,6 +21,7 @@ import { useRequestLogs, usageKeys } from "@/lib/query/usage";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LogFilters } from "@/types/usage";
 import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
+import { RequestDetailPanel } from "./RequestDetailPanel";
 import {
   fmtInt,
   fmtUsd,
@@ -55,6 +56,9 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const [page, setPage] = useState(0);
   const pageSize = 20;
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(
+    null,
+  );
 
   const { data: result, isLoading } = useRequestLogs({
     filters: appliedFilters,
@@ -385,7 +389,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                   </TableRow>
                 ) : (
                   logs.map((log) => (
-                    <TableRow key={log.requestId}>
+                    <TableRow
+                      key={log.requestId}
+                      className="cursor-pointer"
+                      onDoubleClick={() => setSelectedRequestId(log.requestId)}
+                    >
                       <TableCell>
                         {new Date(log.createdAt * 1000).toLocaleString(locale)}
                       </TableCell>
@@ -579,6 +587,13 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
             </div>
           )}
         </>
+      )}
+
+      {selectedRequestId && (
+        <RequestDetailPanel
+          requestId={selectedRequestId}
+          onClose={() => setSelectedRequestId(null)}
+        />
       )}
     </div>
   );

@@ -62,7 +62,9 @@
     "saveFailed": "Save failed: {{error}}",
     "hideAttribution": "Hide AI Attribution",
     "alwaysThinking": "Extended Thinking",
-    "enableTeammates": "Teammates Mode"
+    "enableTeammates": "Teammates Mode",
+    "skipAllPermissions": "Skip All Permissions",
+    "fastMode": "Fast Mode"
   },
   "header": {
     "viewOnGithub": "View on GitHub",
@@ -117,6 +119,10 @@
     "configureUsage": "Configure usage query",
     "officialPartner": "Official Partner",
     "openTerminal": "Open Terminal",
+    "terminalTargetManual": "Manual select",
+    "terminalTargetRecentOpened": "Recent opened",
+    "terminalTargetRecentEmpty": "Empty",
+    "terminalTargetRecentClear": "Clear recent",
     "terminalOpened": "Terminal opened",
     "terminalOpenFailed": "Failed to open terminal",
     "name": "Provider Name",
@@ -143,7 +149,13 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    }
+    },
+    "sortTitle": "Sort",
+    "sortByManual": "Manual",
+    "sortByName": "Name",
+    "sortByCreatedAt": "Added time",
+    "sortOrderAsc": "Ascending",
+    "sortOrderDesc": "Descending"
   },
   "notifications": {
     "providerAdded": "Provider added",
@@ -504,6 +516,12 @@
     "oneClickInstall": "One-click Install",
     "oneClickInstallHint": "Install Claude Code / Codex / Gemini CLI / OpenCode",
     "localEnvCheck": "Local environment check",
+    "toolLocalVersion": "Local",
+    "toolLatestVersion": "Latest",
+    "updateTool": "Update",
+    "updatingTool": "Updating",
+    "toolUpdateStarted": "Update started, check terminal output",
+    "toolUpdateFailed": "Update failed, check logs",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -904,7 +922,8 @@
     "costBreakdown": "Cost Breakdown",
     "performance": "Performance",
     "latency": "Latency",
-    "errorMessage": "Error Message"
+    "errorMessage": "Error Message",
+    "allFields": "All Fields"
   },
   "usageScript": {
     "title": "Configure Usage Query",

@@ -30,7 +30,7 @@ mod usage_script;
 
 pub use app_config::{AppType, McpApps, McpServer, MultiAppConfig};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
-pub use commands::open_provider_terminal;
+pub use commands::{open_app_terminal, open_provider_terminal};
 pub use commands::*;
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
 pub use database::Database;
@@ -253,6 +253,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Ensure a larger default window size on startup (do not shrink).
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(size) = window.inner_size() {
+                    let target_width: u32 = 1280;
+                    let target_height: u32 = 800;
+                    if size.width < target_width || size.height < target_height {
+                        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                            width: target_width as f64,
+                            height: target_height as f64,
+                        }));
+                    }
+                }
+            }
+
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
@@ -382,6 +396,11 @@ pub fn run() {
 
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
+
+            // 启动时同步已启用的 MCP 服务器到各应用配置（避免数据库已启用但配置缺失）
+            if let Err(e) = McpService::sync_all_enabled(&app_state) {
+                log::warn!("启动时同步 MCP 服务器失败: {e}");
+            }
 
             // ============================================================
             // 按表独立判断的导入逻辑（各类数据独立检查，互不影响）
@@ -672,8 +691,10 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id("main")
-                .on_tray_icon_event(|_tray, event| match event {
-                    // 左键点击已通过 show_menu_on_left_click(true) 打开菜单，这里不再额外处理
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::DoubleClick { .. } => {
+                        tray::show_main_window(tray.app_handle());
+                    }
                     TrayIconEvent::Click { .. } => {}
                     _ => log::debug!("unhandled event {event:?}"),
                 })
@@ -681,7 +702,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
@@ -1027,8 +1048,10 @@ pub fn run() {
             commands::get_session_messages,
             commands::launch_session_terminal,
             commands::get_tool_versions,
+            commands::update_tool,
             // Provider terminal
             commands::open_provider_terminal,
+            commands::open_app_terminal,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,

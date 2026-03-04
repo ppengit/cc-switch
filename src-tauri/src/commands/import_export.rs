@@ -1,7 +1,8 @@
 #![allow(non_snake_case)]
 
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
@@ -12,7 +13,61 @@ use crate::database::backup::BackupEntry;
 use crate::database::Database;
 use crate::error::AppError;
 use crate::services::provider::ProviderService;
+use crate::settings;
 use crate::store::AppState;
+
+fn build_settings_sidecar_path(sql_path: &Path) -> PathBuf {
+    let stem = sql_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("cc-switch-export");
+    let file_name = format!("{stem}.settings.json");
+    match sql_path.parent() {
+        Some(parent) => parent.join(file_name),
+        None => PathBuf::from(file_name),
+    }
+}
+
+fn export_settings_sidecar(sql_path: &Path) -> Result<Option<PathBuf>, AppError> {
+    let Some(settings_path) = settings::settings_file_path() else {
+        return Ok(None);
+    };
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+
+    let sidecar_path = build_settings_sidecar_path(sql_path);
+    if let Some(parent) = sidecar_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
+    }
+    fs::copy(&settings_path, &sidecar_path).map_err(|e| AppError::io(&sidecar_path, e))?;
+    Ok(Some(sidecar_path))
+}
+
+fn import_settings_sidecar(sql_path: &Path) -> Result<Option<PathBuf>, AppError> {
+    let sidecar_path = build_settings_sidecar_path(sql_path);
+    if !sidecar_path.exists() {
+        return Ok(None);
+    }
+
+    if let Some(settings_path) = settings::settings_file_path() {
+        if settings_path.exists() {
+            let safety_path = settings_path.with_extension("json.bak");
+            if let Err(err) = fs::copy(&settings_path, &safety_path) {
+                log::warn!(
+                    "Failed to create settings safety backup {}: {}",
+                    safety_path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    let settings_data = settings::load_settings_from_path(&sidecar_path)?;
+    settings::update_settings(settings_data)?;
+    Ok(Some(sidecar_path))
+}
 
 // ─── File import/export ──────────────────────────────────────
 
@@ -26,11 +81,33 @@ pub async fn export_config_to_file(
     tauri::async_runtime::spawn_blocking(move || {
         let target_path = PathBuf::from(&filePath);
         db.export_sql(&target_path)?;
-        Ok::<_, AppError>(json!({
+        let mut warning: Option<String> = None;
+        let settings_path = match export_settings_sidecar(&target_path) {
+            Ok(path) => path,
+            Err(err) => {
+                warning = Some(format!("导出 settings 失败: {err}"));
+                None
+            }
+        };
+
+        let mut payload = json!({
             "success": true,
             "message": "SQL exported successfully",
             "filePath": filePath
-        }))
+        });
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(path) = settings_path {
+                obj.insert(
+                    "settingsPath".to_string(),
+                    Value::String(path.to_string_lossy().to_string()),
+                );
+            }
+            if let Some(msg) = warning {
+                obj.insert("warning".to_string(), Value::String(msg));
+            }
+        }
+
+        Ok::<_, AppError>(payload)
     })
     .await
     .map_err(|e| format!("导出配置失败: {e}"))?
@@ -48,11 +125,39 @@ pub async fn import_config_from_file(
     tauri::async_runtime::spawn_blocking(move || {
         let path_buf = PathBuf::from(&filePath);
         let backup_id = db.import_sql(&path_buf)?;
-        let warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
-        if let Some(msg) = warning.as_ref() {
+        let mut warnings: Vec<String> = Vec::new();
+
+        let settings_path = match import_settings_sidecar(&path_buf) {
+            Ok(path) => path,
+            Err(err) => {
+                warnings.push(format!("导入 settings 失败: {err}"));
+                None
+            }
+        };
+
+        let sync_warning = post_sync_warning_from_result(Ok(run_post_import_sync(db_for_sync)));
+        if let Some(msg) = sync_warning.as_ref() {
             log::warn!("[Import] post-import sync warning: {msg}");
+            warnings.push(msg.clone());
         }
-        Ok::<_, AppError>(success_payload_with_warning(backup_id, warning))
+
+        let warning = if warnings.is_empty() {
+            None
+        } else {
+            Some(warnings.join("；"))
+        };
+
+        let mut payload = success_payload_with_warning(backup_id, warning);
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(path) = settings_path {
+                obj.insert(
+                    "settingsPath".to_string(),
+                    Value::String(path.to_string_lossy().to_string()),
+                );
+            }
+        }
+
+        Ok::<_, AppError>(payload)
     })
     .await
     .map_err(|e| format!("导入配置失败: {e}"))?

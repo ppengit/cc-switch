@@ -244,6 +244,10 @@ export interface Settings {
   currentProviderCodex?: string;
   // 当前 Gemini 供应商 ID（优先于数据库 is_current）
   currentProviderGemini?: string;
+  // 当前 OpenCode 供应商 ID（优先于数据库 is_current）
+  currentProviderOpencode?: string;
+  // 当前 OpenClaw 供应商 ID（优先于数据库 is_current）
+  currentProviderOpenclaw?: string;
 
   // ===== Skill 同步设置 =====
   // Skill 同步方式：auto（默认，优先 symlink）、symlink、copy
@@ -264,7 +268,34 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
+
+  // ===== 终端快捷方式设置 =====
+  terminalTargets?: TerminalTargetMap;
+  currentSessionByApp?: Record<string, string>;
+
+  // ===== 提供商列表排序 =====
+  providerSort?: ProviderSortMap;
 }
+
+export type TerminalTargetMode = "manual" | "recent";
+
+export interface TerminalTargetPreference {
+  mode?: TerminalTargetMode;
+  lastCwd?: string;
+  recentCwds?: string[];
+}
+
+export type TerminalTargetMap = Record<string, TerminalTargetPreference>;
+
+export type ProviderSortBy = "manual" | "name" | "createdAt";
+export type SortOrder = "asc" | "desc";
+
+export interface ProviderSortPreference {
+  by: ProviderSortBy;
+  order: SortOrder;
+}
+
+export type ProviderSortMap = Record<string, ProviderSortPreference>;
 
 export interface SessionMeta {
   providerId: string;
@@ -315,6 +346,7 @@ export interface McpServer {
   name: string;
   server: McpServerSpec;
   apps: McpApps; // v3.7.0: 标记应用到哪些客户端
+  configuredApps?: McpApps; // live config state (from actual config files)
   description?: string;
   tags?: string[];
   homepage?: string;

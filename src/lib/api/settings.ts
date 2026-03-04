@@ -6,6 +6,8 @@ export interface ConfigTransferResult {
   success: boolean;
   message: string;
   filePath?: string;
+  settingsPath?: string;
+  warning?: string;
   backupId?: string;
 }
 
@@ -186,6 +188,17 @@ export const settingsApi = {
     }>
   > {
     return await invoke("get_tool_versions", { tools, wslShellByTool });
+  },
+
+  async updateTool(
+    tool: string,
+    options?: { envType?: string; wslDistro?: string },
+  ): Promise<boolean> {
+    return await invoke("update_tool", {
+      tool,
+      envType: options?.envType,
+      wslDistro: options?.wslDistro,
+    });
   },
 
   async getRectifierConfig(): Promise<RectifierConfig> {

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Download,
   Copy,
-  ExternalLink,
   Info,
   Loader2,
   RefreshCw,
@@ -22,8 +20,6 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
 import { settingsApi } from "@/lib/api";
-import { useUpdate } from "@/contexts/UpdateContext";
-import { relaunchApp } from "@/lib/updater";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
@@ -94,18 +90,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
   const [isLoadingVersion, setIsLoadingVersion] = useState(true);
-  const [isDownloading, setIsDownloading] = useState(false);
   const [toolVersions, setToolVersions] = useState<ToolVersion[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(true);
-
-  const {
-    hasUpdate,
-    updateInfo,
-    updateHandle,
-    checkUpdate,
-    resetDismiss,
-    isChecking,
-  } = useUpdate();
+  const [updatingTools, setUpdatingTools] = useState<Record<string, boolean>>(
+    {},
+  );
 
   const [wslShellByTool, setWslShellByTool] = useState<
     Record<string, WslShellPreference>
@@ -171,6 +160,36 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     }
   }, [wslShellByTool]);
 
+  const handleUpdateTool = useCallback(
+    async (tool: ToolVersion) => {
+      const toolName = tool.name;
+      setUpdatingTools((prev) => ({ ...prev, [toolName]: true }));
+      try {
+        await settingsApi.updateTool(toolName, {
+          envType: tool.env_type,
+          wslDistro: tool.wsl_distro ?? undefined,
+        });
+        toast.success(
+          t("settings.toolUpdateStarted", {
+            defaultValue: "已开始更新，请查看终端输出",
+          }),
+          { closeButton: true },
+        );
+        await refreshToolVersions([toolName as ToolName], wslShellByTool);
+      } catch (error) {
+        console.error("[AboutSection] Failed to update tool", error);
+        toast.error(
+          t("settings.toolUpdateFailed", {
+            defaultValue: "更新失败，请查看日志",
+          }),
+        );
+      } finally {
+        setUpdatingTools((prev) => ({ ...prev, [toolName]: false }));
+      }
+    },
+    [refreshToolVersions, t, wslShellByTool],
+  );
+
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
     const wslShell = value === "auto" ? null : value;
     const nextPref: WslShellPreference = {
@@ -200,7 +219,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       try {
         const [appVersion] = await Promise.all([
           getVersion(),
-          ...(isWindows() ? [] : [loadAllToolVersions()]),
+          loadAllToolVersions(),
         ]);
 
         if (active) {
@@ -227,77 +246,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     // refreshes are handled by refreshToolVersions in the shell/flag handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ... (handlers like handleOpenReleaseNotes, handleCheckUpdate) ...
-
-  const handleOpenReleaseNotes = useCallback(async () => {
-    try {
-      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
-      const displayVersion = targetVersion.startsWith("v")
-        ? targetVersion
-        : targetVersion
-          ? `v${targetVersion}`
-          : "";
-
-      if (!displayVersion) {
-        await settingsApi.openExternal(
-          "https://github.com/farion1231/cc-switch/releases",
-        );
-        return;
-      }
-
-      await settingsApi.openExternal(
-        `https://github.com/farion1231/cc-switch/releases/tag/${displayVersion}`,
-      );
-    } catch (error) {
-      console.error("[AboutSection] Failed to open release notes", error);
-      toast.error(t("settings.openReleaseNotesFailed"));
-    }
-  }, [t, updateInfo?.availableVersion, version]);
-
-  const handleCheckUpdate = useCallback(async () => {
-    if (hasUpdate && updateHandle) {
-      if (isPortable) {
-        try {
-          await settingsApi.checkUpdates();
-        } catch (error) {
-          console.error("[AboutSection] Portable update failed", error);
-        }
-        return;
-      }
-
-      setIsDownloading(true);
-      try {
-        resetDismiss();
-        await updateHandle.downloadAndInstall();
-        await relaunchApp();
-      } catch (error) {
-        console.error("[AboutSection] Update failed", error);
-        toast.error(t("settings.updateFailed"));
-        try {
-          await settingsApi.checkUpdates();
-        } catch (fallbackError) {
-          console.error(
-            "[AboutSection] Failed to open fallback updater",
-            fallbackError,
-          );
-        }
-      } finally {
-        setIsDownloading(false);
-      }
-      return;
-    }
-
-    try {
-      const available = await checkUpdate();
-      if (!available) {
-        toast.success(t("settings.upToDate"), { closeButton: true });
-      }
-    } catch (error) {
-      console.error("[AboutSection] Check update failed", error);
-      toast.error(t("settings.checkUpdateFailed"));
-    }
-  }, [checkUpdate, hasUpdate, isPortable, resetDismiss, t, updateHandle]);
 
   const handleCopyInstallCommands = useCallback(async () => {
     try {
@@ -359,175 +307,117 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleOpenReleaseNotes}
-              className="h-8 gap-1.5 text-xs"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              {t("settings.releaseNotes")}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleCheckUpdate}
-              disabled={isChecking || isDownloading}
-              className="h-8 gap-1.5 text-xs"
-            >
-              {isDownloading ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("settings.updating")}
-                </>
-              ) : hasUpdate ? (
-                <>
-                  <Download className="h-3.5 w-3.5" />
-                  {t("settings.updateTo", {
-                    version: updateInfo?.availableVersion ?? "",
-                  })}
-                </>
-              ) : isChecking ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  {t("settings.checking")}
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  {t("settings.checkForUpdates")}
-                </>
-              )}
-            </Button>
-          </div>
+          <div className="flex items-center gap-2" />
         </div>
-
-        {hasUpdate && updateInfo && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            className="rounded-lg bg-primary/10 border border-primary/20 px-4 py-3 text-sm"
-          >
-            <p className="font-medium text-primary mb-1">
-              {t("settings.updateAvailable", {
-                version: updateInfo.availableVersion,
-              })}
-            </p>
-            {updateInfo.notes && (
-              <p className="text-muted-foreground line-clamp-3 leading-relaxed">
-                {updateInfo.notes}
-              </p>
-            )}
-          </motion.div>
-        )}
       </motion.div>
 
-      {!isWindows() && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-sm font-medium">
-              {t("settings.localEnvCheck")}
-            </h3>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 text-xs"
-              onClick={() => loadAllToolVersions()}
-              disabled={isLoadingTools}
-            >
-              <RefreshCw
-                className={
-                  isLoadingTools ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
-                }
-              />
-              {isLoadingTools ? t("common.refreshing") : t("common.refresh")}
-            </Button>
-          </div>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between px-1">
+          <h3 className="text-sm font-medium">
+            {t("settings.localEnvCheck")}
+          </h3>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => loadAllToolVersions()}
+            disabled={isLoadingTools}
+          >
+            <RefreshCw
+              className={
+                isLoadingTools ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
+              }
+            />
+            {isLoadingTools ? t("common.refreshing") : t("common.refresh")}
+          </Button>
+        </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 px-1">
-            {TOOL_NAMES.map((toolName, index) => {
-              const tool = toolVersions.find((item) => item.name === toolName);
-              // Special case for OpenCode (capital C), others use capitalize
-              const displayName =
-                toolName === "opencode"
-                  ? "OpenCode"
-                  : toolName.charAt(0).toUpperCase() + toolName.slice(1);
-              const title = tool?.version || tool?.error || t("common.unknown");
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 px-1">
+          {TOOL_NAMES.map((toolName, index) => {
+            const tool = toolVersions.find((item) => item.name === toolName);
+            // Special case for OpenCode (capital C), others use capitalize
+            const displayName =
+              toolName === "opencode"
+                ? "OpenCode"
+                : toolName.charAt(0).toUpperCase() + toolName.slice(1);
+            const title =
+              tool?.version ||
+              tool?.latest_version ||
+              tool?.error ||
+              t("common.unknown");
+            const localVersion = tool?.version || t("common.unknown");
+            const latestVersion = tool?.latest_version || t("common.unknown");
+            const isUpdating = updatingTools[toolName] ?? false;
+            const canUpdate =
+              !isUpdating && !isLoadingTools && !loadingTools[toolName];
 
-              return (
-                <motion.div
-                  key={toolName}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: 0.15 + index * 0.05 }}
-                  whileHover={{ scale: 1.02 }}
-                  className="flex flex-col gap-2 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Terminal className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm font-medium">{displayName}</span>
-                      {/* Environment Badge */}
-                      {tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] && (
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
-                        >
-                          {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
-                        </span>
-                      )}
-                      {/* WSL Shell Selector */}
-                      {tool?.env_type === "wsl" && (
-                        <Select
-                          value={wslShellByTool[toolName]?.wslShell || "auto"}
-                          onValueChange={(v) =>
-                            handleToolShellChange(toolName, v)
-                          }
-                          disabled={isLoadingTools || loadingTools[toolName]}
-                        >
-                          <SelectTrigger className="h-6 w-[70px] text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">
-                              {t("common.auto")}
+            return (
+              <motion.div
+                key={toolName}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, delay: 0.15 + index * 0.05 }}
+                whileHover={{ scale: 1.02 }}
+                className="flex flex-col gap-2 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">{displayName}</span>
+                    {/* Environment Badge */}
+                    {tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] && (
+                      <span
+                        className={`text-[9px] px-1.5 py-0.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
+                      >
+                        {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
+                      </span>
+                    )}
+                    {/* WSL Shell Selector */}
+                    {tool?.env_type === "wsl" && (
+                      <Select
+                        value={wslShellByTool[toolName]?.wslShell || "auto"}
+                        onValueChange={(v) =>
+                          handleToolShellChange(toolName, v)
+                        }
+                        disabled={isLoadingTools || loadingTools[toolName]}
+                      >
+                        <SelectTrigger className="h-6 w-[70px] text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">{t("common.auto")}</SelectItem>
+                          {WSL_SHELL_OPTIONS.map((shell) => (
+                            <SelectItem key={shell} value={shell}>
+                              {shell}
                             </SelectItem>
-                            {WSL_SHELL_OPTIONS.map((shell) => (
-                              <SelectItem key={shell} value={shell}>
-                                {shell}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                      {/* WSL Shell Flag Selector */}
-                      {tool?.env_type === "wsl" && (
-                        <Select
-                          value={
-                            wslShellByTool[toolName]?.wslShellFlag || "auto"
-                          }
-                          onValueChange={(v) =>
-                            handleToolShellFlagChange(toolName, v)
-                          }
-                          disabled={isLoadingTools || loadingTools[toolName]}
-                        >
-                          <SelectTrigger className="h-6 w-[70px] text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">
-                              {t("common.auto")}
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {/* WSL Shell Flag Selector */}
+                    {tool?.env_type === "wsl" && (
+                      <Select
+                        value={wslShellByTool[toolName]?.wslShellFlag || "auto"}
+                        onValueChange={(v) =>
+                          handleToolShellFlagChange(toolName, v)
+                        }
+                        disabled={isLoadingTools || loadingTools[toolName]}
+                      >
+                        <SelectTrigger className="h-6 w-[70px] text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">{t("common.auto")}</SelectItem>
+                          {WSL_SHELL_FLAG_OPTIONS.map((flag) => (
+                            <SelectItem key={flag} value={flag}>
+                              {flag}
                             </SelectItem>
-                            {WSL_SHELL_FLAG_OPTIONS.map((flag) => (
-                              <SelectItem key={flag} value={flag}>
-                                {flag}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </div>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
                     {isLoadingTools || loadingTools[toolName] ? (
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     ) : tool?.version ? (
@@ -542,23 +432,50 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     ) : (
                       <AlertCircle className="h-4 w-4 text-yellow-500" />
                     )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => tool && handleUpdateTool(tool)}
+                      disabled={!tool || !canUpdate}
+                    >
+                      {isUpdating
+                        ? t("settings.updatingTool", {
+                            defaultValue: "更新中",
+                          })
+                        : t("settings.updateTool", {
+                            defaultValue: "更新",
+                          })}
+                    </Button>
                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                  <div className="truncate" title={title}>
+                    {t("settings.toolLocalVersion", {
+                      defaultValue: "本地",
+                    })}
+                    : <span className="font-mono">{localVersion}</span>
+                  </div>
+                  <div className="truncate" title={title}>
+                    {t("settings.toolLatestVersion", {
+                      defaultValue: "官方",
+                    })}
+                    : <span className="font-mono">{latestVersion}</span>
+                  </div>
+                </div>
+                {tool?.error && !tool?.version && (
                   <div
-                    className="text-xs font-mono text-muted-foreground truncate"
-                    title={title}
+                    className="text-xs text-amber-600 truncate"
+                    title={tool.error}
                   >
-                    {isLoadingTools
-                      ? t("common.loading")
-                      : tool?.version
-                        ? tool.version
-                        : tool?.error || t("common.notInstalled")}
+                    {tool.error}
                   </div>
-                </motion.div>
-              );
-            })}
-          </div>
+                )}
+              </motion.div>
+            );
+          })}
         </div>
-      )}
+      </div>
 
       {!isWindows() && (
         <motion.div

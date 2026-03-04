@@ -47,6 +47,7 @@ impl Database {
                             gemini: enabled_gemini,
                             opencode: enabled_opencode,
                         },
+                        configured_apps: None,
                         description,
                         homepage,
                         docs,

@@ -203,6 +203,20 @@ impl Database {
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
 
+        if let Some(settings_path) = crate::settings::settings_file_path() {
+            if settings_path.exists() {
+                let settings_backup_path =
+                    backup_dir.join(format!("{backup_id}.settings.json"));
+                if let Err(err) = fs::copy(&settings_path, &settings_backup_path) {
+                    log::warn!(
+                        "Failed to backup settings file to {}: {}",
+                        settings_backup_path.display(),
+                        err
+                    );
+                }
+            }
+        }
+
         Self::cleanup_db_backups(&backup_dir)?;
         Ok(Some(backup_path))
     }
@@ -233,8 +247,20 @@ impl Database {
         sorted.sort_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok());
 
         for entry in sorted.into_iter().take(remove_count) {
-            if let Err(err) = fs::remove_file(entry.path()) {
-                log::warn!("删除旧数据库备份失败 {}: {}", entry.path().display(), err);
+            let path = entry.path();
+            if let Err(err) = fs::remove_file(&path) {
+                log::warn!("删除旧数据库备份失败 {}: {}", path.display(), err);
+            } else if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let sidecar = dir.join(format!("{stem}.settings.json"));
+                if sidecar.exists() {
+                    if let Err(err) = fs::remove_file(&sidecar) {
+                        log::warn!(
+                            "删除旧数据库备份 settings 失败 {}: {}",
+                            sidecar.display(),
+                            err
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -465,6 +491,48 @@ impl Database {
         self.apply_schema_migrations()?;
         self.ensure_model_pricing_seeded()?;
 
+        if let Some(settings_path) = crate::settings::settings_file_path() {
+            let backup_stem = Path::new(filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            if !backup_stem.is_empty() {
+                let settings_backup_path =
+                    backup_dir.join(format!("{backup_stem}.settings.json"));
+                if settings_backup_path.exists() {
+                    if settings_path.exists() {
+                        let safety_path = settings_path.with_extension("json.bak");
+                        if let Err(err) = fs::copy(&settings_path, &safety_path) {
+                            log::warn!(
+                                "Failed to create settings safety backup {}: {}",
+                                safety_path.display(),
+                                err
+                            );
+                        }
+                    }
+
+                    match crate::settings::load_settings_from_path(&settings_backup_path) {
+                        Ok(settings) => {
+                            if let Err(err) = crate::settings::update_settings(settings) {
+                                log::warn!(
+                                    "Failed to restore settings from backup {}: {}",
+                                    settings_backup_path.display(),
+                                    err
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "Failed to parse settings backup {}: {}",
+                                settings_backup_path.display(),
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         log::info!("Database restored from backup: {filename}, safety backup: {safety_id}");
         Ok(safety_id)
     }
@@ -528,6 +596,29 @@ impl Database {
         }
 
         fs::rename(&old_path, &new_path).map_err(|e| AppError::io(&old_path, e))?;
+        let old_stem = Path::new(old_filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let new_stem = Path::new(&new_filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if !old_stem.is_empty() && !new_stem.is_empty() {
+            let old_settings = backup_dir.join(format!("{old_stem}.settings.json"));
+            if old_settings.exists() {
+                let new_settings = backup_dir.join(format!("{new_stem}.settings.json"));
+                if let Err(err) = fs::rename(&old_settings, &new_settings) {
+                    log::warn!(
+                        "Failed to rename settings backup {} -> {}: {}",
+                        old_settings.display(),
+                        new_settings.display(),
+                        err
+                    );
+                }
+            }
+        }
+
         log::info!("Renamed backup: {old_filename} -> {new_filename}");
         Ok(new_filename)
     }
@@ -553,6 +644,22 @@ impl Database {
         }
 
         fs::remove_file(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
+        if let Some(stem) = Path::new(filename).file_stem().and_then(|s| s.to_str()) {
+            if !stem.is_empty() {
+                let settings_path =
+                    get_app_config_dir().join("backups").join(format!("{stem}.settings.json"));
+                if settings_path.exists() {
+                    if let Err(err) = fs::remove_file(&settings_path) {
+                        log::warn!(
+                            "Failed to delete settings backup {}: {}",
+                            settings_path.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+
         log::info!("Deleted backup: {filename}");
         Ok(())
     }

@@ -79,12 +79,17 @@ export function CommonConfigEditor({
         teammates:
           config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
           config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
+        skipAllPermissions:
+          config?.permissions?.defaultMode === "bypassPermissions",
+        fastMode: config?.fastMode === true,
       };
     } catch {
       return {
         hideAttribution: false,
         alwaysThinking: false,
         teammates: false,
+        skipAllPermissions: false,
+        fastMode: false,
       };
     }
   }, [localValue]);
@@ -118,6 +123,26 @@ export function CommonConfigEditor({
               if (Object.keys(config.env).length === 0) delete config.env;
             }
             break;
+          case "skipAllPermissions":
+            if (!config.permissions) config.permissions = {};
+            if (checked) {
+              config.permissions.defaultMode = "bypassPermissions";
+              delete config.permissions.disableBypassPermissionsMode;
+            } else {
+              if (config.permissions.defaultMode === "bypassPermissions") {
+                delete config.permissions.defaultMode;
+              }
+            }
+            if (Object.keys(config.permissions).length === 0)
+              delete config.permissions;
+            break;
+          case "fastMode":
+            if (checked) {
+              config.fastMode = true;
+            } else {
+              delete config.fastMode;
+            }
+            break;
         }
 
         handleLocalChange(JSON.stringify(config, null, 2));
@@ -126,6 +151,90 @@ export function CommonConfigEditor({
       }
     },
     [localValue, handleLocalChange],
+  );
+
+  const snippetToggleStates = useMemo(() => {
+    try {
+      const config = JSON.parse(commonConfigSnippet || "{}");
+      return {
+        hideAttribution:
+          config?.attribution?.commit === "" && config?.attribution?.pr === "",
+        alwaysThinking: config?.alwaysThinkingEnabled === true,
+        teammates:
+          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
+          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
+        skipAllPermissions:
+          config?.permissions?.defaultMode === "bypassPermissions",
+        fastMode: config?.fastMode === true,
+      };
+    } catch {
+      return {
+        hideAttribution: false,
+        alwaysThinking: false,
+        teammates: false,
+        skipAllPermissions: false,
+        fastMode: false,
+      };
+    }
+  }, [commonConfigSnippet]);
+
+  const handleSnippetToggle = useCallback(
+    (toggleKey: string, checked: boolean) => {
+      try {
+        const config = JSON.parse(commonConfigSnippet || "{}");
+
+        switch (toggleKey) {
+          case "hideAttribution":
+            if (checked) {
+              config.attribution = { commit: "", pr: "" };
+            } else {
+              delete config.attribution;
+            }
+            break;
+          case "alwaysThinking":
+            if (checked) {
+              config.alwaysThinkingEnabled = true;
+            } else {
+              delete config.alwaysThinkingEnabled;
+            }
+            break;
+          case "teammates":
+            if (!config.env) config.env = {};
+            if (checked) {
+              config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
+            } else {
+              delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+              if (Object.keys(config.env).length === 0) delete config.env;
+            }
+            break;
+          case "skipAllPermissions":
+            if (!config.permissions) config.permissions = {};
+            if (checked) {
+              config.permissions.defaultMode = "bypassPermissions";
+              delete config.permissions.disableBypassPermissionsMode;
+            } else {
+              if (config.permissions.defaultMode === "bypassPermissions") {
+                delete config.permissions.defaultMode;
+              }
+            }
+            if (Object.keys(config.permissions).length === 0)
+              delete config.permissions;
+            break;
+          case "fastMode":
+            if (checked) {
+              config.fastMode = true;
+            } else {
+              delete config.fastMode;
+            }
+            break;
+        }
+
+        onCommonConfigSnippetChange(JSON.stringify(config, null, 2));
+      } catch {
+        // invalid JSON
+      }
+    },
+    [commonConfigSnippet, onCommonConfigSnippetChange],
   );
 
   return (
@@ -196,6 +305,34 @@ export function CommonConfigEditor({
             />
             <span>{t("claudeConfig.enableTeammates")}</span>
           </label>
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={toggleStates.skipAllPermissions}
+              onChange={(e) =>
+                handleToggle("skipAllPermissions", e.target.checked)
+              }
+              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+            />
+            <span>
+              {t("claudeConfig.skipAllPermissions", {
+                defaultValue: "跳过所有权限",
+              })}
+            </span>
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={toggleStates.fastMode}
+              onChange={(e) => handleToggle("fastMode", e.target.checked)}
+              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+            />
+            <span>
+              {t("claudeConfig.fastMode", {
+                defaultValue: "Fast 模式",
+              })}
+            </span>
+          </label>
         </div>
         <JsonEditor
           value={localValue}
@@ -255,6 +392,71 @@ export function CommonConfigEditor({
               defaultValue: "通用配置片段将合并到所有启用它的供应商配置中",
             })}
           </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={snippetToggleStates.hideAttribution}
+                onChange={(e) =>
+                  handleSnippetToggle("hideAttribution", e.target.checked)
+                }
+                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+              />
+              <span>{t("claudeConfig.hideAttribution")}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={snippetToggleStates.alwaysThinking}
+                onChange={(e) =>
+                  handleSnippetToggle("alwaysThinking", e.target.checked)
+                }
+                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+              />
+              <span>{t("claudeConfig.alwaysThinking")}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={snippetToggleStates.teammates}
+                onChange={(e) =>
+                  handleSnippetToggle("teammates", e.target.checked)
+                }
+                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+              />
+              <span>{t("claudeConfig.enableTeammates")}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={snippetToggleStates.skipAllPermissions}
+                onChange={(e) =>
+                  handleSnippetToggle("skipAllPermissions", e.target.checked)
+                }
+                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+              />
+              <span>
+                {t("claudeConfig.skipAllPermissions", {
+                  defaultValue: "跳过所有权限",
+                })}
+              </span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={snippetToggleStates.fastMode}
+                onChange={(e) =>
+                  handleSnippetToggle("fastMode", e.target.checked)
+                }
+                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+              />
+              <span>
+                {t("claudeConfig.fastMode", {
+                  defaultValue: "Fast 模式",
+                })}
+              </span>
+            </label>
+          </div>
           <JsonEditor
             value={commonConfigSnippet}
             onChange={onCommonConfigSnippetChange}

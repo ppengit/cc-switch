@@ -77,7 +77,7 @@ pub fn write_codex_live_atomic(
     } else {
         None
     };
-    let _old_config = if config_path.exists() {
+    let old_config = if config_path.exists() {
         Some(fs::read(&config_path).map_err(|e| AppError::io(&config_path, e))?)
     } else {
         None
@@ -91,6 +91,18 @@ pub fn write_codex_live_atomic(
     if !cfg_text.trim().is_empty() {
         toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
     }
+
+    // Preserve existing MCP servers if the incoming config doesn't include them.
+    let cfg_text = if let Some(bytes) = old_config.as_ref() {
+        match String::from_utf8(bytes.clone()) {
+            Ok(existing_text) => {
+                merge_mcp_servers_from_existing(&cfg_text, &existing_text).unwrap_or(cfg_text)
+            }
+            Err(_) => cfg_text,
+        }
+    } else {
+        cfg_text
+    };
 
     // 第一步：写 auth.json
     write_json_file(&auth_path, auth)?;
@@ -109,7 +121,48 @@ pub fn write_codex_live_atomic(
     Ok(())
 }
 
-/// 读取 `~/.codex/config.toml`，若不存在返回空字符串
+fn merge_mcp_servers_from_existing(new_text: &str, existing_text: &str) -> Option<String> {
+    use toml_edit::{DocumentMut, Item};
+
+    let mut new_doc = if new_text.trim().is_empty() {
+        DocumentMut::default()
+    } else {
+        new_text.parse::<DocumentMut>().ok()?
+    };
+
+    // If new config already defines MCP servers (correct or legacy), keep as-is.
+    let has_mcp_servers = new_doc.get("mcp_servers").is_some()
+        || new_doc
+            .get("mcp")
+            .and_then(|item| item.as_table_like())
+            .and_then(|tbl| tbl.get("servers"))
+            .is_some();
+    if has_mcp_servers {
+        return Some(new_doc.to_string());
+    }
+
+    let existing_doc = existing_text.parse::<DocumentMut>().ok()?;
+
+    if let Some(item) = existing_doc.get("mcp_servers") {
+        new_doc["mcp_servers"] = item.clone();
+        return Some(new_doc.to_string());
+    }
+
+    if let Some(mcp_item) = existing_doc.get("mcp") {
+        if let Some(mcp_tbl) = mcp_item.as_table_like() {
+            if let Some(servers_item) = mcp_tbl.get("servers") {
+                if let Item::Table(_) = servers_item {
+                    new_doc["mcp_servers"] = servers_item.clone();
+                    return Some(new_doc.to_string());
+                }
+            }
+        }
+    }
+
+    Some(new_doc.to_string())
+}
+
+/// Read ~/.codex/config.toml; returns empty string if missing.
 pub fn read_codex_config_text() -> Result<String, AppError> {
     let path = get_codex_config_path();
     if path.exists() {

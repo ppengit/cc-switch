@@ -1,6 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
+import {
+  getTomlStringValue,
+  removeTomlKeyIfMatch,
+  upsertTomlStringValue,
+} from "@/utils/tomlKeyUtils";
 
 interface CodexAuthSectionProps {
   value: string;
@@ -115,6 +120,36 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     return () => observer.disconnect();
   }, []);
 
+  const toggleStates = useMemo(() => {
+    return {
+      fullAccess:
+        getTomlStringValue(value, "sandbox_mode") === "danger-full-access",
+    };
+  }, [value]);
+
+  const handleToggle = useCallback(
+    (toggleKey: "fullAccess", checked: boolean) => {
+      let nextValue = value;
+      switch (toggleKey) {
+        case "fullAccess":
+          nextValue = checked
+            ? upsertTomlStringValue(
+                value,
+                "sandbox_mode",
+                "danger-full-access",
+              )
+            : removeTomlKeyIfMatch(
+                value,
+                "sandbox_mode",
+                "danger-full-access",
+              );
+          break;
+      }
+      onChange(nextValue);
+    },
+    [value, onChange],
+  );
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -151,6 +186,20 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
           {commonConfigError}
         </p>
       )}
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={toggleStates.fullAccess}
+              onChange={(e) => handleToggle("fullAccess", e.target.checked)}
+              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+            />
+            <span>
+              {t("codexConfig.fullAccess", { defaultValue: "完全访问权限" })}
+            </span>
+          </label>
+        </div>
 
       <JsonEditor
         value={value}

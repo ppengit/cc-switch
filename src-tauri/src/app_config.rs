@@ -200,6 +200,8 @@ pub struct McpServer {
     pub name: String,
     pub server: serde_json::Value,
     pub apps: McpApps,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "configuredApps")]
+    pub configured_apps: Option<McpApps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -830,6 +832,7 @@ impl MultiAppConfig {
                             name,
                             server,
                             apps,
+                            configured_apps: None,
                             description,
                             homepage,
                             docs,

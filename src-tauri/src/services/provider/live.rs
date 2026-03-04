@@ -109,7 +109,22 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
     match app_type {
         AppType::Claude => {
             let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            let mut settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            if path.exists() {
+                if let Ok(existing) = read_json_file::<Value>(&path) {
+                    let has_mcp = settings
+                        .get("mcpServers")
+                        .and_then(|v| v.as_object())
+                        .is_some();
+                    if !has_mcp {
+                        if let Some(mcp) = existing.get("mcpServers").cloned() {
+                            if let Some(obj) = settings.as_object_mut() {
+                                obj.insert("mcpServers".to_string(), mcp);
+                            }
+                        }
+                    }
+                }
+            }
             write_json_file(&path, &settings)?;
         }
         AppType::Codex => {
@@ -124,10 +139,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
                 AppError::Config("Codex 供应商配置缺少 'config' 字段或不是字符串".to_string())
             })?;
 
-            let auth_path = get_codex_auth_path();
-            write_json_file(&auth_path, auth)?;
-            let config_path = get_codex_config_path();
-            std::fs::write(&config_path, config_str).map_err(|e| AppError::io(&config_path, e))?;
+            crate::codex_config::write_codex_live_atomic(auth, Some(config_str))?;
         }
         AppType::Gemini => {
             // Delegate to write_gemini_live which handles env file writing correctly

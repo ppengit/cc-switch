@@ -161,6 +161,26 @@ html.dark {
     overflow-x: hidden;
   }
 
+  .scroll-visible {
+    scrollbar-width: auto;
+    -ms-overflow-style: auto;
+  }
+
+  .scroll-visible::-webkit-scrollbar {
+    display: block;
+    width: 8px;
+    height: 8px;
+  }
+
+  .scroll-visible::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.35);
+    border-radius: 999px;
+  }
+
+  .scroll-visible::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
   .border-default {
     border-width: 1px;
     border-color: hsl(var(--border));

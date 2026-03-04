@@ -32,6 +32,42 @@ interface ConfigLoadErrorPayload {
   error?: string;
 }
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const renderFatalError = (error: unknown) => {
+  const root = document.getElementById("root");
+  if (!root) return;
+  const message =
+    error instanceof Error ? error.message : String(error ?? "Unknown error");
+  root.innerHTML = `
+    <div style="
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      height:100vh;
+      background:#f8fafc;
+      color:#0f172a;
+      font-family:Segoe UI, Arial, sans-serif;
+      padding:24px;
+      text-align:center;
+    ">
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px;">
+        界面加载失败
+      </div>
+      <div style="font-size:12px;color:#6b7280;max-width:720px;white-space:pre-wrap;">
+        ${escapeHtml(message)}
+      </div>
+    </div>
+  `;
+};
+
 /**
  * 处理配置加载失败：显示错误消息并强制退出应用
  * 不给用户"取消"选项，因为配置损坏时应用无法正常运行
@@ -70,6 +106,18 @@ try {
   console.error("订阅 configLoadError 事件失败", e);
 }
 
+window.addEventListener("error", (event) => {
+  if (event.error) {
+    renderFatalError(event.error);
+  } else if (event.message) {
+    renderFatalError(event.message);
+  }
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  renderFatalError(event.reason ?? "Unhandled promise rejection");
+});
+
 async function bootstrap() {
   // 启动早期主动查询后端初始化错误，避免事件竞态
   try {
@@ -100,4 +148,10 @@ async function bootstrap() {
   );
 }
 
-void bootstrap();
+void (async () => {
+  try {
+    await bootstrap();
+  } catch (err) {
+    renderFatalError(err);
+  }
+})();

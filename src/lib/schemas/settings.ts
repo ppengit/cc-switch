@@ -26,6 +26,8 @@ export const settingsSchema = z.object({
   currentProviderClaude: z.string().optional(),
   currentProviderCodex: z.string().optional(),
   currentProviderGemini: z.string().optional(),
+  currentProviderOpencode: z.string().optional(),
+  currentProviderOpenclaw: z.string().optional(),
 
   // Skill 同步设置
   skillSyncMethod: z.enum(["auto", "symlink", "copy"]).optional(),
@@ -52,6 +54,13 @@ export const settingsSchema = z.object({
         .optional(),
     })
     .optional(),
+
+  // 终端快捷方式设置
+  terminalTargets: z.record(z.string(), z.any()).optional(),
+  currentSessionByApp: z.record(z.string(), z.string()).optional(),
+
+  // 提供商列表排序
+  providerSort: z.record(z.string(), z.any()).optional(),
 });
 
 export type SettingsFormData = z.infer<typeof settingsSchema>;

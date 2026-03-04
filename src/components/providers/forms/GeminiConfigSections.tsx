@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
 
@@ -151,6 +151,69 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
     return () => observer.disconnect();
   }, []);
 
+  const toggleStates = useMemo(() => {
+    try {
+      const config = JSON.parse(value || "{}");
+      return {
+        inlineThinking: config?.ui?.inlineThinkingMode === "full",
+        showModelInfo: config?.ui?.showModelInfoInChat === true,
+        enableAgents: config?.experimental?.enableAgents === true,
+      };
+    } catch {
+      return {
+        inlineThinking: false,
+        showModelInfo: false,
+        enableAgents: false,
+      };
+    }
+  }, [value]);
+
+  const handleToggle = useCallback(
+    (
+      toggleKey: "inlineThinking" | "showModelInfo" | "enableAgents",
+      checked: boolean,
+    ) => {
+      try {
+        const config = JSON.parse(value || "{}");
+        if (toggleKey === "inlineThinking") {
+          config.ui = config.ui || {};
+          if (checked) {
+            config.ui.inlineThinkingMode = "full";
+          } else {
+            delete config.ui.inlineThinkingMode;
+          }
+          if (Object.keys(config.ui).length === 0) delete config.ui;
+        }
+
+        if (toggleKey === "showModelInfo") {
+          config.ui = config.ui || {};
+          if (checked) {
+            config.ui.showModelInfoInChat = true;
+          } else {
+            delete config.ui.showModelInfoInChat;
+          }
+          if (Object.keys(config.ui).length === 0) delete config.ui;
+        }
+
+        if (toggleKey === "enableAgents") {
+          config.experimental = config.experimental || {};
+          if (checked) {
+            config.experimental.enableAgents = true;
+          } else {
+            delete config.experimental.enableAgents;
+          }
+          if (Object.keys(config.experimental).length === 0)
+            delete config.experimental;
+        }
+
+        onChange(JSON.stringify(config, null, 2));
+      } catch {
+        // ignore invalid JSON
+      }
+    },
+    [value, onChange],
+  );
+
   return (
     <div className="space-y-2">
       <label
@@ -161,6 +224,48 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
           defaultValue: "配置文件 (config.json)",
         })}
       </label>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={toggleStates.inlineThinking}
+            onChange={(e) => handleToggle("inlineThinking", e.target.checked)}
+            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+          />
+          <span>
+            {t("geminiConfig.inlineThinking", {
+              defaultValue: "扩展思考",
+            })}
+          </span>
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={toggleStates.showModelInfo}
+            onChange={(e) => handleToggle("showModelInfo", e.target.checked)}
+            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+          />
+          <span>
+            {t("geminiConfig.showModelInfo", {
+              defaultValue: "显示模型信息",
+            })}
+          </span>
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={toggleStates.enableAgents}
+            onChange={(e) => handleToggle("enableAgents", e.target.checked)}
+            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+          />
+          <span>
+            {t("geminiConfig.enableAgents", {
+              defaultValue: "启用代理模式",
+            })}
+          </span>
+        </label>
+      </div>
 
       <JsonEditor
         value={value}

@@ -38,8 +38,6 @@ import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
-// Hidden: stream check feature disabled
-// import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
@@ -242,10 +240,12 @@ export function SettingsPage({
 
               <TabsContent value="proxy" className="space-y-6 mt-0 pb-4">
                 {settings ? (
-                  <ProxyTabContent
-                    settings={settings}
-                    onAutoSave={handleAutoSave}
-                  />
+                  <>
+                    <ProxyTabContent
+                      settings={settings}
+                      onAutoSave={handleAutoSave}
+                    />
+                  </>
                 ) : null}
               </TabsContent>
 

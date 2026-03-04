@@ -278,6 +278,16 @@ export function RequestDetailPanel({
               <p className="text-sm text-red-700">{request.errorMessage}</p>
             </div>
           )}
+
+          {/* 全部字段 */}
+          <div className="rounded-lg border p-4">
+            <h3 className="mb-3 font-semibold">
+              {t("usage.allFields", "全部字段")}
+            </h3>
+            <pre className="max-h-[320px] overflow-auto rounded-md border bg-background/80 p-3 text-xs font-mono text-muted-foreground">
+              {JSON.stringify(request, null, 2)}
+            </pre>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

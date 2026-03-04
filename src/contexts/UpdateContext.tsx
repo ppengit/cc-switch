@@ -10,16 +10,13 @@ import type { UpdateInfo, UpdateHandle } from "../lib/updater";
 import { checkForUpdate } from "../lib/updater";
 
 interface UpdateContextValue {
-  // 鏇存柊鐘舵€?  hasUpdate: boolean;
+  hasUpdate: boolean;
   updateInfo: UpdateInfo | null;
   updateHandle: UpdateHandle | null;
   isChecking: boolean;
   error: string | null;
-
-  // 鎻愮ず鐘舵€?  isDismissed: boolean;
+  isDismissed: boolean;
   dismissUpdate: () => void;
-
-  // 鎿嶄綔鏂规硶
   checkUpdate: () => Promise<boolean>;
   resetDismiss: () => void;
 }
@@ -143,3 +140,4 @@ export function useUpdate() {
   }
   return context;
 }
+

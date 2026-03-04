@@ -6,7 +6,22 @@
     <title>Claude Code 供应商切换器</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        id="boot-fallback"
+        style="
+          display: flex;
+          height: 100vh;
+          align-items: center;
+          justify-content: center;
+          font-family: sans-serif;
+          color: #6b7280;
+          background: #f8fafc;
+        "
+      >
+        正在加载…
+      </div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

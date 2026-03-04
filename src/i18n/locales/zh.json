@@ -62,7 +62,9 @@
     "saveFailed": "保存失败: {{error}}",
     "hideAttribution": "隐藏 AI 署名",
     "alwaysThinking": "扩展思考",
-    "enableTeammates": "Teammates 模式"
+    "enableTeammates": "Teammates 模式",
+    "skipAllPermissions": "跳过所有权限",
+    "fastMode": "Fast 模式"
   },
   "header": {
     "viewOnGithub": "在 GitHub 上查看",
@@ -117,6 +119,10 @@
     "configureUsage": "配置用量查询",
     "officialPartner": "官方合作伙伴",
     "openTerminal": "打开终端",
+    "terminalTargetManual": "手动选择",
+    "terminalTargetRecentOpened": "最近打开",
+    "terminalTargetRecentEmpty": "空",
+    "terminalTargetRecentClear": "清除最近打开",
     "terminalOpened": "终端已打开",
     "terminalOpenFailed": "打开终端失败",
     "name": "供应商名称",
@@ -143,7 +149,13 @@
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
       }
-    }
+    },
+    "sortTitle": "排序",
+    "sortByManual": "手动",
+    "sortByName": "名称",
+    "sortByCreatedAt": "加入时间",
+    "sortOrderAsc": "正序",
+    "sortOrderDesc": "倒序"
   },
   "notifications": {
     "providerAdded": "供应商已添加",
@@ -504,6 +516,12 @@
     "oneClickInstall": "一键安装",
     "oneClickInstallHint": "安装 Claude Code / Codex / Gemini CLI / OpenCode",
     "localEnvCheck": "本地环境检查",
+    "toolLocalVersion": "本地",
+    "toolLatestVersion": "官方",
+    "updateTool": "更新",
+    "updatingTool": "更新中",
+    "toolUpdateStarted": "已开始更新，请查看终端输出",
+    "toolUpdateFailed": "更新失败，请查看日志",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -889,8 +907,8 @@
     "searchProviderPlaceholder": "搜索供应商...",
     "searchModelPlaceholder": "搜索模型...",
     "timeRange": "时间范围",
-    "input": "Input",
-    "output": "Output",
+    "input": "输入",
+    "output": "输出",
     "cacheWrite": "创建",
     "cacheRead": "命中",
     "baseCost": "基础",
@@ -904,7 +922,8 @@
     "costBreakdown": "成本明细",
     "performance": "性能信息",
     "latency": "延迟",
-    "errorMessage": "错误信息"
+    "errorMessage": "错误信息",
+    "allFields": "全部字段"
   },
   "usageScript": {
     "title": "配置用量查询",

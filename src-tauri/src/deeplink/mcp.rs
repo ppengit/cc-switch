@@ -118,6 +118,7 @@ pub fn import_mcp_from_deeplink(
                 name: existing.name.clone(),
                 server: existing.server.clone(), // Keep existing server config
                 apps: merged_apps,               // Merged apps
+                configured_apps: None,
                 description: existing.description.clone(),
                 homepage: existing.homepage.clone(),
                 docs: existing.docs.clone(),
@@ -131,6 +132,7 @@ pub fn import_mcp_from_deeplink(
                 name: id.clone(),
                 server: server_spec.clone(),
                 apps: target_apps.clone(),
+                configured_apps: None,
                 description: None,
                 homepage: None,
                 docs: None,

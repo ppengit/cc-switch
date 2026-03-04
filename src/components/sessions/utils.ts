@@ -12,6 +12,16 @@ export const getBaseName = (value?: string | null) => {
   return parts[parts.length - 1] || trimmed;
 };
 
+export const getDirName = (value?: string | null) => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return null;
+  return parts.slice(0, -1).join("/");
+};
+
 export const formatTimestamp = (value?: number) => {
   if (!value) return "";
   return new Date(value).toLocaleString();
