@@ -194,6 +194,8 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
               <SelectItem value="claude">Claude</SelectItem>
               <SelectItem value="codex">Codex</SelectItem>
               <SelectItem value="gemini">Gemini</SelectItem>
+              <SelectItem value="opencode">OpenCode</SelectItem>
+              <SelectItem value="openclaw">OpenClaw</SelectItem>
             </SelectContent>
           </Select>
 

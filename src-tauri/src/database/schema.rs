@@ -409,6 +409,13 @@ impl Database {
                         Self::migrate_v4_to_v5(conn)?;
                         Self::set_user_version(conn, 5)?;
                     }
+                    5 => {
+                        log::info!(
+                            "Migrating database from v5 to v6 (normalize proxy_request_logs.created_at)"
+                        );
+                        Self::migrate_v5_to_v6(conn)?;
+                        Self::set_user_version(conn, 6)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -978,6 +985,36 @@ impl Database {
     /// 插入默认模型定价数据
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
+    /// v5 -> v6 migration: normalize proxy_request_logs.created_at to seconds
+    fn migrate_v5_to_v6(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_request_logs")? {
+            return Ok(());
+        }
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs WHERE created_at > 100000000000",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if count > 0 {
+            log::info!(
+                "Detected {count} request logs with millisecond created_at; normalizing to seconds."
+            );
+            conn.execute(
+                "UPDATE proxy_request_logs
+                 SET created_at = CAST(created_at / 1000 AS INTEGER)
+                 WHERE created_at > 100000000000",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("normalize request log created_at failed: {e}")))?;
+        }
+
+        Ok(())
+    }
+
     fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_data = [
             // Claude 4.6 系列

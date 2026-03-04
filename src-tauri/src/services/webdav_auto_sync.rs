@@ -52,6 +52,7 @@ pub fn should_trigger_for_table(table: &str) -> bool {
             | "skill_repos"
             | "settings"
             | "proxy_config"
+            | "session_provider_bindings"
     )
 }
 
