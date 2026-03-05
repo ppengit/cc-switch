@@ -13,6 +13,7 @@ use crate::proxy::{
     ProxyError,
 };
 use axum::http::HeaderMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// 流式超时配置
@@ -188,23 +189,45 @@ impl RequestContext {
         session_id: &str,
         app_config: &AppProxyConfig,
     ) -> Result<Vec<Provider>, ProxyError> {
-        let providers = state
-            .provider_router
-            .select_session_routing_providers(app_type_str)
-            .await
-            .map_err(Self::map_provider_selection_error)?;
+        let all_providers_map = state
+            .db
+            .get_all_providers(app_type_str)
+            .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+        let ordered_provider_ids = state
+            .db
+            .list_provider_ids_for_session_routing(app_type_str)
+            .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
 
+        let providers: Vec<Provider> = ordered_provider_ids
+            .iter()
+            .filter_map(|provider_id| all_providers_map.get(provider_id).cloned())
+            .collect();
         if providers.is_empty() {
             return Err(ProxyError::NoAvailableProvider);
         }
 
-        let candidate_provider_ids: Vec<String> = providers.iter().map(|p| p.id.clone()).collect();
+        let available_provider_ids: Vec<String> = match state
+            .provider_router
+            .select_session_routing_providers(app_type_str)
+            .await
+        {
+            Ok(available) => available.into_iter().map(|p| p.id).collect(),
+            Err(AppError::NoProvidersConfigured | AppError::AllProvidersCircuitOpen) => Vec::new(),
+            Err(error) => return Err(Self::map_provider_selection_error(error)),
+        };
+
+        let assignment_candidate_provider_ids = if available_provider_ids.is_empty() {
+            ordered_provider_ids.clone()
+        } else {
+            available_provider_ids.clone()
+        };
+
         let binding = state
             .db
             .assign_session_provider_from_candidates(
                 app_type_str,
                 session_id,
-                &candidate_provider_ids,
+                &assignment_candidate_provider_ids,
                 app_config.session_routing_strategy.as_str(),
                 app_config.session_max_sessions_per_provider,
                 app_config.session_allow_shared_when_exhausted,
@@ -219,25 +242,24 @@ impl RequestContext {
                 session_id,
                 app_config.session_routing_strategy,
                 binding.provider_id,
-                candidate_provider_ids.join(",")
+                assignment_candidate_provider_ids.join(",")
             );
-            if providers
-                .iter()
-                .any(|provider| provider.id == binding.provider_id)
-            {
-                return Ok(Self::reorder_providers_by_preferred(
-                    providers,
-                    binding.provider_id.as_str(),
-                ));
-            }
 
-            log::warn!(
-                "[{}] session binding provider not in available chain, fallback to chain head: session={}, provider={}",
-                app_type_str,
-                session_id,
-                binding.provider_id
-            );
-            return Ok(providers);
+            let active_counts = state
+                .db
+                .get_active_session_counts_map(
+                    app_type_str,
+                    app_config.session_idle_ttl_minutes,
+                )
+                .unwrap_or_default();
+            let available_provider_set: HashSet<String> = available_provider_ids.into_iter().collect();
+
+            return Ok(Self::reorder_providers_by_preferred(
+                providers,
+                binding.provider_id.as_str(),
+                Some(&active_counts),
+                Some(&available_provider_set),
+            ));
         }
 
         log::warn!(
@@ -245,7 +267,7 @@ impl RequestContext {
             app_type_str,
             session_id,
             app_config.session_routing_strategy,
-            candidate_provider_ids.join(","),
+            assignment_candidate_provider_ids.join(","),
             app_config.session_max_sessions_per_provider,
             app_config.session_allow_shared_when_exhausted
         );
@@ -255,17 +277,38 @@ impl RequestContext {
     fn reorder_providers_by_preferred(
         providers: Vec<Provider>,
         preferred_provider_id: &str,
+        active_counts: Option<&HashMap<String, usize>>,
+        available_provider_ids: Option<&HashSet<String>>,
     ) -> Vec<Provider> {
         let mut preferred: Option<Provider> = None;
         let mut rest = Vec::with_capacity(providers.len());
 
-        for provider in providers {
+        for (index, provider) in providers.into_iter().enumerate() {
             if preferred.is_none() && provider.id == preferred_provider_id {
                 preferred = Some(provider);
             } else {
-                rest.push(provider);
+                rest.push((index, provider));
             }
         }
+
+        if let Some(counts) = active_counts {
+            rest.sort_by(|(left_index, left_provider), (right_index, right_provider)| {
+                let left_available_rank = available_provider_ids
+                    .map(|ids| if ids.contains(&left_provider.id) { 0 } else { 1 })
+                    .unwrap_or(0);
+                let right_available_rank = available_provider_ids
+                    .map(|ids| if ids.contains(&right_provider.id) { 0 } else { 1 })
+                    .unwrap_or(0);
+                let left_count = counts.get(&left_provider.id).copied().unwrap_or(0);
+                let right_count = counts.get(&right_provider.id).copied().unwrap_or(0);
+                left_available_rank
+                    .cmp(&right_available_rank)
+                    .then_with(|| left_count.cmp(&right_count))
+                    .then_with(|| left_index.cmp(right_index))
+            });
+        }
+
+        let rest: Vec<Provider> = rest.into_iter().map(|(_, provider)| provider).collect();
 
         if let Some(preferred_provider) = preferred {
             let mut ordered = Vec::with_capacity(rest.len() + 1);
@@ -367,5 +410,60 @@ impl RequestContext {
                 idle_timeout: 0,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RequestContext;
+    use crate::provider::Provider;
+    use std::collections::{HashMap, HashSet};
+
+    fn provider(id: &str) -> Provider {
+        Provider::with_id(
+            id.to_string(),
+            id.to_string(),
+            serde_json::json!({ "env": {} }),
+            None,
+        )
+    }
+
+    #[test]
+    fn reorder_providers_by_preferred_keeps_preferred_and_balances_rest() {
+        let providers = vec![provider("a"), provider("b"), provider("c"), provider("d")];
+        let mut counts = HashMap::new();
+        counts.insert("a".to_string(), 5);
+        counts.insert("b".to_string(), 3);
+        counts.insert("c".to_string(), 0);
+        counts.insert("d".to_string(), 1);
+
+        let ordered = RequestContext::reorder_providers_by_preferred(
+            providers,
+            "b",
+            Some(&counts),
+            None,
+        );
+        let ids: Vec<String> = ordered.into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec!["b", "c", "d", "a"]);
+    }
+
+    #[test]
+    fn reorder_providers_by_preferred_prioritizes_available_before_unavailable() {
+        let providers = vec![provider("a"), provider("b"), provider("c"), provider("d")];
+        let mut counts = HashMap::new();
+        counts.insert("a".to_string(), 0);
+        counts.insert("b".to_string(), 5);
+        counts.insert("c".to_string(), 0);
+        counts.insert("d".to_string(), 1);
+        let available = HashSet::from(["a".to_string(), "d".to_string()]);
+
+        let ordered = RequestContext::reorder_providers_by_preferred(
+            providers,
+            "c",
+            Some(&counts),
+            Some(&available),
+        );
+        let ids: Vec<String> = ordered.into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec!["c", "a", "d", "b"]);
     }
 }

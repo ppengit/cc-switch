@@ -845,7 +845,7 @@ function App() {
           return <AgentsDefaultsPanel />;
         default:
           return (
-            <div className="px-6 flex flex-col h-full min-h-0 overflow-hidden">
+            <div className="px-6 pb-6 flex flex-col h-full min-h-0 overflow-hidden">
               <AnimatePresence mode="wait">
                 <motion.div
                   key={activeApp}
