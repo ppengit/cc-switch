@@ -300,11 +300,11 @@ pub fn run() {
     let builder = builder
         // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
         .plugin(tauri_plugin_deep_link::init())
-        // 拦截窗口关闭：根据设置决定是否最小化到托盘
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                persist_main_window_size(&window.app_handle());
-                let settings = crate::settings::get_settings();
+            // 拦截窗口关闭：根据设置决定是否最小化到托盘
+            .on_window_event(|window, event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    persist_main_window_size(window.app_handle());
+                    let settings = crate::settings::get_settings();
 
                 if settings.minimize_to_tray_on_close {
                     api.prevent_close();

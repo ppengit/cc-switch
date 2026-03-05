@@ -119,22 +119,26 @@ export function ProxyPanel({
   const handleSaveBasicConfig = async () => {
     if (!globalConfig) return;
 
-    // 校验地址格式（简单的 IP 地址或 localhost 校验）
+    // 生产安全限制：仅允许本机回环地址，避免将无鉴权代理暴露到局域网/公网
     const addressTrimmed = listenAddress.trim();
+    const normalizedAddress = addressTrimmed.toLowerCase();
     const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const isLoopbackIpv4 =
+      ipv4Regex.test(normalizedAddress) &&
+      normalizedAddress.split(".").every((n) => {
+        const num = parseInt(n, 10);
+        return num >= 0 && num <= 255;
+      }) &&
+      normalizedAddress.startsWith("127.");
     const isValidAddress =
-      addressTrimmed === "localhost" ||
-      addressTrimmed === "0.0.0.0" ||
-      (ipv4Regex.test(addressTrimmed) &&
-        addressTrimmed.split(".").every((n) => {
-          const num = parseInt(n);
-          return num >= 0 && num <= 255;
-        }));
+      normalizedAddress === "localhost" ||
+      normalizedAddress === "::1" ||
+      isLoopbackIpv4;
     if (!isValidAddress) {
       toast.error(
         t("proxy.settings.invalidAddress", {
           defaultValue:
-            "地址无效，请输入有效的 IP 地址（如 127.0.0.1）或 localhost",
+            "仅允许本机回环地址：127.0.0.1、::1 或 localhost",
         }),
       );
       return;

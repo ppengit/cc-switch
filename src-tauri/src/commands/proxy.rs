@@ -2,11 +2,40 @@
 //!
 //! 提供前端调用的 API 接口
 
-use crate::error::AppError;
 use crate::database::{ProviderSessionOccupancy, SessionProviderBinding};
+use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use std::net::IpAddr;
+
+fn is_loopback_listen_address(address: &str) -> bool {
+    let trimmed = address.trim();
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    match trimmed.parse::<IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+fn validate_proxy_bind(address: &str, port: u16) -> Result<(), String> {
+    if !is_loopback_listen_address(address) {
+        return Err(format!(
+            "listenAddress must be loopback only (127.0.0.1, ::1, localhost), got {address}"
+        ));
+    }
+
+    if !(1024..=65535).contains(&port) {
+        return Err(format!(
+            "listenPort must be between 1024 and 65535, got {port}"
+        ));
+    }
+
+    Ok(())
+}
 
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
@@ -61,6 +90,7 @@ pub async fn update_proxy_config(
     state: tauri::State<'_, AppState>,
     config: ProxyConfig,
 ) -> Result<(), String> {
+    validate_proxy_bind(&config.listen_address, config.listen_port)?;
     state.proxy_service.update_config(&config).await
 }
 
@@ -87,6 +117,7 @@ pub async fn update_global_proxy_config(
     state: tauri::State<'_, AppState>,
     config: GlobalProxyConfig,
 ) -> Result<(), String> {
+    validate_proxy_bind(&config.listen_address, config.listen_port)?;
     let db = &state.db;
     db.update_global_proxy_config(config)
         .await

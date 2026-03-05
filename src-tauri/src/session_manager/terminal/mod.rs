@@ -35,7 +35,7 @@ pub fn launch_terminal(
         if target == "custom" {
             return Err("Custom terminal resume is not supported on Windows".to_string());
         }
-        return launch_windows_terminal_command(command, cwd);
+        launch_windows_terminal_command(command, cwd)
     }
 
     #[cfg(target_os = "linux")]

@@ -300,6 +300,14 @@ pub async fn update_tool(
 
     let final_command = if envType.as_deref() == Some("wsl") {
         let distro = wslDistro.ok_or_else(|| "Missing WSL distro".to_string())?;
+        let valid_distro = !distro.is_empty()
+            && distro.len() <= 64
+            && distro
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if !valid_distro {
+            return Err(format!("Invalid WSL distro name: {distro}"));
+        }
         let escaped = escape_bash_single_quotes(command);
         format!("wsl.exe -d {distro} -- bash -lc '{escaped}'")
     } else {
@@ -984,7 +992,7 @@ fn launch_terminal_with_env(
     #[cfg(target_os = "windows")]
     {
         launch_windows_terminal(&temp_dir, &config_file, cwd)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -1028,7 +1036,7 @@ fn launch_terminal_with_command(command: &str, cwd: Option<&str>) -> Result<(), 
     #[cfg(target_os = "windows")]
     {
         launch_windows_terminal_command(command, cwd)?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -1714,13 +1722,11 @@ mod tests {
     fn opencode_extra_search_paths_deduplicates_repeated_entries() {
         let home = PathBuf::from("/home/tester");
         let same_dir = Some(std::ffi::OsString::from("/same/path"));
+        let target = PathBuf::from("/same/path");
 
         let paths = opencode_extra_search_paths(&home, same_dir.clone(), same_dir.clone(), None);
 
-        let count = paths
-            .iter()
-            .filter(|path| **path == PathBuf::from("/same/path"))
-            .count();
+        let count = paths.iter().filter(|path| path == &&target).count();
         assert_eq!(count, 1);
     }
 

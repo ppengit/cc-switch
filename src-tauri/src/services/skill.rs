@@ -1340,16 +1340,28 @@ impl SkillService {
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor)?;
 
-        let root_name = if !archive.is_empty() {
-            let first_file = archive.by_index(0)?;
-            let name = first_file.name();
-            name.split('/').next().unwrap_or("").to_string()
-        } else {
+        let root_name = if archive.is_empty() {
             return Err(anyhow::anyhow!(format_skill_error(
                 "EMPTY_ARCHIVE",
                 &[],
                 Some("checkRepoUrl"),
             )));
+        } else {
+            let mut detected_root: Option<String> = None;
+
+            for i in 0..archive.len() {
+                let file = archive.by_index(i)?;
+                let Some(path) = file.enclosed_name() else {
+                    continue;
+                };
+                if let Some(Component::Normal(root)) = path.components().next() {
+                    detected_root = Some(root.to_string_lossy().to_string());
+                    break;
+                }
+            }
+
+            detected_root
+                .ok_or_else(|| anyhow!("archive does not contain a valid root directory"))?
         };
 
         // 第一遍：解压普通文件和目录，收集 symlink 条目
@@ -1357,16 +1369,26 @@ impl SkillService {
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let file_path = file.name().to_string();
+            let file_path = match file.enclosed_name() {
+                Some(path) => path.to_owned(),
+                None => continue,
+            };
 
-            let relative_path =
-                if let Some(stripped) = file_path.strip_prefix(&format!("{root_name}/")) {
-                    stripped
-                } else {
-                    continue;
-                };
+            let relative_path = match file_path.strip_prefix(Path::new(&root_name)) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
 
-            if relative_path.is_empty() {
+            if relative_path.as_os_str().is_empty() {
+                continue;
+            }
+
+            if relative_path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }) {
                 continue;
             }
 
