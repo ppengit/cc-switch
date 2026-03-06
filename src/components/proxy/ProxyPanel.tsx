@@ -137,8 +137,7 @@ export function ProxyPanel({
     if (!isValidAddress) {
       toast.error(
         t("proxy.settings.invalidAddress", {
-          defaultValue:
-            "仅允许本机回环地址：127.0.0.1、::1 或 localhost",
+          defaultValue: "仅允许本机回环地址：127.0.0.1、::1 或 localhost",
         }),
       );
       return;

@@ -1,4 +1,4 @@
-﻿use crate::database::{lock_conn, Database};
+use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,8 @@ impl Database {
             let last_seen_at: i64 = row.get(7).map_err(|e| AppError::Database(e.to_string()))?;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
-            let stored_session_id: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            let stored_session_id: String =
+                row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
             let display_session_id = normalize_session_id_for_app(app_type, &stored_session_id);
             Ok(Some(SessionProviderBinding {
                 app_type: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
@@ -249,7 +250,12 @@ impl Database {
                 "UPDATE session_provider_bindings
                  SET pinned = ?3, updated_at = ?4
                  WHERE app_type = ?1 AND session_id = ?2",
-                params![app_type, canonical_session_id, if pinned { 1 } else { 0 }, timestamp_ms],
+                params![
+                    app_type,
+                    canonical_session_id,
+                    if pinned { 1 } else { 0 },
+                    timestamp_ms
+                ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
@@ -462,27 +468,9 @@ impl Database {
                 }));
             }
 
-            if binding.pinned {
-                conn.execute(
-                    "UPDATE session_provider_bindings
-                     SET last_seen_at = ?3, updated_at = ?3
-                     WHERE app_type = ?1 AND session_id = ?2",
-                    params![app_type, canonical_session_id, now_ms],
-                )
-                .map_err(|e| AppError::Database(e.to_string()))?;
-
-                return Ok(Some(SessionProviderBinding {
-                    app_type: app_type.to_string(),
-                    session_id: canonical_session_id.clone(),
-                    provider_id: binding.provider_id,
-                    provider_name: None,
-                    pinned: true,
-                    created_at: binding.created_at,
-                    updated_at: now_ms,
-                    last_seen_at: now_ms,
-                    is_active: false,
-                }));
-            }
+            // Existing binding is no longer in routing candidates.
+            // Continue to reassign so session occupancy can move away from
+            // unhealthy/degraded providers when routing policy changes.
         }
 
         let mut active_counts = HashMap::<String, usize>::new();
@@ -631,18 +619,7 @@ impl Database {
             )?;
         }
 
-        if let Some(binding) = existing {
-            if binding.pinned && binding.provider_id != actual_provider_id {
-                conn.execute(
-                    "UPDATE session_provider_bindings
-                     SET last_seen_at = ?3, updated_at = ?3
-                     WHERE app_type = ?1 AND session_id = ?2",
-                    params![app_type, canonical_session_id, now_ms],
-                )
-                .map_err(|e| AppError::Database(e.to_string()))?;
-                return Ok(());
-            }
-
+        if existing.is_some() {
             conn.execute(
                 "UPDATE session_provider_bindings
                  SET provider_id = ?3, updated_at = ?4, last_seen_at = ?4
@@ -678,7 +655,8 @@ fn query_binding_on_conn(
     app_type: &str,
     session_id: &str,
 ) -> Result<Option<BindingRow>, AppError> {
-    let (canonical_session_id, legacy_session_id) = build_session_id_candidates(app_type, session_id);
+    let (canonical_session_id, legacy_session_id) =
+        build_session_id_candidates(app_type, session_id);
     let result = if let Some(legacy_id) = legacy_session_id.as_ref() {
         conn.query_row(
             "SELECT session_id, provider_id, pinned, created_at
@@ -1034,6 +1012,36 @@ mod tests {
     }
 
     #[test]
+    fn assign_session_provider_reassigns_pinned_when_existing_not_in_candidates() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "switch-pinned-session", "a", true, now_ms)
+            .expect("seed pinned binding");
+
+        let candidates = vec!["b".to_string()];
+        let binding = db
+            .assign_session_provider_from_candidates(
+                "codex",
+                "switch-pinned-session",
+                &candidates,
+                "priority",
+                1,
+                false,
+                30,
+            )
+            .expect("assign switched")
+            .expect("binding exists");
+
+        assert_eq!(binding.provider_id, "b");
+        assert!(binding.pinned);
+    }
+
+    #[test]
     fn assign_session_provider_priority_prefers_idle_provider_before_sharing() {
         let db = Database::memory().expect("init database");
         db.save_provider("codex", &build_provider("a", "A"))
@@ -1146,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_session_provider_after_success_keeps_pinned_binding_provider() {
+    fn sync_session_provider_after_success_updates_pinned_binding_provider() {
         let db = Database::memory().expect("init database");
         db.save_provider("codex", &build_provider("a", "A"))
             .expect("save provider a");
@@ -1164,7 +1172,7 @@ mod tests {
             .get_session_provider_binding("codex", "pinned-session", 30)
             .expect("query binding")
             .expect("binding exists");
-        assert_eq!(binding.provider_id, "a");
+        assert_eq!(binding.provider_id, "b");
         assert!(binding.pinned);
     }
 }

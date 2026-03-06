@@ -611,7 +611,16 @@
     "daysAgo": "{{count}} 天前",
     "roleUser": "用户",
     "roleSystem": "系统",
-    "roleTool": "工具"
+    "roleTool": "工具",
+    "associatedProviderShort": "关联",
+    "bindingPinnedShort": "锁定",
+    "bindingAutoShort": "自动",
+    "bindingModePinned": "模式：已绑定（锁定）",
+    "bindingModeAuto": "模式：自动",
+    "bindingModeNone": "模式：未绑定",
+    "bindingPinnedHint": "锁定（已绑定）：优先使用当前提供商；若该提供商降级/熔断或不可用，系统仍会自动迁移并释放占用。",
+    "bindingAutoHint": "自动：系统根据会话路由策略自动分配提供商，并在降级/熔断或容量变化时自动重绑定。",
+    "bindingModeHint": "自动：按策略分配并可自动迁移。已绑定（锁定）：优先使用当前提供商，但当提供商降级/熔断或不可用时仍会自动释放并迁移。"
   },
   "console": {
     "providerSwitchReceived": "收到供应商切换事件:",
@@ -920,7 +929,18 @@
     "performance": "性能信息",
     "latency": "延迟",
     "errorMessage": "错误信息",
-    "allFields": "全部字段"
+    "allFields": "全部字段",
+    "cleanupAutoSwitch": "自动清理请求日志",
+    "cleanupRetentionDays": "保留天数",
+    "cleanupRetentionValidation": "保留天数需在 1-3650 之间",
+    "cleanupConfigSaved": "请求日志清理配置已保存",
+    "cleanupConfigSaveFailed": "保存请求日志清理配置失败",
+    "cleanupNow": "立即清理",
+    "cleanupNowSuccess": "清理完成，已删除 {{count}} 条日志",
+    "cleanupNowFailed": "立即清理请求日志失败",
+    "cleanupLastRun": "上次清理：{{time}}",
+    "cleanupNeverRun": "上次清理：从未",
+    "cleanupHint": "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。"
   },
   "usageScript": {
     "title": "配置用量查询",

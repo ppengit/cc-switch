@@ -109,6 +109,18 @@ export interface ProviderLimitStatus {
   monthlyExceeded: boolean;
 }
 
+export interface RequestLogCleanupConfig {
+  enabled: boolean;
+  retentionDays: number;
+  lastCleanupAt?: number;
+}
+
+export interface RequestLogCleanupResult {
+  deletedRows: number;
+  cutoffTimestamp: number;
+  retentionDays: number;
+}
+
 export type TimeRange = "1d" | "7d" | "30d";
 
 export interface StatsFilters {

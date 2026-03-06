@@ -216,11 +216,56 @@ impl RequestContext {
             Err(error) => return Err(Self::map_provider_selection_error(error)),
         };
 
-        let assignment_candidate_provider_ids = if available_provider_ids.is_empty() {
-            ordered_provider_ids.clone()
+        if available_provider_ids.is_empty() {
+            log::warn!(
+                "[{}] session routing assignment skipped: session={}, no available providers after circuit filter",
+                app_type_str,
+                session_id
+            );
+            return Err(ProxyError::NoAvailableProvider);
+        }
+
+        let mut stable_available_provider_ids = Vec::new();
+        let mut degraded_available_provider_ids = Vec::new();
+        for provider_id in available_provider_ids.iter() {
+            match state
+                .db
+                .get_provider_health(provider_id, app_type_str)
+                .await
+            {
+                Ok(health) if health.is_healthy && health.consecutive_failures == 0 => {
+                    stable_available_provider_ids.push(provider_id.clone());
+                }
+                Ok(health) if health.is_healthy => {
+                    degraded_available_provider_ids.push(provider_id.clone());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[{}] failed to read provider health during session routing assignment, keeping provider as candidate: provider={}, error={}",
+                        app_type_str,
+                        provider_id,
+                        error
+                    );
+                    stable_available_provider_ids.push(provider_id.clone());
+                }
+            }
+        }
+
+        let assignment_candidate_provider_ids = if !stable_available_provider_ids.is_empty() {
+            stable_available_provider_ids
         } else {
-            available_provider_ids.clone()
+            degraded_available_provider_ids
         };
+
+        if assignment_candidate_provider_ids.is_empty() {
+            log::warn!(
+                "[{}] session routing assignment skipped: session={}, all available providers are unhealthy",
+                app_type_str,
+                session_id
+            );
+            return Err(ProxyError::NoAvailableProvider);
+        }
 
         let binding = state
             .db
@@ -247,12 +292,10 @@ impl RequestContext {
 
             let active_counts = state
                 .db
-                .get_active_session_counts_map(
-                    app_type_str,
-                    app_config.session_idle_ttl_minutes,
-                )
+                .get_active_session_counts_map(app_type_str, app_config.session_idle_ttl_minutes)
                 .unwrap_or_default();
-            let available_provider_set: HashSet<String> = available_provider_ids.into_iter().collect();
+            let available_provider_set: HashSet<String> =
+                available_provider_ids.into_iter().collect();
 
             return Ok(Self::reorder_providers_by_preferred(
                 providers,
@@ -292,20 +335,34 @@ impl RequestContext {
         }
 
         if let Some(counts) = active_counts {
-            rest.sort_by(|(left_index, left_provider), (right_index, right_provider)| {
-                let left_available_rank = available_provider_ids
-                    .map(|ids| if ids.contains(&left_provider.id) { 0 } else { 1 })
-                    .unwrap_or(0);
-                let right_available_rank = available_provider_ids
-                    .map(|ids| if ids.contains(&right_provider.id) { 0 } else { 1 })
-                    .unwrap_or(0);
-                let left_count = counts.get(&left_provider.id).copied().unwrap_or(0);
-                let right_count = counts.get(&right_provider.id).copied().unwrap_or(0);
-                left_available_rank
-                    .cmp(&right_available_rank)
-                    .then_with(|| left_count.cmp(&right_count))
-                    .then_with(|| left_index.cmp(right_index))
-            });
+            rest.sort_by(
+                |(left_index, left_provider), (right_index, right_provider)| {
+                    let left_available_rank = available_provider_ids
+                        .map(|ids| {
+                            if ids.contains(&left_provider.id) {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                        .unwrap_or(0);
+                    let right_available_rank = available_provider_ids
+                        .map(|ids| {
+                            if ids.contains(&right_provider.id) {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                        .unwrap_or(0);
+                    let left_count = counts.get(&left_provider.id).copied().unwrap_or(0);
+                    let right_count = counts.get(&right_provider.id).copied().unwrap_or(0);
+                    left_available_rank
+                        .cmp(&right_available_rank)
+                        .then_with(|| left_count.cmp(&right_count))
+                        .then_with(|| left_index.cmp(right_index))
+                },
+            );
         }
 
         let rest: Vec<Provider> = rest.into_iter().map(|(_, provider)| provider).collect();
@@ -437,12 +494,8 @@ mod tests {
         counts.insert("c".to_string(), 0);
         counts.insert("d".to_string(), 1);
 
-        let ordered = RequestContext::reorder_providers_by_preferred(
-            providers,
-            "b",
-            Some(&counts),
-            None,
-        );
+        let ordered =
+            RequestContext::reorder_providers_by_preferred(providers, "b", Some(&counts), None);
         let ids: Vec<String> = ordered.into_iter().map(|p| p.id).collect();
         assert_eq!(ids, vec!["b", "c", "d", "a"]);
     }

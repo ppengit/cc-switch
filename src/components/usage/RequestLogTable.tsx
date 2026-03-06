@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -17,11 +18,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useRequestLogs, usageKeys } from "@/lib/query/usage";
+import {
+  useCleanupRequestLogsNow,
+  useRequestLogCleanupConfig,
+  useRequestLogs,
+  useUpdateRequestLogCleanupConfig,
+  usageKeys,
+} from "@/lib/query/usage";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LogFilters, RequestLog } from "@/types/usage";
 import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
 import { RequestDetailPanel } from "./RequestDetailPanel";
+import { toast } from "sonner";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   fmtInt,
   fmtUsd,
@@ -59,6 +68,18 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(
     null,
   );
+  const [cleanupEnabledDraft, setCleanupEnabledDraft] = useState(true);
+  const [retentionDaysDraft, setRetentionDaysDraft] = useState("30");
+
+  const { data: cleanupConfig } = useRequestLogCleanupConfig();
+  const updateCleanupConfig = useUpdateRequestLogCleanupConfig();
+  const cleanupLogsNow = useCleanupRequestLogsNow();
+
+  useEffect(() => {
+    if (!cleanupConfig) return;
+    setCleanupEnabledDraft(cleanupConfig.enabled);
+    setRetentionDaysDraft(String(cleanupConfig.retentionDays));
+  }, [cleanupConfig]);
 
   const { data: result, isLoading } = useRequestLogs({
     filters: appliedFilters,
@@ -142,6 +163,78 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     queryClient.invalidateQueries({
       queryKey: usageKeys.logs(key, page, pageSize),
     });
+  };
+
+  const handleSaveCleanupConfig = async () => {
+    const parsedRetentionDays = Number.parseInt(retentionDaysDraft, 10);
+    if (
+      !Number.isFinite(parsedRetentionDays) ||
+      parsedRetentionDays < 1 ||
+      parsedRetentionDays > 3650
+    ) {
+      toast.error(
+        t("usage.cleanupRetentionValidation", {
+          defaultValue: "保留天数需在 1-3650 之间",
+        }),
+      );
+      return;
+    }
+
+    try {
+      const updated = await updateCleanupConfig.mutateAsync({
+        enabled: cleanupEnabledDraft,
+        retentionDays: parsedRetentionDays,
+      });
+      setCleanupEnabledDraft(updated.enabled);
+      setRetentionDaysDraft(String(updated.retentionDays));
+      toast.success(
+        t("usage.cleanupConfigSaved", {
+          defaultValue: "请求日志清理配置已保存",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("usage.cleanupConfigSaveFailed", {
+            defaultValue: "保存请求日志清理配置失败",
+          }),
+      );
+    }
+  };
+
+  const handleCleanupNow = async () => {
+    const parsedRetentionDays = Number.parseInt(retentionDaysDraft, 10);
+    if (
+      !Number.isFinite(parsedRetentionDays) ||
+      parsedRetentionDays < 1 ||
+      parsedRetentionDays > 3650
+    ) {
+      toast.error(
+        t("usage.cleanupRetentionValidation", {
+          defaultValue: "保留天数需在 1-3650 之间",
+        }),
+      );
+      return;
+    }
+
+    try {
+      const result = await cleanupLogsNow.mutateAsync({
+        retentionDays: parsedRetentionDays,
+      });
+      toast.success(
+        t("usage.cleanupNowSuccess", {
+          defaultValue: "清理完成，已删除 {{count}} 条日志",
+          count: result.deletedRows,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("usage.cleanupNowFailed", {
+            defaultValue: "立即清理请求日志失败",
+          }),
+      );
+    }
   };
 
   // 将 Unix 时间戳转换为本地时间的 datetime-local 格式
@@ -329,6 +422,81 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={cleanupEnabledDraft}
+                onCheckedChange={setCleanupEnabledDraft}
+                disabled={updateCleanupConfig.isPending}
+              />
+              <span className="text-sm">
+                {t("usage.cleanupAutoSwitch", {
+                  defaultValue: "自动清理请求日志",
+                })}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                {t("usage.cleanupRetentionDays", {
+                  defaultValue: "保留天数",
+                })}
+              </span>
+              <Input
+                type="number"
+                min={1}
+                max={3650}
+                step={1}
+                value={retentionDaysDraft}
+                onChange={(event) => setRetentionDaysDraft(event.target.value)}
+                className="h-8 w-24 bg-background"
+              />
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void handleSaveCleanupConfig()}
+              disabled={updateCleanupConfig.isPending}
+            >
+              {t("common.save", { defaultValue: "保存" })}
+            </Button>
+
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void handleCleanupNow()}
+              disabled={cleanupLogsNow.isPending}
+            >
+              {t("usage.cleanupNow", { defaultValue: "立即清理" })}
+            </Button>
+
+            {cleanupConfig?.lastCleanupAt ? (
+              <span className="text-xs text-muted-foreground">
+                {t("usage.cleanupLastRun", {
+                  defaultValue: "上次清理：{{time}}",
+                  time: new Date(
+                    cleanupConfig.lastCleanupAt * 1000,
+                  ).toLocaleString(locale),
+                })}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {t("usage.cleanupNeverRun", {
+                  defaultValue: "上次清理：从未",
+                })}
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t("usage.cleanupHint", {
+              defaultValue:
+                "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
+            })}
+          </p>
         </div>
 
         {validationError && (

@@ -7,6 +7,7 @@ use crate::error::AppError;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 fn is_loopback_listen_address(address: &str) -> bool {
@@ -206,6 +207,7 @@ pub async fn list_session_provider_bindings(
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Vec<SessionProviderBinding>, String> {
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
     state
         .db
         .list_session_provider_bindings(&app_type, ttl)
@@ -220,6 +222,7 @@ pub async fn get_session_provider_binding(
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Option<SessionProviderBinding>, String> {
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
     state
         .db
         .get_session_provider_binding(&app_type, &session_id, ttl)
@@ -298,10 +301,96 @@ pub async fn get_provider_session_occupancy(
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Vec<ProviderSessionOccupancy>, String> {
     let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
     state
         .db
         .get_provider_session_occupancy(&app_type, ttl)
         .map_err(|e| e.to_string())
+}
+
+async fn reconcile_session_bindings_for_routing(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: u32,
+) -> Result<(), String> {
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !app_config.session_routing_enabled {
+        return Ok(());
+    }
+
+    let ordered_provider_ids = state
+        .db
+        .list_provider_ids_for_session_routing(app_type)
+        .map_err(|e| e.to_string())?;
+    if ordered_provider_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut stable_provider_ids = Vec::new();
+    let mut degraded_provider_ids = Vec::new();
+    for provider_id in ordered_provider_ids {
+        let health = state
+            .db
+            .get_provider_health(&provider_id, app_type)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !health.is_healthy {
+            continue;
+        }
+
+        if health.consecutive_failures == 0 {
+            stable_provider_ids.push(provider_id);
+        } else {
+            degraded_provider_ids.push(provider_id);
+        }
+    }
+
+    let candidate_provider_ids = if !stable_provider_ids.is_empty() {
+        stable_provider_ids
+    } else {
+        degraded_provider_ids
+    };
+    if candidate_provider_ids.is_empty() {
+        return Ok(());
+    }
+
+    let candidate_provider_set: HashSet<String> = candidate_provider_ids.iter().cloned().collect();
+    let bindings = state
+        .db
+        .list_session_provider_bindings(app_type, idle_ttl_minutes)
+        .map_err(|e| e.to_string())?;
+    for binding in bindings
+        .into_iter()
+        .filter(|binding| binding.is_active)
+        .filter(|binding| !candidate_provider_set.contains(&binding.provider_id))
+    {
+        let assignment = state
+            .db
+            .assign_session_provider_from_candidates(
+                app_type,
+                &binding.session_id,
+                &candidate_provider_ids,
+                app_config.session_routing_strategy.as_str(),
+                app_config.session_max_sessions_per_provider,
+                app_config.session_allow_shared_when_exhausted,
+                idle_ttl_minutes,
+            )
+            .map_err(|e| e.to_string())?;
+
+        if assignment.is_none() {
+            state
+                .db
+                .remove_session_provider_binding(app_type, &binding.session_id)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn resolve_session_idle_ttl(

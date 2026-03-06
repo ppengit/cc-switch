@@ -611,7 +611,16 @@
     "daysAgo": "{{count}} days ago",
     "roleUser": "User",
     "roleSystem": "System",
-    "roleTool": "Tool"
+    "roleTool": "Tool",
+    "associatedProviderShort": "Provider",
+    "bindingPinnedShort": "Pinned",
+    "bindingAutoShort": "Auto",
+    "bindingModePinned": "Mode: pinned",
+    "bindingModeAuto": "Mode: auto",
+    "bindingModeNone": "Mode: unbound",
+    "bindingPinnedHint": "Pinned: prefer the current provider. If that provider is degraded/circuit-open/unavailable, the session will still migrate and release occupancy automatically.",
+    "bindingAutoHint": "Auto: the system assigns providers by session routing policy and automatically rebinds on degradation/circuit-open/capacity changes.",
+    "bindingModeHint": "Auto: policy-driven assignment with automatic migration. Pinned: prefer current provider, but still auto-release and migrate when degraded/circuit-open/unavailable."
   },
   "console": {
     "providerSwitchReceived": "Received provider switch event:",
@@ -920,7 +929,18 @@
     "performance": "Performance",
     "latency": "Latency",
     "errorMessage": "Error Message",
-    "allFields": "All Fields"
+    "allFields": "All Fields",
+    "cleanupAutoSwitch": "Auto-clean request logs",
+    "cleanupRetentionDays": "Retention days",
+    "cleanupRetentionValidation": "Retention days must be between 1 and 3650",
+    "cleanupConfigSaved": "Request log cleanup settings saved",
+    "cleanupConfigSaveFailed": "Failed to save request log cleanup settings",
+    "cleanupNow": "Clean up now",
+    "cleanupNowSuccess": "Cleanup complete, removed {{count}} logs",
+    "cleanupNowFailed": "Failed to clean request logs now",
+    "cleanupLastRun": "Last cleanup: {{time}}",
+    "cleanupNeverRun": "Last cleanup: never",
+    "cleanupHint": "When auto-cleanup is enabled, logs are cleaned in the background by retention days (triggered at most once per hour)."
   },
   "usageScript": {
     "title": "Configure Usage Query",

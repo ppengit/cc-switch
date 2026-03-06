@@ -30,8 +30,8 @@ mod usage_script;
 
 pub use app_config::{AppType, McpApps, McpServer, MultiAppConfig};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
-pub use commands::{open_app_terminal, open_provider_terminal};
 pub use commands::*;
+pub use commands::{open_app_terminal, open_provider_terminal};
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
 pub use database::Database;
 pub use deeplink::{import_provider_from_deeplink, parse_deeplink_url, DeepLinkImportRequest};
@@ -1105,6 +1105,9 @@ pub fn run() {
             commands::get_model_stats,
             commands::get_request_logs,
             commands::get_request_detail,
+            commands::get_request_log_cleanup_config,
+            commands::update_request_log_cleanup_config,
+            commands::cleanup_request_logs_now,
             commands::get_model_pricing,
             commands::update_model_pricing,
             commands::delete_model_pricing,

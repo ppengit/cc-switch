@@ -44,8 +44,6 @@ impl<'a> UsageLogger<'a> {
 
     /// 记录成功的请求
     pub fn log_request(&self, log: &RequestLog) -> Result<(), AppError> {
-        let conn = crate::database::lock_conn!(self.db.conn);
-
         let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) =
             if let Some(cost) = &log.cost {
                 (
@@ -73,42 +71,49 @@ impl<'a> UsageLogger<'a> {
                 0
             });
 
-        conn.execute(
-            "INSERT INTO proxy_request_logs (
-                request_id, provider_id, app_type, model, request_model,
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
-                latency_ms, first_token_ms, status_code, error_message, session_id, session_routing_active,
-                provider_type, is_streaming, cost_multiplier, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
-            rusqlite::params![
-                log.request_id,
-                log.provider_id,
-                log.app_type,
-                log.model,
-                log.request_model,
-                log.usage.input_tokens,
-                log.usage.output_tokens,
-                log.usage.cache_read_tokens,
-                log.usage.cache_creation_tokens,
-                input_cost,
-                output_cost,
-                cache_read_cost,
-                cache_creation_cost,
-                total_cost,
-                log.latency_ms as i64,
-                log.first_token_ms.map(|v| v as i64),
-                log.status_code as i64,
-                log.error_message,
-                log.session_id,
-                if log.session_routing_active { 1 } else { 0 },
-                log.provider_type,
-                log.is_streaming as i64,
-                log.cost_multiplier,
-                created_at,
-            ],
-        )
-        .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
+        {
+            let conn = crate::database::lock_conn!(self.db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, request_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
+                    latency_ms, first_token_ms, status_code, error_message, session_id, session_routing_active,
+                    provider_type, is_streaming, cost_multiplier, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                rusqlite::params![
+                    log.request_id,
+                    log.provider_id,
+                    log.app_type,
+                    log.model,
+                    log.request_model,
+                    log.usage.input_tokens,
+                    log.usage.output_tokens,
+                    log.usage.cache_read_tokens,
+                    log.usage.cache_creation_tokens,
+                    input_cost,
+                    output_cost,
+                    cache_read_cost,
+                    cache_creation_cost,
+                    total_cost,
+                    log.latency_ms as i64,
+                    log.first_token_ms.map(|v| v as i64),
+                    log.status_code as i64,
+                    log.error_message,
+                    log.session_id,
+                    if log.session_routing_active { 1 } else { 0 },
+                    log.provider_type,
+                    log.is_streaming as i64,
+                    log.cost_multiplier,
+                    created_at,
+                ],
+            )
+            .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
+        }
+
+        if let Err(error) = self.db.maybe_cleanup_request_logs_if_due(created_at) {
+            log::warn!("自动清理请求日志失败: {error}");
+        }
 
         Ok(())
     }

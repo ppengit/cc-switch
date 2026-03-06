@@ -1,4 +1,5 @@
-﻿import { useTranslation } from "react-i18next";
+import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogClose,
@@ -49,6 +50,17 @@ export function RequestDetailPanel({
       onClose();
     }
   };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
 
   const renderHeader = () => (
     <DialogHeader className="flex-row items-center justify-between space-y-0">

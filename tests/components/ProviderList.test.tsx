@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
@@ -7,62 +7,32 @@ import { ProviderList } from "@/components/providers/ProviderList";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
-const providerCardRenderSpy = vi.fn();
+const providerActionsRenderSpy = vi.fn();
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
 }));
 
-vi.mock("@/components/providers/ProviderCard", () => ({
-  ProviderCard: (props: any) => {
-    providerCardRenderSpy(props);
-    const {
-      provider,
-      onSwitch,
-      onEdit,
-      onDelete,
-      onDuplicate,
-      onConfigureUsage,
-    } = props;
-
+vi.mock("@/components/providers/ProviderActions", () => ({
+  ProviderActions: (props: any) => {
+    providerActionsRenderSpy(props);
     return (
-      <div data-testid={`provider-card-${provider.id}`}>
-        <button
-          data-testid={`switch-${provider.id}`}
-          onClick={() => onSwitch(provider)}
-        >
+      <div>
+        <button aria-label="switch" onClick={props.onSwitch}>
           switch
         </button>
-        <button
-          data-testid={`edit-${provider.id}`}
-          onClick={() => onEdit(provider)}
-        >
+        <button aria-label="edit" onClick={props.onEdit}>
           edit
         </button>
-        <button
-          data-testid={`duplicate-${provider.id}`}
-          onClick={() => onDuplicate(provider)}
-        >
+        <button aria-label="duplicate" onClick={props.onDuplicate}>
           duplicate
         </button>
-        <button
-          data-testid={`usage-${provider.id}`}
-          onClick={() => onConfigureUsage(provider)}
-        >
+        <button aria-label="usage" onClick={props.onConfigureUsage}>
           usage
         </button>
-        <button
-          data-testid={`delete-${provider.id}`}
-          onClick={() => onDelete(provider)}
-        >
+        <button aria-label="delete" onClick={props.onDelete}>
           delete
         </button>
-        <span data-testid={`is-current-${provider.id}`}>
-          {props.isCurrent ? "current" : "inactive"}
-        </span>
-        <span data-testid={`drag-attr-${provider.id}`}>
-          {props.dragHandleProps?.attributes?.["data-dnd-id"] ?? "none"}
-        </span>
       </div>
     );
   },
@@ -94,6 +64,7 @@ vi.mock("@/lib/query/failover", () => ({
   useFailoverQueue: () => ({ data: [] }),
   useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
   useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
+  useProviderHealth: () => ({ data: null }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
 }));
 
@@ -123,7 +94,7 @@ function renderWithQueryClient(ui: ReactElement) {
 beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
-  providerCardRenderSpy.mockClear();
+  providerActionsRenderSpy.mockClear();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -210,7 +181,7 @@ describe("ProviderList Component", () => {
       handleDragEnd: vi.fn(),
     });
 
-    renderWithQueryClient(
+    const { container } = renderWithQueryClient(
       <ProviderList
         providers={{ a: providerA, b: providerB }}
         currentProviderId="b"
@@ -224,32 +195,25 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    // Verify sort order (allow re-renders)
-    const renderOrder = providerCardRenderSpy.mock.calls
-      .map((call) => call[0].provider.id)
+    const rows = Array.from(
+      container.querySelectorAll("tbody tr"),
+    ) as HTMLElement[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain("b");
+    expect(rows[1].textContent).toContain("a");
+
+    const sortableIds = useSortableMock.mock.calls
+      .map((call) => call[0].id)
       .filter((id, index, arr) => arr.indexOf(id) === index);
-    expect(renderOrder.slice(0, 2)).toEqual(["b", "a"]);
+    expect(sortableIds.slice(0, 2)).toEqual(["b", "a"]);
 
-    const firstRenderFor = (id: string) =>
-      providerCardRenderSpy.mock.calls.find((call) => call[0].provider.id === id)
-        ?.[0];
-
-    const firstB = firstRenderFor("b");
-    const firstA = firstRenderFor("a");
-
-    // Verify current provider marker
-    expect(firstB?.isCurrent).toBe(true);
-
-    // Drag attributes from useSortable
-    expect(firstB?.dragHandleProps?.attributes["data-dnd-id"]).toBe("b");
-    expect(firstA?.dragHandleProps?.attributes["data-dnd-id"]).toBe("a");
-
-    // Trigger action buttons
-    fireEvent.click(screen.getByTestId("switch-b"));
-    fireEvent.click(screen.getByTestId("edit-b"));
-    fireEvent.click(screen.getByTestId("duplicate-b"));
-    fireEvent.click(screen.getByTestId("usage-b"));
-    fireEvent.click(screen.getByTestId("delete-a"));
+    const actionsForB = within(rows[0]);
+    const actionsForA = within(rows[1]);
+    fireEvent.click(actionsForB.getByRole("button", { name: "switch" }));
+    fireEvent.click(actionsForB.getByRole("button", { name: "edit" }));
+    fireEvent.click(actionsForB.getByRole("button", { name: "duplicate" }));
+    fireEvent.click(actionsForB.getByRole("button", { name: "usage" }));
+    fireEvent.click(actionsForA.getByRole("button", { name: "delete" }));
 
     expect(handleSwitch).toHaveBeenCalledWith(providerB);
     expect(handleEdit).toHaveBeenCalledWith(providerB);
@@ -288,22 +252,18 @@ describe("ProviderList Component", () => {
     );
 
     fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const searchInput = screen.getByPlaceholderText(
-      "Search name, notes, or URL...",
-    );
-    // Initially both providers are rendered
-    expect(screen.getByTestId("provider-card-alpha")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-card-beta")).toBeInTheDocument();
+    const searchInput =
+      screen.getByPlaceholderText("输入关键字筛选名称/网址/备注/模型");
+    expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
+    expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "beta" } });
-    expect(screen.queryByTestId("provider-card-alpha")).not.toBeInTheDocument();
-    expect(screen.getByTestId("provider-card-beta")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
+    expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "gamma" } });
-    expect(screen.queryByTestId("provider-card-alpha")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("provider-card-beta")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("No providers match your search."),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
+    expect(screen.queryByText("Beta Works")).not.toBeInTheDocument();
+    expect(screen.getByText("没有符合筛选条件的提供商")).toBeInTheDocument();
   });
 });

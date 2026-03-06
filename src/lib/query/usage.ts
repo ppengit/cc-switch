@@ -157,6 +157,44 @@ export function useRequestDetail(requestId: string) {
   });
 }
 
+export function useRequestLogCleanupConfig() {
+  return useQuery({
+    queryKey: [...usageKeys.all, "request-log-cleanup-config"] as const,
+    queryFn: () => usageApi.getRequestLogCleanupConfig(),
+  });
+}
+
+export function useUpdateRequestLogCleanupConfig() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      enabled,
+      retentionDays,
+    }: {
+      enabled: boolean;
+      retentionDays: number;
+    }) => usageApi.updateRequestLogCleanupConfig(enabled, retentionDays),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [...usageKeys.all, "request-log-cleanup-config"] as const,
+      });
+    },
+  });
+}
+
+export function useCleanupRequestLogsNow() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ retentionDays }: { retentionDays?: number } = {}) =>
+      usageApi.cleanupRequestLogsNow(retentionDays),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    },
+  });
+}
+
 export function useModelPricing() {
   return useQuery({
     queryKey: usageKeys.pricing(),

@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useUsageSummary } from "@/lib/query/usage";
 import { Activity, DollarSign, Layers, Database, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
-import { fmtUsd, parseFiniteNumber } from "./format";
+import { fmtTokenCompact, fmtUsd, parseFiniteNumber } from "./format";
 
 interface UsageSummaryCardsProps {
   days: number;
@@ -52,7 +52,7 @@ export function UsageSummaryCards({
       },
       {
         title: t("usage.totalTokens"),
-        value: totalTokens.toLocaleString(),
+        value: fmtTokenCompact(totalTokens),
         icon: Layers,
         color: "text-purple-500",
         bg: "bg-purple-500/10",
@@ -61,13 +61,13 @@ export function UsageSummaryCards({
             <div className="flex justify-between items-center">
               <span>{t("usage.input")}</span>
               <span className="text-foreground/80">
-                {(inputTokens / 1000).toFixed(1)}k
+                {fmtTokenCompact(inputTokens)}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span>{t("usage.output")}</span>
               <span className="text-foreground/80">
-                {(outputTokens / 1000).toFixed(1)}k
+                {fmtTokenCompact(outputTokens)}
               </span>
             </div>
           </div>
@@ -75,7 +75,7 @@ export function UsageSummaryCards({
       },
       {
         title: t("usage.cacheTokens"),
-        value: totalCacheTokens.toLocaleString(),
+        value: fmtTokenCompact(totalCacheTokens),
         icon: Database,
         color: "text-orange-500",
         bg: "bg-orange-500/10",
@@ -84,13 +84,13 @@ export function UsageSummaryCards({
             <div className="flex justify-between items-center">
               <span>{t("usage.cacheWrite")}</span>
               <span className="text-foreground/80">
-                {(cacheWriteTokens / 1000).toFixed(1)}k
+                {fmtTokenCompact(cacheWriteTokens)}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span>{t("usage.cacheRead")}</span>
               <span className="text-foreground/80">
-                {(cacheReadTokens / 1000).toFixed(1)}k
+                {fmtTokenCompact(cacheReadTokens)}
               </span>
             </div>
           </div>

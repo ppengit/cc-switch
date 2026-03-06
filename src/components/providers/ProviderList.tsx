@@ -3,23 +3,15 @@ import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
   SortableContext,
   useSortable,
-  rectSortingStrategy,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowDown,
   ArrowUp,
+  ArrowUpDown,
   FlaskConical,
-  LayoutGrid,
-  List,
   Loader2,
   Save,
   Search,
@@ -41,11 +33,13 @@ import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
 import { useSettingsQuery } from "@/lib/query";
 import {
+  openclawKeys,
   useOpenClawLiveProviderIds,
   useOpenClawDefaultModel,
 } from "@/hooks/useOpenClaw";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -56,13 +50,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isWindows } from "@/lib/platform";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
-import { ProviderCard } from "@/components/providers/ProviderCard";
+import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
+import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
   useAddToFailoverQueue,
   useRemoveFromFailoverQueue,
+  useProviderHealth,
 } from "@/lib/query/failover";
 import {
   useAppProxyConfig,
@@ -98,6 +95,8 @@ import {
 import {
   hasCommonConfigSnippet,
   hasTomlCommonConfigSnippet,
+  extractCodexModelName,
+  setCodexModelName,
   updateCommonConfigSnippet,
   updateTomlCommonConfigSnippet,
   validateJsonConfig,
@@ -132,12 +131,21 @@ interface ProviderListProps {
   onSetAsDefault?: (provider: Provider) => void; // OpenClaw: set as default model
 }
 
-type ProviderViewMode = "list" | "card";
-type ProviderDensity = "compact" | "comfortable";
 type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
-
-const VIEW_MODE_STORAGE_KEY = "cc-switch:provider-view-mode-v2";
-const DENSITY_STORAGE_KEY = "cc-switch:provider-density-v2";
+type ProviderSortKey =
+  | "default"
+  | "name"
+  | "websiteUrl"
+  | "notes"
+  | "model"
+  | "status";
+type SortDirection = "asc" | "desc";
+type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
+interface ProviderStatusMeta {
+  label: string;
+  sortValue: number;
+  className: string;
+}
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
   label: string;
@@ -197,7 +205,6 @@ export function ProviderList({
   onOpenAppTerminal,
   onCreate,
   isLoading = false,
-  isProxyRunning = false,
   isProxyTakeover = false,
   activeProviderId,
   onSetAsDefault,
@@ -209,31 +216,6 @@ export function ProviderList({
     providers,
     appId,
   );
-
-  const [viewMode, setViewMode] = useState<ProviderViewMode>(() => {
-    if (typeof window === "undefined") return "card";
-    const saved = window.localStorage.getItem(
-      VIEW_MODE_STORAGE_KEY,
-    ) as ProviderViewMode | null;
-    return saved === "card" || saved === "list" ? saved : "card";
-  });
-  const [density, setDensity] = useState<ProviderDensity>(() => {
-    if (typeof window === "undefined") return "compact";
-    const saved = window.localStorage.getItem(
-      DENSITY_STORAGE_KEY,
-    ) as ProviderDensity | null;
-    return saved === "compact" || saved === "comfortable" ? saved : "compact";
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
-  }, [viewMode]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(DENSITY_STORAGE_KEY, density);
-  }, [density]);
 
   const { data: opencodeLiveIds } = useQuery({
     queryKey: ["opencodeLiveProviderIds"],
@@ -609,17 +591,6 @@ export function ProviderList({
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
   const { data: currentOmoSlimId } = useCurrentOmoSlimProviderId(isOpenCode);
 
-  const getFailoverPriority = useCallback(
-    (providerId: string): number | undefined => {
-      if (!isAutoFailoverActive || !failoverQueue) return undefined;
-      const index = failoverQueue.findIndex(
-        (item) => item.providerId === providerId,
-      );
-      return index >= 0 ? index + 1 : undefined;
-    },
-    [isAutoFailoverActive, failoverQueue],
-  );
-
   const isInFailoverQueue = useCallback(
     (providerId: string): boolean => {
       if (!isAutoFailoverActive || !failoverQueue) return false;
@@ -746,14 +717,6 @@ export function ProviderList({
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
   );
-  const sessionOccupancyMap = useMemo(() => {
-    return new Map(
-      providerSessionOccupancy.map((item) => [
-        item.providerId,
-        item.sessionCount,
-      ]),
-    );
-  }, [providerSessionOccupancy]);
   const activeSessionCount = useMemo(
     () =>
       providerSessionOccupancy.reduce(
@@ -856,9 +819,31 @@ export function ProviderList({
     });
   }, [appProxyConfig, sessionRoutingForm, t, updateAppProxyConfig]);
 
-  const [searchTerm, setSearchTerm] = useState("");
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [filterField, setFilterField] = useState<ProviderFilterField>("all");
+  const [filterKeyword, setFilterKeyword] = useState("");
+  const [selectedModelFilters, setSelectedModelFilters] = useState<string[]>(
+    [],
+  );
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const [sortState, setSortState] = useState<{
+    key: ProviderSortKey;
+    direction: SortDirection;
+  }>({
+    key: "default",
+    direction: "asc",
+  });
+  const [selectedProviderIds, setSelectedProviderIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [isBatchModelDialogOpen, setIsBatchModelDialogOpen] = useState(false);
+  const [isBatchDeleteDialogOpen, setIsBatchDeleteDialogOpen] = useState(false);
+  const [batchCodexModel, setBatchCodexModel] = useState("");
+  const [batchGeminiModel, setBatchGeminiModel] = useState("");
+  const [batchClaudePrimaryModel, setBatchClaudePrimaryModel] = useState("");
+  const [batchClaudeReasoningModel, setBatchClaudeReasoningModel] =
+    useState("");
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
 
   // Import current live config as default provider
   const parseGeminiSnippet = useCallback(
@@ -1721,28 +1706,16 @@ export function ProviderList({
       const key = (event.key ?? "").toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
-        setIsSearchOpen(true);
-        return;
-      }
-
-      if (key === "escape") {
-        setIsSearchOpen(false);
+        requestAnimationFrame(() => {
+          filterInputRef.current?.focus();
+          filterInputRef.current?.select();
+        });
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  useEffect(() => {
-    if (isSearchOpen) {
-      const frame = requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-  }, [isSearchOpen]);
 
   useEffect(() => {
     const container = listScrollRef.current;
@@ -1765,26 +1738,815 @@ export function ProviderList({
     container.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  const filteredProviders = useMemo(() => {
-    const keyword = (searchTerm ?? "").trim().toLowerCase();
-    if (!keyword) return sortedProviders;
-    return sortedProviders.filter((provider) => {
-      const fields = [provider.name, provider.notes, provider.websiteUrl];
-      return fields.some((field) => {
-        const text = field?.toString();
-        return text ? text.toLowerCase().includes(keyword) : false;
-      });
-    });
-  }, [searchTerm, sortedProviders]);
+  const isAdditiveMode = appId === "opencode" || appId === "openclaw";
 
-  const listGapClass = density === "compact" ? "space-y-2" : "space-y-3";
-  const gridGapClass = density === "compact" ? "gap-3" : "gap-4";
-  const listLayoutClass =
-    viewMode === "card"
-      ? `grid ${gridGapClass} sm:grid-cols-2 xl:grid-cols-3`
-      : listGapClass;
-  const sortingStrategy =
-    viewMode === "card" ? rectSortingStrategy : verticalListSortingStrategy;
+  const isCurrentProvider = useCallback(
+    (provider: Provider): boolean => {
+      if (provider.category === "omo") {
+        return provider.id === (currentOmoId || "");
+      }
+      if (provider.category === "omo-slim") {
+        return provider.id === (currentOmoSlimId || "");
+      }
+      return provider.id === currentProviderId;
+    },
+    [currentOmoId, currentOmoSlimId, currentProviderId],
+  );
+
+  const resolveProviderModelNames = useCallback(
+    (provider: Provider): string[] => {
+      const config = isPlainObject(provider.settingsConfig)
+        ? (provider.settingsConfig as Record<string, unknown>)
+        : {};
+
+      if (appId === "codex") {
+        const configText =
+          typeof config.config === "string" ? config.config : "";
+        const modelName = extractCodexModelName(configText);
+        return modelName?.trim() ? [modelName.trim()] : [];
+      }
+
+      if (appId === "claude") {
+        const env = isPlainObject(config.env)
+          ? (config.env as Record<string, unknown>)
+          : {};
+        return Array.from(
+          new Set(
+            [
+              env.ANTHROPIC_MODEL,
+              env.ANTHROPIC_REASONING_MODEL,
+              env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+              env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+              env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+            ]
+              .map((value) => (typeof value === "string" ? value.trim() : ""))
+              .filter((value) => value.length > 0),
+          ),
+        );
+      }
+
+      if (appId === "gemini") {
+        const env = isPlainObject(config.env)
+          ? (config.env as Record<string, unknown>)
+          : {};
+        const model =
+          typeof env.GEMINI_MODEL === "string" ? env.GEMINI_MODEL : "";
+        return model.trim() ? [model.trim()] : [];
+      }
+
+      if (appId === "opencode") {
+        const models = isPlainObject(config.models)
+          ? (config.models as Record<string, unknown>)
+          : null;
+        return models
+          ? Object.keys(models)
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0)
+          : [];
+      }
+
+      if (appId === "openclaw") {
+        const models = Array.isArray(config.models)
+          ? (config.models as Array<Record<string, unknown>>)
+          : [];
+        return Array.from(
+          new Set(
+            models
+              .map((item) => {
+                if (isPlainObject(item) && typeof item.id === "string") {
+                  return item.id;
+                }
+                if (isPlainObject(item) && typeof item.name === "string") {
+                  return item.name;
+                }
+                return "";
+              })
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0),
+          ),
+        );
+      }
+
+      return [];
+    },
+    [appId],
+  );
+
+  const resolveProviderModelSummary = useCallback(
+    (provider: Provider): string => {
+      const modelNames = resolveProviderModelNames(provider);
+      if (modelNames.length === 0) {
+        return "—";
+      }
+      return modelNames.join(", ");
+    },
+    [resolveProviderModelNames],
+  );
+
+  const resolveProviderStatus = useCallback(
+    (provider: Provider): ProviderStatusMeta => {
+      if (provider.category === "omo" || provider.category === "omo-slim") {
+        const current = isCurrentProvider(provider);
+        return current
+          ? {
+              label: t("provider.inUse", { defaultValue: "使用中" }),
+              sortValue: 3,
+              className:
+                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+            }
+          : {
+              label: t("provider.disabled", { defaultValue: "未启用" }),
+              sortValue: 1,
+              className: "bg-muted text-muted-foreground",
+            };
+      }
+
+      if (appId === "openclaw") {
+        if (isProviderDefaultModel(provider.id)) {
+          return {
+            label: t("provider.isDefault", { defaultValue: "默认模型" }),
+            sortValue: 4,
+            className:
+              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          };
+        }
+        const inConfig = isProviderInConfig(provider.id);
+        return inConfig
+          ? {
+              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+              sortValue: 3,
+              className:
+                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+            }
+          : {
+              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
+              sortValue: 1,
+              className: "bg-muted text-muted-foreground",
+            };
+      }
+
+      if (appId === "opencode") {
+        const inConfig = isProviderInConfig(provider.id);
+        return inConfig
+          ? {
+              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+              sortValue: 3,
+              className:
+                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+            }
+          : {
+              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
+              sortValue: 1,
+              className: "bg-muted text-muted-foreground",
+            };
+      }
+
+      if (isProxyTakeover && activeProviderId === provider.id) {
+        return {
+          label: t("provider.activeRouting", { defaultValue: "当前路由" }),
+          sortValue: 5,
+          className:
+            "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+        };
+      }
+
+      const current = isCurrentProvider(provider);
+      return current
+        ? {
+            label: t("provider.inUse", { defaultValue: "使用中" }),
+            sortValue: 4,
+            className:
+              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          }
+        : {
+            label: t("provider.available", { defaultValue: "可切换" }),
+            sortValue: 2,
+            className: "bg-muted text-muted-foreground",
+          };
+    },
+    [
+      activeProviderId,
+      appId,
+      isCurrentProvider,
+      isProviderDefaultModel,
+      isProviderInConfig,
+      isProxyTakeover,
+      t,
+    ],
+  );
+
+  const availableModelFilters = useMemo(() => {
+    const modelSet = new Set<string>();
+    for (const provider of sortedProviders) {
+      for (const modelName of resolveProviderModelNames(provider)) {
+        modelSet.add(modelName);
+      }
+    }
+    return Array.from(modelSet).sort((left, right) =>
+      left.localeCompare(right),
+    );
+  }, [resolveProviderModelNames, sortedProviders]);
+
+  useEffect(() => {
+    setSelectedModelFilters((current) =>
+      current.filter((value) => availableModelFilters.includes(value)),
+    );
+  }, [availableModelFilters]);
+
+  const selectedModelFilterSet = useMemo(
+    () => new Set(selectedModelFilters),
+    [selectedModelFilters],
+  );
+
+  const filteredProviders = useMemo(() => {
+    const keyword = (filterKeyword ?? "").trim().toLowerCase();
+    return sortedProviders.filter((provider) => {
+      const modelSummary = resolveProviderModelSummary(provider).toLowerCase();
+      const fieldMap: Record<Exclude<ProviderFilterField, "all">, string> = {
+        name: provider.name.toLowerCase(),
+        websiteUrl: (provider.websiteUrl ?? "").toLowerCase(),
+        notes: (provider.notes ?? "").toLowerCase(),
+        model: modelSummary === "—" ? "" : modelSummary,
+      };
+
+      const matchesKeyword =
+        !keyword ||
+        (filterField === "all"
+          ? Object.values(fieldMap).some((value) => value.includes(keyword))
+          : fieldMap[filterField].includes(keyword));
+
+      if (!matchesKeyword) {
+        return false;
+      }
+
+      if (selectedModelFilterSet.size === 0) {
+        return true;
+      }
+
+      const modelNames = resolveProviderModelNames(provider);
+      return modelNames.some((name) => selectedModelFilterSet.has(name));
+    });
+  }, [
+    filterField,
+    filterKeyword,
+    resolveProviderModelNames,
+    resolveProviderModelSummary,
+    selectedModelFilterSet,
+    sortedProviders,
+  ]);
+
+  const sortedDisplayProviders = useMemo(() => {
+    const directionFactor = sortState.direction === "asc" ? 1 : -1;
+    const indexedProviders = filteredProviders.map((provider, index) => ({
+      provider,
+      index,
+    }));
+
+    const compareText = (left: string, right: string) =>
+      left.localeCompare(right) * directionFactor;
+
+    indexedProviders.sort((leftItem, rightItem) => {
+      const left = leftItem.provider;
+      const right = rightItem.provider;
+      let comparison = 0;
+
+      if (sortState.key === "default") {
+        comparison = (leftItem.index - rightItem.index) * directionFactor;
+      } else if (sortState.key === "name") {
+        comparison = compareText(left.name, right.name);
+      } else if (sortState.key === "websiteUrl") {
+        comparison = compareText(left.websiteUrl ?? "", right.websiteUrl ?? "");
+      } else if (sortState.key === "notes") {
+        comparison = compareText(left.notes ?? "", right.notes ?? "");
+      } else if (sortState.key === "model") {
+        comparison = compareText(
+          resolveProviderModelSummary(left),
+          resolveProviderModelSummary(right),
+        );
+      } else if (sortState.key === "status") {
+        comparison =
+          (resolveProviderStatus(left).sortValue -
+            resolveProviderStatus(right).sortValue) *
+          directionFactor;
+      }
+
+      if (comparison !== 0) {
+        return comparison;
+      }
+
+      return leftItem.index - rightItem.index;
+    });
+
+    return indexedProviders.map((item) => item.provider);
+  }, [
+    filteredProviders,
+    resolveProviderModelSummary,
+    resolveProviderStatus,
+    sortState.direction,
+    sortState.key,
+  ]);
+
+  const isDragEnabled =
+    sortState.key === "default" && sortState.direction === "asc";
+
+  const displayedProviderIds = useMemo(
+    () => sortedDisplayProviders.map((provider) => provider.id),
+    [sortedDisplayProviders],
+  );
+
+  useEffect(() => {
+    const validIds = new Set(sortedProviders.map((provider) => provider.id));
+    setSelectedProviderIds((current) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const id of Object.keys(current)) {
+        if (current[id] && validIds.has(id)) {
+          next[id] = true;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sortedProviders]);
+
+  const selectedProviders = useMemo(
+    () =>
+      sortedProviders.filter((provider) => selectedProviderIds[provider.id]),
+    [selectedProviderIds, sortedProviders],
+  );
+
+  const selectedCount = selectedProviders.length;
+
+  const allVisibleSelected =
+    displayedProviderIds.length > 0 &&
+    displayedProviderIds.every((id) => selectedProviderIds[id]);
+  const someVisibleSelected =
+    displayedProviderIds.some((id) => selectedProviderIds[id]) &&
+    !allVisibleSelected;
+
+  const toggleProviderSelection = useCallback(
+    (providerId: string, checked: boolean) => {
+      setSelectedProviderIds((current) => {
+        const next = { ...current };
+        if (checked) {
+          next[providerId] = true;
+        } else {
+          delete next[providerId];
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const toggleSelectAllVisible = useCallback(
+    (checked: boolean) => {
+      setSelectedProviderIds((current) => {
+        const next = { ...current };
+        for (const providerId of displayedProviderIds) {
+          if (checked) {
+            next[providerId] = true;
+          } else {
+            delete next[providerId];
+          }
+        }
+        return next;
+      });
+    },
+    [displayedProviderIds],
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelectedProviderIds({});
+  }, []);
+
+  const canDeleteProvider = useCallback(
+    (provider: Provider): boolean => {
+      const isOmoCategory =
+        provider.category === "omo" || provider.category === "omo-slim";
+      if (isAdditiveMode || isOmoCategory) return true;
+      return !isCurrentProvider(provider);
+    },
+    [isAdditiveMode, isCurrentProvider],
+  );
+
+  const deletableSelectedProviders = useMemo(
+    () => selectedProviders.filter((provider) => canDeleteProvider(provider)),
+    [canDeleteProvider, selectedProviders],
+  );
+
+  const supportsBatchModelEdit =
+    appId === "claude" || appId === "codex" || appId === "gemini";
+
+  const modelFilterLabel =
+    selectedModelFilters.length > 0
+      ? t("provider.modelFilterSelected", {
+          defaultValue: "模型 ({{count}})",
+          count: selectedModelFilters.length,
+        })
+      : t("provider.modelFilter", {
+          defaultValue: "模型筛选",
+        });
+
+  const handleSortChange = useCallback((key: ProviderSortKey) => {
+    setSortState((current) => {
+      if (current.key === key) {
+        return {
+          key,
+          direction: current.direction === "asc" ? "desc" : "asc",
+        };
+      }
+      return { key, direction: "asc" };
+    });
+  }, []);
+
+  const getSortIcon = useCallback(
+    (key: ProviderSortKey) => {
+      if (sortState.key !== key) {
+        return <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/70" />;
+      }
+      return sortState.direction === "asc" ? (
+        <ArrowUp className="h-3.5 w-3.5 text-foreground" />
+      ) : (
+        <ArrowDown className="h-3.5 w-3.5 text-foreground" />
+      );
+    },
+    [sortState.direction, sortState.key],
+  );
+
+  const handleApplyBatchModelUpdate = useCallback(async () => {
+    if (!supportsBatchModelEdit || selectedProviders.length === 0) return;
+
+    const codexModel = batchCodexModel.trim();
+    const geminiModel = batchGeminiModel.trim();
+    const claudePrimaryModel = batchClaudePrimaryModel.trim();
+    const claudeReasoningModel = batchClaudeReasoningModel.trim();
+
+    if (appId === "codex" && !codexModel) {
+      toast.error(
+        t("provider.batchModelRequired", {
+          defaultValue: "请填写模型名称",
+        }),
+      );
+      return;
+    }
+
+    if (appId === "gemini" && !geminiModel) {
+      toast.error(
+        t("provider.batchModelRequired", {
+          defaultValue: "请填写模型名称",
+        }),
+      );
+      return;
+    }
+
+    if (appId === "claude" && !claudePrimaryModel && !claudeReasoningModel) {
+      toast.error(
+        t("provider.batchClaudeModelRequired", {
+          defaultValue: "请至少填写主模型或推理模型",
+        }),
+      );
+      return;
+    }
+
+    setIsBatchUpdating(true);
+    const failed: Array<{ name: string; reason: string }> = [];
+    let updatedCount = 0;
+
+    try {
+      for (const provider of selectedProviders) {
+        try {
+          const config = isPlainObject(provider.settingsConfig)
+            ? ({ ...provider.settingsConfig } as Record<string, unknown>)
+            : {};
+          let nextSettingsConfig = config;
+
+          if (appId === "codex") {
+            const configText =
+              typeof config.config === "string" ? config.config : "";
+            nextSettingsConfig = {
+              ...config,
+              config: setCodexModelName(configText, codexModel),
+            };
+          } else if (appId === "gemini") {
+            const env = isPlainObject(config.env)
+              ? ({ ...config.env } as Record<string, unknown>)
+              : {};
+            nextSettingsConfig = {
+              ...config,
+              env: {
+                ...env,
+                GEMINI_MODEL: geminiModel,
+              },
+            };
+          } else if (appId === "claude") {
+            const env = isPlainObject(config.env)
+              ? ({ ...config.env } as Record<string, unknown>)
+              : {};
+            const nextEnv: Record<string, unknown> = { ...env };
+            if (claudePrimaryModel) {
+              nextEnv.ANTHROPIC_MODEL = claudePrimaryModel;
+            }
+            if (claudeReasoningModel) {
+              nextEnv.ANTHROPIC_REASONING_MODEL = claudeReasoningModel;
+            }
+            nextSettingsConfig = {
+              ...config,
+              env: nextEnv,
+            };
+          }
+
+          const updatedProvider: Provider = {
+            ...provider,
+            settingsConfig: nextSettingsConfig as Record<string, any>,
+          };
+          await providersApi.update(updatedProvider, appId);
+          updatedCount += 1;
+        } catch (error) {
+          failed.push({
+            name: provider.name,
+            reason:
+              error instanceof Error
+                ? error.message
+                : t("common.unknownError", { defaultValue: "未知错误" }),
+          });
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      try {
+        await providersApi.updateTrayMenu();
+      } catch (trayError) {
+        console.error(
+          "[ProviderList] Failed to update tray menu after batch model update",
+          trayError,
+        );
+      }
+
+      if (updatedCount > 0) {
+        toast.success(
+          t("provider.batchModelUpdateSuccess", {
+            defaultValue: "已批量更新 {{count}} 个提供商",
+            count: updatedCount,
+          }),
+        );
+        setIsBatchModelDialogOpen(false);
+      }
+
+      if (failed.length > 0) {
+        toast.error(
+          t("provider.batchModelUpdatePartialFailed", {
+            defaultValue: "部分提供商更新失败（{{count}} 个）",
+            count: failed.length,
+          }),
+          {
+            description: `${failed[0]?.name ?? ""}: ${failed[0]?.reason ?? ""}`,
+          },
+        );
+      }
+    } finally {
+      setIsBatchUpdating(false);
+    }
+  }, [
+    appId,
+    batchClaudePrimaryModel,
+    batchClaudeReasoningModel,
+    batchCodexModel,
+    batchGeminiModel,
+    queryClient,
+    selectedProviders,
+    supportsBatchModelEdit,
+    t,
+  ]);
+
+  const handleBatchDelete = useCallback(async () => {
+    if (deletableSelectedProviders.length === 0) {
+      toast.error(
+        t("provider.batchDeleteNone", {
+          defaultValue: "当前选中项不可删除",
+        }),
+      );
+      return;
+    }
+
+    setIsBatchDeleting(true);
+    const failed: Array<{ name: string; reason: string }> = [];
+    let deletedCount = 0;
+
+    try {
+      for (const provider of deletableSelectedProviders) {
+        try {
+          await providersApi.delete(provider.id, appId);
+          deletedCount += 1;
+        } catch (error) {
+          failed.push({
+            name: provider.name,
+            reason:
+              error instanceof Error
+                ? error.message
+                : t("common.unknownError", { defaultValue: "未知错误" }),
+          });
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: ["failoverQueue", appId],
+      });
+      if (appId === "opencode") {
+        await queryClient.invalidateQueries({
+          queryKey: ["opencodeLiveProviderIds"],
+        });
+      }
+      if (appId === "openclaw") {
+        await queryClient.invalidateQueries({
+          queryKey: openclawKeys.liveProviderIds,
+        });
+      }
+
+      if (deletedCount > 0) {
+        toast.success(
+          t("provider.batchDeleteSuccess", {
+            defaultValue: "已删除 {{count}} 个提供商",
+            count: deletedCount,
+          }),
+        );
+      }
+
+      if (failed.length > 0) {
+        toast.error(
+          t("provider.batchDeletePartialFailed", {
+            defaultValue: "部分提供商删除失败（{{count}} 个）",
+            count: failed.length,
+          }),
+          {
+            description: `${failed[0]?.name ?? ""}: ${failed[0]?.reason ?? ""}`,
+          },
+        );
+      }
+
+      setSelectedProviderIds((current) => {
+        const next = { ...current };
+        for (const provider of deletableSelectedProviders) {
+          delete next[provider.id];
+        }
+        return next;
+      });
+      setIsBatchDeleteDialogOpen(false);
+    } finally {
+      setIsBatchDeleting(false);
+    }
+  }, [appId, deletableSelectedProviders, queryClient, t]);
+
+  const renderProviderTable = () => (
+    <DndContext
+      sensors={isDragEnabled ? sensors : undefined}
+      collisionDetection={closestCenter}
+      onDragEnd={(event) => {
+        if (!isDragEnabled) return;
+        void handleDragEnd(event);
+      }}
+    >
+      <SortableContext
+        items={sortedDisplayProviders.map((provider) => provider.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="rounded-xl border border-border/70 overflow-hidden">
+          <div className="overflow-auto">
+            <table className="min-w-[1120px] w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-background">
+                <tr className="border-b border-border/70">
+                  <th className="sticky left-0 z-30 w-12 bg-background px-3 py-2 text-left">
+                    <Checkbox
+                      checked={
+                        allVisibleSelected
+                          ? true
+                          : someVisibleSelected
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={(checked) =>
+                        toggleSelectAllVisible(checked === true)
+                      }
+                      aria-label={t("common.selectAll", {
+                        defaultValue: "全选当前筛选结果",
+                      })}
+                    />
+                  </th>
+                  <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left" />
+                  <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium"
+                      onClick={() => handleSortChange("name")}
+                    >
+                      {t("provider.providerName", { defaultValue: "提供商" })}
+                      {getSortIcon("name")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium"
+                      onClick={() => handleSortChange("websiteUrl")}
+                    >
+                      {t("provider.website", { defaultValue: "官网链接" })}
+                      {getSortIcon("websiteUrl")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium"
+                      onClick={() => handleSortChange("notes")}
+                    >
+                      {t("provider.notes", { defaultValue: "备注" })}
+                      {getSortIcon("notes")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium"
+                      onClick={() => handleSortChange("model")}
+                    >
+                      {t("provider.model", { defaultValue: "模型" })}
+                      {getSortIcon("model")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-left">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium"
+                      onClick={() => handleSortChange("status")}
+                    >
+                      {t("provider.status", { defaultValue: "默认状态" })}
+                      {getSortIcon("status")}
+                    </button>
+                  </th>
+                  <th className="sticky right-0 z-30 w-[360px] bg-background px-3 py-2 text-left">
+                    {t("common.actions", { defaultValue: "操作" })}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDisplayProviders.map((provider, index) => (
+                  <SortableProviderTableRow
+                    key={provider.id}
+                    provider={provider}
+                    rowIndex={index}
+                    dragEnabled={isDragEnabled}
+                    isSelected={Boolean(selectedProviderIds[provider.id])}
+                    onToggleSelected={toggleProviderSelection}
+                    modelSummary={resolveProviderModelSummary(provider)}
+                    statusMeta={resolveProviderStatus(provider)}
+                    isCurrent={isCurrentProvider(provider)}
+                    isInConfig={isProviderInConfig(provider.id)}
+                    isOmo={provider.category === "omo"}
+                    isOmoSlim={provider.category === "omo-slim"}
+                    appId={appId}
+                    onSwitch={onSwitch}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onRemoveFromConfig={onRemoveFromConfig}
+                    onDisableOmo={onDisableOmo}
+                    onDisableOmoSlim={onDisableOmoSlim}
+                    onDuplicate={onDuplicate}
+                    onConfigureUsage={onConfigureUsage}
+                    onOpenWebsite={onOpenWebsite}
+                    onOpenTerminalWithMode={providerTerminalHandler}
+                    recentTerminalTargets={getRecentTerminalTargets(
+                      provider.id,
+                    )}
+                    onClearRecentTerminals={() =>
+                      void handleClearRecentTerminals(provider.id)
+                    }
+                    onTest={enableStreamCheck ? handleTestProvider : undefined}
+                    isTesting={
+                      enableStreamCheck ? isChecking(provider.id) : false
+                    }
+                    isProxyTakeover={isProxyTakeover}
+                    isAutoFailoverEnabled={isAutoFailoverActive}
+                    isInFailoverQueue={isInFailoverQueue(provider.id)}
+                    onToggleFailover={(enabled) =>
+                      handleToggleFailover(provider.id, enabled)
+                    }
+                    isDefaultModel={isProviderDefaultModel(provider.id)}
+                    onSetAsDefault={
+                      onSetAsDefault
+                        ? () => onSetAsDefault(provider)
+                        : undefined
+                    }
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </SortableContext>
+    </DndContext>
+  );
 
   if (isLoading) {
     return (
@@ -1808,148 +2570,9 @@ export function ProviderList({
     );
   }
 
-  const renderProviderList = () => (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext
-        items={filteredProviders.map((provider) => provider.id)}
-        strategy={sortingStrategy}
-      >
-        <div className={listLayoutClass}>
-          {filteredProviders.map((provider) => {
-            const isOmo = provider.category === "omo";
-            const isOmoSlim = provider.category === "omo-slim";
-            const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
-            const isOmoSlimCurrent =
-              isOmoSlim && provider.id === (currentOmoSlimId || "");
-            return (
-              <SortableProviderCard
-                key={provider.id}
-                provider={provider}
-                isCurrent={
-                  isOmo
-                    ? isOmoCurrent
-                    : isOmoSlim
-                      ? isOmoSlimCurrent
-                      : provider.id === currentProviderId
-                }
-                appId={appId}
-                isInConfig={isProviderInConfig(provider.id)}
-                isOmo={isOmo}
-                isOmoSlim={isOmoSlim}
-                onSwitch={onSwitch}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onRemoveFromConfig={onRemoveFromConfig}
-                onDisableOmo={onDisableOmo}
-                onDisableOmoSlim={onDisableOmoSlim}
-                onDuplicate={onDuplicate}
-                onConfigureUsage={onConfigureUsage}
-                onOpenWebsite={onOpenWebsite}
-                onOpenTerminalWithMode={providerTerminalHandler}
-                recentTerminalTargets={getRecentTerminalTargets(provider.id)}
-                onClearRecentTerminals={() =>
-                  void handleClearRecentTerminals(provider.id)
-                }
-                onTest={enableStreamCheck ? handleTestProvider : undefined}
-                isTesting={enableStreamCheck ? isChecking(provider.id) : false}
-                isProxyRunning={isProxyRunning}
-                isProxyTakeover={isProxyTakeover}
-                viewMode={viewMode}
-                isAutoFailoverEnabled={isAutoFailoverActive}
-                failoverPriority={getFailoverPriority(provider.id)}
-                isInFailoverQueue={isInFailoverQueue(provider.id)}
-                onToggleFailover={(enabled) =>
-                  handleToggleFailover(provider.id, enabled)
-                }
-                activeProviderId={activeProviderId}
-                density={density}
-                sessionOccupancyCount={
-                  sessionOccupancyMap.get(provider.id) ?? 0
-                }
-                // OpenClaw: default model
-                isDefaultModel={isProviderDefaultModel(provider.id)}
-                onSetAsDefault={
-                  onSetAsDefault ? () => onSetAsDefault(provider) : undefined
-                }
-              />
-            );
-          })}
-        </div>
-      </SortableContext>
-    </DndContext>
-  );
-
   return (
     <div className="flex flex-col h-full min-h-0 gap-4">
-      <AnimatePresence>
-        {isSearchOpen && (
-          <motion.div
-            key="provider-search"
-            initial={{ opacity: 0, y: -8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.98 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
-            className="fixed left-1/2 top-[6.5rem] z-40 w-[min(90vw,26rem)] -translate-x-1/2 sm:right-6 sm:left-auto sm:translate-x-0"
-          >
-            <div className="p-4 space-y-3 border shadow-md rounded-2xl border-white/10 bg-background/95 shadow-black/20 backdrop-blur-md">
-              <div className="relative flex items-center gap-2">
-                <Search className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none left-3 top-1/2 text-muted-foreground" />
-                <Input
-                  ref={searchInputRef}
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder={t("provider.searchPlaceholder", {
-                    defaultValue: "Search name, notes, or URL...",
-                  })}
-                  aria-label={t("provider.searchAriaLabel", {
-                    defaultValue: "Search providers",
-                  })}
-                  className="pr-16 pl-9"
-                />
-                {searchTerm && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="absolute text-xs -translate-y-1/2 right-11 top-1/2"
-                    onClick={() => setSearchTerm("")}
-                  >
-                    {t("common.clear", { defaultValue: "Clear" })}
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="ml-auto"
-                  onClick={() => setIsSearchOpen(false)}
-                  aria-label={t("provider.searchCloseAriaLabel", {
-                    defaultValue: "Close provider search",
-                  })}
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                <span>
-                  {t("provider.searchScopeHint", {
-                    defaultValue: "Matches provider name, notes, and URL.",
-                  })}
-                </span>
-                <span>
-                  {t("provider.searchCloseHint", {
-                    defaultValue: "Press Esc to close",
-                  })}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div className="sticky top-0 z-20 -mx-1 px-1 py-2 bg-background/95 backdrop-blur-md border-b border-border/60">
+      <div className="-mx-1 border-b border-border/60 bg-background/95 px-1 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {supportsCommonConfig && (
@@ -2142,97 +2765,388 @@ export function ProviderList({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "h-7 px-2 text-xs",
-                  viewMode === "list"
-                    ? "bg-background shadow-sm text-foreground"
-                    : "text-muted-foreground",
-                )}
-                onClick={() => setViewMode("list")}
-                title={t("provider.viewModeList", { defaultValue: "列表" })}
-              >
-                <List className="h-3.5 w-3.5 mr-1" />
-                {t("provider.viewModeList", { defaultValue: "列表" })}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "h-7 px-2 text-xs",
-                  viewMode === "card"
-                    ? "bg-background shadow-sm text-foreground"
-                    : "text-muted-foreground",
-                )}
-                onClick={() => setViewMode("card")}
-                title={t("provider.viewModeCard", { defaultValue: "卡片" })}
-              >
-                <LayoutGrid className="h-3.5 w-3.5 mr-1" />
-                {t("provider.viewModeCard", { defaultValue: "卡片" })}
-              </Button>
-            </div>
-
-            <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "h-7 px-2 text-xs",
-                  density === "compact"
-                    ? "bg-background shadow-sm text-foreground"
-                    : "text-muted-foreground",
-                )}
-                onClick={() => setDensity("compact")}
-                title={t("provider.viewDensityCompact", {
-                  defaultValue: "紧凑",
+            {selectedCount > 0 && (
+              <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {t("common.selectedCount", {
+                  defaultValue: "已选 {{count}} 项",
+                  count: selectedCount,
                 })}
-              >
-                {t("provider.viewDensityCompact", { defaultValue: "紧凑" })}
-              </Button>
+              </span>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setIsBatchModelDialogOpen(true)}
+              disabled={!supportsBatchModelEdit || selectedCount === 0}
+            >
+              {t("provider.batchUpdateModel", { defaultValue: "批量修改模型" })}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-800/80 dark:text-rose-300 dark:hover:bg-rose-900/20"
+              onClick={() => setIsBatchDeleteDialogOpen(true)}
+              disabled={selectedCount === 0}
+            >
+              {t("provider.batchDelete", { defaultValue: "批量删除" })}
+            </Button>
+            {selectedCount > 0 && (
               <Button
                 type="button"
-                variant="ghost"
                 size="sm"
-                className={cn(
-                  "h-7 px-2 text-xs",
-                  density === "comfortable"
-                    ? "bg-background shadow-sm text-foreground"
-                    : "text-muted-foreground",
-                )}
-                onClick={() => setDensity("comfortable")}
-                title={t("provider.viewDensityComfortable", {
-                  defaultValue: "宽松",
-                })}
+                variant="ghost"
+                onClick={clearSelection}
               >
-                {t("provider.viewDensityComfortable", { defaultValue: "宽松" })}
+                {t("common.clearSelection", { defaultValue: "清空选择" })}
               </Button>
-            </div>
+            )}
           </div>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <div className="w-[190px] space-y-1">
+            <Label className="text-xs text-muted-foreground">
+              {t("provider.filterField", { defaultValue: "筛选字段" })}
+            </Label>
+            <select
+              value={filterField}
+              onChange={(event) =>
+                setFilterField(event.target.value as ProviderFilterField)
+              }
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="all">
+                {t("provider.filterAll", { defaultValue: "全部字段" })}
+              </option>
+              <option value="name">
+                {t("provider.filterByName", { defaultValue: "供应商名称" })}
+              </option>
+              <option value="websiteUrl">
+                {t("provider.filterByWebsite", { defaultValue: "官网链接" })}
+              </option>
+              <option value="notes">
+                {t("provider.filterByNotes", { defaultValue: "备注" })}
+              </option>
+              <option value="model">
+                {t("provider.filterByModel", { defaultValue: "模型名称" })}
+              </option>
+            </select>
+          </div>
+
+          <div className="relative min-w-[220px] flex-1 space-y-1">
+            <Label className="text-xs text-muted-foreground">
+              {t("provider.fuzzyFilter", { defaultValue: "模糊筛选" })}
+            </Label>
+            <Search className="pointer-events-none absolute left-2.5 top-[30px] h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              ref={filterInputRef}
+              value={filterKeyword}
+              onChange={(event) => setFilterKeyword(event.target.value)}
+              placeholder={t("provider.searchPlaceholder", {
+                defaultValue: "输入关键字筛选名称/网址/备注/模型",
+              })}
+              className="h-8 pl-8 pr-8 text-sm"
+            />
+            {filterKeyword.trim().length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-[24px] h-6 w-6"
+                onClick={() => setFilterKeyword("")}
+                aria-label={t("common.clear", { defaultValue: "清空" })}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">
+              {t("provider.modelFilter", {
+                defaultValue: "模型名称 distinct 多选",
+              })}
+            </Label>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" className="h-8">
+                  {modelFilterLabel}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="max-h-72 w-64 overflow-y-auto"
+              >
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    setSelectedModelFilters([]);
+                  }}
+                  disabled={selectedModelFilters.length === 0}
+                >
+                  {t("common.clear", { defaultValue: "清空" })}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {availableModelFilters.length === 0 ? (
+                  <DropdownMenuItem disabled>
+                    {t("provider.noModelOptions", {
+                      defaultValue: "暂无模型可选",
+                    })}
+                  </DropdownMenuItem>
+                ) : (
+                  availableModelFilters.map((modelName) => (
+                    <DropdownMenuCheckboxItem
+                      key={modelName}
+                      checked={selectedModelFilterSet.has(modelName)}
+                      onCheckedChange={(checked) => {
+                        setSelectedModelFilters((current) => {
+                          if (checked === true) {
+                            if (current.includes(modelName)) return current;
+                            return [...current, modelName];
+                          }
+                          return current.filter((item) => item !== modelName);
+                        });
+                      }}
+                      onSelect={(event) => event.preventDefault()}
+                    >
+                      <span
+                        className="max-w-[220px] truncate"
+                        title={modelName}
+                      >
+                        {modelName}
+                      </span>
+                    </DropdownMenuCheckboxItem>
+                  ))
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={() => setSortState({ key: "default", direction: "asc" })}
+            disabled={
+              sortState.key === "default" && sortState.direction === "asc"
+            }
+          >
+            {t("provider.defaultOrder", { defaultValue: "默认顺序" })}
+          </Button>
+
+          {!isDragEnabled && (
+            <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+              {t("provider.dragDisabledForSort", {
+                defaultValue: "当前为临时排序，拖拽已禁用",
+              })}
+            </span>
+          )}
         </div>
       </div>
 
       <div
         ref={listScrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden scroll-visible px-1 pb-2"
+        className="flex-1 overflow-y-auto overflow-x-auto scroll-visible px-1 pb-2"
       >
         <div className="space-y-4 pb-4">
-          {filteredProviders.length === 0 ? (
+          {sortedDisplayProviders.length === 0 ? (
             <div className="px-6 py-8 text-sm text-center border border-dashed rounded-lg border-border text-muted-foreground">
               {t("provider.noSearchResults", {
-                defaultValue: "No providers match your search.",
+                defaultValue: "没有符合筛选条件的提供商",
               })}
             </div>
           ) : (
-            renderProviderList()
+            renderProviderTable()
           )}
         </div>
       </div>
+
+      <Dialog
+        open={isBatchModelDialogOpen}
+        onOpenChange={setIsBatchModelDialogOpen}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t("provider.batchUpdateModel", { defaultValue: "批量修改模型" })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("provider.batchUpdateModelHint", {
+                defaultValue:
+                  "仅更新当前选中提供商，改动只影响配置展示与后续调用参数。",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {t("common.selectedCount", {
+                defaultValue: "已选 {{count}} 项",
+                count: selectedCount,
+              })}
+            </p>
+
+            {appId === "codex" && (
+              <div className="space-y-1">
+                <Label htmlFor="batch-codex-model">
+                  {t("provider.model", { defaultValue: "模型名称" })}
+                </Label>
+                <Input
+                  id="batch-codex-model"
+                  value={batchCodexModel}
+                  onChange={(event) => setBatchCodexModel(event.target.value)}
+                  placeholder={t("provider.modelPlaceholder", {
+                    defaultValue: "例如 gpt-5-codex",
+                  })}
+                />
+              </div>
+            )}
+
+            {appId === "gemini" && (
+              <div className="space-y-1">
+                <Label htmlFor="batch-gemini-model">
+                  {t("provider.model", { defaultValue: "模型名称" })}
+                </Label>
+                <Input
+                  id="batch-gemini-model"
+                  value={batchGeminiModel}
+                  onChange={(event) => setBatchGeminiModel(event.target.value)}
+                  placeholder={t("provider.modelPlaceholder", {
+                    defaultValue: "例如 gemini-3-pro-preview",
+                  })}
+                />
+              </div>
+            )}
+
+            {appId === "claude" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="batch-claude-primary-model">
+                    {t("provider.primaryModel", { defaultValue: "主模型" })}
+                  </Label>
+                  <Input
+                    id="batch-claude-primary-model"
+                    value={batchClaudePrimaryModel}
+                    onChange={(event) =>
+                      setBatchClaudePrimaryModel(event.target.value)
+                    }
+                    placeholder={t("provider.primaryModelPlaceholder", {
+                      defaultValue: "例如 claude-sonnet-4",
+                    })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="batch-claude-reasoning-model">
+                    {t("provider.reasoningModel", { defaultValue: "推理模型" })}
+                  </Label>
+                  <Input
+                    id="batch-claude-reasoning-model"
+                    value={batchClaudeReasoningModel}
+                    onChange={(event) =>
+                      setBatchClaudeReasoningModel(event.target.value)
+                    }
+                    placeholder={t("provider.reasoningModelPlaceholder", {
+                      defaultValue: "例如 claude-opus-4",
+                    })}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsBatchModelDialogOpen(false)}
+              disabled={isBatchUpdating}
+            >
+              {t("common.cancel", { defaultValue: "取消" })}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleApplyBatchModelUpdate()}
+              disabled={
+                !supportsBatchModelEdit ||
+                selectedCount === 0 ||
+                isBatchUpdating
+              }
+            >
+              {isBatchUpdating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                t("common.save", { defaultValue: "保存" })
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isBatchDeleteDialogOpen}
+        onOpenChange={setIsBatchDeleteDialogOpen}
+      >
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>
+              {t("provider.batchDelete", { defaultValue: "批量删除" })}
+            </DialogTitle>
+            <DialogDescription>
+              {t("provider.batchDeleteHint", {
+                defaultValue:
+                  "将删除当前选中提供商。该操作仅影响提供商记录，不改变会话路由策略设定。",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2 text-sm">
+            <p>
+              {t("provider.batchDeleteSummary", {
+                defaultValue: "已选 {{selected}} 项，可删除 {{deletable}} 项。",
+                selected: selectedCount,
+                deletable: deletableSelectedProviders.length,
+              })}
+            </p>
+            {selectedCount > deletableSelectedProviders.length && (
+              <p className="text-amber-600 dark:text-amber-300">
+                {t("provider.batchDeleteBlocked", {
+                  defaultValue:
+                    "{{count}} 项为当前使用中或受限项，将自动跳过。",
+                  count: selectedCount - deletableSelectedProviders.length,
+                })}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsBatchDeleteDialogOpen(false)}
+              disabled={isBatchDeleting}
+            >
+              {t("common.cancel", { defaultValue: "取消" })}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleBatchDelete()}
+              disabled={
+                deletableSelectedProviders.length === 0 || isBatchDeleting
+              }
+            >
+              {isBatchDeleting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                t("common.delete", { defaultValue: "删除" })
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {appProxyConfig && (
         <Dialog
@@ -3041,15 +3955,19 @@ export function ProviderList({
   );
 }
 
-interface SortableProviderCardProps {
+interface SortableProviderTableRowProps {
   provider: Provider;
+  rowIndex: number;
+  dragEnabled: boolean;
+  isSelected: boolean;
+  onToggleSelected: (providerId: string, checked: boolean) => void;
+  modelSummary: string;
+  statusMeta: ProviderStatusMeta;
   isCurrent: boolean;
-  appId: AppId;
-  density: ProviderDensity;
-  sessionOccupancyCount: number;
   isInConfig: boolean;
   isOmo: boolean;
   isOmoSlim: boolean;
+  appId: AppId;
   onSwitch: (provider: Provider) => void;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
@@ -3068,28 +3986,27 @@ interface SortableProviderCardProps {
   onClearRecentTerminals?: () => void;
   onTest?: (provider: Provider) => void;
   isTesting: boolean;
-  isProxyRunning: boolean;
   isProxyTakeover: boolean;
-  viewMode?: ProviderViewMode;
   isAutoFailoverEnabled: boolean;
-  failoverPriority?: number;
   isInFailoverQueue: boolean;
   onToggleFailover: (enabled: boolean) => void;
-  activeProviderId?: string;
-  // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
 }
 
-function SortableProviderCard({
+function SortableProviderTableRow({
   provider,
+  rowIndex,
+  dragEnabled,
+  isSelected,
+  onToggleSelected,
+  modelSummary,
+  statusMeta,
   isCurrent,
-  appId,
-  density,
-  sessionOccupancyCount,
   isInConfig,
   isOmo,
   isOmoSlim,
+  appId,
   onSwitch,
   onEdit,
   onDelete,
@@ -3104,17 +4021,14 @@ function SortableProviderCard({
   onClearRecentTerminals,
   onTest,
   isTesting,
-  isProxyRunning,
   isProxyTakeover,
-  viewMode,
   isAutoFailoverEnabled,
-  failoverPriority,
   isInFailoverQueue,
   onToggleFailover,
-  activeProviderId,
   isDefaultModel,
   onSetAsDefault,
-}: SortableProviderCardProps) {
+}: SortableProviderTableRowProps) {
+  const { t } = useTranslation();
   const {
     setNodeRef,
     attributes,
@@ -3122,57 +4036,217 @@ function SortableProviderCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: provider.id });
+  } = useSortable({ id: provider.id, disabled: !dragEnabled });
+  const { data: health } = useProviderHealth(provider.id, appId);
 
-  const style: CSSProperties = {
+  const style = {
     transform: CSS.Transform.toString(transform),
     transition,
   };
 
+  const rowClass =
+    rowIndex % 2 === 0
+      ? "bg-background/90 dark:bg-background/40"
+      : "bg-muted/35 dark:bg-muted/20";
+  const stickyCellBgClass =
+    rowIndex % 2 === 0
+      ? "bg-background dark:bg-background/60"
+      : "bg-muted/45 dark:bg-muted/30";
+
+  const website = provider.websiteUrl?.trim() ?? "";
+  const notes = provider.notes?.trim() ?? "";
+  const disableOmoHandler = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
+  const showHealthBadge =
+    isInFailoverQueue && health != null && !isOmo && !isOmoSlim;
+
   return (
-    <div ref={setNodeRef} style={style}>
-      <ProviderCard
-        provider={provider}
-        isCurrent={isCurrent}
-        appId={appId}
-        density={density}
-        isInConfig={isInConfig}
-        isOmo={isOmo}
-        isOmoSlim={isOmoSlim}
-        onSwitch={onSwitch}
-        onEdit={onEdit}
-        onDelete={onDelete}
-        onRemoveFromConfig={onRemoveFromConfig}
-        onDisableOmo={onDisableOmo}
-        onDisableOmoSlim={onDisableOmoSlim}
-        onDuplicate={onDuplicate}
-        onConfigureUsage={
-          onConfigureUsage ? (item) => onConfigureUsage(item) : () => undefined
-        }
-        onOpenWebsite={onOpenWebsite}
-        onOpenTerminalWithMode={onOpenTerminalWithMode}
-        recentTerminalTargets={recentTerminalTargets}
-        onClearRecentTerminals={onClearRecentTerminals}
-        onTest={onTest}
-        isTesting={isTesting}
-        isProxyRunning={isProxyRunning}
-        isProxyTakeover={isProxyTakeover}
-        viewMode={viewMode}
-        dragHandleProps={{
-          attributes,
-          listeners,
-          isDragging,
-        }}
-        isAutoFailoverEnabled={isAutoFailoverEnabled}
-        failoverPriority={failoverPriority}
-        isInFailoverQueue={isInFailoverQueue}
-        onToggleFailover={onToggleFailover}
-        activeProviderId={activeProviderId}
-        sessionOccupancyCount={sessionOccupancyCount}
-        // OpenClaw: default model
-        isDefaultModel={isDefaultModel}
-        onSetAsDefault={onSetAsDefault}
-      />
-    </div>
+    <tr
+      ref={setNodeRef}
+      style={style}
+      data-state={isSelected ? "selected" : undefined}
+      className={cn(
+        "border-b border-border/60 align-top transition-colors hover:bg-muted/45",
+        rowClass,
+        isDragging && "z-10 bg-accent/40",
+      )}
+    >
+      <td
+        className={cn(
+          "sticky left-0 z-20 px-3 py-2 align-top",
+          stickyCellBgClass,
+        )}
+      >
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={(checked) =>
+            onToggleSelected(provider.id, checked === true)
+          }
+          aria-label={t("common.select", { defaultValue: "选择" })}
+        />
+      </td>
+
+      <td
+        className={cn(
+          "sticky left-[48px] z-20 px-2 py-2 align-top",
+          stickyCellBgClass,
+        )}
+      >
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
+            dragEnabled
+              ? "cursor-grab hover:bg-muted active:cursor-grabbing"
+              : "cursor-not-allowed opacity-40",
+          )}
+          aria-label={t("provider.dragHandle", { defaultValue: "拖拽排序" })}
+          disabled={!dragEnabled}
+          {...(dragEnabled ? attributes : {})}
+          {...(dragEnabled ? listeners : {})}
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <circle cx="5" cy="4" r="1" />
+            <circle cx="11" cy="4" r="1" />
+            <circle cx="5" cy="8" r="1" />
+            <circle cx="11" cy="8" r="1" />
+            <circle cx="5" cy="12" r="1" />
+            <circle cx="11" cy="12" r="1" />
+          </svg>
+        </button>
+      </td>
+
+      <td
+        className={cn(
+          "sticky left-[88px] z-20 min-w-[220px] px-3 py-2 align-top",
+          stickyCellBgClass,
+        )}
+      >
+        <div className="flex items-start gap-2">
+          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md border border-border bg-muted">
+            <ProviderIcon
+              icon={provider.icon}
+              name={provider.name}
+              color={provider.iconColor}
+              size={16}
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="truncate font-medium" title={provider.name}>
+              {provider.name}
+            </div>
+            <div
+              className="truncate text-xs text-muted-foreground"
+              title={provider.id}
+            >
+              {provider.id}
+            </div>
+          </div>
+        </div>
+      </td>
+
+      <td className="max-w-[260px] px-3 py-2 align-top">
+        {website ? (
+          <button
+            type="button"
+            className="max-w-full truncate text-left text-blue-500 hover:underline dark:text-blue-400"
+            title={website}
+            onClick={() => onOpenWebsite(website)}
+          >
+            {website}
+          </button>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+
+      <td className="max-w-[240px] px-3 py-2 align-top">
+        {notes ? (
+          <span className="block truncate text-muted-foreground" title={notes}>
+            {notes}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+
+      <td className="max-w-[260px] px-3 py-2 align-top">
+        <span
+          className="block truncate text-muted-foreground"
+          title={modelSummary}
+        >
+          {modelSummary}
+        </span>
+      </td>
+
+      <td
+        className={cn(
+          "sticky right-0 z-20 px-3 py-2 align-top",
+          stickyCellBgClass,
+        )}
+      >
+        <div className="flex flex-col items-start gap-1">
+          {showHealthBadge && (
+            <ProviderHealthBadge
+              consecutiveFailures={health.consecutive_failures}
+              lastError={health.last_error}
+            />
+          )}
+          <span
+            className={cn(
+              "inline-flex rounded-md px-2 py-0.5 text-xs",
+              statusMeta.className,
+            )}
+          >
+            {statusMeta.label}
+          </span>
+        </div>
+      </td>
+
+      <td className="px-3 py-2 align-top">
+        <div className="min-w-[330px]">
+          <ProviderActions
+            appId={appId}
+            isCurrent={isCurrent}
+            isInConfig={isInConfig}
+            isTesting={isTesting}
+            isProxyTakeover={isProxyTakeover}
+            isOmo={isOmo || isOmoSlim}
+            onSwitch={() => onSwitch(provider)}
+            onEdit={() => onEdit(provider)}
+            onDuplicate={() => onDuplicate(provider)}
+            onTest={onTest ? () => onTest(provider) : undefined}
+            onConfigureUsage={
+              onConfigureUsage
+                ? () => onConfigureUsage(provider)
+                : () => undefined
+            }
+            onDelete={() => onDelete(provider)}
+            onRemoveFromConfig={
+              onRemoveFromConfig
+                ? () => onRemoveFromConfig(provider)
+                : undefined
+            }
+            onDisableOmo={disableOmoHandler}
+            onOpenTerminalWithMode={
+              onOpenTerminalWithMode
+                ? (mode, path) => onOpenTerminalWithMode(provider, mode, path)
+                : undefined
+            }
+            recentTerminalTargets={recentTerminalTargets}
+            onClearRecentTerminals={onClearRecentTerminals}
+            isAutoFailoverEnabled={isAutoFailoverEnabled}
+            isInFailoverQueue={isInFailoverQueue}
+            onToggleFailover={onToggleFailover}
+            isDefaultModel={isDefaultModel}
+            onSetAsDefault={onSetAsDefault}
+          />
+        </div>
+      </td>
+    </tr>
   );
 }
