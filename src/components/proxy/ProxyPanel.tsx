@@ -715,6 +715,7 @@ function ProviderQueueItem({
       {/* 健康徽章 */}
       <ProviderHealthBadge
         consecutiveFailures={health?.consecutive_failures ?? 0}
+        lastError={health?.last_error}
       />
     </div>
   );

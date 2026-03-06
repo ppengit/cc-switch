@@ -1575,7 +1575,9 @@
     "degraded": "Degraded",
     "failed": "Failed",
     "circuitOpen": "Circuit Open",
-    "consecutiveFailures": "{{count}} consecutive failures"
+    "consecutiveFailures": "{{count}} consecutive failures",
+    "circuitReason": "Circuit reason: {{reason}}",
+    "circuitReasonUnavailable": "No detailed reason available yet, please check logs"
   },
   "failover": {
     "enabled": "{{app}} failover enabled",

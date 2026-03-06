@@ -1575,7 +1575,9 @@
     "degraded": "降级",
     "failed": "失败",
     "circuitOpen": "熔断",
-    "consecutiveFailures": "连续失败 {{count}} 次"
+    "consecutiveFailures": "连续失败 {{count}} 次",
+    "circuitReason": "熔断原因：{{reason}}",
+    "circuitReasonUnavailable": "暂无详细原因，请查看日志"
   },
   "failover": {
     "enabled": "{{app}} 故障转移已启用",

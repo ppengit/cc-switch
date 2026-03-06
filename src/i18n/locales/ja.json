@@ -1572,7 +1572,9 @@
     "degraded": "低下",
     "failed": "失敗",
     "circuitOpen": "サーキットオープン",
-    "consecutiveFailures": "{{count}} 回連続失敗"
+    "consecutiveFailures": "{{count}} 回連続失敗",
+    "circuitReason": "サーキットオープン理由: {{reason}}",
+    "circuitReasonUnavailable": "詳細な理由はまだありません。ログを確認してください"
   },
   "failover": {
     "enabled": "{{app}} フェイルオーバーが有効になりました",
