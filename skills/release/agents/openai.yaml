@@ -1,0 +1,4 @@
+interface:
+  display_name: "release"
+  short_description: "Automate commit push build and artifact opening for cc-switch."
+  default_prompt: "Use $release to commit changes, push the current branch, build a release, and open the dist folder."
