@@ -208,9 +208,9 @@ const VALID_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
 fn update_command_for_tool(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("claude update"),
-        "codex" => Some("codex --upgrade"),
-        "gemini" => Some("npm install -g @google/gemini-cli@latest"),
-        "opencode" => Some("npm install -g opencode-ai"),
+        "codex" => Some("npm i -g @openai/codex@latest"),
+        "gemini" => Some("npm i -g @google/gemini-cli@latest"),
+        "opencode" => Some("npm i -g opencode@latest"),
         _ => None,
     }
 }
