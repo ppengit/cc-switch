@@ -1222,7 +1222,7 @@ setlocal\r\n\
 {cd_line}\
 call {command}\r\n\
 endlocal\r\n\
-del \"%~f0\" >nul 2>&1\r\n",
+start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"\r\n",
         cd_line = cd_line,
         command = command
     );
@@ -1561,7 +1561,7 @@ setlocal\r\n\
 call claude --settings \"{config_path}\"\r\n\
 del \"{config_path}\" >nul 2>&1\r\n\
 endlocal\r\n\
-del \"%~f0\" >nul 2>&1\r\n",
+start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"\r\n",
         config_path = config_path,
         cd_line = cd_line
     );

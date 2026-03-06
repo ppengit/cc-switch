@@ -2766,6 +2766,11 @@ export function ProviderList({
                           defaultValue: "模型",
                         })}
                       </th>
+                      <th className="px-3 py-2 text-left">
+                        {t("streamCheck.failureReason", {
+                          defaultValue: "失败原因",
+                        })}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2781,12 +2786,16 @@ export function ProviderList({
                       });
                       let statusClass = "text-muted-foreground";
                       let statusDetail = "";
+                      let failureReason = "—";
                       if (hasResult) {
                         if (!result) {
                           statusLabel = t("streamCheck.failedShort", {
                             defaultValue: "失败",
                           });
                           statusClass = "text-rose-500";
+                          failureReason = t("streamCheck.failedNoReason", {
+                            defaultValue: "请求异常，请查看错误提示",
+                          });
                         } else if (result.status === "operational") {
                           statusLabel = t("streamCheck.operationalShort", {
                             defaultValue: "正常",
@@ -2802,6 +2811,11 @@ export function ProviderList({
                             defaultValue: "失败",
                           });
                           statusClass = "text-rose-500";
+                          failureReason =
+                            result.message?.trim() ||
+                            t("streamCheck.failedNoReason", {
+                              defaultValue: "无详细错误信息",
+                            });
                         }
                         statusDetail = result?.message || "";
                       }
@@ -2861,6 +2875,18 @@ export function ProviderList({
                           </td>
                           <td className="px-3 py-2 text-muted-foreground">
                             {result?.modelUsed || "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {failureReason === "—" ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span
+                                className="block max-w-[360px] truncate text-rose-500"
+                                title={failureReason}
+                              >
+                                {failureReason}
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
