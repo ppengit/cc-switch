@@ -200,18 +200,59 @@ pub async fn set_session_routing_master_enabled(
     Ok(())
 }
 
+async fn list_session_provider_bindings_internal(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<SessionProviderBinding>, String> {
+    let ttl = resolve_session_idle_ttl(state, app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(state, app_type, ttl).await?;
+    state
+        .db
+        .list_session_provider_bindings(app_type, ttl)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn list_session_provider_bindings_test_hook(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<SessionProviderBinding>, String> {
+    list_session_provider_bindings_internal(state, app_type, idle_ttl_minutes).await
+}
+
 #[tauri::command]
 pub async fn list_session_provider_bindings(
     state: tauri::State<'_, AppState>,
     app_type: String,
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Vec<SessionProviderBinding>, String> {
-    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
-    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
+    list_session_provider_bindings_internal(&state, &app_type, idle_ttl_minutes).await
+}
+
+async fn get_session_provider_binding_internal(
+    state: &AppState,
+    app_type: &str,
+    session_id: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Option<SessionProviderBinding>, String> {
+    let ttl = resolve_session_idle_ttl(state, app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(state, app_type, ttl).await?;
     state
         .db
-        .list_session_provider_bindings(&app_type, ttl)
+        .get_session_provider_binding(app_type, session_id, ttl)
         .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn get_session_provider_binding_test_hook(
+    state: &AppState,
+    app_type: &str,
+    session_id: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Option<SessionProviderBinding>, String> {
+    get_session_provider_binding_internal(state, app_type, session_id, idle_ttl_minutes).await
 }
 
 #[tauri::command]
@@ -221,12 +262,7 @@ pub async fn get_session_provider_binding(
     session_id: String,
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Option<SessionProviderBinding>, String> {
-    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
-    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
-    state
-        .db
-        .get_session_provider_binding(&app_type, &session_id, ttl)
-        .map_err(|e| e.to_string())
+    get_session_provider_binding_internal(&state, &app_type, &session_id, idle_ttl_minutes).await
 }
 
 #[tauri::command]
@@ -300,12 +336,29 @@ pub async fn get_provider_session_occupancy(
     app_type: String,
     idle_ttl_minutes: Option<u32>,
 ) -> Result<Vec<ProviderSessionOccupancy>, String> {
-    let ttl = resolve_session_idle_ttl(&state, &app_type, idle_ttl_minutes).await?;
-    reconcile_session_bindings_for_routing(&state, &app_type, ttl).await?;
+    get_provider_session_occupancy_internal(&state, &app_type, idle_ttl_minutes).await
+}
+
+async fn get_provider_session_occupancy_internal(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<ProviderSessionOccupancy>, String> {
+    let ttl = resolve_session_idle_ttl(state, app_type, idle_ttl_minutes).await?;
+    reconcile_session_bindings_for_routing(state, app_type, ttl).await?;
     state
         .db
-        .get_provider_session_occupancy(&app_type, ttl)
+        .get_provider_session_occupancy(app_type, ttl)
         .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn get_provider_session_occupancy_test_hook(
+    state: &AppState,
+    app_type: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<Vec<ProviderSessionOccupancy>, String> {
+    get_provider_session_occupancy_internal(state, app_type, idle_ttl_minutes).await
 }
 
 async fn reconcile_session_bindings_for_routing(
@@ -322,11 +375,26 @@ async fn reconcile_session_bindings_for_routing(
         return Ok(());
     }
 
+    let bindings = state
+        .db
+        .list_session_provider_bindings(app_type, idle_ttl_minutes)
+        .map_err(|e| e.to_string())?;
+    let active_bindings: Vec<SessionProviderBinding> = bindings
+        .into_iter()
+        .filter(|binding| binding.is_active)
+        .collect();
+
     let ordered_provider_ids = state
         .db
         .list_provider_ids_for_session_routing(app_type)
         .map_err(|e| e.to_string())?;
     if ordered_provider_ids.is_empty() {
+        for binding in active_bindings {
+            state
+                .db
+                .remove_session_provider_binding(app_type, &binding.session_id)
+                .map_err(|e| e.to_string())?;
+        }
         return Ok(());
     }
 
@@ -356,17 +424,18 @@ async fn reconcile_session_bindings_for_routing(
         degraded_provider_ids
     };
     if candidate_provider_ids.is_empty() {
+        for binding in active_bindings {
+            state
+                .db
+                .remove_session_provider_binding(app_type, &binding.session_id)
+                .map_err(|e| e.to_string())?;
+        }
         return Ok(());
     }
 
     let candidate_provider_set: HashSet<String> = candidate_provider_ids.iter().cloned().collect();
-    let bindings = state
-        .db
-        .list_session_provider_bindings(app_type, idle_ttl_minutes)
-        .map_err(|e| e.to_string())?;
-    for binding in bindings
+    for binding in active_bindings
         .into_iter()
-        .filter(|binding| binding.is_active)
         .filter(|binding| !candidate_provider_set.contains(&binding.provider_id))
     {
         let assignment = state
