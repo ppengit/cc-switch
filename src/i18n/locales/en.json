@@ -149,13 +149,7 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    },
-    "sortTitle": "Sort",
-    "sortByManual": "Failover Priority",
-    "sortByName": "Name",
-    "sortByCreatedAt": "Added time",
-    "sortOrderAsc": "Ascending",
-    "sortOrderDesc": "Descending"
+    }
   },
   "notifications": {
     "providerAdded": "Provider added",

@@ -81,9 +81,6 @@ export const settingsSchema = z.object({
 
   // 终端设置
   preferredTerminal: z.string().optional(),
-
-  // 提供商列表排序
-  providerSort: z.record(z.string(), z.any()).optional(),
 });
 
 export type SettingsFormData = z.infer<typeof settingsSchema>;

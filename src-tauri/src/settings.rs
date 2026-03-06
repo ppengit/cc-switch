@@ -122,13 +122,6 @@ pub struct TerminalTargetPreference {
     pub last_cwd: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderSortPreference {
-    pub by: String,    // "manual" | "name" | "createdAt"
-    pub order: String, // "asc" | "desc"
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowSize {
@@ -297,9 +290,6 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_session_by_app: Option<HashMap<String, String>>,
 
-    // ===== 提供商列表排序 =====
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_sort: Option<HashMap<String, ProviderSortPreference>>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -344,7 +334,6 @@ impl Default for AppSettings {
             preferred_terminal: None,
             terminal_targets: None,
             current_session_by_app: None,
-            provider_sort: None,
         }
     }
 }

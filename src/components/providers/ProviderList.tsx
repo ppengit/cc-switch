@@ -17,7 +17,6 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
-  ArrowUpDown,
   FlaskConical,
   LayoutGrid,
   List,
@@ -33,9 +32,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type {
   Provider,
-  ProviderSortBy,
-  ProviderSortPreference,
-  SortOrder,
   TerminalTargetMode,
   TerminalTargetPreference,
 } from "@/types";
@@ -52,8 +48,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -208,78 +202,13 @@ export function ProviderList({
   activeProviderId,
   onSetAsDefault,
 }: ProviderListProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: settingsData } = useSettingsQuery();
-  const {
-    sortedProviders: manualSortedProviders,
-    sensors,
-    handleDragEnd,
-  } = useDragSort(providers, appId);
-  const locale = i18n.language === "zh" ? "zh-CN" : "en-US";
-  const providerSortPreference = useMemo(() => {
-    const stored = settingsData?.providerSort?.[appId];
-    return {
-      by: stored?.by ?? "manual",
-      order: stored?.order ?? "asc",
-    };
-  }, [settingsData?.providerSort, appId]);
-  const isManualSort = providerSortPreference.by === "manual";
-  const activeSensors = isManualSort ? sensors : [];
-  const activeHandleDragEnd = isManualSort ? handleDragEnd : undefined;
-  const sortByLabel = useMemo(() => {
-    switch (providerSortPreference.by) {
-      case "name":
-        return t("provider.sortByName", { defaultValue: "名称" });
-      case "createdAt":
-        return t("provider.sortByCreatedAt", { defaultValue: "加入时间" });
-      default:
-        return t("provider.sortByManual", { defaultValue: "故障转移优先级" });
-    }
-  }, [providerSortPreference.by, t]);
-  const sortOrderLabel = useMemo(
-    () =>
-      providerSortPreference.order === "desc"
-        ? t("provider.sortOrderDesc", { defaultValue: "倒序" })
-        : t("provider.sortOrderAsc", { defaultValue: "正序" }),
-    [providerSortPreference.order, t],
-  );
-  const sortedProviders = useMemo(() => {
-    if (providerSortPreference.by === "manual") {
-      return manualSortedProviders;
-    }
-
-    const list = Object.values(providers);
-    const direction = providerSortPreference.order === "desc" ? -1 : 1;
-
-    list.sort((a, b) => {
-      if (providerSortPreference.by === "name") {
-        const nameCompare = a.name.localeCompare(b.name, locale);
-        if (nameCompare !== 0) return nameCompare * direction;
-        return a.id.localeCompare(b.id, locale) * direction;
-      }
-
-      const timeA = a.createdAt ?? 0;
-      const timeB = b.createdAt ?? 0;
-      const hasTimeA = timeA > 0;
-      const hasTimeB = timeB > 0;
-      if (hasTimeA && hasTimeB && timeA !== timeB) {
-        return (timeA - timeB) * direction;
-      }
-      if (hasTimeA !== hasTimeB) {
-        return hasTimeA ? -1 : 1;
-      }
-      return a.id.localeCompare(b.id, locale) * direction;
-    });
-
-    return list;
-  }, [
-    manualSortedProviders,
+  const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
-    providerSortPreference.by,
-    providerSortPreference.order,
-    locale,
-  ]);
+    appId,
+  );
 
   const [viewMode, setViewMode] = useState<ProviderViewMode>(() => {
     if (typeof window === "undefined") return "card";
@@ -434,25 +363,6 @@ export function ProviderList({
       return nextTarget;
     },
     [queryClient, settingsData],
-  );
-
-  const saveProviderSort = useCallback(
-    async (nextPreference: Partial<ProviderSortPreference>) => {
-      const base = settingsData ?? (await settingsApi.get());
-      const prevSort = base.providerSort ?? {};
-      const existing = prevSort[appId] ?? { by: "manual", order: "asc" };
-      const next: ProviderSortPreference = {
-        by: nextPreference.by ?? existing.by,
-        order: nextPreference.order ?? existing.order,
-      };
-      const nextSettings = {
-        ...base,
-        providerSort: { ...prevSort, [appId]: next },
-      };
-      await settingsApi.save(nextSettings);
-      await queryClient.invalidateQueries({ queryKey: ["settings"] });
-    },
-    [appId, queryClient, settingsData],
   );
 
   const appTerminalTarget = useMemo(
@@ -1900,9 +1810,9 @@ export function ProviderList({
 
   const renderProviderList = () => (
     <DndContext
-      sensors={activeSensors}
+      sensors={sensors}
       collisionDetection={closestCenter}
-      onDragEnd={activeHandleDragEnd}
+      onDragEnd={handleDragEnd}
     >
       <SortableContext
         items={filteredProviders.map((provider) => provider.id)}
@@ -1949,7 +1859,6 @@ export function ProviderList({
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
                 viewMode={viewMode}
-                dragDisabled={!isManualSort}
                 isAutoFailoverEnabled={isAutoFailoverActive}
                 failoverPriority={getFailoverPriority(provider.id)}
                 isInFailoverQueue={isInFailoverQueue(provider.id)}
@@ -2233,58 +2142,6 @@ export function ProviderList({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  title={t("provider.sortTitle", { defaultValue: "排序" })}
-                  className="h-7 px-2 text-xs bg-muted/60 text-foreground hover:bg-muted hover:text-foreground dark:hover:text-foreground"
-                >
-                  <ArrowUpDown className="h-3.5 w-3.5 mr-1" />
-                  {sortByLabel}
-                  <span className="mx-1 text-muted-foreground/80">·</span>
-                  {sortOrderLabel}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[180px]">
-                <DropdownMenuRadioGroup
-                  value={providerSortPreference.by}
-                  onValueChange={(value) =>
-                    void saveProviderSort({ by: value as ProviderSortBy })
-                  }
-                >
-                  <DropdownMenuRadioItem value="manual">
-                    {t("provider.sortByManual", {
-                      defaultValue: "故障转移优先级",
-                    })}
-                  </DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="name">
-                    {t("provider.sortByName", { defaultValue: "名称" })}
-                  </DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="createdAt">
-                    {t("provider.sortByCreatedAt", {
-                      defaultValue: "加入时间",
-                    })}
-                  </DropdownMenuRadioItem>
-                </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuRadioGroup
-                  value={providerSortPreference.order}
-                  onValueChange={(value) =>
-                    void saveProviderSort({ order: value as SortOrder })
-                  }
-                >
-                  <DropdownMenuRadioItem value="asc">
-                    {t("provider.sortOrderAsc", { defaultValue: "正序" })}
-                  </DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="desc">
-                    {t("provider.sortOrderDesc", { defaultValue: "倒序" })}
-                  </DropdownMenuRadioItem>
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
             <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
               <Button
                 type="button"
@@ -3193,7 +3050,6 @@ interface SortableProviderCardProps {
   isInConfig: boolean;
   isOmo: boolean;
   isOmoSlim: boolean;
-  dragDisabled?: boolean;
   onSwitch: (provider: Provider) => void;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
@@ -3234,7 +3090,6 @@ function SortableProviderCard({
   isInConfig,
   isOmo,
   isOmoSlim,
-  dragDisabled = false,
   onSwitch,
   onEdit,
   onDelete,
@@ -3267,7 +3122,7 @@ function SortableProviderCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: provider.id, disabled: dragDisabled });
+  } = useSortable({ id: provider.id });
 
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -3303,15 +3158,11 @@ function SortableProviderCard({
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
         viewMode={viewMode}
-        dragHandleProps={
-          dragDisabled
-            ? undefined
-            : {
-                attributes,
-                listeners,
-                isDragging,
-              }
-        }
+        dragHandleProps={{
+          attributes,
+          listeners,
+          isDragging,
+        }}
         isAutoFailoverEnabled={isAutoFailoverEnabled}
         failoverPriority={failoverPriority}
         isInFailoverQueue={isInFailoverQueue}

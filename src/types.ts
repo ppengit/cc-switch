@@ -274,9 +274,6 @@ export interface Settings {
   // ===== 终端快捷方式设置 =====
   terminalTargets?: TerminalTargetMap;
   currentSessionByApp?: Record<string, string>;
-
-  // ===== 提供商列表排序 =====
-  providerSort?: ProviderSortMap;
 }
 
 export type TerminalTargetMode = "manual" | "recent";
@@ -288,16 +285,6 @@ export interface TerminalTargetPreference {
 }
 
 export type TerminalTargetMap = Record<string, TerminalTargetPreference>;
-
-export type ProviderSortBy = "manual" | "name" | "createdAt";
-export type SortOrder = "asc" | "desc";
-
-export interface ProviderSortPreference {
-  by: ProviderSortBy;
-  order: SortOrder;
-}
-
-export type ProviderSortMap = Record<string, ProviderSortPreference>;
 
 export interface SessionMeta {
   providerId: string;

@@ -149,13 +149,7 @@
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
       }
-    },
-    "sortTitle": "排序",
-    "sortByManual": "故障转移优先级",
-    "sortByName": "名称",
-    "sortByCreatedAt": "加入时间",
-    "sortOrderAsc": "正序",
-    "sortOrderDesc": "倒序"
+    }
   },
   "notifications": {
     "providerAdded": "供应商已添加",
