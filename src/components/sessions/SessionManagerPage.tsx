@@ -22,6 +22,7 @@ import {
   useAppProxyConfig,
   useRemoveSessionProviderBinding,
   useSessionProviderBinding,
+  useSessionProviderBindings,
   useSetSessionProviderBindingPin,
   useSwitchSessionProviderBinding,
 } from "@/lib/query/proxy";
@@ -78,6 +79,30 @@ type ProviderFilter =
   | "opencode"
   | "openclaw"
   | "gemini";
+
+interface SessionBindingPreview {
+  providerId: string;
+  providerName: string;
+  pinned: boolean;
+}
+
+function buildBindingLookupKeys(appType: string, sessionId: string): string[] {
+  const normalizedAppType = (appType || "").toLowerCase();
+  const keys = [`${normalizedAppType}:${sessionId}`];
+
+  if (normalizedAppType === "codex") {
+    if (sessionId.startsWith("codex_")) {
+      const canonicalSessionId = sessionId.slice("codex_".length);
+      if (canonicalSessionId) {
+        keys.push(`${normalizedAppType}:${canonicalSessionId}`);
+      }
+    } else {
+      keys.push(`${normalizedAppType}:codex_${sessionId}`);
+    }
+  }
+
+  return keys;
+}
 
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
@@ -164,6 +189,50 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
     );
   }, [providersMap]);
+  const { data: codexBindings = [] } = useSessionProviderBindings("codex");
+  const { data: claudeBindings = [] } = useSessionProviderBindings("claude");
+  const { data: opencodeBindings = [] } =
+    useSessionProviderBindings("opencode");
+  const { data: openclawBindings = [] } =
+    useSessionProviderBindings("openclaw");
+  const { data: geminiBindings = [] } = useSessionProviderBindings("gemini");
+
+  const sessionBindingPreviewMap = useMemo(() => {
+    const map = new Map<string, SessionBindingPreview>();
+    const allBindings = [
+      ...codexBindings,
+      ...claudeBindings,
+      ...opencodeBindings,
+      ...openclawBindings,
+      ...geminiBindings,
+    ];
+
+    for (const binding of allBindings) {
+      if (!binding.isActive) {
+        continue;
+      }
+      const providerName = binding.providerName?.trim() || binding.providerId;
+      const preview: SessionBindingPreview = {
+        providerId: binding.providerId,
+        providerName,
+        pinned: binding.pinned,
+      };
+      for (const key of buildBindingLookupKeys(
+        binding.appType,
+        binding.sessionId,
+      )) {
+        map.set(key, preview);
+      }
+    }
+
+    return map;
+  }, [
+    claudeBindings,
+    codexBindings,
+    geminiBindings,
+    opencodeBindings,
+    openclawBindings,
+  ]);
 
   const handleSwitchSessionProvider = async (providerId: string) => {
     if (!selectedSessionAppType || !selectedSession?.sessionId) return;
@@ -520,6 +589,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           const isSelected =
                             selectedKey !== null &&
                             getSessionKey(session) === selectedKey;
+                          const bindingPreview = buildBindingLookupKeys(
+                            session.providerId,
+                            session.sessionId,
+                          )
+                            .map((key) => sessionBindingPreviewMap.get(key))
+                            .find((item) => item != null);
 
                           return (
                             <SessionItem
@@ -527,6 +602,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               session={session}
                               isSelected={isSelected}
                               onSelect={setSelectedKey}
+                              bindingProviderName={bindingPreview?.providerName}
+                              bindingProviderId={bindingPreview?.providerId}
+                              bindingPinned={bindingPreview?.pinned}
                             />
                           );
                         })}
@@ -676,6 +754,20 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                   })}
                             </Badge>
 
+                            <Badge variant="outline" className="text-[11px]">
+                              {sessionBinding
+                                ? sessionBinding.pinned
+                                  ? t("sessionManager.bindingModePinned", {
+                                      defaultValue: "模式：已绑定（锁定）",
+                                    })
+                                  : t("sessionManager.bindingModeAuto", {
+                                      defaultValue: "模式：自动",
+                                    })
+                                : t("sessionManager.bindingModeNone", {
+                                    defaultValue: "模式：未绑定",
+                                  })}
+                            </Badge>
+
                             {isSessionRoutingEnabledForSelection ? (
                               <>
                                 <Popover
@@ -775,6 +867,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                   variant="outline"
                                   className="h-7 px-2 text-xs gap-1"
                                   onClick={() => void handleToggleSessionPin()}
+                                  title={
+                                    sessionBinding?.pinned
+                                      ? t("sessionManager.bindingPinnedHint", {
+                                          defaultValue:
+                                            "锁定（已绑定）：优先使用当前提供商；若该提供商降级/熔断或不可用，系统仍会自动迁移并释放占用。",
+                                        })
+                                      : t("sessionManager.bindingAutoHint", {
+                                          defaultValue:
+                                            "自动：系统根据会话路由策略自动分配提供商，并在降级/熔断或容量变化时自动重绑定。",
+                                        })
+                                  }
                                   disabled={
                                     !sessionBinding ||
                                     setSessionProviderBindingPin.isPending
@@ -811,6 +914,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                     defaultValue: "解绑",
                                   })}
                                 </Button>
+
+                                <p className="w-full text-[11px] text-muted-foreground">
+                                  {t("sessionManager.bindingModeHint", {
+                                    defaultValue:
+                                      "自动：按策略分配并可自动迁移。已绑定（锁定）：优先使用当前提供商，但当提供商降级/熔断或不可用时仍会自动释放并迁移。",
+                                  })}
+                                </p>
                               </>
                             ) : (
                               <span className="text-[11px] text-muted-foreground">

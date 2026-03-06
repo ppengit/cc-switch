@@ -8,7 +8,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useModelStats } from "@/lib/query/usage";
-import { fmtUsd } from "./format";
+import { fmtTokenCompact, fmtUsd } from "./format";
 
 interface ModelStatsTableProps {
   refreshIntervalMs: number;
@@ -64,7 +64,7 @@ export function ModelStatsTable({ refreshIntervalMs }: ModelStatsTableProps) {
                   {stat.requestCount.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                  {fmtTokenCompact(stat.totalTokens)}
                 </TableCell>
                 <TableCell className="text-right">
                   {fmtUsd(stat.totalCost, 4)}

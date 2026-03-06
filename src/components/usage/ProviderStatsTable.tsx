@@ -8,7 +8,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useProviderStats } from "@/lib/query/usage";
-import { fmtUsd } from "./format";
+import { fmtTokenCompact, fmtUsd } from "./format";
 
 interface ProviderStatsTableProps {
   refreshIntervalMs: number;
@@ -69,7 +69,7 @@ export function ProviderStatsTable({
                   {stat.requestCount.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
-                  {stat.totalTokens.toLocaleString()}
+                  {fmtTokenCompact(stat.totalTokens)}
                 </TableCell>
                 <TableCell className="text-right">
                   {fmtUsd(stat.totalCost, 4)}

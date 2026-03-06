@@ -5,6 +5,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import type { SessionMeta } from "@/types";
@@ -20,17 +21,28 @@ interface SessionItemProps {
   session: SessionMeta;
   isSelected: boolean;
   onSelect: (key: string) => void;
+  bindingProviderName?: string | null;
+  bindingProviderId?: string | null;
+  bindingPinned?: boolean | null;
 }
 
 export function SessionItem({
   session,
   isSelected,
   onSelect,
+  bindingProviderName,
+  bindingProviderId,
+  bindingPinned,
 }: SessionItemProps) {
   const { t } = useTranslation();
   const title = formatSessionTitle(session);
   const lastActive = session.lastActiveAt || session.createdAt || undefined;
   const sessionKey = getSessionKey(session);
+  const associatedProvider = bindingProviderName || bindingProviderId || "";
+  const modeLabel =
+    bindingPinned === true
+      ? t("sessionManager.bindingPinnedShort", { defaultValue: "锁定" })
+      : t("sessionManager.bindingAutoShort", { defaultValue: "自动" });
 
   return (
     <button
@@ -73,6 +85,28 @@ export function SessionItem({
           {lastActive ? formatRelativeTime(lastActive, t) : t("common.unknown")}
         </span>
       </div>
+
+      {associatedProvider && (
+        <div className="mt-1 flex items-center gap-1 text-[11px] min-w-0">
+          <span className="text-muted-foreground">
+            {t("sessionManager.associatedProviderShort", {
+              defaultValue: "关联",
+            })}
+          </span>
+          <span
+            className="truncate text-foreground/80"
+            title={associatedProvider}
+          >
+            {associatedProvider}
+          </span>
+          <Badge
+            variant={bindingPinned ? "default" : "secondary"}
+            className="h-4 px-1.5 text-[10px] leading-none"
+          >
+            {modeLabel}
+          </Badge>
+        </div>
+      )}
     </button>
   );
 }

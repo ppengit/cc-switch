@@ -11,6 +11,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+const REQUEST_LOG_CLEANUP_ENABLED_KEY: &str = "request_log_cleanup_enabled";
+const REQUEST_LOG_RETENTION_DAYS_KEY: &str = "request_log_retention_days";
+const REQUEST_LOG_LAST_CLEANUP_AT_KEY: &str = "request_log_last_cleanup_at";
+const DEFAULT_REQUEST_LOG_RETENTION_DAYS: u32 = 30;
+const MIN_REQUEST_LOG_RETENTION_DAYS: u32 = 1;
+const MAX_REQUEST_LOG_RETENTION_DAYS: u32 = 3650;
+const REQUEST_LOG_AUTO_CLEANUP_INTERVAL_SECONDS: i64 = 60 * 60;
+
 /// 使用量汇总
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,7 +125,136 @@ pub struct RequestLogDetail {
     pub created_at: i64,
 }
 
+/// 请求日志清理配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogCleanupConfig {
+    pub enabled: bool,
+    pub retention_days: u32,
+    pub last_cleanup_at: Option<i64>,
+}
+
+/// 请求日志清理结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogCleanupResult {
+    pub deleted_rows: u64,
+    pub cutoff_timestamp: i64,
+    pub retention_days: u32,
+}
+
 impl Database {
+    fn normalize_retention_days(retention_days: u32) -> u32 {
+        retention_days.clamp(
+            MIN_REQUEST_LOG_RETENTION_DAYS,
+            MAX_REQUEST_LOG_RETENTION_DAYS,
+        )
+    }
+
+    pub fn get_request_log_cleanup_config(&self) -> Result<RequestLogCleanupConfig, AppError> {
+        let enabled = self
+            .get_setting(REQUEST_LOG_CLEANUP_ENABLED_KEY)?
+            .map(|value| value == "true" || value == "1")
+            .unwrap_or(true);
+
+        let retention_days = self
+            .get_setting(REQUEST_LOG_RETENTION_DAYS_KEY)?
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(Self::normalize_retention_days)
+            .unwrap_or(DEFAULT_REQUEST_LOG_RETENTION_DAYS);
+
+        let last_cleanup_at = self
+            .get_setting(REQUEST_LOG_LAST_CLEANUP_AT_KEY)?
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|value| *value > 0);
+
+        Ok(RequestLogCleanupConfig {
+            enabled,
+            retention_days,
+            last_cleanup_at,
+        })
+    }
+
+    pub fn set_request_log_cleanup_config(
+        &self,
+        enabled: bool,
+        retention_days: u32,
+    ) -> Result<RequestLogCleanupConfig, AppError> {
+        let normalized_retention_days = Self::normalize_retention_days(retention_days);
+        self.set_setting(
+            REQUEST_LOG_CLEANUP_ENABLED_KEY,
+            if enabled { "true" } else { "false" },
+        )?;
+        self.set_setting(
+            REQUEST_LOG_RETENTION_DAYS_KEY,
+            normalized_retention_days.to_string().as_str(),
+        )?;
+        self.get_request_log_cleanup_config()
+    }
+
+    pub fn cleanup_request_logs_with_retention_days(
+        &self,
+        retention_days: u32,
+    ) -> Result<RequestLogCleanupResult, AppError> {
+        let normalized_retention_days = Self::normalize_retention_days(retention_days);
+        let cutoff_timestamp =
+            chrono::Utc::now().timestamp() - (normalized_retention_days as i64) * 24 * 60 * 60;
+        let conn = lock_conn!(self.conn);
+
+        let deleted_rows = conn
+            .execute(
+                "DELETE FROM proxy_request_logs WHERE created_at < ?1",
+                params![cutoff_timestamp],
+            )
+            .map_err(|e| AppError::Database(format!("清理请求日志失败: {e}")))?;
+
+        Ok(RequestLogCleanupResult {
+            deleted_rows: deleted_rows as u64,
+            cutoff_timestamp,
+            retention_days: normalized_retention_days,
+        })
+    }
+
+    pub fn cleanup_request_logs_now(
+        &self,
+        retention_days: Option<u32>,
+    ) -> Result<RequestLogCleanupResult, AppError> {
+        let effective_retention_days = retention_days
+            .map(Self::normalize_retention_days)
+            .unwrap_or(self.get_request_log_cleanup_config()?.retention_days);
+
+        let result = self.cleanup_request_logs_with_retention_days(effective_retention_days)?;
+        self.set_setting(
+            REQUEST_LOG_LAST_CLEANUP_AT_KEY,
+            chrono::Utc::now().timestamp().to_string().as_str(),
+        )?;
+        Ok(result)
+    }
+
+    pub fn maybe_cleanup_request_logs_if_due(
+        &self,
+        now_timestamp: i64,
+    ) -> Result<Option<RequestLogCleanupResult>, AppError> {
+        let config = self.get_request_log_cleanup_config()?;
+        if !config.enabled {
+            return Ok(None);
+        }
+
+        if let Some(last_cleanup_at) = config.last_cleanup_at {
+            let elapsed = now_timestamp - last_cleanup_at;
+            if elapsed >= 0 && elapsed < REQUEST_LOG_AUTO_CLEANUP_INTERVAL_SECONDS {
+                return Ok(None);
+            }
+        }
+
+        let result = self.cleanup_request_logs_with_retention_days(config.retention_days)?;
+        self.set_setting(
+            REQUEST_LOG_LAST_CLEANUP_AT_KEY,
+            now_timestamp.to_string().as_str(),
+        )?;
+        Ok(Some(result))
+    }
+
     /// 获取使用量汇总
     pub fn get_usage_summary(
         &self,
@@ -1020,6 +1157,114 @@ pub(crate) fn find_model_pricing_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn insert_usage_log(
+        conn: &Connection,
+        request_id: &str,
+        created_at: i64,
+    ) -> Result<(), AppError> {
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model,
+                input_tokens, output_tokens, total_cost_usd,
+                latency_ms, status_code, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                request_id,
+                "p1",
+                "codex",
+                "gpt-5.2-codex",
+                100,
+                20,
+                "0.01",
+                120,
+                200,
+                created_at
+            ],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn count_usage_logs(db: &Database) -> Result<i64, AppError> {
+        let conn = lock_conn!(db.conn);
+        conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    #[test]
+    fn request_log_cleanup_config_defaults() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let config = db.get_request_log_cleanup_config()?;
+        assert!(config.enabled);
+        assert_eq!(config.retention_days, DEFAULT_REQUEST_LOG_RETENTION_DAYS);
+        assert!(config.last_cleanup_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_request_logs_respects_retention_days() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 24 * 60 * 60;
+        let recent_ts = now - 2 * 24 * 60 * 60;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "old-log", old_ts)?;
+            insert_usage_log(&conn, "recent-log", recent_ts)?;
+        }
+
+        let cleanup = db.cleanup_request_logs_with_retention_days(30)?;
+        assert_eq!(cleanup.deleted_rows, 1);
+        assert_eq!(cleanup.retention_days, 30);
+
+        assert_eq!(count_usage_logs(&db)?, 1);
+        let conn = lock_conn!(db.conn);
+        let remaining_id: String =
+            conn.query_row("SELECT request_id FROM proxy_request_logs", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(remaining_id, "recent-log");
+
+        Ok(())
+    }
+
+    #[test]
+    fn maybe_cleanup_request_logs_throttles_within_interval() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.set_request_log_cleanup_config(true, 1)?;
+        let now = chrono::Utc::now().timestamp();
+        let stale_ts = now - 2 * 24 * 60 * 60;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "stale-log-1", stale_ts)?;
+        }
+
+        let first_run = db.maybe_cleanup_request_logs_if_due(now)?;
+        assert!(first_run.is_some());
+        assert_eq!(count_usage_logs(&db)?, 0);
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "stale-log-2", stale_ts)?;
+        }
+
+        let throttled = db.maybe_cleanup_request_logs_if_due(now + 30)?;
+        assert!(throttled.is_none());
+        assert_eq!(count_usage_logs(&db)?, 1);
+
+        let second_run = db.maybe_cleanup_request_logs_if_due(
+            now + REQUEST_LOG_AUTO_CLEANUP_INTERVAL_SECONDS + 1,
+        )?;
+        assert!(second_run.is_some());
+        assert_eq!(count_usage_logs(&db)?, 0);
+
+        Ok(())
+    }
 
     #[test]
     fn test_get_usage_summary() -> Result<(), AppError> {

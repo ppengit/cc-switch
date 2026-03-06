@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -17,10 +18,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useRequestLogs, usageKeys } from "@/lib/query/usage";
+import {
+  useCleanupRequestLogsNow,
+  useRequestLogCleanupConfig,
+  useRequestLogs,
+  useUpdateRequestLogCleanupConfig,
+  usageKeys,
+} from "@/lib/query/usage";
 import { useQueryClient } from "@tanstack/react-query";
-import type { LogFilters } from "@/types/usage";
+import type { LogFilters, RequestLog } from "@/types/usage";
 import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
+import { RequestDetailPanel } from "./RequestDetailPanel";
+import { toast } from "sonner";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   fmtInt,
   fmtUsd,
@@ -55,6 +65,21 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const [page, setPage] = useState(0);
   const pageSize = 20;
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(
+    null,
+  );
+  const [cleanupEnabledDraft, setCleanupEnabledDraft] = useState(true);
+  const [retentionDaysDraft, setRetentionDaysDraft] = useState("30");
+
+  const { data: cleanupConfig } = useRequestLogCleanupConfig();
+  const updateCleanupConfig = useUpdateRequestLogCleanupConfig();
+  const cleanupLogsNow = useCleanupRequestLogsNow();
+
+  useEffect(() => {
+    if (!cleanupConfig) return;
+    setCleanupEnabledDraft(cleanupConfig.enabled);
+    setRetentionDaysDraft(String(cleanupConfig.retentionDays));
+  }, [cleanupConfig]);
 
   const { data: result, isLoading } = useRequestLogs({
     filters: appliedFilters,
@@ -140,6 +165,78 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     });
   };
 
+  const handleSaveCleanupConfig = async () => {
+    const parsedRetentionDays = Number.parseInt(retentionDaysDraft, 10);
+    if (
+      !Number.isFinite(parsedRetentionDays) ||
+      parsedRetentionDays < 1 ||
+      parsedRetentionDays > 3650
+    ) {
+      toast.error(
+        t("usage.cleanupRetentionValidation", {
+          defaultValue: "保留天数需在 1-3650 之间",
+        }),
+      );
+      return;
+    }
+
+    try {
+      const updated = await updateCleanupConfig.mutateAsync({
+        enabled: cleanupEnabledDraft,
+        retentionDays: parsedRetentionDays,
+      });
+      setCleanupEnabledDraft(updated.enabled);
+      setRetentionDaysDraft(String(updated.retentionDays));
+      toast.success(
+        t("usage.cleanupConfigSaved", {
+          defaultValue: "请求日志清理配置已保存",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("usage.cleanupConfigSaveFailed", {
+            defaultValue: "保存请求日志清理配置失败",
+          }),
+      );
+    }
+  };
+
+  const handleCleanupNow = async () => {
+    const parsedRetentionDays = Number.parseInt(retentionDaysDraft, 10);
+    if (
+      !Number.isFinite(parsedRetentionDays) ||
+      parsedRetentionDays < 1 ||
+      parsedRetentionDays > 3650
+    ) {
+      toast.error(
+        t("usage.cleanupRetentionValidation", {
+          defaultValue: "保留天数需在 1-3650 之间",
+        }),
+      );
+      return;
+    }
+
+    try {
+      const result = await cleanupLogsNow.mutateAsync({
+        retentionDays: parsedRetentionDays,
+      });
+      toast.success(
+        t("usage.cleanupNowSuccess", {
+          defaultValue: "清理完成，已删除 {{count}} 条日志",
+          count: result.deletedRows,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("usage.cleanupNowFailed", {
+            defaultValue: "立即清理请求日志失败",
+          }),
+      );
+    }
+  };
+
   // 将 Unix 时间戳转换为本地时间的 datetime-local 格式
   const timestampToLocalDatetime = (timestamp: number): string => {
     const date = new Date(timestamp * 1000);
@@ -190,6 +287,8 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
               <SelectItem value="claude">Claude</SelectItem>
               <SelectItem value="codex">Codex</SelectItem>
               <SelectItem value="gemini">Gemini</SelectItem>
+              <SelectItem value="opencode">OpenCode</SelectItem>
+              <SelectItem value="openclaw">OpenClaw</SelectItem>
             </SelectContent>
           </Select>
 
@@ -325,13 +424,90 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
           </div>
         </div>
 
+        <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={cleanupEnabledDraft}
+                onCheckedChange={setCleanupEnabledDraft}
+                disabled={updateCleanupConfig.isPending}
+              />
+              <span className="text-sm">
+                {t("usage.cleanupAutoSwitch", {
+                  defaultValue: "自动清理请求日志",
+                })}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                {t("usage.cleanupRetentionDays", {
+                  defaultValue: "保留天数",
+                })}
+              </span>
+              <Input
+                type="number"
+                min={1}
+                max={3650}
+                step={1}
+                value={retentionDaysDraft}
+                onChange={(event) => setRetentionDaysDraft(event.target.value)}
+                className="h-8 w-24 bg-background"
+              />
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void handleSaveCleanupConfig()}
+              disabled={updateCleanupConfig.isPending}
+            >
+              {t("common.save", { defaultValue: "保存" })}
+            </Button>
+
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void handleCleanupNow()}
+              disabled={cleanupLogsNow.isPending}
+            >
+              {t("usage.cleanupNow", { defaultValue: "立即清理" })}
+            </Button>
+
+            {cleanupConfig?.lastCleanupAt ? (
+              <span className="text-xs text-muted-foreground">
+                {t("usage.cleanupLastRun", {
+                  defaultValue: "上次清理：{{time}}",
+                  time: new Date(
+                    cleanupConfig.lastCleanupAt * 1000,
+                  ).toLocaleString(locale),
+                })}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {t("usage.cleanupNeverRun", {
+                  defaultValue: "上次清理：从未",
+                })}
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t("usage.cleanupHint", {
+              defaultValue:
+                "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
+            })}
+          </p>
+        </div>
+
         {validationError && (
-          <div className="text-sm text-red-600">{validationError}</div>
+          <div className="text-sm text-red-600 dark:text-red-400">
+            {validationError}
+          </div>
         )}
       </div>
 
       {isLoading ? (
-        <div className="h-[400px] animate-pulse rounded bg-gray-100" />
+        <div className="h-[400px] animate-pulse rounded bg-muted/60" />
       ) : (
         <>
           <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
@@ -388,7 +564,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                   </TableRow>
                 ) : (
                   logs.map((log) => (
-                    <TableRow key={log.requestId}>
+                    <TableRow
+                      key={log.requestId}
+                      className="cursor-pointer"
+                      onDoubleClick={() => setSelectedRequest(log)}
+                    >
                       <TableCell>
                         {new Date(log.createdAt * 1000).toLocaleString(locale)}
                       </TableCell>
@@ -432,7 +612,8 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                             className="truncate text-muted-foreground text-[10px]"
                             title={log.requestModel}
                           >
-                            ← {log.requestModel}
+                            {"-> "}
+                            {log.requestModel}
                           </div>
                         )}
                       </TableCell>
@@ -450,11 +631,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs">
                         {(parseFiniteNumber(log.costMultiplier) ?? 1) !== 1 ? (
-                          <span className="text-orange-600">
-                            ×{log.costMultiplier}
+                          <span className="text-orange-600 dark:text-orange-400">
+                            x{log.costMultiplier}
                           </span>
                         ) : (
-                          <span className="text-muted-foreground">×1</span>
+                          <span className="text-muted-foreground">x1</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -470,11 +651,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                             const durationSec = durationMs / 1000;
                             const durationColor = Number.isFinite(durationSec)
                               ? durationSec <= 5
-                                ? "bg-green-100 text-green-800"
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
                                 : durationSec <= 120
-                                  ? "bg-orange-100 text-orange-800"
-                                  : "bg-red-200 text-red-900"
-                              : "bg-gray-100 text-gray-700";
+                                  ? "bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-200"
+                                  : "bg-red-200 text-red-900 dark:bg-red-500/20 dark:text-red-200"
+                              : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200";
                             return (
                               <span
                                 className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-xs ${durationColor}`}
@@ -491,11 +672,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                               const firstSec = log.firstTokenMs / 1000;
                               const firstColor = Number.isFinite(firstSec)
                                 ? firstSec <= 5
-                                  ? "bg-green-100 text-green-800"
+                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
                                   : firstSec <= 120
-                                    ? "bg-orange-100 text-orange-800"
-                                    : "bg-red-200 text-red-900"
-                                : "bg-gray-100 text-gray-700";
+                                    ? "bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-200"
+                                    : "bg-red-200 text-red-900 dark:bg-red-500/20 dark:text-red-200"
+                                : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200";
                               return (
                                 <span
                                   className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-xs ${firstColor}`}
@@ -509,8 +690,8 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                           <span
                             className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-xs ${
                               log.isStreaming
-                                ? "bg-blue-100 text-blue-800"
-                                : "bg-purple-100 text-purple-800"
+                                ? "bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-200"
+                                : "bg-purple-100 text-purple-800 dark:bg-purple-500/20 dark:text-purple-200"
                             }`}
                           >
                             {log.isStreaming
@@ -523,8 +704,8 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         <span
                           className={`inline-flex rounded-full px-2 py-1 text-xs ${
                             log.statusCode >= 200 && log.statusCode < 300
-                              ? "bg-green-100 text-green-800"
-                              : "bg-red-100 text-red-800"
+                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
+                              : "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200"
                           }`}
                         >
                           {log.statusCode}
@@ -603,6 +784,14 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
             </div>
           )}
         </>
+      )}
+
+      {selectedRequest && (
+        <RequestDetailPanel
+          requestId={selectedRequest.requestId}
+          initialRequest={selectedRequest}
+          onClose={() => setSelectedRequest(null)}
+        />
       )}
     </div>
   );

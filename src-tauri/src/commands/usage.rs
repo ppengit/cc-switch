@@ -57,6 +57,35 @@ pub fn get_request_detail(
     state.db.get_request_detail(&request_id)
 }
 
+/// 获取请求日志清理配置
+#[tauri::command]
+pub fn get_request_log_cleanup_config(
+    state: State<'_, AppState>,
+) -> Result<RequestLogCleanupConfig, AppError> {
+    state.db.get_request_log_cleanup_config()
+}
+
+/// 更新请求日志清理配置
+#[tauri::command]
+pub fn update_request_log_cleanup_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    retention_days: u32,
+) -> Result<RequestLogCleanupConfig, AppError> {
+    state
+        .db
+        .set_request_log_cleanup_config(enabled, retention_days)
+}
+
+/// 立即清理请求日志
+#[tauri::command]
+pub fn cleanup_request_logs_now(
+    state: State<'_, AppState>,
+    retention_days: Option<u32>,
+) -> Result<RequestLogCleanupResult, AppError> {
+    state.db.cleanup_request_logs_now(retention_days)
+}
+
 /// 获取模型定价列表
 #[tauri::command]
 pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingInfo>, AppError> {

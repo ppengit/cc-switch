@@ -9,6 +9,8 @@ import type {
   ModelPricing,
   ProviderLimitStatus,
   PaginatedLogs,
+  RequestLogCleanupConfig,
+  RequestLogCleanupResult,
 } from "@/types/usage";
 import type { UsageResult } from "@/types";
 import type { AppId } from "./types";
@@ -80,6 +82,28 @@ export const usageApi = {
 
   getRequestDetail: async (requestId: string): Promise<RequestLog | null> => {
     return invoke("get_request_detail", { requestId });
+  },
+
+  getRequestLogCleanupConfig: async (): Promise<RequestLogCleanupConfig> => {
+    return invoke("get_request_log_cleanup_config");
+  },
+
+  updateRequestLogCleanupConfig: async (
+    enabled: boolean,
+    retentionDays: number,
+  ): Promise<RequestLogCleanupConfig> => {
+    return invoke("update_request_log_cleanup_config", {
+      enabled,
+      retentionDays,
+    });
+  },
+
+  cleanupRequestLogsNow: async (
+    retentionDays?: number,
+  ): Promise<RequestLogCleanupResult> => {
+    return invoke("cleanup_request_logs_now", {
+      retentionDays,
+    });
   },
 
   getModelPricing: async (): Promise<ModelPricing[]> => {

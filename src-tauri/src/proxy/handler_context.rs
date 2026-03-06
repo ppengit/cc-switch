@@ -216,11 +216,56 @@ impl RequestContext {
             Err(error) => return Err(Self::map_provider_selection_error(error)),
         };
 
-        let assignment_candidate_provider_ids = if available_provider_ids.is_empty() {
-            ordered_provider_ids.clone()
+        if available_provider_ids.is_empty() {
+            log::warn!(
+                "[{}] session routing assignment skipped: session={}, no available providers after circuit filter",
+                app_type_str,
+                session_id
+            );
+            return Err(ProxyError::NoAvailableProvider);
+        }
+
+        let mut stable_available_provider_ids = Vec::new();
+        let mut degraded_available_provider_ids = Vec::new();
+        for provider_id in available_provider_ids.iter() {
+            match state
+                .db
+                .get_provider_health(provider_id, app_type_str)
+                .await
+            {
+                Ok(health) if health.is_healthy && health.consecutive_failures == 0 => {
+                    stable_available_provider_ids.push(provider_id.clone());
+                }
+                Ok(health) if health.is_healthy => {
+                    degraded_available_provider_ids.push(provider_id.clone());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[{}] failed to read provider health during session routing assignment, keeping provider as candidate: provider={}, error={}",
+                        app_type_str,
+                        provider_id,
+                        error
+                    );
+                    stable_available_provider_ids.push(provider_id.clone());
+                }
+            }
+        }
+
+        let assignment_candidate_provider_ids = if !stable_available_provider_ids.is_empty() {
+            stable_available_provider_ids
         } else {
-            available_provider_ids.clone()
+            degraded_available_provider_ids
         };
+
+        if assignment_candidate_provider_ids.is_empty() {
+            log::warn!(
+                "[{}] session routing assignment skipped: session={}, all available providers are unhealthy",
+                app_type_str,
+                session_id
+            );
+            return Err(ProxyError::NoAvailableProvider);
+        }
 
         let binding = state
             .db
