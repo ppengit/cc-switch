@@ -1108,6 +1108,7 @@ pub fn run() {
             commands::get_request_log_cleanup_config,
             commands::update_request_log_cleanup_config,
             commands::cleanup_request_logs_now,
+            commands::clear_request_logs_all,
             commands::get_model_pricing,
             commands::update_model_pricing,
             commands::delete_model_pricing,

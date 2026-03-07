@@ -31,6 +31,7 @@ import type { AppId } from "@/lib/api";
 import { configApi, settingsApi } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
+import { useColumnResize } from "@/hooks/useColumnResize";
 import { useSettingsQuery } from "@/lib/query";
 import {
   openclawKeys,
@@ -141,11 +142,24 @@ type ProviderSortKey =
   | "status";
 type SortDirection = "asc" | "desc";
 type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
+type ProviderResizableColumnKey =
+  | "websiteUrl"
+  | "notes"
+  | "model"
+  | "status"
+  | "actions";
 interface ProviderStatusMeta {
   label: string;
   sortValue: number;
   className: string;
 }
+const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
+  websiteUrl: 180,
+  notes: 180,
+  model: 200,
+  status: 220,
+  actions: 260,
+};
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
   label: string;
@@ -824,6 +838,7 @@ export function ProviderList({
   const [selectedModelFilters, setSelectedModelFilters] = useState<string[]>(
     [],
   );
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const [sortState, setSortState] = useState<{
     key: ProviderSortKey;
@@ -831,6 +846,19 @@ export function ProviderList({
   }>({
     key: "default",
     direction: "asc",
+  });
+  const {
+    widths: providerColumnWidths,
+    startResize: startProviderColumnResize,
+  } = useColumnResize<ProviderResizableColumnKey>({
+    initialWidths: {
+      websiteUrl: 220,
+      notes: 220,
+      model: 240,
+      status: 240,
+      actions: 300,
+    },
+    minWidths: PROVIDER_COLUMN_MIN_WIDTHS,
   });
   const [selectedProviderIds, setSelectedProviderIds] = useState<
     Record<string, boolean>
@@ -1706,6 +1734,7 @@ export function ProviderList({
       const key = (event.key ?? "").toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
+        setIsFilterPanelOpen(true);
         requestAnimationFrame(() => {
           filterInputRef.current?.focus();
           filterInputRef.current?.select();
@@ -1770,19 +1799,23 @@ export function ProviderList({
         const env = isPlainObject(config.env)
           ? (config.env as Record<string, unknown>)
           : {};
-        return Array.from(
-          new Set(
-            [
-              env.ANTHROPIC_MODEL,
-              env.ANTHROPIC_REASONING_MODEL,
-              env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-              env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-              env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-            ]
-              .map((value) => (typeof value === "string" ? value.trim() : ""))
-              .filter((value) => value.length > 0),
-          ),
-        );
+        const primaryModel =
+          typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : "";
+        if (primaryModel.trim()) {
+          return [primaryModel.trim()];
+        }
+        const fallbackModelCandidates = [
+          env.ANTHROPIC_REASONING_MODEL,
+          env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+          env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+          env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        ];
+        for (const candidate of fallbackModelCandidates) {
+          if (typeof candidate === "string" && candidate.trim().length > 0) {
+            return [candidate.trim()];
+          }
+        }
+        return [];
       }
 
       if (appId === "gemini") {
@@ -2139,15 +2172,39 @@ export function ProviderList({
   const supportsBatchModelEdit =
     appId === "claude" || appId === "codex" || appId === "gemini";
 
+  const modelFieldLabel = useMemo(() => {
+    if (appId === "claude") {
+      return t("provider.primaryModel", { defaultValue: "主模型" });
+    }
+    if (appId === "codex" || appId === "gemini") {
+      return t("provider.model", { defaultValue: "模型名称" });
+    }
+    return t("provider.model", { defaultValue: "模型" });
+  }, [appId, t]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filterField !== "all") count += 1;
+    if (filterKeyword.trim().length > 0) count += 1;
+    if (selectedModelFilters.length > 0) count += 1;
+    return count;
+  }, [filterField, filterKeyword, selectedModelFilters]);
+
   const modelFilterLabel =
     selectedModelFilters.length > 0
-      ? t("provider.modelFilterSelected", {
-          defaultValue: "模型 ({{count}})",
+      ? t("provider.modelFilterLabelSelected", {
+          defaultValue: "{{field}} ({{count}})",
+          field: modelFieldLabel,
           count: selectedModelFilters.length,
         })
-      : t("provider.modelFilter", {
-          defaultValue: "模型筛选",
+      : t("provider.modelFilterLabelIdle", {
+          field: modelFieldLabel,
+          defaultValue: "按{{field}}筛选",
         });
+
+  const filterToggleLabel = isFilterPanelOpen
+    ? t("provider.hideFilters", { defaultValue: "收起筛选" })
+    : t("provider.showFilters", { defaultValue: "展开筛选" });
 
   const handleSortChange = useCallback((key: ProviderSortKey) => {
     setSortState((current) => {
@@ -2173,6 +2230,19 @@ export function ProviderList({
       );
     },
     [sortState.direction, sortState.key],
+  );
+
+  const renderProviderColumnResizeHandle = useCallback(
+    (columnKey: ProviderResizableColumnKey) => (
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        className="absolute right-0 top-0 h-full w-2 cursor-col-resize select-none touch-none"
+        onMouseDown={(event) => startProviderColumnResize(columnKey, event)}
+        onClick={(event) => event.stopPropagation()}
+      />
+    ),
+    [startProviderColumnResize],
   );
 
   const handleApplyBatchModelUpdate = useCallback(async () => {
@@ -2415,24 +2485,61 @@ export function ProviderList({
         <div className="rounded-xl border border-border/70 overflow-hidden">
           <div className="overflow-auto">
             <table className="min-w-[1120px] w-full text-sm">
+              <colgroup>
+                <col style={{ width: 48, minWidth: 48 }} />
+                <col style={{ width: 40, minWidth: 40 }} />
+                <col style={{ width: 260, minWidth: 220 }} />
+                <col
+                  style={{
+                    width: providerColumnWidths.websiteUrl,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.notes,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.model,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.status,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.actions,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                  }}
+                />
+              </colgroup>
               <thead className="sticky top-0 z-10 bg-background">
                 <tr className="border-b border-border/70">
-                  <th className="sticky left-0 z-30 w-12 bg-background px-3 py-2 text-left">
-                    <Checkbox
-                      checked={
-                        allVisibleSelected
-                          ? true
-                          : someVisibleSelected
-                            ? "indeterminate"
-                            : false
-                      }
-                      onCheckedChange={(checked) =>
-                        toggleSelectAllVisible(checked === true)
-                      }
-                      aria-label={t("common.selectAll", {
-                        defaultValue: "全选当前筛选结果",
-                      })}
-                    />
+                  <th className="sticky left-0 z-30 w-12 bg-background px-3 py-2 text-left align-middle">
+                    <div className="flex items-center justify-center">
+                      <Checkbox
+                        checked={
+                          allVisibleSelected
+                            ? true
+                            : someVisibleSelected
+                              ? "indeterminate"
+                              : false
+                        }
+                        onCheckedChange={(checked) =>
+                          toggleSelectAllVisible(checked === true)
+                        }
+                        aria-label={t("common.selectAll", {
+                          defaultValue: "全选当前筛选结果",
+                        })}
+                      />
+                    </div>
                   </th>
                   <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left" />
                   <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left">
@@ -2445,7 +2552,13 @@ export function ProviderList({
                       {getSortIcon("name")}
                     </button>
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.websiteUrl,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2454,8 +2567,15 @@ export function ProviderList({
                       {t("provider.website", { defaultValue: "官网链接" })}
                       {getSortIcon("websiteUrl")}
                     </button>
+                    {renderProviderColumnResizeHandle("websiteUrl")}
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.notes,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2464,8 +2584,15 @@ export function ProviderList({
                       {t("provider.notes", { defaultValue: "备注" })}
                       {getSortIcon("notes")}
                     </button>
+                    {renderProviderColumnResizeHandle("notes")}
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.model,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2474,8 +2601,15 @@ export function ProviderList({
                       {t("provider.model", { defaultValue: "模型" })}
                       {getSortIcon("model")}
                     </button>
+                    {renderProviderColumnResizeHandle("model")}
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.status,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2484,9 +2618,17 @@ export function ProviderList({
                       {t("provider.status", { defaultValue: "默认状态" })}
                       {getSortIcon("status")}
                     </button>
+                    {renderProviderColumnResizeHandle("status")}
                   </th>
-                  <th className="sticky right-0 z-30 w-[360px] bg-background px-3 py-2 text-left">
+                  <th
+                    className="relative sticky right-0 z-30 bg-background px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.actions,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                    }}
+                  >
                     {t("common.actions", { defaultValue: "操作" })}
+                    {renderProviderColumnResizeHandle("actions")}
                   </th>
                 </tr>
               </thead>
@@ -2496,6 +2638,8 @@ export function ProviderList({
                     key={provider.id}
                     provider={provider}
                     rowIndex={index}
+                    showOrderNumber={isDragEnabled}
+                    columnWidths={providerColumnWidths}
                     dragEnabled={isDragEnabled}
                     isSelected={Boolean(selectedProviderIds[provider.id])}
                     onToggleSelected={toggleProviderSelection}
@@ -2802,149 +2946,171 @@ export function ProviderList({
                 {t("common.clearSelection", { defaultValue: "清空选择" })}
               </Button>
             )}
-          </div>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-end gap-2">
-          <div className="w-[190px] space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.filterField", { defaultValue: "筛选字段" })}
-            </Label>
-            <select
-              value={filterField}
-              onChange={(event) =>
-                setFilterField(event.target.value as ProviderFilterField)
-              }
-              className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Button
+              type="button"
+              size="icon"
+              variant={isFilterPanelOpen ? "default" : "outline"}
+              className="h-8 w-8"
+              onClick={() => setIsFilterPanelOpen((current) => !current)}
+              aria-label={filterToggleLabel}
+              title={filterToggleLabel}
             >
-              <option value="all">
-                {t("provider.filterAll", { defaultValue: "全部字段" })}
-              </option>
-              <option value="name">
-                {t("provider.filterByName", { defaultValue: "供应商名称" })}
-              </option>
-              <option value="websiteUrl">
-                {t("provider.filterByWebsite", { defaultValue: "官网链接" })}
-              </option>
-              <option value="notes">
-                {t("provider.filterByNotes", { defaultValue: "备注" })}
-              </option>
-              <option value="model">
-                {t("provider.filterByModel", { defaultValue: "模型名称" })}
-              </option>
-            </select>
-          </div>
-
-          <div className="relative min-w-[220px] flex-1 space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.fuzzyFilter", { defaultValue: "模糊筛选" })}
-            </Label>
-            <Search className="pointer-events-none absolute left-2.5 top-[30px] h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              ref={filterInputRef}
-              value={filterKeyword}
-              onChange={(event) => setFilterKeyword(event.target.value)}
-              placeholder={t("provider.searchPlaceholder", {
-                defaultValue: "输入关键字筛选名称/网址/备注/模型",
-              })}
-              className="h-8 pl-8 pr-8 text-sm"
-            />
-            {filterKeyword.trim().length > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-1 top-[24px] h-6 w-6"
-                onClick={() => setFilterKeyword("")}
-                aria-label={t("common.clear", { defaultValue: "清空" })}
-              >
-                <X className="h-3.5 w-3.5" />
-              </Button>
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+            </Button>
+            {activeFilterCount > 0 && (
+              <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {t("provider.activeFilters", {
+                  defaultValue: "筛选 {{count}}",
+                  count: activeFilterCount,
+                })}
+              </span>
             )}
           </div>
-
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.modelFilter", {
-                defaultValue: "模型名称 distinct 多选",
-              })}
-            </Label>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="outline" className="h-8">
-                  {modelFilterLabel}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="max-h-72 w-64 overflow-y-auto"
-              >
-                <DropdownMenuItem
-                  onSelect={(event) => {
-                    event.preventDefault();
-                    setSelectedModelFilters([]);
-                  }}
-                  disabled={selectedModelFilters.length === 0}
-                >
-                  {t("common.clear", { defaultValue: "清空" })}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {availableModelFilters.length === 0 ? (
-                  <DropdownMenuItem disabled>
-                    {t("provider.noModelOptions", {
-                      defaultValue: "暂无模型可选",
-                    })}
-                  </DropdownMenuItem>
-                ) : (
-                  availableModelFilters.map((modelName) => (
-                    <DropdownMenuCheckboxItem
-                      key={modelName}
-                      checked={selectedModelFilterSet.has(modelName)}
-                      onCheckedChange={(checked) => {
-                        setSelectedModelFilters((current) => {
-                          if (checked === true) {
-                            if (current.includes(modelName)) return current;
-                            return [...current, modelName];
-                          }
-                          return current.filter((item) => item !== modelName);
-                        });
-                      }}
-                      onSelect={(event) => event.preventDefault()}
-                    >
-                      <span
-                        className="max-w-[220px] truncate"
-                        title={modelName}
-                      >
-                        {modelName}
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8"
-            onClick={() => setSortState({ key: "default", direction: "asc" })}
-            disabled={
-              sortState.key === "default" && sortState.direction === "asc"
-            }
-          >
-            {t("provider.defaultOrder", { defaultValue: "默认顺序" })}
-          </Button>
-
-          {!isDragEnabled && (
-            <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-              {t("provider.dragDisabledForSort", {
-                defaultValue: "当前为临时排序，拖拽已禁用",
-              })}
-            </span>
-          )}
         </div>
+
+        {isFilterPanelOpen && (
+          <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+            <div className="w-[190px] space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.filterField", { defaultValue: "筛选字段" })}
+              </Label>
+              <select
+                value={filterField}
+                onChange={(event) =>
+                  setFilterField(event.target.value as ProviderFilterField)
+                }
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value="all">
+                  {t("provider.filterAll", { defaultValue: "全部字段" })}
+                </option>
+                <option value="name">
+                  {t("provider.filterByName", { defaultValue: "供应商名称" })}
+                </option>
+                <option value="websiteUrl">
+                  {t("provider.filterByWebsite", { defaultValue: "官网链接" })}
+                </option>
+                <option value="notes">
+                  {t("provider.filterByNotes", { defaultValue: "备注" })}
+                </option>
+                <option value="model">{modelFieldLabel}</option>
+              </select>
+            </div>
+
+            <div className="relative min-w-[220px] flex-1 space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.fuzzyFilter", { defaultValue: "模糊筛选" })}
+              </Label>
+              <Search className="pointer-events-none absolute left-2.5 top-[30px] h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                ref={filterInputRef}
+                data-testid="provider-filter-keyword-input"
+                value={filterKeyword}
+                onChange={(event) => setFilterKeyword(event.target.value)}
+                placeholder={t("provider.filterKeywordPlaceholder", {
+                  field: modelFieldLabel,
+                  defaultValue: "输入关键字筛选名称/网址/备注/{{field}}",
+                })}
+                className="h-8 pl-8 pr-8 text-sm"
+              />
+              {filterKeyword.trim().length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-[24px] h-6 w-6"
+                  onClick={() => setFilterKeyword("")}
+                  aria-label={t("common.clear", { defaultValue: "清空" })}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.modelFilterMultiSelect", {
+                  field: modelFieldLabel,
+                  defaultValue: "按{{field}}多选",
+                })}
+              </Label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" className="h-8">
+                    {modelFilterLabel}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="max-h-72 w-64 overflow-y-auto"
+                >
+                  <DropdownMenuItem
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      setSelectedModelFilters([]);
+                    }}
+                    disabled={selectedModelFilters.length === 0}
+                  >
+                    {t("common.clear", { defaultValue: "清空" })}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {availableModelFilters.length === 0 ? (
+                    <DropdownMenuItem disabled>
+                      {t("provider.noModelOptions", {
+                        defaultValue: "暂无模型可选",
+                      })}
+                    </DropdownMenuItem>
+                  ) : (
+                    availableModelFilters.map((modelName) => (
+                      <DropdownMenuCheckboxItem
+                        key={modelName}
+                        checked={selectedModelFilterSet.has(modelName)}
+                        onCheckedChange={(checked) => {
+                          setSelectedModelFilters((current) => {
+                            if (checked === true) {
+                              if (current.includes(modelName)) return current;
+                              return [...current, modelName];
+                            }
+                            return current.filter((item) => item !== modelName);
+                          });
+                        }}
+                        onSelect={(event) => event.preventDefault()}
+                      >
+                        <span
+                          className="max-w-[220px] truncate"
+                          title={modelName}
+                        >
+                          {modelName}
+                        </span>
+                      </DropdownMenuCheckboxItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => setSortState({ key: "default", direction: "asc" })}
+              disabled={
+                sortState.key === "default" && sortState.direction === "asc"
+              }
+            >
+              {t("provider.defaultOrder", { defaultValue: "默认顺序" })}
+            </Button>
+
+            {!isDragEnabled && (
+              <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                {t("provider.dragDisabledForSort", {
+                  defaultValue: "当前为临时排序，拖拽已禁用",
+                })}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -3958,6 +4124,8 @@ export function ProviderList({
 interface SortableProviderTableRowProps {
   provider: Provider;
   rowIndex: number;
+  showOrderNumber: boolean;
+  columnWidths: Record<ProviderResizableColumnKey, number>;
   dragEnabled: boolean;
   isSelected: boolean;
   onToggleSelected: (providerId: string, checked: boolean) => void;
@@ -3997,6 +4165,8 @@ interface SortableProviderTableRowProps {
 function SortableProviderTableRow({
   provider,
   rowIndex,
+  showOrderNumber,
+  columnWidths,
   dragEnabled,
   isSelected,
   onToggleSelected,
@@ -4065,24 +4235,26 @@ function SortableProviderTableRow({
       style={style}
       data-state={isSelected ? "selected" : undefined}
       className={cn(
-        "border-b border-border/60 align-top transition-colors hover:bg-muted/45",
+        "border-b border-border/60 transition-colors hover:bg-muted/45",
         rowClass,
         isDragging && "z-10 bg-accent/40",
       )}
     >
       <td
         className={cn(
-          "sticky left-0 z-20 px-3 py-2 align-top",
+          "sticky left-0 z-20 px-3 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
-        <Checkbox
-          checked={isSelected}
-          onCheckedChange={(checked) =>
-            onToggleSelected(provider.id, checked === true)
-          }
-          aria-label={t("common.select", { defaultValue: "选择" })}
-        />
+        <div className="flex items-center justify-center">
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={(checked) =>
+              onToggleSelected(provider.id, checked === true)
+            }
+            aria-label={t("common.select", { defaultValue: "选择" })}
+          />
+        </div>
       </td>
 
       <td
@@ -4094,7 +4266,7 @@ function SortableProviderTableRow({
         <button
           type="button"
           className={cn(
-            "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
+            "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1 text-muted-foreground transition-colors tabular-nums",
             dragEnabled
               ? "cursor-grab hover:bg-muted active:cursor-grabbing"
               : "cursor-not-allowed opacity-40",
@@ -4104,19 +4276,23 @@ function SortableProviderTableRow({
           {...(dragEnabled ? attributes : {})}
           {...(dragEnabled ? listeners : {})}
         >
-          <svg
-            className="h-4 w-4"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <circle cx="5" cy="4" r="1" />
-            <circle cx="11" cy="4" r="1" />
-            <circle cx="5" cy="8" r="1" />
-            <circle cx="11" cy="8" r="1" />
-            <circle cx="5" cy="12" r="1" />
-            <circle cx="11" cy="12" r="1" />
-          </svg>
+          {showOrderNumber ? (
+            <span className="text-xs font-semibold">{rowIndex + 1}</span>
+          ) : (
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <circle cx="5" cy="4" r="1" />
+              <circle cx="11" cy="4" r="1" />
+              <circle cx="5" cy="8" r="1" />
+              <circle cx="11" cy="8" r="1" />
+              <circle cx="5" cy="12" r="1" />
+              <circle cx="11" cy="12" r="1" />
+            </svg>
+          )}
         </button>
       </td>
 
@@ -4149,7 +4325,13 @@ function SortableProviderTableRow({
         </div>
       </td>
 
-      <td className="max-w-[260px] px-3 py-2 align-top">
+      <td
+        className="px-3 py-2 align-top"
+        style={{
+          width: columnWidths.websiteUrl,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
+        }}
+      >
         {website ? (
           <button
             type="button"
@@ -4164,7 +4346,13 @@ function SortableProviderTableRow({
         )}
       </td>
 
-      <td className="max-w-[240px] px-3 py-2 align-top">
+      <td
+        className="px-3 py-2 align-top"
+        style={{
+          width: columnWidths.notes,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+        }}
+      >
         {notes ? (
           <span className="block truncate text-muted-foreground" title={notes}>
             {notes}
@@ -4174,7 +4362,13 @@ function SortableProviderTableRow({
         )}
       </td>
 
-      <td className="max-w-[260px] px-3 py-2 align-top">
+      <td
+        className="px-3 py-2 align-top"
+        style={{
+          width: columnWidths.model,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+        }}
+      >
         <span
           className="block truncate text-muted-foreground"
           title={modelSummary}
@@ -4184,12 +4378,13 @@ function SortableProviderTableRow({
       </td>
 
       <td
-        className={cn(
-          "sticky right-0 z-20 px-3 py-2 align-top",
-          stickyCellBgClass,
-        )}
+        className="px-3 py-2 align-top"
+        style={{
+          width: columnWidths.status,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+        }}
       >
-        <div className="flex flex-col items-start gap-1">
+        <div className="flex flex-wrap items-center gap-2">
           {showHealthBadge && (
             <ProviderHealthBadge
               consecutiveFailures={health.consecutive_failures}
@@ -4207,8 +4402,17 @@ function SortableProviderTableRow({
         </div>
       </td>
 
-      <td className="px-3 py-2 align-top">
-        <div className="min-w-[330px]">
+      <td
+        className={cn(
+          "sticky right-0 z-20 px-3 py-2 align-top",
+          stickyCellBgClass,
+        )}
+        style={{
+          width: columnWidths.actions,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+        }}
+      >
+        <div className="min-w-[240px]">
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}

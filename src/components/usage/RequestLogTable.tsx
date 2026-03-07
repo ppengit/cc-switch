@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -20,19 +20,29 @@ import {
 } from "@/components/ui/select";
 import {
   useCleanupRequestLogsNow,
+  useClearRequestLogsAll,
   useRequestLogCleanupConfig,
   useRequestLogs,
   useUpdateRequestLogCleanupConfig,
   usageKeys,
 } from "@/lib/query/usage";
 import { useQueryClient } from "@tanstack/react-query";
+import { useColumnResize } from "@/hooks/useColumnResize";
 import type { LogFilters, RequestLog } from "@/types/usage";
-import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
 import { RequestDetailPanel } from "./RequestDetailPanel";
 import { toast } from "sonner";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import {
-  fmtInt,
+  fmtTokenCompact,
   fmtUsd,
   getLocaleFromLanguage,
   parseFiniteNumber,
@@ -46,6 +56,34 @@ const ONE_DAY_SECONDS = 24 * 60 * 60;
 const MAX_FIXED_RANGE_SECONDS = 30 * ONE_DAY_SECONDS;
 
 type TimeMode = "rolling" | "fixed";
+type RequestLogColumnKey =
+  | "time"
+  | "provider"
+  | "sessionRouting"
+  | "billingModel"
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheReadTokens"
+  | "cacheCreationTokens"
+  | "multiplier"
+  | "totalCost"
+  | "timingInfo"
+  | "status";
+
+const REQUEST_LOG_COLUMN_MIN_WIDTHS: Record<RequestLogColumnKey, number> = {
+  time: 160,
+  provider: 150,
+  sessionRouting: 220,
+  billingModel: 220,
+  inputTokens: 110,
+  outputTokens: 110,
+  cacheReadTokens: 110,
+  cacheCreationTokens: 120,
+  multiplier: 95,
+  totalCost: 110,
+  timingInfo: 160,
+  status: 90,
+};
 
 export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const { t, i18n } = useTranslation();
@@ -68,12 +106,32 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(
     null,
   );
+  const [showCleanupControls, setShowCleanupControls] = useState(false);
   const [cleanupEnabledDraft, setCleanupEnabledDraft] = useState(true);
   const [retentionDaysDraft, setRetentionDaysDraft] = useState("30");
+  const { widths: columnWidths, startResize: startColumnResize } =
+    useColumnResize<RequestLogColumnKey>({
+      initialWidths: {
+        time: 170,
+        provider: 160,
+        sessionRouting: 240,
+        billingModel: 260,
+        inputTokens: 120,
+        outputTokens: 120,
+        cacheReadTokens: 120,
+        cacheCreationTokens: 135,
+        multiplier: 100,
+        totalCost: 120,
+        timingInfo: 170,
+        status: 95,
+      },
+      minWidths: REQUEST_LOG_COLUMN_MIN_WIDTHS,
+    });
 
   const { data: cleanupConfig } = useRequestLogCleanupConfig();
   const updateCleanupConfig = useUpdateRequestLogCleanupConfig();
   const cleanupLogsNow = useCleanupRequestLogsNow();
+  const clearAllLogs = useClearRequestLogsAll();
 
   useEffect(() => {
     if (!cleanupConfig) return;
@@ -95,6 +153,17 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const logs = result?.data ?? [];
   const total = result?.total ?? 0;
   const totalPages = Math.ceil(total / pageSize);
+
+  useEffect(() => {
+    if (page === 0) return;
+    if (total === 0) {
+      setPage(0);
+      return;
+    }
+    if (page >= totalPages) {
+      setPage(Math.max(totalPages - 1, 0));
+    }
+  }, [page, total, totalPages]);
 
   const handleSearch = () => {
     setValidationError(null);
@@ -221,12 +290,20 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
       const result = await cleanupLogsNow.mutateAsync({
         retentionDays: parsedRetentionDays,
       });
-      toast.success(
-        t("usage.cleanupNowSuccess", {
-          defaultValue: "清理完成，已删除 {{count}} 条日志",
-          count: result.deletedRows,
-        }),
-      );
+      if (result.deletedRows === 0) {
+        toast.info(
+          t("usage.cleanupNowNoop", {
+            defaultValue: "未删除日志：当前记录均在保留期内",
+          }),
+        );
+      } else {
+        toast.success(
+          t("usage.cleanupNowSuccess", {
+            defaultValue: "清理完成，已删除 {{count}} 条日志",
+            count: result.deletedRows,
+          }),
+        );
+      }
     } catch (error) {
       toast.error(
         extractErrorMessage(error) ||
@@ -237,7 +314,36 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     }
   };
 
-  // 将 Unix 时间戳转换为本地时间的 datetime-local 格式
+  const handleClearAllLogs = async () => {
+    const confirmed = window.confirm(
+      t("usage.clearAllLogsConfirm", {
+        defaultValue:
+          "将清空全部请求日志（不限保留天数），该操作不可恢复。是否继续？",
+      }),
+    );
+    if (!confirmed) return;
+
+    try {
+      const result = await clearAllLogs.mutateAsync();
+      setSelectedRequest(null);
+      setPage(0);
+      toast.success(
+        t("usage.clearAllLogsSuccess", {
+          defaultValue: "已清空全部请求日志，共删除 {{count}} 条记录",
+          count: result.deletedRows,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("usage.clearAllLogsFailed", {
+            defaultValue: "清空全部请求日志失败",
+          }),
+      );
+    }
+  };
+
+  // Convert Unix timestamp to local datetime-local input value.
   const timestampToLocalDatetime = (timestamp: number): string => {
     const date = new Date(timestamp * 1000);
     const year = date.getFullYear();
@@ -248,14 +354,13 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     return `${year}-${month}-${day}T${hours}:${minutes}`;
   };
 
-  // 将 datetime-local 格式转换为 Unix 时间戳
+  // Convert datetime-local input value to Unix timestamp.
   const localDatetimeToTimestamp = (datetime: string): number | undefined => {
     if (!datetime) return undefined;
-    // 验证格式是否完整 (YYYY-MM-DDTHH:mm)
+    // Validate format completeness (YYYY-MM-DDTHH:mm)
     if (datetime.length < 16) return undefined;
     const timestamp = new Date(datetime).getTime();
-    // 验证是否为有效日期
-    if (isNaN(timestamp)) return undefined;
+    if (Number.isNaN(timestamp)) return undefined;
     return Math.floor(timestamp / 1000);
   };
 
@@ -264,6 +369,85 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
 
   const rollingRangeForDisplay =
     draftTimeMode === "rolling" ? getRollingRange() : null;
+
+  const renderColumnResizeHandle = useCallback(
+    (columnKey: RequestLogColumnKey) => (
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        className="absolute right-0 top-0 h-full w-2 cursor-col-resize select-none touch-none"
+        onMouseDown={(event) => startColumnResize(columnKey, event)}
+        onClick={(event) => event.stopPropagation()}
+      />
+    ),
+    [startColumnResize],
+  );
+
+  const logColumnDefs = useMemo(
+    () => [
+      {
+        key: "time",
+        width: columnWidths.time,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.time,
+      },
+      {
+        key: "provider",
+        width: columnWidths.provider,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.provider,
+      },
+      {
+        key: "sessionRouting",
+        width: columnWidths.sessionRouting,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.sessionRouting,
+      },
+      {
+        key: "billingModel",
+        width: columnWidths.billingModel,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.billingModel,
+      },
+      {
+        key: "inputTokens",
+        width: columnWidths.inputTokens,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.inputTokens,
+      },
+      {
+        key: "outputTokens",
+        width: columnWidths.outputTokens,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.outputTokens,
+      },
+      {
+        key: "cacheReadTokens",
+        width: columnWidths.cacheReadTokens,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.cacheReadTokens,
+      },
+      {
+        key: "cacheCreationTokens",
+        width: columnWidths.cacheCreationTokens,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.cacheCreationTokens,
+      },
+      {
+        key: "multiplier",
+        width: columnWidths.multiplier,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.multiplier,
+      },
+      {
+        key: "totalCost",
+        width: columnWidths.totalCost,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.totalCost,
+      },
+      {
+        key: "timingInfo",
+        width: columnWidths.timingInfo,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.timingInfo,
+      },
+      {
+        key: "status",
+        width: columnWidths.status,
+        minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.status,
+      },
+    ],
+    [columnWidths],
+  );
 
   return (
     <div className="space-y-4">
@@ -421,83 +605,113 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
+            <Button
+              size="sm"
+              variant={showCleanupControls ? "default" : "outline"}
+              onClick={() => setShowCleanupControls((current) => !current)}
+              className="h-8 gap-1.5"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              {t("usage.cleanupControls", { defaultValue: "日志清理" })}
+            </Button>
           </div>
         </div>
 
-        <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={cleanupEnabledDraft}
-                onCheckedChange={setCleanupEnabledDraft}
+        {showCleanupControls && (
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={cleanupEnabledDraft}
+                  onCheckedChange={setCleanupEnabledDraft}
+                  disabled={updateCleanupConfig.isPending}
+                />
+                <span className="text-sm">
+                  {t("usage.cleanupAutoSwitch", {
+                    defaultValue: "自动清理请求日志",
+                  })}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  {t("usage.cleanupRetentionDays", {
+                    defaultValue: "保留天数",
+                  })}
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3650}
+                  step={1}
+                  value={retentionDaysDraft}
+                  onChange={(event) =>
+                    setRetentionDaysDraft(event.target.value)
+                  }
+                  className="h-8 w-24 bg-background"
+                />
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleSaveCleanupConfig()}
                 disabled={updateCleanupConfig.isPending}
-              />
-              <span className="text-sm">
-                {t("usage.cleanupAutoSwitch", {
-                  defaultValue: "自动清理请求日志",
-                })}
-              </span>
+              >
+                {t("common.save", { defaultValue: "保存" })}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => void handleCleanupNow()}
+                disabled={cleanupLogsNow.isPending}
+              >
+                {t("usage.cleanupNow", { defaultValue: "立即清理" })}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/20"
+                onClick={() => void handleClearAllLogs()}
+                disabled={clearAllLogs.isPending}
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                {t("usage.clearAllLogs", { defaultValue: "清空全部日志" })}
+              </Button>
+
+              {cleanupConfig?.lastCleanupAt ? (
+                <span className="text-xs text-muted-foreground">
+                  {t("usage.cleanupLastRun", {
+                    defaultValue: "上次清理：{{time}}",
+                    time: new Date(
+                      cleanupConfig.lastCleanupAt * 1000,
+                    ).toLocaleString(locale),
+                  })}
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  {t("usage.cleanupNeverRun", {
+                    defaultValue: "上次清理：从未",
+                  })}
+                </span>
+              )}
             </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">
-                {t("usage.cleanupRetentionDays", {
-                  defaultValue: "保留天数",
-                })}
-              </span>
-              <Input
-                type="number"
-                min={1}
-                max={3650}
-                step={1}
-                value={retentionDaysDraft}
-                onChange={(event) => setRetentionDaysDraft(event.target.value)}
-                className="h-8 w-24 bg-background"
-              />
-            </div>
-
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void handleSaveCleanupConfig()}
-              disabled={updateCleanupConfig.isPending}
-            >
-              {t("common.save", { defaultValue: "保存" })}
-            </Button>
-
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => void handleCleanupNow()}
-              disabled={cleanupLogsNow.isPending}
-            >
-              {t("usage.cleanupNow", { defaultValue: "立即清理" })}
-            </Button>
-
-            {cleanupConfig?.lastCleanupAt ? (
-              <span className="text-xs text-muted-foreground">
-                {t("usage.cleanupLastRun", {
-                  defaultValue: "上次清理：{{time}}",
-                  time: new Date(
-                    cleanupConfig.lastCleanupAt * 1000,
-                  ).toLocaleString(locale),
-                })}
-              </span>
-            ) : (
-              <span className="text-xs text-muted-foreground">
-                {t("usage.cleanupNeverRun", {
-                  defaultValue: "上次清理：从未",
-                })}
-              </span>
-            )}
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("usage.cleanupHint", {
+                defaultValue:
+                  "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
+              })}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("usage.cleanupNowHint", {
+                defaultValue:
+                  "“立即清理”只会删除超出保留期的日志；如需彻底清空，请使用“清空全部日志”。",
+              })}
+            </p>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {t("usage.cleanupHint", {
-              defaultValue:
-                "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
-            })}
-          </p>
-        </div>
+        )}
 
         {validationError && (
           <div className="text-sm text-red-600 dark:text-red-400">
@@ -512,43 +726,136 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
         <>
           <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
             <Table>
+              <colgroup>
+                {logColumnDefs.map((column) => (
+                  <col
+                    key={column.key}
+                    style={{ width: column.width, minWidth: column.minWidth }}
+                  />
+                ))}
+              </colgroup>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="whitespace-nowrap">
+                  <TableHead
+                    className="relative whitespace-nowrap"
+                    style={{
+                      width: columnWidths.time,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.time,
+                    }}
+                  >
                     {t("usage.time")}
+                    {renderColumnResizeHandle("time")}
                   </TableHead>
-                  <TableHead className="whitespace-nowrap">
+                  <TableHead
+                    className="relative whitespace-nowrap"
+                    style={{
+                      width: columnWidths.provider,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.provider,
+                    }}
+                  >
                     {t("usage.provider")}
+                    {renderColumnResizeHandle("provider")}
                   </TableHead>
-                  <TableHead className="min-w-[180px] whitespace-nowrap">
+                  <TableHead
+                    className="relative whitespace-nowrap"
+                    style={{
+                      width: columnWidths.sessionRouting,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.sessionRouting,
+                    }}
+                  >
                     {t("usage.sessionRouting", "会话路由")}
+                    {renderColumnResizeHandle("sessionRouting")}
                   </TableHead>
-                  <TableHead className="min-w-[200px] whitespace-nowrap">
+                  <TableHead
+                    className="relative whitespace-nowrap"
+                    style={{
+                      width: columnWidths.billingModel,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.billingModel,
+                    }}
+                  >
                     {t("usage.billingModel")}
+                    {renderColumnResizeHandle("billingModel")}
                   </TableHead>
-                  <TableHead className="text-right whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.inputTokens,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.inputTokens,
+                    }}
+                  >
                     {t("usage.inputTokens")}
+                    {renderColumnResizeHandle("inputTokens")}
                   </TableHead>
-                  <TableHead className="text-right whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.outputTokens,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.outputTokens,
+                    }}
+                  >
                     {t("usage.outputTokens")}
+                    {renderColumnResizeHandle("outputTokens")}
                   </TableHead>
-                  <TableHead className="text-right min-w-[90px] whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.cacheReadTokens,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.cacheReadTokens,
+                    }}
+                  >
                     {t("usage.cacheReadTokens")}
+                    {renderColumnResizeHandle("cacheReadTokens")}
                   </TableHead>
-                  <TableHead className="text-right min-w-[90px] whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.cacheCreationTokens,
+                      minWidth:
+                        REQUEST_LOG_COLUMN_MIN_WIDTHS.cacheCreationTokens,
+                    }}
+                  >
                     {t("usage.cacheCreationTokens")}
+                    {renderColumnResizeHandle("cacheCreationTokens")}
                   </TableHead>
-                  <TableHead className="text-right whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.multiplier,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.multiplier,
+                    }}
+                  >
                     {t("usage.multiplier")}
+                    {renderColumnResizeHandle("multiplier")}
                   </TableHead>
-                  <TableHead className="text-right whitespace-nowrap">
+                  <TableHead
+                    className="relative text-right whitespace-nowrap"
+                    style={{
+                      width: columnWidths.totalCost,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.totalCost,
+                    }}
+                  >
                     {t("usage.totalCost")}
+                    {renderColumnResizeHandle("totalCost")}
                   </TableHead>
-                  <TableHead className="text-center min-w-[140px] whitespace-nowrap">
+                  <TableHead
+                    className="relative text-center whitespace-nowrap"
+                    style={{
+                      width: columnWidths.timingInfo,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.timingInfo,
+                    }}
+                  >
                     {t("usage.timingInfo")}
+                    {renderColumnResizeHandle("timingInfo")}
                   </TableHead>
-                  <TableHead className="whitespace-nowrap">
+                  <TableHead
+                    className="relative whitespace-nowrap"
+                    style={{
+                      width: columnWidths.status,
+                      minWidth: REQUEST_LOG_COLUMN_MIN_WIDTHS.status,
+                    }}
+                  >
                     {t("usage.status")}
+                    {renderColumnResizeHandle("status")}
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -575,10 +882,10 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                       <TableCell>
                         {log.providerName || t("usage.unknownProvider")}
                       </TableCell>
-                      <TableCell className="max-w-[180px]">
-                        <div className="space-y-1">
+                      <TableCell>
+                        <div className="flex items-center gap-2 whitespace-nowrap overflow-hidden">
                           <span
-                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] ${
+                            className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] ${
                               log.sessionRoutingActive
                                 ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
                                 : "bg-muted text-muted-foreground"
@@ -589,7 +896,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                               : t("usage.sessionRoutingInactive", "未启用")}
                           </span>
                           <div
-                            className="truncate font-mono text-[10px] text-muted-foreground"
+                            className="truncate font-mono text-[10px] text-muted-foreground whitespace-nowrap"
                             title={log.sessionId ?? "-"}
                           >
                             {log.sessionId || "-"}
@@ -618,16 +925,16 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         )}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtInt(log.inputTokens, locale)}
+                        {fmtTokenCompact(log.inputTokens)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtInt(log.outputTokens, locale)}
+                        {fmtTokenCompact(log.outputTokens)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtInt(log.cacheReadTokens, locale)}
+                        {fmtTokenCompact(log.cacheReadTokens)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtInt(log.cacheCreationTokens, locale)}
+                        {fmtTokenCompact(log.cacheCreationTokens)}
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs">
                         {(parseFiniteNumber(log.costMultiplier) ?? 1) !== 1 ? (

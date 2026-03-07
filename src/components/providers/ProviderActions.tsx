@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -230,16 +231,33 @@ export function ProviderActions({
         </Button>
       )}
 
-      <Button
-        size="sm"
-        variant={buttonState.variant}
-        onClick={handleMainButtonClick}
-        disabled={buttonState.disabled}
-        className={cn("w-[4.5rem] px-2.5", buttonState.className)}
-      >
-        {buttonState.icon}
-        {buttonState.text}
-      </Button>
+      {isFailoverMode ? (
+        <div className="flex h-8 items-center gap-2 rounded-md border border-border px-2">
+          <Switch
+            checked={isInFailoverQueue}
+            onCheckedChange={(checked) => onToggleFailover?.(checked)}
+            aria-label={t("failover.bulkToggleAll", {
+              defaultValue: "启用/禁用故障转移",
+            })}
+          />
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {isInFailoverQueue
+              ? t("failover.inQueue", { defaultValue: "已加入" })
+              : t("failover.addQueue", { defaultValue: "加入" })}
+          </span>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant={buttonState.variant}
+          onClick={handleMainButtonClick}
+          disabled={buttonState.disabled}
+          className={cn("w-[4.5rem] px-2.5", buttonState.className)}
+        >
+          {buttonState.icon}
+          {buttonState.text}
+        </Button>
+      )}
 
       <div className="flex items-center gap-1">
         <Button

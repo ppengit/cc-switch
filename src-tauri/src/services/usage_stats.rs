@@ -143,6 +143,13 @@ pub struct RequestLogCleanupResult {
     pub retention_days: u32,
 }
 
+/// 请求日志全量清空结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogClearResult {
+    pub deleted_rows: u64,
+}
+
 impl Database {
     fn normalize_retention_days(retention_days: u32) -> u32 {
         retention_days.clamp(
@@ -229,6 +236,21 @@ impl Database {
             chrono::Utc::now().timestamp().to_string().as_str(),
         )?;
         Ok(result)
+    }
+
+    pub fn clear_request_logs_all(&self) -> Result<RequestLogClearResult, AppError> {
+        let conn = lock_conn!(self.conn);
+        let deleted_rows = conn
+            .execute("DELETE FROM proxy_request_logs", [])
+            .map_err(|e| AppError::Database(format!("清空请求日志失败: {e}")))?;
+        drop(conn);
+        self.set_setting(
+            REQUEST_LOG_LAST_CLEANUP_AT_KEY,
+            chrono::Utc::now().timestamp().to_string().as_str(),
+        )?;
+        Ok(RequestLogClearResult {
+            deleted_rows: deleted_rows as u64,
+        })
     }
 
     pub fn maybe_cleanup_request_logs_if_due(
@@ -1107,6 +1129,28 @@ mod tests {
         )?;
         assert!(second_run.is_some());
         assert_eq!(count_usage_logs(&db)?, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn clear_request_logs_all_removes_everything() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "log-1", now - 1000)?;
+            insert_usage_log(&conn, "log-2", now - 500)?;
+        }
+
+        let clear_result = db.clear_request_logs_all()?;
+        assert_eq!(clear_result.deleted_rows, 2);
+        assert_eq!(count_usage_logs(&db)?, 0);
+        assert!(db
+            .get_request_log_cleanup_config()?
+            .last_cleanup_at
+            .is_some());
 
         Ok(())
     }

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import { useRequestDetail } from "@/lib/query/usage";
 import type { RequestLog } from "@/types/usage";
+import { fmtTokenCompact } from "./format";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -226,7 +227,7 @@ export function RequestDetailPanel({
                   {t("usage.inputTokens", "输入 Tokens")}
                 </dt>
                 <dd className="font-mono">
-                  {request.inputTokens.toLocaleString()}
+                  {fmtTokenCompact(request.inputTokens)}
                 </dd>
               </div>
               <div>
@@ -234,7 +235,7 @@ export function RequestDetailPanel({
                   {t("usage.outputTokens", "输出 Tokens")}
                 </dt>
                 <dd className="font-mono">
-                  {request.outputTokens.toLocaleString()}
+                  {fmtTokenCompact(request.outputTokens)}
                 </dd>
               </div>
               <div>
@@ -242,7 +243,7 @@ export function RequestDetailPanel({
                   {t("usage.cacheReadTokens", "缓存读取")}
                 </dt>
                 <dd className="font-mono">
-                  {request.cacheReadTokens.toLocaleString()}
+                  {fmtTokenCompact(request.cacheReadTokens)}
                 </dd>
               </div>
               <div>
@@ -250,7 +251,7 @@ export function RequestDetailPanel({
                   {t("usage.cacheCreationTokens", "缓存写入")}
                 </dt>
                 <dd className="font-mono">
-                  {request.cacheCreationTokens.toLocaleString()}
+                  {fmtTokenCompact(request.cacheCreationTokens)}
                 </dd>
               </div>
               <div className="col-span-2">
@@ -258,9 +259,7 @@ export function RequestDetailPanel({
                   {t("usage.totalTokens", "总计")}
                 </dt>
                 <dd className="text-lg font-semibold">
-                  {(
-                    request.inputTokens + request.outputTokens
-                  ).toLocaleString()}
+                  {fmtTokenCompact(request.inputTokens + request.outputTokens)}
                 </dd>
               </div>
             </dl>

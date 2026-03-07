@@ -86,6 +86,13 @@ pub fn cleanup_request_logs_now(
     state.db.cleanup_request_logs_now(retention_days)
 }
 
+#[tauri::command]
+pub fn clear_request_logs_all(
+    state: State<'_, AppState>,
+) -> Result<RequestLogClearResult, AppError> {
+    state.db.clear_request_logs_all()
+}
+
 /// 获取模型定价列表
 #[tauri::command]
 pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingInfo>, AppError> {

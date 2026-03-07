@@ -111,7 +111,6 @@ beforeEach(() => {
     handleDragEnd: vi.fn(),
   });
 });
-
 describe("ProviderList Component", () => {
   it("should render skeleton placeholders when loading", () => {
     const { container } = renderWithQueryClient(
@@ -252,8 +251,7 @@ describe("ProviderList Component", () => {
     );
 
     fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const searchInput =
-      screen.getByPlaceholderText("输入关键字筛选名称/网址/备注/模型");
+    const searchInput = screen.getByTestId("provider-filter-keyword-input");
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
     expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
@@ -264,6 +262,10 @@ describe("ProviderList Component", () => {
     fireEvent.change(searchInput, { target: { value: "gamma" } });
     expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
     expect(screen.queryByText("Beta Works")).not.toBeInTheDocument();
-    expect(screen.getByText("没有符合筛选条件的提供商")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /provider\.noSearchResults|\u6ca1\u6709\u7b26\u5408\u7b5b\u9009\u6761\u4ef6\u7684\u63d0\u4f9b\u5546/i,
+      ),
+    ).toBeInTheDocument();
   });
 });
