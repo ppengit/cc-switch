@@ -101,11 +101,15 @@ impl RequestContext {
             crate::settings::get_current_provider(&app_type).unwrap_or_default();
 
         // 从请求体提取模型名称
-        let request_model = body
-            .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let request_model = app_config
+            .effective_force_model()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                body.get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
 
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
@@ -378,6 +382,10 @@ impl RequestContext {
     }
 
     pub fn with_model_from_uri(mut self, uri: &axum::http::Uri) -> Self {
+        if self.app_config.effective_force_model().is_some() {
+            return self;
+        }
+
         let endpoint = uri
             .path_and_query()
             .map(|pq| pq.as_str())
@@ -430,6 +438,7 @@ impl RequestContext {
             first_byte_timeout,
             idle_timeout,
             self.session_routing_active,
+            self.app_config.effective_force_model().map(str::to_string),
             self.rectifier_config.clone(),
         )
     }

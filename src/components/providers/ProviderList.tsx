@@ -133,32 +133,21 @@ interface ProviderListProps {
 }
 
 type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
-type ProviderSortKey =
-  | "default"
-  | "name"
-  | "websiteUrl"
-  | "notes"
-  | "model"
-  | "status";
+type ProviderSortKey = "default" | "name" | "notes" | "model" | "status";
 type SortDirection = "asc" | "desc";
 type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
-type ProviderResizableColumnKey =
-  | "websiteUrl"
-  | "notes"
-  | "model"
-  | "status"
-  | "actions";
+type ProviderResizableColumnKey = "notes" | "model" | "status" | "actions";
 interface ProviderStatusMeta {
   label: string;
   sortValue: number;
   className: string;
+  description?: string;
 }
 const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
-  websiteUrl: 180,
   notes: 180,
   model: 200,
-  status: 220,
-  actions: 260,
+  status: 260,
+  actions: 220,
 };
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
@@ -731,6 +720,14 @@ export function ProviderList({
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
   );
+  const providerSessionCountMap = useMemo(() => {
+    return new Map(
+      providerSessionOccupancy.map((item) => [
+        item.providerId,
+        item.sessionCount,
+      ]),
+    );
+  }, [providerSessionOccupancy]);
   const activeSessionCount = useMemo(
     () =>
       providerSessionOccupancy.reduce(
@@ -852,11 +849,10 @@ export function ProviderList({
     startResize: startProviderColumnResize,
   } = useColumnResize<ProviderResizableColumnKey>({
     initialWidths: {
-      websiteUrl: 220,
       notes: 220,
       model: 240,
-      status: 240,
-      actions: 300,
+      status: 280,
+      actions: 220,
     },
     minWidths: PROVIDER_COLUMN_MIN_WIDTHS,
   });
@@ -1886,11 +1882,17 @@ export function ProviderList({
               sortValue: 3,
               className:
                 "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              description: t("provider.statusHint.inUse", {
+                defaultValue: "当前应用已切换到该供应商",
+              }),
             }
           : {
               label: t("provider.disabled", { defaultValue: "未启用" }),
               sortValue: 1,
               className: "bg-muted text-muted-foreground",
+              description: t("provider.statusHint.disabled", {
+                defaultValue: "该供应商未启用",
+              }),
             };
       }
 
@@ -1901,6 +1903,9 @@ export function ProviderList({
             sortValue: 4,
             className:
               "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+            description: t("provider.statusHint.defaultModel", {
+              defaultValue: "OpenClaw 默认主模型",
+            }),
           };
         }
         const inConfig = isProviderInConfig(provider.id);
@@ -1910,11 +1915,17 @@ export function ProviderList({
               sortValue: 3,
               className:
                 "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              description: t("provider.statusHint.inConfig", {
+                defaultValue: "已写入应用配置，可被选择使用",
+              }),
             }
           : {
               label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
               className: "bg-muted text-muted-foreground",
+              description: t("provider.statusHint.notInConfig", {
+                defaultValue: "未写入应用配置，当前不会被使用",
+              }),
             };
       }
 
@@ -1926,11 +1937,17 @@ export function ProviderList({
               sortValue: 3,
               className:
                 "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              description: t("provider.statusHint.inConfig", {
+                defaultValue: "已写入应用配置，可被选择使用",
+              }),
             }
           : {
               label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
               className: "bg-muted text-muted-foreground",
+              description: t("provider.statusHint.notInConfig", {
+                defaultValue: "未写入应用配置，当前不会被使用",
+              }),
             };
       }
 
@@ -1940,6 +1957,9 @@ export function ProviderList({
           sortValue: 5,
           className:
             "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+          description: t("provider.statusHint.activeRouting", {
+            defaultValue: "会话路由开启时，该会话正在使用此供应商",
+          }),
         };
       }
 
@@ -1950,11 +1970,17 @@ export function ProviderList({
             sortValue: 4,
             className:
               "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+            description: t("provider.statusHint.inUse", {
+              defaultValue: "当前应用已切换到该供应商",
+            }),
           }
         : {
             label: t("provider.available", { defaultValue: "可切换" }),
             sortValue: 2,
             className: "bg-muted text-muted-foreground",
+            description: t("provider.statusHint.available", {
+              defaultValue: "可切换为当前供应商",
+            }),
           };
     },
     [
@@ -2047,8 +2073,6 @@ export function ProviderList({
         comparison = (leftItem.index - rightItem.index) * directionFactor;
       } else if (sortState.key === "name") {
         comparison = compareText(left.name, right.name);
-      } else if (sortState.key === "websiteUrl") {
-        comparison = compareText(left.websiteUrl ?? "", right.websiteUrl ?? "");
       } else if (sortState.key === "notes") {
         comparison = compareText(left.notes ?? "", right.notes ?? "");
       } else if (sortState.key === "model") {
@@ -2484,17 +2508,11 @@ export function ProviderList({
       >
         <div className="rounded-xl border border-border/70 overflow-hidden">
           <div className="overflow-auto">
-            <table className="min-w-[1120px] w-full text-sm">
+            <table className="min-w-[1040px] w-full text-sm">
               <colgroup>
                 <col style={{ width: 48, minWidth: 48 }} />
                 <col style={{ width: 40, minWidth: 40 }} />
-                <col style={{ width: 260, minWidth: 220 }} />
-                <col
-                  style={{
-                    width: providerColumnWidths.websiteUrl,
-                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
-                  }}
-                />
+                <col style={{ width: 300, minWidth: 240 }} />
                 <col
                   style={{
                     width: providerColumnWidths.notes,
@@ -2541,8 +2559,8 @@ export function ProviderList({
                       />
                     </div>
                   </th>
-                  <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left" />
-                  <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left">
+                  <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left align-middle" />
+                  <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left align-middle">
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2551,23 +2569,6 @@ export function ProviderList({
                       {t("provider.providerName", { defaultValue: "提供商" })}
                       {getSortIcon("name")}
                     </button>
-                  </th>
-                  <th
-                    className="relative px-3 py-2 text-left"
-                    style={{
-                      width: providerColumnWidths.websiteUrl,
-                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 text-sm font-medium"
-                      onClick={() => handleSortChange("websiteUrl")}
-                    >
-                      {t("provider.website", { defaultValue: "官网链接" })}
-                      {getSortIcon("websiteUrl")}
-                    </button>
-                    {renderProviderColumnResizeHandle("websiteUrl")}
                   </th>
                   <th
                     className="relative px-3 py-2 text-left"
@@ -2638,13 +2639,17 @@ export function ProviderList({
                     key={provider.id}
                     provider={provider}
                     rowIndex={index}
-                    showOrderNumber={isDragEnabled}
+                    showOrderNumber={sortState.key === "default"}
                     columnWidths={providerColumnWidths}
                     dragEnabled={isDragEnabled}
                     isSelected={Boolean(selectedProviderIds[provider.id])}
                     onToggleSelected={toggleProviderSelection}
                     modelSummary={resolveProviderModelSummary(provider)}
                     statusMeta={resolveProviderStatus(provider)}
+                    sessionCount={providerSessionCountMap.get(provider.id) ?? 0}
+                    showSessionOccupancy={Boolean(
+                      appProxyConfig?.sessionRoutingEnabled,
+                    )}
                     isCurrent={isCurrentProvider(provider)}
                     isInConfig={isProviderInConfig(provider.id)}
                     isOmo={provider.category === "omo"}
@@ -2955,7 +2960,7 @@ export function ProviderList({
               aria-label={filterToggleLabel}
               title={filterToggleLabel}
             >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <Search className="h-3.5 w-3.5" />
             </Button>
             {activeFilterCount > 0 && (
               <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
@@ -3670,22 +3675,24 @@ export function ProviderList({
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 z-10 bg-background">
                     <tr className="border-b border-border/60">
-                      <th className="w-10 px-3 py-2 text-left">
-                        <Checkbox
-                          checked={
-                            batchSelectionStatus.allSelected
-                              ? true
-                              : batchSelectionStatus.partial
-                                ? "indeterminate"
-                                : false
-                          }
-                          onCheckedChange={(checked) =>
-                            handleToggleAllBatchSelections(checked === true)
-                          }
-                          aria-label={t("common.selectAll", {
-                            defaultValue: "全选",
-                          })}
-                        />
+                      <th className="w-10 px-3 py-2 text-center align-middle">
+                        <div className="flex items-center justify-center">
+                          <Checkbox
+                            checked={
+                              batchSelectionStatus.allSelected
+                                ? true
+                                : batchSelectionStatus.partial
+                                  ? "indeterminate"
+                                  : false
+                            }
+                            onCheckedChange={(checked) =>
+                              handleToggleAllBatchSelections(checked === true)
+                            }
+                            aria-label={t("common.selectAll", {
+                              defaultValue: "全选",
+                            })}
+                          />
+                        </div>
                       </th>
                       <th className="px-3 py-2 text-left">
                         {t("provider.name", { defaultValue: "供应商" })}
@@ -3765,19 +3772,21 @@ export function ProviderList({
                             isSelected ? "bg-background" : "opacity-70",
                           )}
                         >
-                          <td className="px-3 py-2">
-                            <Checkbox
-                              checked={isSelected}
-                              onCheckedChange={(checked) =>
-                                handleToggleBatchSelection(
-                                  provider.id,
-                                  checked === true,
-                                )
-                              }
-                              aria-label={t("common.select", {
-                                defaultValue: "选择",
-                              })}
-                            />
+                          <td className="px-3 py-2 align-middle">
+                            <div className="flex items-center justify-center">
+                              <Checkbox
+                                checked={isSelected}
+                                onCheckedChange={(checked) =>
+                                  handleToggleBatchSelection(
+                                    provider.id,
+                                    checked === true,
+                                  )
+                                }
+                                aria-label={t("common.select", {
+                                  defaultValue: "选择",
+                                })}
+                              />
+                            </div>
                           </td>
                           <td className="px-3 py-2">
                             <div className="font-medium">{provider.name}</div>
@@ -3872,7 +3881,7 @@ export function ProviderList({
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-nowrap">
                 <Button
                   type="button"
                   variant="outline"
@@ -4131,6 +4140,8 @@ interface SortableProviderTableRowProps {
   onToggleSelected: (providerId: string, checked: boolean) => void;
   modelSummary: string;
   statusMeta: ProviderStatusMeta;
+  sessionCount?: number;
+  showSessionOccupancy?: boolean;
   isCurrent: boolean;
   isInConfig: boolean;
   isOmo: boolean;
@@ -4172,6 +4183,8 @@ function SortableProviderTableRow({
   onToggleSelected,
   modelSummary,
   statusMeta,
+  sessionCount = 0,
+  showSessionOccupancy = false,
   isCurrent,
   isInConfig,
   isOmo,
@@ -4228,6 +4241,7 @@ function SortableProviderTableRow({
   const disableOmoHandler = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
   const showHealthBadge =
     isInFailoverQueue && health != null && !isOmo && !isOmoSlim;
+  const showOccupancyBadge = showSessionOccupancy && sessionCount > 0;
 
   return (
     <tr
@@ -4298,7 +4312,7 @@ function SortableProviderTableRow({
 
       <td
         className={cn(
-          "sticky left-[88px] z-20 min-w-[220px] px-3 py-2 align-top",
+          "sticky left-[88px] z-20 min-w-[240px] px-3 py-2 align-top",
           stickyCellBgClass,
         )}
       >
@@ -4313,37 +4327,29 @@ function SortableProviderTableRow({
           </div>
           <div className="min-w-0">
             <div className="truncate font-medium" title={provider.name}>
-              {provider.name}
+              {website ? (
+                <button
+                  type="button"
+                  className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
+                  title={website}
+                  onClick={() => onOpenWebsite(website)}
+                >
+                  {provider.name}
+                </button>
+              ) : (
+                provider.name
+              )}
             </div>
             <div
               className="truncate text-xs text-muted-foreground"
-              title={provider.id}
+              title={`${provider.id} · ${t("provider.idHint", {
+                defaultValue: "供应商唯一标识",
+              })}`}
             >
               {provider.id}
             </div>
           </div>
         </div>
-      </td>
-
-      <td
-        className="px-3 py-2 align-top"
-        style={{
-          width: columnWidths.websiteUrl,
-          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.websiteUrl,
-        }}
-      >
-        {website ? (
-          <button
-            type="button"
-            className="max-w-full truncate text-left text-blue-500 hover:underline dark:text-blue-400"
-            title={website}
-            onClick={() => onOpenWebsite(website)}
-          >
-            {website}
-          </button>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
       </td>
 
       <td
@@ -4384,18 +4390,33 @@ function SortableProviderTableRow({
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
         }}
       >
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2 flex-nowrap">
           {showHealthBadge && (
             <ProviderHealthBadge
               consecutiveFailures={health.consecutive_failures}
               lastError={health.last_error}
             />
           )}
+          {showOccupancyBadge && (
+            <span
+              className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200"
+              title={t("provider.sessionOccupancyHint", {
+                defaultValue: "活跃会话占用数：{{count}}",
+                count: sessionCount,
+              })}
+            >
+              {t("provider.sessionOccupancy", {
+                defaultValue: "占用 {{count}}",
+                count: sessionCount,
+              })}
+            </span>
+          )}
           <span
             className={cn(
               "inline-flex rounded-md px-2 py-0.5 text-xs",
               statusMeta.className,
             )}
+            title={statusMeta.description ?? undefined}
           >
             {statusMeta.label}
           </span>
@@ -4412,7 +4433,7 @@ function SortableProviderTableRow({
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
         }}
       >
-        <div className="min-w-[240px]">
+        <div className="min-w-[220px]">
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}

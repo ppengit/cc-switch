@@ -18,15 +18,9 @@ pub struct TrayTexts {
 impl TrayTexts {
     pub fn from_language(language: &str) -> Self {
         match language {
-            "en" => Self {
-                quit: "Quit",
-            },
-            "ja" => Self {
-                quit: "終了",
-            },
-            _ => Self {
-                quit: "退出",
-            },
+            "en" => Self { quit: "Quit" },
+            "ja" => Self { quit: "終了" },
+            _ => Self { quit: "退出" },
         }
     }
 }
@@ -69,8 +63,11 @@ fn build_provider_submenu(
     manager: &crate::provider::ProviderManager,
     section: &TrayAppSection,
 ) -> Result<tauri::menu::Submenu<tauri::Wry>, AppError> {
-    let mut submenu_builder =
-        SubmenuBuilder::with_id(app, format!("{}_submenu", section.prefix), section.header_label);
+    let mut submenu_builder = SubmenuBuilder::with_id(
+        app,
+        format!("{}_submenu", section.prefix),
+        section.header_label,
+    );
 
     // Auto (Failover) menu item is hidden from tray; the feature is still
     // accessible from the Settings page. Keep the surrounding code intact so

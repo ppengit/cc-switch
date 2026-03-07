@@ -122,6 +122,8 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            force_model_enabled INTEGER NOT NULL DEFAULT 0,
+            force_model TEXT NOT NULL DEFAULT '',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
             session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
@@ -210,7 +212,8 @@ impl Database {
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         // 9.1 Session Provider Bindings 表（会话级调度绑定）
-        conn.execute("CREATE TABLE IF NOT EXISTS session_provider_bindings (
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_provider_bindings (
             app_type TEXT NOT NULL,
             session_id TEXT NOT NULL,
             provider_id TEXT NOT NULL,
@@ -220,7 +223,10 @@ impl Database {
             last_seen_at INTEGER NOT NULL,
             PRIMARY KEY (app_type, session_id),
             FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
-        )", []).map_err(|e| AppError::Database(e.to_string()))?;
+        )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_spb_provider ON session_provider_bindings(app_type, provider_id)",
             [],
@@ -386,6 +392,20 @@ impl Database {
             "ALTER TABLE proxy_config ADD COLUMN session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30",
             [],
         );
+        if Self::table_exists(conn, "proxy_config")? {
+            let _ = Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "force_model_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
+            );
+            let _ = Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "force_model",
+                "TEXT NOT NULL DEFAULT ''",
+            );
+        }
 
         // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为 per-app 结构
         // 说明：user_version=2 时不会再触发 v1->v2 迁移，但新代码查询依赖 app_type 列。
@@ -481,6 +501,13 @@ impl Database {
                         );
                         Self::migrate_v6_to_v7(conn)?;
                         Self::set_user_version(conn, 7)?;
+                    }
+                    7 => {
+                        log::info!(
+                            "Migrating database from v7 to v8 (add app-level force model settings)"
+                        );
+                        Self::migrate_v7_to_v8(conn)?;
+                        Self::set_user_version(conn, 8)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1101,7 +1128,9 @@ impl Database {
                  WHERE created_at > 100000000000",
                 [],
             )
-            .map_err(|e| AppError::Database(format!("normalize request log created_at failed: {e}")))?;
+            .map_err(|e| {
+                AppError::Database(format!("normalize request log created_at failed: {e}"))
+            })?;
         }
 
         Ok(())
@@ -1139,7 +1168,12 @@ impl Database {
             "enable_logging",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
-        Self::add_column_if_missing(conn, "proxy_config", "enabled", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Self::add_column_if_missing(
             conn,
             "proxy_config",
@@ -1322,8 +1356,17 @@ impl Database {
             ("openclaw", 3, 60, 120, 4, 2, 60, 0.6, 10),
         ];
 
-        for (app, retries, fb_timeout, idle_timeout, cb_fail, cb_succ, cb_timeout, cb_rate, cb_min) in
-            seed_rows
+        for (
+            app,
+            retries,
+            fb_timeout,
+            idle_timeout,
+            cb_fail,
+            cb_succ,
+            cb_timeout,
+            cb_rate,
+            cb_min,
+        ) in seed_rows
         {
             conn.execute(
                 "INSERT OR IGNORE INTO proxy_config_new (
@@ -1355,6 +1398,26 @@ impl Database {
             .map_err(|e| AppError::Database(format!("rename proxy_config_new failed: {e}")))?;
 
         log::info!("v6 -> v7 migration completed: proxy_config app_type constraint expanded");
+        Ok(())
+    }
+
+    fn migrate_v7_to_v8(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "force_model_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "force_model",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         Ok(())
     }
 

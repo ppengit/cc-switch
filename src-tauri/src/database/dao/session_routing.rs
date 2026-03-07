@@ -586,6 +586,147 @@ impl Database {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn reassign_session_provider_bindings_for_provider(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        candidate_provider_ids: &[String],
+        strategy: &str,
+        max_sessions_per_provider: u32,
+        allow_shared_when_exhausted: bool,
+        idle_ttl_minutes: u32,
+    ) -> Result<usize, AppError> {
+        if candidate_provider_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
+        let conn = lock_conn!(self.conn);
+
+        let candidates: Vec<String> = candidate_provider_ids
+            .iter()
+            .filter(|candidate| candidate.as_str() != provider_id)
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id
+                 FROM session_provider_bindings
+                 WHERE app_type = ?1 AND provider_id = ?2 AND last_seen_at >= ?3
+                 ORDER BY last_seen_at DESC",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![app_type, provider_id, cutoff], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+
+        if sessions.is_empty() {
+            return Ok(0);
+        }
+
+        let mut active_counts = HashMap::<String, usize>::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider_id, COUNT(*)
+                 FROM session_provider_bindings
+                 WHERE app_type = ?1 AND last_seen_at >= ?2
+                 GROUP BY provider_id",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![app_type, cutoff], |row| {
+                let provider_id: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((provider_id, count.max(0) as usize))
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for row in rows {
+            let (provider_id, count) = row.map_err(|e| AppError::Database(e.to_string()))?;
+            active_counts.insert(provider_id, count);
+        }
+
+        let has_limit = max_sessions_per_provider > 0;
+        let max_sessions = max_sessions_per_provider as usize;
+        let strategy = strategy.trim().to_ascii_lowercase();
+        let choose_least_active = |pool: &[String], counts: &HashMap<String, usize>| -> String {
+            let mut chosen = pool[0].clone();
+            let mut min_count = counts.get(&chosen).copied().unwrap_or(0);
+            for provider_id in pool.iter().skip(1) {
+                let current = counts.get(provider_id).copied().unwrap_or(0);
+                if current < min_count {
+                    min_count = current;
+                    chosen = provider_id.clone();
+                }
+            }
+            chosen
+        };
+
+        let mut reassigned = 0usize;
+        for session_id in sessions {
+            let eligible_provider_ids: Vec<String> = candidates
+                .iter()
+                .filter(|candidate| {
+                    !has_limit
+                        || active_counts.get(candidate.as_str()).copied().unwrap_or(0)
+                            < max_sessions
+                })
+                .cloned()
+                .collect();
+
+            let pool = if !eligible_provider_ids.is_empty() {
+                eligible_provider_ids
+            } else if allow_shared_when_exhausted {
+                candidates.clone()
+            } else {
+                continue;
+            };
+
+            let chosen_provider_id = match strategy.as_str() {
+                "round_robin" => {
+                    let cursor =
+                        get_and_increment_session_round_robin_cursor_on_conn(&conn, app_type)?;
+                    let index = (cursor as usize) % pool.len();
+                    pool[index].clone()
+                }
+                "least_active" => choose_least_active(&pool, &active_counts),
+                "priority" => choose_least_active(&pool, &active_counts),
+                "fixed" => pool[0].clone(),
+                _ => pool[0].clone(),
+            };
+
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET provider_id = ?3, updated_at = ?4
+                 WHERE app_type = ?1 AND session_id = ?2",
+                params![app_type, session_id, chosen_provider_id, now_ms],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            if let Some(count) = active_counts.get_mut(provider_id) {
+                if *count > 0 {
+                    *count -= 1;
+                }
+            }
+            *active_counts.entry(chosen_provider_id.clone()).or_insert(0) += 1;
+            reassigned += 1;
+        }
+
+        Ok(reassigned)
+    }
+
     pub fn sync_session_provider_after_success(
         &self,
         app_type: &str,
@@ -1039,6 +1180,52 @@ mod tests {
 
         assert_eq!(binding.provider_id, "b");
         assert!(binding.pinned);
+    }
+
+    #[test]
+    fn reassign_session_provider_bindings_moves_active_sessions() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "rebalance-s1", "a", true, now_ms)
+            .expect("seed binding s1");
+        db.upsert_session_provider_binding("codex", "rebalance-s2", "a", false, now_ms)
+            .expect("seed binding s2");
+
+        let candidates = vec!["a".to_string(), "b".to_string()];
+        let reassigned = db
+            .reassign_session_provider_bindings_for_provider(
+                "codex",
+                "a",
+                &candidates,
+                "least_active",
+                0,
+                true,
+                30,
+            )
+            .expect("reassign sessions");
+
+        assert_eq!(reassigned, 2);
+
+        let binding = db
+            .get_session_provider_binding("codex", "rebalance-s1", 30)
+            .expect("query binding s1")
+            .expect("binding s1 exists");
+        assert_eq!(binding.provider_id, "b");
+        assert!(binding.pinned);
+        assert_eq!(binding.last_seen_at, now_ms);
+
+        let binding = db
+            .get_session_provider_binding("codex", "rebalance-s2", 30)
+            .expect("query binding s2")
+            .expect("binding s2 exists");
+        assert_eq!(binding.provider_id, "b");
+        assert!(!binding.pinned);
+        assert_eq!(binding.last_seen_at, now_ms);
     }
 
     #[test]

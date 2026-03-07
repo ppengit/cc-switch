@@ -1076,4 +1076,3 @@ fn import_sql_accepts_cc_switch_exported_backup() {
         "imported providers should contain test-provider"
     );
 }
-

@@ -271,9 +271,7 @@ pub async fn get_tool_versions(
         let tool_wsl_shell = pref.and_then(|p| p.wsl_shell.as_deref());
         let tool_wsl_shell_flag = pref.and_then(|p| p.wsl_shell_flag.as_deref());
 
-        results.push(
-            get_single_tool_version_impl(tool, tool_wsl_shell, tool_wsl_shell_flag).await,
-        );
+        results.push(get_single_tool_version_impl(tool, tool_wsl_shell, tool_wsl_shell_flag).await);
     }
 
     Ok(results)
@@ -295,8 +293,8 @@ pub async fn update_tool(
         return Err(format!("Unsupported tool: {tool}"));
     }
 
-    let command = update_command_for_tool(&tool)
-        .ok_or_else(|| format!("No update command for {tool}"))?;
+    let command =
+        update_command_for_tool(&tool).ok_or_else(|| format!("No update command for {tool}"))?;
 
     let final_command = if envType.as_deref() == Some("wsl") {
         let distro = wslDistro.ok_or_else(|| "Missing WSL distro".to_string())?;
@@ -314,8 +312,7 @@ pub async fn update_tool(
         command.to_string()
     };
 
-    launch_terminal_with_command(&final_command, None)
-        .map_err(|e| format!("启动更新失败: {e}"))?;
+    launch_terminal_with_command(&final_command, None).map_err(|e| format!("启动更新失败: {e}"))?;
 
     Ok(true)
 }
@@ -1238,7 +1235,9 @@ start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"
             &["powershell", "-NoExit", "-Command", &ps_cmd],
             "PowerShell",
         ),
-        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal"),
+        "wt" => {
+            run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal")
+        }
         _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"),
     };
 
@@ -1419,10 +1418,7 @@ fn launch_macos_open_app(
 
 /// Linux: 根据用户首选终端启动
 #[cfg(target_os = "linux")]
-fn launch_linux_terminal(
-    config_file: &std::path::Path,
-    cwd: Option<&str>,
-) -> Result<(), String> {
+fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&str>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -1578,7 +1574,9 @@ start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"
             &["powershell", "-NoExit", "-Command", &ps_cmd],
             "PowerShell",
         ),
-        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal"),
+        "wt" => {
+            run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal")
+        }
         _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"), // "cmd" or default
     };
 

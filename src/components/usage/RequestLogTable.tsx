@@ -11,6 +11,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -107,6 +113,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     null,
   );
   const [showCleanupControls, setShowCleanupControls] = useState(false);
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
   const [cleanupEnabledDraft, setCleanupEnabledDraft] = useState(true);
   const [retentionDaysDraft, setRetentionDaysDraft] = useState("30");
   const { widths: columnWidths, startResize: startColumnResize } =
@@ -314,14 +321,13 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     }
   };
 
-  const handleClearAllLogs = async () => {
-    const confirmed = window.confirm(
-      t("usage.clearAllLogsConfirm", {
-        defaultValue:
-          "将清空全部请求日志（不限保留天数），该操作不可恢复。是否继续？",
-      }),
-    );
-    if (!confirmed) return;
+  const handleClearAllLogs = () => {
+    setShowClearAllConfirm(true);
+  };
+
+  const handleConfirmClearAllLogs = async () => {
+    if (clearAllLogs.isPending) return;
+    setShowClearAllConfirm(false);
 
     try {
       const result = await clearAllLogs.mutateAsync();
@@ -602,116 +608,125 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
               variant="ghost"
               onClick={handleRefresh}
               className="h-8 px-2"
+              title={t("common.refresh")}
+              aria-label={t("common.refresh")}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
-            <Button
-              size="sm"
-              variant={showCleanupControls ? "default" : "outline"}
-              onClick={() => setShowCleanupControls((current) => !current)}
-              className="h-8 gap-1.5"
+            <Popover
+              open={showCleanupControls}
+              onOpenChange={setShowCleanupControls}
             >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              {t("usage.cleanupControls", { defaultValue: "日志清理" })}
-            </Button>
+              <PopoverTrigger asChild>
+                <Button
+                  size="sm"
+                  variant={showCleanupControls ? "default" : "outline"}
+                  className="h-8 gap-1.5"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  {t("usage.cleanupControls", { defaultValue: "日志清理" })}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[380px] p-4">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={cleanupEnabledDraft}
+                        onCheckedChange={setCleanupEnabledDraft}
+                        disabled={updateCleanupConfig.isPending}
+                      />
+                      <span className="text-sm">
+                        {t("usage.cleanupAutoSwitch", {
+                          defaultValue: "自动清理请求日志",
+                        })}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">
+                        {t("usage.cleanupRetentionDays", {
+                          defaultValue: "保留天数",
+                        })}
+                      </span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={3650}
+                        step={1}
+                        value={retentionDaysDraft}
+                        onChange={(event) =>
+                          setRetentionDaysDraft(event.target.value)
+                        }
+                        className="h-8 w-24 bg-background"
+                      />
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleSaveCleanupConfig()}
+                      disabled={updateCleanupConfig.isPending}
+                    >
+                      {t("common.save", { defaultValue: "保存" })}
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => void handleCleanupNow()}
+                      disabled={cleanupLogsNow.isPending}
+                    >
+                      {t("usage.cleanupNow", { defaultValue: "立即清理" })}
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/20"
+                      onClick={handleClearAllLogs}
+                      disabled={clearAllLogs.isPending}
+                    >
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />
+                      {t("usage.clearAllLogs", {
+                        defaultValue: "清空全部日志",
+                      })}
+                    </Button>
+
+                    {cleanupConfig?.lastCleanupAt ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t("usage.cleanupLastRun", {
+                          defaultValue: "上次清理：{{time}}",
+                          time: new Date(
+                            cleanupConfig.lastCleanupAt * 1000,
+                          ).toLocaleString(locale),
+                        })}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {t("usage.cleanupNeverRun", {
+                          defaultValue: "上次清理：从未",
+                        })}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {t("usage.cleanupHint", {
+                      defaultValue:
+                        "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
+                    })}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("usage.cleanupNowHint", {
+                      defaultValue:
+                        "“立即清理”只会删除超出保留期的日志；如需彻底清空，请使用“清空全部日志”。",
+                    })}
+                  </p>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
-
-        {showCleanupControls && (
-          <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={cleanupEnabledDraft}
-                  onCheckedChange={setCleanupEnabledDraft}
-                  disabled={updateCleanupConfig.isPending}
-                />
-                <span className="text-sm">
-                  {t("usage.cleanupAutoSwitch", {
-                    defaultValue: "自动清理请求日志",
-                  })}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  {t("usage.cleanupRetentionDays", {
-                    defaultValue: "保留天数",
-                  })}
-                </span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={3650}
-                  step={1}
-                  value={retentionDaysDraft}
-                  onChange={(event) =>
-                    setRetentionDaysDraft(event.target.value)
-                  }
-                  className="h-8 w-24 bg-background"
-                />
-              </div>
-
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleSaveCleanupConfig()}
-                disabled={updateCleanupConfig.isPending}
-              >
-                {t("common.save", { defaultValue: "保存" })}
-              </Button>
-
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => void handleCleanupNow()}
-                disabled={cleanupLogsNow.isPending}
-              >
-                {t("usage.cleanupNow", { defaultValue: "立即清理" })}
-              </Button>
-
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/20"
-                onClick={() => void handleClearAllLogs()}
-                disabled={clearAllLogs.isPending}
-              >
-                <Trash2 className="mr-1 h-3.5 w-3.5" />
-                {t("usage.clearAllLogs", { defaultValue: "清空全部日志" })}
-              </Button>
-
-              {cleanupConfig?.lastCleanupAt ? (
-                <span className="text-xs text-muted-foreground">
-                  {t("usage.cleanupLastRun", {
-                    defaultValue: "上次清理：{{time}}",
-                    time: new Date(
-                      cleanupConfig.lastCleanupAt * 1000,
-                    ).toLocaleString(locale),
-                  })}
-                </span>
-              ) : (
-                <span className="text-xs text-muted-foreground">
-                  {t("usage.cleanupNeverRun", {
-                    defaultValue: "上次清理：从未",
-                  })}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {t("usage.cleanupHint", {
-                defaultValue:
-                  "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
-              })}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("usage.cleanupNowHint", {
-                defaultValue:
-                  "“立即清理”只会删除超出保留期的日志；如需彻底清空，请使用“清空全部日志”。",
-              })}
-            </p>
-          </div>
-        )}
 
         {validationError && (
           <div className="text-sm text-red-600 dark:text-red-400">
@@ -1100,6 +1115,20 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
           onClose={() => setSelectedRequest(null)}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={showClearAllConfirm}
+        title={t("usage.clearAllLogsTitle", {
+          defaultValue: "清空全部日志",
+        })}
+        message={t("usage.clearAllLogsConfirm", {
+          defaultValue:
+            "将清空全部请求日志（不限保留天数），该操作不可恢复。是否继续？",
+        })}
+        confirmText={t("usage.clearAllLogsAction", { defaultValue: "清空" })}
+        onConfirm={() => void handleConfirmClearAllLogs()}
+        onCancel={() => setShowClearAllConfirm(false)}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-﻿use axum::http::HeaderMap;
+use axum::http::HeaderMap;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -307,7 +307,10 @@ mod tests {
 
     #[test]
     fn test_client_format_from_path_claude() {
-        assert_eq!(ClientFormat::from_path("/v1/messages"), ClientFormat::Claude);
+        assert_eq!(
+            ClientFormat::from_path("/v1/messages"),
+            ClientFormat::Claude
+        );
         assert_eq!(
             ClientFormat::from_path("/api/v1/messages"),
             ClientFormat::Claude
@@ -316,7 +319,10 @@ mod tests {
 
     #[test]
     fn test_client_format_from_path_codex() {
-        assert_eq!(ClientFormat::from_path("/v1/responses"), ClientFormat::Codex);
+        assert_eq!(
+            ClientFormat::from_path("/v1/responses"),
+            ClientFormat::Codex
+        );
     }
 
     #[test]
@@ -398,8 +404,8 @@ mod tests {
 
     #[test]
     fn test_session_with_provider() {
-        let session =
-            ProxySession::from_request("POST", "/v1/messages", None, None).with_provider("provider-123");
+        let session = ProxySession::from_request("POST", "/v1/messages", None, None)
+            .with_provider("provider-123");
 
         assert_eq!(session.provider_id, Some("provider-123".to_string()));
     }

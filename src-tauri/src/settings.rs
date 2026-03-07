@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
@@ -289,7 +289,6 @@ pub struct AppSettings {
     pub terminal_targets: Option<HashMap<String, TerminalTargetPreference>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_session_by_app: Option<HashMap<String, String>>,
-
 }
 
 fn default_show_in_tray() -> bool {

@@ -297,8 +297,7 @@ del \"%~f0\" >nul 2>&1\r\n",
         command = command
     );
 
-    std::fs::write(&bat_file, &content)
-        .map_err(|e| format!("写入会话恢复脚本失败: {e}"))?;
+    std::fs::write(&bat_file, &content).map_err(|e| format!("写入会话恢复脚本失败: {e}"))?;
 
     let bat_path = bat_file.to_string_lossy().to_string();
     let bat_path_quoted = format!("\"{}\"", bat_path.replace('\"', "\"\""));
@@ -309,7 +308,9 @@ del \"%~f0\" >nul 2>&1\r\n",
             &["powershell", "-NoExit", "-Command", &ps_cmd],
             "PowerShell",
         ),
-        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal"),
+        "wt" => {
+            run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal")
+        }
         _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"),
     };
 

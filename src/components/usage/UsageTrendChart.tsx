@@ -12,7 +12,7 @@ import {
 import { useUsageTrends } from "@/lib/query/usage";
 import { Loader2 } from "lucide-react";
 import {
-  fmtInt,
+  fmtTokenCompact,
   fmtUsd,
   getLocaleFromLanguage,
   parseFiniteNumber,
@@ -90,7 +90,7 @@ export function UsageTrendChart({
               <span>
                 {entry.dataKey === "cost"
                   ? fmtUsd(entry.value, 6)
-                  : fmtInt(entry.value, dateLocale)}
+                  : fmtTokenCompact(entry.value)}
               </span>
             </div>
           ))}
@@ -163,7 +163,7 @@ export function UsageTrendChart({
               axisLine={false}
               tickLine={false}
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
-              tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`}
+              tickFormatter={(value) => fmtTokenCompact(value)}
             />
             <YAxis
               yAxisId="cost"

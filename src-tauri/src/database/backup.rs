@@ -205,8 +205,7 @@ impl Database {
 
         if let Some(settings_path) = crate::settings::settings_file_path() {
             if settings_path.exists() {
-                let settings_backup_path =
-                    backup_dir.join(format!("{backup_id}.settings.json"));
+                let settings_backup_path = backup_dir.join(format!("{backup_id}.settings.json"));
                 if let Err(err) = fs::copy(&settings_path, &settings_backup_path) {
                     log::warn!(
                         "Failed to backup settings file to {}: {}",
@@ -497,8 +496,7 @@ impl Database {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
             if !backup_stem.is_empty() {
-                let settings_backup_path =
-                    backup_dir.join(format!("{backup_stem}.settings.json"));
+                let settings_backup_path = backup_dir.join(format!("{backup_stem}.settings.json"));
                 if settings_backup_path.exists() {
                     if settings_path.exists() {
                         let safety_path = settings_path.with_extension("json.bak");
@@ -646,8 +644,9 @@ impl Database {
         fs::remove_file(&backup_path).map_err(|e| AppError::io(&backup_path, e))?;
         if let Some(stem) = Path::new(filename).file_stem().and_then(|s| s.to_str()) {
             if !stem.is_empty() {
-                let settings_path =
-                    get_app_config_dir().join("backups").join(format!("{stem}.settings.json"));
+                let settings_path = get_app_config_dir()
+                    .join("backups")
+                    .join(format!("{stem}.settings.json"));
                 if settings_path.exists() {
                     if let Err(err) = fs::remove_file(&settings_path) {
                         log::warn!(

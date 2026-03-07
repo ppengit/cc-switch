@@ -97,6 +97,8 @@ pub struct RequestForwarder {
     current_provider_id_at_start: String,
     /// 会话路由激活时，禁止将 failover 结果写回全局 current provider
     suppress_global_failover_switch: bool,
+    /// 按应用强制使用的模型
+    force_model: Option<String>,
     /// 整流器配置
     rectifier_config: RectifierConfig,
     /// 非流式请求超时（秒）
@@ -116,6 +118,7 @@ impl RequestForwarder {
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
         suppress_global_failover_switch: bool,
+        force_model: Option<String>,
         rectifier_config: RectifierConfig,
     ) -> Self {
         Self {
@@ -126,6 +129,7 @@ impl RequestForwarder {
             app_handle,
             current_provider_id_at_start,
             suppress_global_failover_switch,
+            force_model,
             rectifier_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
         }
@@ -766,17 +770,24 @@ impl RequestForwarder {
 
         let effective_endpoint =
             if needs_transform && adapter.name() == "Claude" && endpoint == "/v1/messages" {
-                "/v1/chat/completions"
+                "/v1/chat/completions".to_string()
             } else {
-                endpoint
+                endpoint.to_string()
             };
+        let effective_endpoint = Self::apply_forced_model_to_endpoint(
+            &effective_endpoint,
+            self.force_model.as_deref(),
+            adapter.name(),
+        );
 
         // 使用适配器构建 URL
-        let url = adapter.build_url(&base_url, effective_endpoint);
+        let url = adapter.build_url(&base_url, &effective_endpoint);
 
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
             super::model_mapper::apply_model_mapping(body.clone(), provider);
+        let mapped_body =
+            Self::apply_forced_model_to_body(mapped_body, self.force_model.as_deref());
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mapped_body = normalize_thinking_type(mapped_body);
@@ -932,6 +943,86 @@ impl RequestForwarder {
             // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
             _ => ErrorCategory::NonRetryable,
         }
+    }
+
+    fn apply_forced_model_to_body(mut body: Value, force_model: Option<&str>) -> Value {
+        let Some(force_model) = force_model.map(str::trim).filter(|value| !value.is_empty()) else {
+            return body;
+        };
+
+        body["model"] = serde_json::json!(force_model);
+        body
+    }
+
+    fn apply_forced_model_to_endpoint(
+        endpoint: &str,
+        force_model: Option<&str>,
+        adapter_name: &str,
+    ) -> String {
+        let Some(force_model) = force_model.map(str::trim).filter(|value| !value.is_empty()) else {
+            return endpoint.to_string();
+        };
+
+        if adapter_name != "Gemini" {
+            return endpoint.to_string();
+        }
+
+        let Some(model_start) = endpoint.find("/models/").map(|index| index + 8) else {
+            return endpoint.to_string();
+        };
+        let Some(model_end_offset) = endpoint[model_start..].find(':') else {
+            return endpoint.to_string();
+        };
+        let model_end = model_start + model_end_offset;
+
+        format!(
+            "{}{}{}",
+            &endpoint[..model_start],
+            force_model,
+            &endpoint[model_end..]
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RequestForwarder;
+    use serde_json::json;
+
+    #[test]
+    fn apply_forced_model_to_body_rewrites_model() {
+        let body = json!({ "model": "gpt-5.3-codex" });
+        let result = RequestForwarder::apply_forced_model_to_body(body, Some("gpt-5.4"));
+        assert_eq!(result["model"], "gpt-5.4");
+    }
+
+    #[test]
+    fn apply_forced_model_to_body_ignores_empty_override() {
+        let body = json!({ "model": "gpt-5.3-codex" });
+        let result = RequestForwarder::apply_forced_model_to_body(body, Some("  "));
+        assert_eq!(result["model"], "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn apply_forced_model_to_endpoint_rewrites_gemini_model_segment() {
+        let endpoint = "/v1beta/models/gemini-2.5-pro:generateContent?alt=sse";
+        let result = RequestForwarder::apply_forced_model_to_endpoint(
+            endpoint,
+            Some("gemini-2.5-flash"),
+            "Gemini",
+        );
+        assert_eq!(
+            result,
+            "/v1beta/models/gemini-2.5-flash:generateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn apply_forced_model_to_endpoint_does_not_touch_other_adapters() {
+        let endpoint = "/responses";
+        let result =
+            RequestForwarder::apply_forced_model_to_endpoint(endpoint, Some("gpt-5.4"), "Codex");
+        assert_eq!(result, endpoint);
     }
 }
 

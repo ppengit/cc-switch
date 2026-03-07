@@ -358,4 +358,3 @@ fn switch_provider_codex_missing_auth_returns_error_and_keeps_state() {
         "current provider should remain empty or be the attempted id on failure, got: {current_id:?}"
     );
 }
-

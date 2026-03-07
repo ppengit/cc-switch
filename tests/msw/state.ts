@@ -10,7 +10,10 @@ type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
 type AppProxyConfigState = Record<AppId, AppProxyConfig>;
-type SessionBindingsState = Record<AppId, Record<string, SessionProviderBinding>>;
+type SessionBindingsState = Record<
+  AppId,
+  Record<string, SessionProviderBinding>
+>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -79,6 +82,8 @@ const createDefaultCurrent = (): CurrentProviderState => ({
 const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   appType,
   enabled: false,
+  forceModelEnabled: false,
+  forceModel: "",
   autoFailoverEnabled: false,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
@@ -132,7 +137,13 @@ let mcpConfigs: McpConfigState = {
       id: "sample",
       name: "Sample Claude Server",
       enabled: true,
-      apps: { claude: true, codex: false, gemini: false, opencode: false, openclaw: false },
+      apps: {
+        claude: true,
+        codex: false,
+        gemini: false,
+        opencode: false,
+        openclaw: false,
+      },
       server: {
         type: "stdio",
         command: "claude-server",
@@ -144,7 +155,13 @@ let mcpConfigs: McpConfigState = {
       id: "httpServer",
       name: "HTTP Codex Server",
       enabled: false,
-      apps: { claude: false, codex: true, gemini: false, opencode: false, openclaw: false },
+      apps: {
+        claude: false,
+        codex: true,
+        gemini: false,
+        opencode: false,
+        openclaw: false,
+      },
       server: {
         type: "http",
         url: "http://localhost:3000",
@@ -180,7 +197,13 @@ export const resetProviderState = () => {
         id: "sample",
         name: "Sample Claude Server",
         enabled: true,
-        apps: { claude: true, codex: false, gemini: false, opencode: false, openclaw: false },
+        apps: {
+          claude: true,
+          codex: false,
+          gemini: false,
+          opencode: false,
+          openclaw: false,
+        },
         server: {
           type: "stdio",
           command: "claude-server",
@@ -192,7 +215,13 @@ export const resetProviderState = () => {
         id: "httpServer",
         name: "HTTP Codex Server",
         enabled: false,
-        apps: { claude: false, codex: true, gemini: false, opencode: false, openclaw: false },
+        apps: {
+          claude: false,
+          codex: true,
+          gemini: false,
+          opencode: false,
+          openclaw: false,
+        },
         server: {
           type: "http",
           url: "http://localhost:3000",
@@ -285,7 +314,9 @@ export const getAppProxyConfig = (appType: AppId) =>
   JSON.parse(JSON.stringify(appProxyConfigs[appType])) as AppProxyConfig;
 
 export const setAppProxyConfig = (appType: AppId, value: AppProxyConfig) => {
-  appProxyConfigs[appType] = JSON.parse(JSON.stringify(value)) as AppProxyConfig;
+  appProxyConfigs[appType] = JSON.parse(
+    JSON.stringify(value),
+  ) as AppProxyConfig;
 };
 
 export const listSessionProviderBindings = (
@@ -346,7 +377,10 @@ export const setSessionProviderBindingPin = (
   };
 };
 
-export const removeSessionProviderBinding = (appType: AppId, sessionId: string) => {
+export const removeSessionProviderBinding = (
+  appType: AppId,
+  sessionId: string,
+) => {
   if (!sessionBindings[appType]) return;
   delete sessionBindings[appType][sessionId];
 };
@@ -360,7 +394,10 @@ export const getProviderSessionOccupancy = (
   for (const binding of Object.values(sessionBindings[appType] ?? {})) {
     if (!binding.isActive) continue;
     counts.set(binding.providerId, (counts.get(binding.providerId) ?? 0) + 1);
-    providerNames.set(binding.providerId, binding.providerName ?? binding.providerId);
+    providerNames.set(
+      binding.providerId,
+      binding.providerName ?? binding.providerId,
+    );
   }
 
   return Array.from(counts.entries())

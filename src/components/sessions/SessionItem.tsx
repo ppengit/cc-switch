@@ -12,6 +12,7 @@ import type { SessionMeta } from "@/types";
 import {
   formatRelativeTime,
   formatSessionTitle,
+  getBaseName,
   getProviderIconName,
   getProviderLabel,
   getSessionKey,
@@ -36,6 +37,8 @@ export function SessionItem({
 }: SessionItemProps) {
   const { t } = useTranslation();
   const title = formatSessionTitle(session);
+  const projectName = getBaseName(session.projectDir);
+  const showProjectName = projectName && projectName !== title;
   const lastActive = session.lastActiveAt || session.createdAt || undefined;
   const sessionKey = getSessionKey(session);
   const associatedProvider = bindingProviderName || bindingProviderId || "";
@@ -86,6 +89,17 @@ export function SessionItem({
         </span>
       </div>
 
+      {showProjectName && (
+        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          <span>
+            {t("sessionManager.projectName", { defaultValue: "项目" })}:
+          </span>
+          <span className="truncate" title={projectName}>
+            {projectName}
+          </span>
+        </div>
+      )}
+
       {associatedProvider && (
         <div className="mt-1 flex items-center gap-1 text-[11px] min-w-0">
           <span className="text-muted-foreground">
@@ -102,6 +116,17 @@ export function SessionItem({
           <Badge
             variant={bindingPinned ? "default" : "secondary"}
             className="h-4 px-1.5 text-[10px] leading-none"
+            title={
+              bindingPinned
+                ? t("sessionManager.bindingPinnedHint", {
+                    defaultValue:
+                      "锁定（已绑定）：优先使用当前提供商；若该提供商降级/熔断或不可用，系统仍会自动迁移并释放占用。",
+                  })
+                : t("sessionManager.bindingAutoHint", {
+                    defaultValue:
+                      "自动：系统根据会话路由策略自动分配提供商，并在降级/熔断或容量变化时自动重绑定。",
+                  })
+            }
           >
             {modeLabel}
           </Badge>

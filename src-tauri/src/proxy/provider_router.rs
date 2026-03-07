@@ -7,6 +7,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::types::AppProxyConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -178,10 +179,11 @@ impl ProviderRouter {
         error_msg: Option<String>,
     ) -> Result<(), AppError> {
         // 1. 按应用独立获取熔断器配置
-        let failure_threshold = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(app_config) => app_config.circuit_failure_threshold,
-            Err(_) => 5, // 默认值
-        };
+        let app_config = self.db.get_proxy_config_for_app(app_type).await.ok();
+        let failure_threshold = app_config
+            .as_ref()
+            .map(|config| config.circuit_failure_threshold)
+            .unwrap_or(5);
 
         // 2. 更新熔断器状态
         let circuit_key = format!("{app_type}:{provider_id}");
@@ -204,7 +206,107 @@ impl ProviderRouter {
             )
             .await?;
 
+        if !success {
+            if let Some(app_config) = app_config.as_ref() {
+                if app_config.session_routing_enabled {
+                    match self.db.get_provider_health(provider_id, app_type).await {
+                        Ok(health) if health.consecutive_failures > 0 => {
+                            if let Err(error) = self
+                                .maybe_reassign_session_routing_bindings(
+                                    app_type,
+                                    provider_id,
+                                    app_config,
+                                )
+                                .await
+                            {
+                                log::warn!(
+                                    "[{app_type}] session routing reassign failed: provider={}, error={}",
+                                    provider_id,
+                                    error
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            log::warn!(
+                                "[{app_type}] failed to read provider health after update: provider={}, error={}",
+                                provider_id,
+                                error
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    async fn maybe_reassign_session_routing_bindings(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        app_config: &AppProxyConfig,
+    ) -> Result<usize, AppError> {
+        if !app_config.session_routing_enabled {
+            return Ok(0);
+        }
+
+        let available = match self.select_session_routing_providers(app_type).await {
+            Ok(providers) => providers,
+            Err(AppError::NoProvidersConfigured | AppError::AllProvidersCircuitOpen) => {
+                return Ok(0)
+            }
+            Err(error) => return Err(error),
+        };
+
+        let mut stable = Vec::new();
+        let mut degraded = Vec::new();
+        for provider in available {
+            match self.db.get_provider_health(&provider.id, app_type).await {
+                Ok(health) if health.is_healthy && health.consecutive_failures == 0 => {
+                    stable.push(provider.id);
+                }
+                Ok(health) if health.is_healthy => {
+                    degraded.push(provider.id);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[{app_type}] failed to read provider health during reassign, keeping provider as candidate: provider={}, error={}",
+                        provider.id,
+                        error
+                    );
+                    stable.push(provider.id);
+                }
+            }
+        }
+
+        let mut candidates = if !stable.is_empty() { stable } else { degraded };
+        candidates.retain(|id| id != provider_id);
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        let reassigned = self.db.reassign_session_provider_bindings_for_provider(
+            app_type,
+            provider_id,
+            &candidates,
+            app_config.session_routing_strategy.as_str(),
+            app_config.session_max_sessions_per_provider,
+            app_config.session_allow_shared_when_exhausted,
+            app_config.session_idle_ttl_minutes,
+        )?;
+
+        if reassigned > 0 {
+            log::info!(
+                "[{app_type}] session routing reassign completed: provider={}, sessions={}",
+                provider_id,
+                reassigned
+            );
+        }
+
+        Ok(reassigned)
     }
 
     /// 重置熔断器（手动恢复）
@@ -520,6 +622,48 @@ mod tests {
         assert_eq!(providers.len(), 2);
         assert_eq!(providers[0].id, "a");
         assert_eq!(providers[1].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_routing_reassigns_on_degraded_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("claude", "s1", "a", true, now_ms)
+            .expect("seed binding");
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.session_routing_enabled = true;
+        config.session_routing_strategy = "priority".to_string();
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        router
+            .record_result("a", "claude", false, false, Some("fail".to_string()))
+            .await
+            .unwrap();
+
+        let binding = db
+            .get_session_provider_binding("claude", "s1", 30)
+            .expect("query binding")
+            .expect("binding exists");
+
+        assert_eq!(binding.provider_id, "b");
+        assert!(binding.pinned);
+        assert_eq!(binding.last_seen_at, now_ms);
     }
 
     #[tokio::test]

@@ -215,7 +215,9 @@ mod tests {
         let file_name = "session-123e4567-e89b-12d3-a456-426614174000.jsonl";
         let (_dir, path) = create_temp_jsonl_file(
             file_name,
-            &[r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"project-shared-id","cwd":"/tmp/project-a"}}"#],
+            &[
+                r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"project-shared-id","cwd":"/tmp/project-a"}}"#,
+            ],
         );
 
         let meta = parse_session(&path).expect("parse session");
@@ -226,7 +228,9 @@ mod tests {
     fn parse_session_falls_back_to_payload_id_when_filename_has_no_guid() {
         let (_dir, path) = create_temp_jsonl_file(
             "session-project-a.jsonl",
-            &[r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"payload-session-id","cwd":"/tmp/project-a"}}"#],
+            &[
+                r#"{"type":"session_meta","timestamp":"2026-03-04T00:00:00Z","payload":{"id":"payload-session-id","cwd":"/tmp/project-a"}}"#,
+            ],
         );
 
         let meta = parse_session(&path).expect("parse session");

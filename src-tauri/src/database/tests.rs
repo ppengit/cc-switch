@@ -448,7 +448,10 @@ fn schema_migration_v6_expands_proxy_config_supported_apps() {
                 |r| r.get(0),
             )
             .expect("count app row");
-        assert_eq!(app_count, 1, "missing or duplicated proxy_config row for {app}");
+        assert_eq!(
+            app_count, 1,
+            "missing or duplicated proxy_config row for {app}"
+        );
     }
 
     assert_eq!(
@@ -821,6 +824,8 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .expect("get opencode proxy config");
     opencode.session_routing_enabled = true;
     opencode.session_max_sessions_per_provider = 2;
+    opencode.force_model_enabled = true;
+    opencode.force_model = "gpt-5.4".to_string();
     db.update_proxy_config_for_app(opencode)
         .await
         .expect("update opencode proxy config");
@@ -831,6 +836,8 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .expect("get openclaw proxy config");
     openclaw.session_routing_enabled = true;
     openclaw.session_idle_ttl_minutes = 45;
+    openclaw.force_model_enabled = true;
+    openclaw.force_model = "claude-sonnet-4-5-20250929".to_string();
     db.update_proxy_config_for_app(openclaw)
         .await
         .expect("update openclaw proxy config");
@@ -841,6 +848,8 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .expect("reload opencode proxy config");
     assert!(opencode_after.session_routing_enabled);
     assert_eq!(opencode_after.session_max_sessions_per_provider, 2);
+    assert!(opencode_after.force_model_enabled);
+    assert_eq!(opencode_after.force_model, "gpt-5.4");
 
     let openclaw_after = db
         .get_proxy_config_for_app("openclaw")
@@ -848,4 +857,6 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .expect("reload openclaw proxy config");
     assert!(openclaw_after.session_routing_enabled);
     assert_eq!(openclaw_after.session_idle_ttl_minutes, 45);
+    assert!(openclaw_after.force_model_enabled);
+    assert_eq!(openclaw_after.force_model, "claude-sonnet-4-5-20250929");
 }
