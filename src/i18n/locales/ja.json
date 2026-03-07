@@ -64,7 +64,14 @@
     "alwaysThinking": "拡張思考",
     "enableTeammates": "Teammates モード",
     "skipAllPermissions": "すべての権限をスキップ",
-    "fastMode": "高速モード"
+    "fastMode": "高速モード",
+    "tooltips": {
+      "hideAttribution": "Claude Code が自動で付けるコミットや PR の署名を隠します。履歴に AI 表記を残したくないときに使います。",
+      "alwaysThinking": "Claude がより深く考えてから応答する傾向になります。安定しやすい一方で遅くなります。",
+      "enableTeammates": "実験的なマルチエージェント協調を有効にします。大きなタスク向けですが、通常モードより不安定な場合があります。",
+      "skipAllPermissions": "ローカル操作の権限確認を既定で省略します。信頼できる環境では便利ですが、リスクは上がります。",
+      "fastMode": "低遅延を優先します。Claude の説明では品質は維持されますが、コストが高く、上流によっては非対応です。"
+    }
   },
   "header": {
     "viewOnGithub": "GitHub で見る",
@@ -128,6 +135,10 @@
     "activeFilters": "フィルター {{count}}",
     "sessionOccupancy": "占有 {{count}}",
     "sessionOccupancyHint": "アクティブセッション数：{{count}}",
+    "sessionOccupancyDetailsTitle": "アクティブセッション数：{{count}}",
+    "sessionOccupancyMore": "ほか {{count}} 件のセッション",
+    "sessionProjectLabel": "プロジェクト",
+    "sessionIdLabel": "セッション",
     "idHint": "プロバイダーの一意ID",
     "statusHint": {
       "inUse": "このアプリで選択中",
@@ -806,7 +817,19 @@
     "extractFromCurrent": "編集内容から抽出",
     "extractNoCommonConfig": "編集内容から抽出できる共通設定がありません",
     "extractFailed": "抽出に失敗しました: {{error}}",
-    "saveFailed": "保存に失敗しました: {{error}}"
+    "saveFailed": "保存に失敗しました: {{error}}",
+    "fullAccess": "フルアクセス",
+    "fastTier": "Fast ティア",
+    "highReasoning": "高推論",
+    "conciseReasoningSummary": "簡潔な推論要約",
+    "verboseOutput": "詳細出力",
+    "tooltips": {
+      "fullAccess": "sandbox_mode を danger-full-access にして、Codex がワークスペースを直接読み書きし、コマンド実行できるようにします。",
+      "fastTier": "service_tier = fast を設定し、対話的な編集で低遅延を優先します。",
+      "highReasoning": "reasoning effort を高めて、難しいタスクで Codex がより多く考えるようにします。通常は安定しますが遅くなります。",
+      "conciseReasoningSummary": "短い reasoning summary を付けて、なぜその応答になったかを素早く把握しやすくします。",
+      "verboseOutput": "model_verbosity を上げて、Codex の説明をより詳しくし、デバッグやレビューに向けます。"
+    }
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -827,7 +850,15 @@
     "commonConfigInvalidValues": "共通設定スニペットの値は文字列である必要があります",
     "noCommonConfigToApply": "共通設定スニペットが空、または適用できる項目がありません",
     "configMergeFailed": "設定のマージに失敗しました: {{error}}",
-    "configReplaceFailed": "設定の置換に失敗しました: {{error}}"
+    "configReplaceFailed": "設定の置換に失敗しました: {{error}}",
+    "inlineThinking": "拡張思考",
+    "showModelInfo": "モデル情報を表示",
+    "enableAgents": "Agents を有効化",
+    "tooltips": {
+      "inlineThinking": "Gemini CLI の思考内容を会話内により多く表示します。確認しやすくなりますが、出力は長くなります。",
+      "showModelInfo": "チャット内に実際に使われているモデルを表示し、ルーティングや設定の反映を確認しやすくします。",
+      "enableAgents": "Gemini CLI の実験的な Agents モードを有効にします。複雑なフロー向けですが、挙動が変わる可能性があります。"
+    }
   },
   "opencode": {
     "npmPackage": "API フォーマット",
@@ -1811,10 +1842,13 @@
       "description": "有効にすると、このアプリのローカルプロキシ経由リクエストはすべて指定モデルに書き換えられます。",
       "notice": "この設定はローカルプロキシ経由で転送されるリクエストにのみ適用されます。provider live 設定は上書きせず、無効にすると通常フローへ即時に戻ります。",
       "inputLabel": "モデル名",
-      "inputHint": "上流が実際にサポートするモデル ID を入力してください。未対応モデルを指定するとリクエストはそのまま失敗します。",
+      "inputHint": "上流が実際にサポートするモデル ID を入力してください。未対応モデルの場合は、強制モデル未設定時と同じ通常フローへ自動でフォールバックします。",
       "validationRequired": "強制モデルを有効にする場合、モデル名は必須です。",
       "saved": "強制モデル設定を保存しました。",
       "loadFailed": "強制モデル設定の読み込みに失敗しました。"
+    },
+    "sessionRouting": {
+      "enabledBadge": "有効"
     }
   },
   "streamCheck": {

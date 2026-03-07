@@ -198,8 +198,8 @@ describe("ProviderList Component", () => {
       container.querySelectorAll("tbody tr"),
     ) as HTMLElement[];
     expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain("b");
-    expect(rows[1].textContent).toContain("a");
+    expect(rows[0].textContent).toContain("B");
+    expect(rows[1].textContent).toContain("A");
 
     const sortableIds = useSortableMock.mock.calls
       .map((call) => call[0].id)

@@ -117,7 +117,7 @@ pub fn enable_auto_launch() -> Result<(), AppError> {
     {
         enable_auto_launch_windows()?;
         log::info!("已启用开机自启（Windows 注册表）");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -136,7 +136,7 @@ pub fn disable_auto_launch() -> Result<(), AppError> {
     {
         disable_auto_launch_windows()?;
         log::info!("已禁用开机自启（Windows 注册表）");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -153,7 +153,7 @@ pub fn disable_auto_launch() -> Result<(), AppError> {
 pub fn is_auto_launch_enabled() -> Result<bool, AppError> {
     #[cfg(target_os = "windows")]
     {
-        return is_auto_launch_enabled_windows();
+        is_auto_launch_enabled_windows()
     }
 
     #[cfg(not(target_os = "windows"))]

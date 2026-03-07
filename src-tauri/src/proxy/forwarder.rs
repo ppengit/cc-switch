@@ -74,11 +74,13 @@ const HEADER_BLACKLIST: &[&str] = &[
     "x-real-ip",
 ];
 
+#[derive(Debug)]
 pub struct ForwardResult {
     pub response: Response,
     pub provider: Provider,
 }
 
+#[derive(Debug)]
 pub struct ForwardError {
     pub error: ProxyError,
     pub provider: Option<Provider>,
@@ -203,10 +205,47 @@ impl RequestForwarder {
             }
 
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            match self
-                .forward(provider, endpoint, &body, &headers, adapter.as_ref())
-                .await
-            {
+            let mut provider_force_model = self
+                .force_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let mut request_result = self
+                .forward_with_force_model(
+                    provider,
+                    endpoint,
+                    &body,
+                    &headers,
+                    adapter.as_ref(),
+                    provider_force_model,
+                )
+                .await;
+
+            if let Some(force_model) = provider_force_model {
+                if let Err(error) = &request_result {
+                    if Self::is_forced_model_rejection(error) {
+                        log::warn!(
+                            "[{}] [FWD-003] Provider {} rejected forced model {}; retrying without override",
+                            app_type_str,
+                            provider.name,
+                            force_model
+                        );
+                        provider_force_model = None;
+                        request_result = self
+                            .forward_with_force_model(
+                                provider,
+                                endpoint,
+                                &body,
+                                &headers,
+                                adapter.as_ref(),
+                                None,
+                            )
+                            .await;
+                    }
+                }
+            }
+
+            match request_result {
                 Ok(response) => {
                     // 成功：记录成功并更新熔断器
                     let _ = self
@@ -328,7 +367,14 @@ impl RequestForwarder {
 
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
-                                    .forward(provider, endpoint, &body, &headers, adapter.as_ref())
+                                    .forward_with_force_model(
+                                        provider,
+                                        endpoint,
+                                        &body,
+                                        &headers,
+                                        adapter.as_ref(),
+                                        provider_force_model,
+                                    )
                                     .await
                                 {
                                     Ok(response) => {
@@ -526,7 +572,14 @@ impl RequestForwarder {
 
                             // 使用同一供应商重试（不计入熔断器）
                             match self
-                                .forward(provider, endpoint, &body, &headers, adapter.as_ref())
+                                .forward_with_force_model(
+                                    provider,
+                                    endpoint,
+                                    &body,
+                                    &headers,
+                                    adapter.as_ref(),
+                                    provider_force_model,
+                                )
                                 .await
                             {
                                 Ok(response) => {
@@ -754,13 +807,14 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
-    async fn forward(
+    async fn forward_with_force_model(
         &self,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
         headers: &axum::http::HeaderMap,
         adapter: &dyn ProviderAdapter,
+        force_model: Option<&str>,
     ) -> Result<Response, ProxyError> {
         // 使用适配器提取 base_url
         let base_url = adapter.extract_base_url(provider)?;
@@ -774,11 +828,8 @@ impl RequestForwarder {
             } else {
                 endpoint.to_string()
             };
-        let effective_endpoint = Self::apply_forced_model_to_endpoint(
-            &effective_endpoint,
-            self.force_model.as_deref(),
-            adapter.name(),
-        );
+        let effective_endpoint =
+            Self::apply_forced_model_to_endpoint(&effective_endpoint, force_model, adapter.name());
 
         // 使用适配器构建 URL
         let url = adapter.build_url(&base_url, &effective_endpoint);
@@ -786,8 +837,7 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
             super::model_mapper::apply_model_mapping(body.clone(), provider);
-        let mapped_body =
-            Self::apply_forced_model_to_body(mapped_body, self.force_model.as_deref());
+        let mapped_body = Self::apply_forced_model_to_body(mapped_body, force_model);
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mapped_body = normalize_thinking_type(mapped_body);
@@ -945,6 +995,35 @@ impl RequestForwarder {
         }
     }
 
+    fn is_forced_model_rejection(error: &ProxyError) -> bool {
+        let ProxyError::UpstreamError { status, body } = error else {
+            return false;
+        };
+
+        if !matches!(status, 400 | 404 | 422) {
+            return false;
+        }
+
+        let body = body.as_deref().unwrap_or("").to_lowercase();
+        if body.is_empty() {
+            return false;
+        }
+
+        [
+            "model_not_found",
+            "model not found",
+            "unknown model",
+            "unsupported model",
+            "model is not supported",
+            "invalid model",
+            "unrecognized model",
+            "does not support model",
+            "not support model",
+        ]
+        .iter()
+        .any(|pattern| body.contains(pattern))
+    }
+
     fn apply_forced_model_to_body(mut body: Value, force_model: Option<&str>) -> Value {
         let Some(force_model) = force_model.map(str::trim).filter(|value| !value.is_empty()) else {
             return body;
@@ -987,7 +1066,26 @@ impl RequestForwarder {
 #[cfg(test)]
 mod tests {
     use super::RequestForwarder;
-    use serde_json::json;
+    use crate::{
+        app_config::AppType,
+        database::Database,
+        provider::Provider,
+        proxy::{
+            failover_switch::FailoverSwitchManager,
+            provider_router::ProviderRouter,
+            types::{ProxyStatus, RectifierConfig},
+            ProxyError,
+        },
+    };
+    use axum::{
+        extract::Json,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+        Router,
+    };
+    use serde_json::{json, Value};
+    use std::{collections::HashMap, sync::Arc};
+    use tokio::sync::RwLock;
 
     #[test]
     fn apply_forced_model_to_body_rewrites_model() {
@@ -1023,6 +1121,104 @@ mod tests {
         let result =
             RequestForwarder::apply_forced_model_to_endpoint(endpoint, Some("gpt-5.4"), "Codex");
         assert_eq!(result, endpoint);
+    }
+
+    #[test]
+    fn forced_model_rejection_matches_known_upstream_errors() {
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"unknown model: gpt-5.4"}}"#.to_string()),
+        };
+
+        assert!(RequestForwarder::is_forced_model_rejection(&error));
+    }
+
+    #[test]
+    fn forced_model_rejection_ignores_unrelated_errors() {
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"missing required field: messages"}}"#.to_string()),
+        };
+
+        assert!(!RequestForwarder::is_forced_model_rejection(&error));
+    }
+
+    #[tokio::test]
+    async fn forward_with_retry_retries_without_forced_model_when_upstream_rejects_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let app = Router::new().route(
+            "/v1/responses",
+            post(|Json(body): Json<Value>| async move {
+                if body.get("model").and_then(Value::as_str) == Some("gpt-5.4") {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": {
+                                "message": "unknown model: gpt-5.4"
+                            }
+                        })),
+                    )
+                } else {
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "model": body.get("model").and_then(Value::as_str),
+                        })),
+                    )
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let provider = Provider::with_id(
+            "provider-a".to_string(),
+            "Provider A".to_string(),
+            json!({
+                "base_url": format!("http://{}", address),
+                "apiKey": "sk-test"
+            }),
+            None,
+        );
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let forwarder = RequestForwarder::new(
+            Arc::new(ProviderRouter::new(db.clone())),
+            30,
+            Arc::new(RwLock::new(ProxyStatus::default())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(FailoverSwitchManager::new(db)),
+            None,
+            provider.id.clone(),
+            0,
+            0,
+            false,
+            Some("gpt-5.4".to_string()),
+            RectifierConfig::default(),
+        );
+
+        let result = forwarder
+            .forward_with_retry(
+                &AppType::Codex,
+                "/responses",
+                json!({ "model": "gpt-5.3-codex" }),
+                HeaderMap::new(),
+                vec![provider.clone()],
+            )
+            .await
+            .expect("request succeeds after fallback");
+
+        assert_eq!(result.provider.id, provider.id);
+        let response_body: Value = result.response.json().await.expect("json response");
+        assert_eq!(response_body["model"], "gpt-5.3-codex");
+
+        server.abort();
+        let _ = server.await;
     }
 }
 

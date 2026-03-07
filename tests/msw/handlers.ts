@@ -13,6 +13,7 @@ import {
   getSessionRoutingMasterEnabledState,
   listProviders,
   listSessionProviderBindings,
+  listSessions,
   removeSessionProviderBinding,
   resetProviderState,
   setAppProxyConfig,
@@ -268,6 +269,8 @@ export const handlers = [
   ),
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
+  http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
     const { appType } = await withJson<{ appType: AppId }>(request);
     return success(getAppProxyConfig(appType));

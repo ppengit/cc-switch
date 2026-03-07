@@ -5,6 +5,11 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Save, Download, Loader2 } from "lucide-react";
 import JsonEditor from "@/components/JsonEditor";
+import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
+import {
+  CLAUDE_QUICK_TOGGLE_OPTIONS,
+  type ClaudeQuickToggleKey,
+} from "@/components/providers/forms/configQuickToggles";
 
 interface CommonConfigEditorProps {
   value: string;
@@ -95,7 +100,7 @@ export function CommonConfigEditor({
   }, [localValue]);
 
   const handleToggle = useCallback(
-    (toggleKey: string, checked: boolean) => {
+    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
       try {
         const config = JSON.parse(localValue || "{}");
 
@@ -179,7 +184,7 @@ export function CommonConfigEditor({
   }, [commonConfigSnippet]);
 
   const handleSnippetToggle = useCallback(
-    (toggleKey: string, checked: boolean) => {
+    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
       try {
         const config = JSON.parse(commonConfigSnippet || "{}");
 
@@ -276,63 +281,17 @@ export function CommonConfigEditor({
           </p>
         )}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toggleStates.hideAttribution}
-              onChange={(e) =>
-                handleToggle("hideAttribution", e.target.checked)
-              }
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-            />
-            <span>{t("claudeConfig.hideAttribution")}</span>
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toggleStates.alwaysThinking}
-              onChange={(e) => handleToggle("alwaysThinking", e.target.checked)}
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-            />
-            <span>{t("claudeConfig.alwaysThinking")}</span>
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toggleStates.teammates}
-              onChange={(e) => handleToggle("teammates", e.target.checked)}
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-            />
-            <span>{t("claudeConfig.enableTeammates")}</span>
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toggleStates.skipAllPermissions}
-              onChange={(e) =>
-                handleToggle("skipAllPermissions", e.target.checked)
-              }
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-            />
-            <span>
-              {t("claudeConfig.skipAllPermissions", {
-                defaultValue: "跳过所有权限",
+          {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
+            <QuickConfigToggle
+              key={option.key}
+              checked={toggleStates[option.key]}
+              onChange={(checked) => handleToggle(option.key, checked)}
+              label={t(option.labelKey, { defaultValue: option.defaultLabel })}
+              description={t(option.descriptionKey, {
+                defaultValue: option.defaultDescription,
               })}
-            </span>
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toggleStates.fastMode}
-              onChange={(e) => handleToggle("fastMode", e.target.checked)}
-              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
             />
-            <span>
-              {t("claudeConfig.fastMode", {
-                defaultValue: "Fast 模式",
-              })}
-            </span>
-          </label>
+          ))}
         </div>
         <JsonEditor
           value={localValue}
@@ -393,69 +352,19 @@ export function CommonConfigEditor({
             })}
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={snippetToggleStates.hideAttribution}
-                onChange={(e) =>
-                  handleSnippetToggle("hideAttribution", e.target.checked)
-                }
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>{t("claudeConfig.hideAttribution")}</span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={snippetToggleStates.alwaysThinking}
-                onChange={(e) =>
-                  handleSnippetToggle("alwaysThinking", e.target.checked)
-                }
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>{t("claudeConfig.alwaysThinking")}</span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={snippetToggleStates.teammates}
-                onChange={(e) =>
-                  handleSnippetToggle("teammates", e.target.checked)
-                }
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>{t("claudeConfig.enableTeammates")}</span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={snippetToggleStates.skipAllPermissions}
-                onChange={(e) =>
-                  handleSnippetToggle("skipAllPermissions", e.target.checked)
-                }
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>
-                {t("claudeConfig.skipAllPermissions", {
-                  defaultValue: "跳过所有权限",
+            {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
+              <QuickConfigToggle
+                key={option.key}
+                checked={snippetToggleStates[option.key]}
+                onChange={(checked) => handleSnippetToggle(option.key, checked)}
+                label={t(option.labelKey, {
+                  defaultValue: option.defaultLabel,
                 })}
-              </span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={snippetToggleStates.fastMode}
-                onChange={(e) =>
-                  handleSnippetToggle("fastMode", e.target.checked)
-                }
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>
-                {t("claudeConfig.fastMode", {
-                  defaultValue: "Fast 模式",
+                description={t(option.descriptionKey, {
+                  defaultValue: option.defaultDescription,
                 })}
-              </span>
-            </label>
+              />
+            ))}
           </div>
           <JsonEditor
             value={commonConfigSnippet}

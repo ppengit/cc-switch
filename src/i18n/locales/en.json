@@ -64,7 +64,14 @@
     "alwaysThinking": "Extended Thinking",
     "enableTeammates": "Teammates Mode",
     "skipAllPermissions": "Skip All Permissions",
-    "fastMode": "Fast Mode"
+    "fastMode": "Fast Mode",
+    "tooltips": {
+      "hideAttribution": "Hides Claude Code commit or PR attribution so AI markers are not automatically written into your workflow.",
+      "alwaysThinking": "Makes Claude spend more effort thinking through the task. Usually steadier, but slower.",
+      "enableTeammates": "Turns on experimental multi-agent collaboration. Useful for larger tasks, but less stable than the default mode.",
+      "skipAllPermissions": "Bypasses local permission prompts by default. Convenient in trusted environments, but higher risk.",
+      "fastMode": "Prioritizes lower latency. Claude docs say quality stays the same, but cost is higher and some third-party upstreams may not support it."
+    }
   },
   "header": {
     "viewOnGithub": "View on GitHub",
@@ -122,6 +129,10 @@
     "fuzzyFilter": "Fuzzy match",
     "sessionOccupancy": "In use {{count}}",
     "sessionOccupancyHint": "Active session count: {{count}}",
+    "sessionOccupancyDetailsTitle": "Active session count: {{count}}",
+    "sessionOccupancyMore": "And {{count}} more sessions",
+    "sessionProjectLabel": "Project",
+    "sessionIdLabel": "Session",
     "idHint": "Provider unique ID",
     "statusHint": {
       "inUse": "Currently selected for this app",
@@ -809,7 +820,19 @@
     "extractFromCurrent": "Extract from Editor",
     "extractNoCommonConfig": "No common config available to extract from editor",
     "extractFailed": "Extract failed: {{error}}",
-    "saveFailed": "Save failed: {{error}}"
+    "saveFailed": "Save failed: {{error}}",
+    "fullAccess": "Full Access",
+    "fastTier": "Fast Tier",
+    "highReasoning": "High Reasoning",
+    "conciseReasoningSummary": "Concise Reasoning Summary",
+    "verboseOutput": "Verbose Output",
+    "tooltips": {
+      "fullAccess": "Sets sandbox_mode to danger-full-access so Codex can read, write, and run commands without sandbox restrictions.",
+      "fastTier": "Sets service_tier = fast to prefer lower latency for interactive editing sessions.",
+      "highReasoning": "Sets a higher reasoning effort so Codex spends more thinking budget on harder tasks. Usually steadier, but slower.",
+      "conciseReasoningSummary": "Adds a short reasoning summary so you can quickly understand why Codex responded that way.",
+      "verboseOutput": "Raises model_verbosity so Codex gives more detailed explanations, which is useful for debugging and review."
+    }
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -830,7 +853,15 @@
     "commonConfigInvalidValues": "Common config snippet values must be strings",
     "noCommonConfigToApply": "Common config snippet is empty or has no applicable entries",
     "configMergeFailed": "Config merge failed: {{error}}",
-    "configReplaceFailed": "Config replace failed: {{error}}"
+    "configReplaceFailed": "Config replace failed: {{error}}",
+    "inlineThinking": "Inline Thinking",
+    "showModelInfo": "Show Model Info",
+    "enableAgents": "Enable Agents",
+    "tooltips": {
+      "inlineThinking": "Shows more of Gemini CLI's thinking inline in chat. Helpful for debugging, but responses get longer.",
+      "showModelInfo": "Displays the actual model being used in chat so you can verify routing and config changes.",
+      "enableAgents": "Enables Gemini CLI's experimental Agents mode. Useful for complex workflows, but behavior may change."
+    }
   },
   "opencode": {
     "npmPackage": "API Format",
@@ -1814,10 +1845,13 @@
       "description": "When enabled, all requests from this app that pass through the local proxy are rewritten to the specified model.",
       "notice": "This setting only affects requests forwarded through the local proxy. It does not overwrite the provider live config, and turning it off restores the normal flow immediately.",
       "inputLabel": "Model name",
-      "inputHint": "Enter a model ID that the upstream provider actually supports. Unsupported models will fail the request directly.",
+      "inputHint": "Enter a model ID that the upstream provider actually supports. If the upstream rejects it, the request will automatically continue with the normal non-forced-model flow.",
       "validationRequired": "Model name is required when force model is enabled.",
       "saved": "Force model settings saved.",
       "loadFailed": "Failed to load force model settings."
+    },
+    "sessionRouting": {
+      "enabledBadge": "Enabled"
     }
   },
   "streamCheck": {

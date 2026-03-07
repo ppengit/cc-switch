@@ -31,6 +31,7 @@ import {
   useAutoFailoverEnabled,
   useSetAutoFailoverEnabled,
 } from "@/lib/query/failover";
+import { ForceModelPanel } from "@/components/proxy/ForceModelPanel";
 
 interface FailoverQueueManagerProps {
   appType: AppId;
@@ -151,6 +152,8 @@ export function FailoverQueueManager({
           disabled={disabled || setFailoverEnabled.isPending}
         />
       </div>
+
+      <ForceModelPanel appType={appType} disabled={disabled} />
 
       {/* 说明信息 */}
       <Alert className="border-blue-500/40 bg-blue-500/10">

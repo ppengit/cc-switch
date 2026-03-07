@@ -13,7 +13,6 @@ import { Badge } from "@/components/ui/badge";
 import { ProxyPanel } from "@/components/proxy";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
-import { ForceModelPanel } from "@/components/proxy/ForceModelPanel";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
 import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
@@ -165,9 +164,6 @@ export function ProxyTabContent({
                     />
                   </div>
                   <div className="border-t border-border/50 pt-6">
-                    <ForceModelPanel appType="claude" />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel
                       appType="claude"
                       disabled={!isRunning}
@@ -190,9 +186,6 @@ export function ProxyTabContent({
                     />
                   </div>
                   <div className="border-t border-border/50 pt-6">
-                    <ForceModelPanel appType="codex" />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel
                       appType="codex"
                       disabled={!isRunning}
@@ -213,9 +206,6 @@ export function ProxyTabContent({
                       appType="gemini"
                       disabled={!isRunning}
                     />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <ForceModelPanel appType="gemini" />
                   </div>
                   <div className="border-t border-border/50 pt-6">
                     <AutoFailoverConfigPanel

@@ -17,6 +17,7 @@ import {
   Search,
   SlidersHorizontal,
   Terminal,
+  Waypoints,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -32,7 +33,7 @@ import { configApi, settingsApi } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
 import { useColumnResize } from "@/hooks/useColumnResize";
-import { useSettingsQuery } from "@/lib/query";
+import { useSessionsQuery, useSettingsQuery } from "@/lib/query";
 import {
   openclawKeys,
   useOpenClawLiveProviderIds,
@@ -54,7 +55,6 @@ import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
-import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -65,6 +65,7 @@ import {
 import {
   useAppProxyConfig,
   useProviderSessionOccupancy,
+  useSessionProviderBindings,
   useUpdateAppProxyConfig,
 } from "@/lib/query/proxy";
 import {
@@ -88,6 +89,11 @@ import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import JsonEditor from "@/components/JsonEditor";
 import { cn } from "@/lib/utils";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   getStreamCheckConfig,
   saveStreamCheckConfig,
   type StreamCheckConfig,
@@ -102,12 +108,19 @@ import {
   updateTomlCommonConfigSnippet,
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
-import {
-  getTomlStringValue,
-  removeTomlKeyIfMatch,
-  upsertTomlStringValue,
-} from "@/utils/tomlKeyUtils";
 import type { SessionRoutingStrategy } from "@/types/proxy";
+import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
+import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
+import {
+  CLAUDE_QUICK_TOGGLE_OPTIONS,
+  CODEX_QUICK_TOGGLE_OPTIONS,
+  GEMINI_QUICK_TOGGLE_OPTIONS,
+  getCodexQuickToggleStates,
+  toggleCodexQuickOption,
+  type ClaudeQuickToggleKey,
+  type CodexQuickToggleKey,
+  type GeminiQuickToggleKey,
+} from "@/components/providers/forms/configQuickToggles";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -143,11 +156,18 @@ interface ProviderStatusMeta {
   className: string;
   description?: string;
 }
+
+interface ProviderOccupancyDetail {
+  sessionId: string;
+  title: string;
+  projectName: string;
+}
+
 const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
   notes: 180,
   model: 200,
   status: 260,
-  actions: 220,
+  actions: 190,
 };
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
@@ -716,6 +736,11 @@ export function ProviderList({
 
   const { data: appProxyConfig } = useAppProxyConfig(appId);
   const updateAppProxyConfig = useUpdateAppProxyConfig();
+  const { data: sessions = [] } = useSessionsQuery();
+  const { data: sessionProviderBindings = [] } = useSessionProviderBindings(
+    appId,
+    appProxyConfig?.sessionIdleTtlMinutes,
+  );
   const { data: providerSessionOccupancy = [] } = useProviderSessionOccupancy(
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
@@ -728,6 +753,37 @@ export function ProviderList({
       ]),
     );
   }, [providerSessionOccupancy]);
+  const sessionMetaMap = useMemo(() => {
+    return new Map(
+      sessions
+        .filter((session) => session.providerId === appId)
+        .map((session) => [session.sessionId, session]),
+    );
+  }, [appId, sessions]);
+  const providerSessionDetailsMap = useMemo(() => {
+    const detailsMap = new Map<string, ProviderOccupancyDetail[]>();
+
+    for (const binding of sessionProviderBindings) {
+      if (!binding.isActive) continue;
+      const session = sessionMetaMap.get(binding.sessionId);
+      const detail: ProviderOccupancyDetail = {
+        sessionId: binding.sessionId,
+        title: session
+          ? formatSessionTitle(session)
+          : binding.sessionId.slice(0, 8),
+        projectName: session ? getBaseName(session.projectDir) : "",
+      };
+      const current = detailsMap.get(binding.providerId) ?? [];
+      current.push(detail);
+      detailsMap.set(binding.providerId, current);
+    }
+
+    for (const details of detailsMap.values()) {
+      details.sort((left, right) => left.title.localeCompare(right.title));
+    }
+
+    return detailsMap;
+  }, [sessionMetaMap, sessionProviderBindings]);
   const activeSessionCount = useMemo(
     () =>
       providerSessionOccupancy.reduce(
@@ -852,7 +908,7 @@ export function ProviderList({
       notes: 220,
       model: 240,
       status: 280,
-      actions: 220,
+      actions: 190,
     },
     minWidths: PROVIDER_COLUMN_MIN_WIDTHS,
   });
@@ -1039,16 +1095,15 @@ export function ProviderList({
     };
   }, [appId, parsedGeminiSnippet.config]);
 
-  const codexSnippetFullAccess = useMemo(() => {
-    if (appId !== "codex") return false;
-    return (
-      getTomlStringValue(commonConfigSnippet, "sandbox_mode") ===
-      "danger-full-access"
-    );
+  const codexSnippetToggleStates = useMemo(() => {
+    if (appId !== "codex") {
+      return getCodexQuickToggleStates("");
+    }
+    return getCodexQuickToggleStates(commonConfigSnippet);
   }, [appId, commonConfigSnippet]);
 
   const handleClaudeSnippetToggle = useCallback(
-    (toggleKey: string, checked: boolean) => {
+    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
       if (appId !== "claude") return;
       try {
         const config = JSON.parse(commonConfigSnippet || "{}");
@@ -1107,10 +1162,7 @@ export function ProviderList({
   );
 
   const handleGeminiSnippetToggle = useCallback(
-    (
-      toggleKey: "inlineThinking" | "showModelInfo" | "enableAgents",
-      checked: boolean,
-    ) => {
+    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
       if (appId !== "gemini") return;
       if (parsedGeminiSnippet.error) return;
 
@@ -1156,20 +1208,11 @@ export function ProviderList({
   );
 
   const handleCodexSnippetToggle = useCallback(
-    (checked: boolean) => {
+    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
       if (appId !== "codex") return;
-      const nextSnippet = checked
-        ? upsertTomlStringValue(
-            commonConfigSnippet,
-            "sandbox_mode",
-            "danger-full-access",
-          )
-        : removeTomlKeyIfMatch(
-            commonConfigSnippet,
-            "sandbox_mode",
-            "danger-full-access",
-          );
-      setCommonConfigSnippet(nextSnippet);
+      setCommonConfigSnippet(
+        toggleCodexQuickOption(commonConfigSnippet, toggleKey, checked),
+      );
       setCommonConfigError("");
     },
     [appId, commonConfigSnippet],
@@ -2647,6 +2690,9 @@ export function ProviderList({
                     modelSummary={resolveProviderModelSummary(provider)}
                     statusMeta={resolveProviderStatus(provider)}
                     sessionCount={providerSessionCountMap.get(provider.id) ?? 0}
+                    occupancyDetails={
+                      providerSessionDetailsMap.get(provider.id) ?? []
+                    }
                     showSessionOccupancy={Boolean(
                       appProxyConfig?.sessionRoutingEnabled,
                     )}
@@ -2806,29 +2852,17 @@ export function ProviderList({
                 className="h-8 gap-2 border-border/70 bg-background/80 hover:bg-muted/70 hover:text-foreground dark:hover:bg-muted/50 dark:hover:text-foreground"
                 onClick={() => setIsSessionRoutingDialogOpen(true)}
               >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <Waypoints className="h-3.5 w-3.5" />
                 {t("proxy.sessionRouting.title", {
                   defaultValue: "会话路由",
                 })}
-                <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  {t("proxy.sessionRouting.activeSessions", {
-                    defaultValue: "活跃会话",
-                  })}
-                  : {activeSessionCount}
-                </span>
-                <span
-                  className={cn(
-                    "rounded-md px-1.5 py-0.5 text-[11px]",
-                    appProxyConfig.sessionRoutingEnabled
-                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                      : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {t("proxy.sessionRouting.app", { defaultValue: "当前应用" })}:{" "}
-                  {appProxyConfig.sessionRoutingEnabled
-                    ? t("common.enabled", { defaultValue: "开" })
-                    : t("common.disabled", { defaultValue: "关" })}
-                </span>
+                {appProxyConfig.sessionRoutingEnabled && (
+                  <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    {t("proxy.sessionRouting.enabledBadge", {
+                      defaultValue: "已启用",
+                    })}
+                  </span>
+                )}
               </Button>
             )}
 
@@ -3924,151 +3958,57 @@ export function ProviderList({
 
             {appId === "codex" ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={codexSnippetFullAccess}
-                    onChange={(e) => handleCodexSnippetToggle(e.target.checked)}
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("codexConfig.fullAccess", {
-                      defaultValue: "完全访问权限",
+                {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={codexSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleCodexSnippetToggle(option.key, checked)
+                    }
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
+                    })}
+                  />
+                ))}
               </div>
             ) : appId === "gemini" ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.inlineThinking}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "inlineThinking",
-                        e.target.checked,
-                      )
+                {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={geminiSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleGeminiSnippetToggle(option.key, checked)
                     }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("geminiConfig.inlineThinking", {
-                      defaultValue: "扩展思考",
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.showModelInfo}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "showModelInfo",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("geminiConfig.showModelInfo", {
-                      defaultValue: "显示模型信息",
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.enableAgents}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "enableAgents",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
                   />
-                  <span>
-                    {t("geminiConfig.enableAgents", {
-                      defaultValue: "启用代理模式",
-                    })}
-                  </span>
-                </label>
+                ))}
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.hideAttribution}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "hideAttribution",
-                        e.target.checked,
-                      )
+                {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={claudeSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleClaudeSnippetToggle(option.key, checked)
                     }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.hideAttribution")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.alwaysThinking}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "alwaysThinking",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.alwaysThinking")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.teammates}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle("teammates", e.target.checked)
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.enableTeammates")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.skipAllPermissions}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "skipAllPermissions",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("claudeConfig.skipAllPermissions", {
-                      defaultValue: "跳过所有权限",
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.fastMode}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle("fastMode", e.target.checked)
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("claudeConfig.fastMode", {
-                      defaultValue: "Fast 模式",
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
                     })}
-                  </span>
-                </label>
+                  />
+                ))}
               </div>
             )}
 
@@ -4141,6 +4081,7 @@ interface SortableProviderTableRowProps {
   modelSummary: string;
   statusMeta: ProviderStatusMeta;
   sessionCount?: number;
+  occupancyDetails?: ProviderOccupancyDetail[];
   showSessionOccupancy?: boolean;
   isCurrent: boolean;
   isInConfig: boolean;
@@ -4184,6 +4125,7 @@ function SortableProviderTableRow({
   modelSummary,
   statusMeta,
   sessionCount = 0,
+  occupancyDetails = [],
   showSessionOccupancy = false,
   isCurrent,
   isInConfig,
@@ -4242,6 +4184,11 @@ function SortableProviderTableRow({
   const showHealthBadge =
     isInFailoverQueue && health != null && !isOmo && !isOmoSlim;
   const showOccupancyBadge = showSessionOccupancy && sessionCount > 0;
+  const visibleOccupancyDetails = occupancyDetails.slice(0, 4);
+  const remainingOccupancyCount = Math.max(
+    occupancyDetails.length - visibleOccupancyDetails.length,
+    0,
+  );
 
   return (
     <tr
@@ -4273,7 +4220,7 @@ function SortableProviderTableRow({
 
       <td
         className={cn(
-          "sticky left-[48px] z-20 px-2 py-2 align-top",
+          "sticky left-[48px] z-20 px-2 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
@@ -4312,48 +4259,30 @@ function SortableProviderTableRow({
 
       <td
         className={cn(
-          "sticky left-[88px] z-20 min-w-[240px] px-3 py-2 align-top",
+          "sticky left-[88px] z-20 min-w-[240px] px-3 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
-        <div className="flex items-start gap-2">
-          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md border border-border bg-muted">
-            <ProviderIcon
-              icon={provider.icon}
-              name={provider.name}
-              color={provider.iconColor}
-              size={16}
-            />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate font-medium" title={provider.name}>
-              {website ? (
-                <button
-                  type="button"
-                  className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
-                  title={website}
-                  onClick={() => onOpenWebsite(website)}
-                >
-                  {provider.name}
-                </button>
-              ) : (
-                provider.name
-              )}
-            </div>
-            <div
-              className="truncate text-xs text-muted-foreground"
-              title={`${provider.id} · ${t("provider.idHint", {
-                defaultValue: "供应商唯一标识",
-              })}`}
-            >
-              {provider.id}
-            </div>
+        <div className="min-w-0">
+          <div className="truncate font-medium" title={provider.name}>
+            {website ? (
+              <button
+                type="button"
+                className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
+                title={website}
+                onClick={() => onOpenWebsite(website)}
+              >
+                {provider.name}
+              </button>
+            ) : (
+              provider.name
+            )}
           </div>
         </div>
       </td>
 
       <td
-        className="px-3 py-2 align-top"
+        className="px-3 py-2 align-middle"
         style={{
           width: columnWidths.notes,
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
@@ -4369,7 +4298,7 @@ function SortableProviderTableRow({
       </td>
 
       <td
-        className="px-3 py-2 align-top"
+        className="px-3 py-2 align-middle"
         style={{
           width: columnWidths.model,
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
@@ -4384,7 +4313,7 @@ function SortableProviderTableRow({
       </td>
 
       <td
-        className="px-3 py-2 align-top"
+        className="px-3 py-2 align-middle"
         style={{
           width: columnWidths.status,
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
@@ -4398,18 +4327,64 @@ function SortableProviderTableRow({
             />
           )}
           {showOccupancyBadge && (
-            <span
-              className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200"
-              title={t("provider.sessionOccupancyHint", {
-                defaultValue: "活跃会话占用数：{{count}}",
-                count: sessionCount,
-              })}
-            >
-              {t("provider.sessionOccupancy", {
-                defaultValue: "占用 {{count}}",
-                count: sessionCount,
-              })}
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                  {t("provider.sessionOccupancy", {
+                    defaultValue: "占用 {{count}}",
+                    count: sessionCount,
+                  })}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-sm text-left leading-relaxed">
+                <div className="space-y-2">
+                  <p className="font-medium">
+                    {t("provider.sessionOccupancyDetailsTitle", {
+                      defaultValue: "活跃会话占用数：{{count}}",
+                      count: sessionCount,
+                    })}
+                  </p>
+                  {visibleOccupancyDetails.length > 0 ? (
+                    <div className="space-y-1">
+                      {visibleOccupancyDetails.map((detail) => (
+                        <div key={detail.sessionId} className="space-y-0.5">
+                          <div className="font-medium">{detail.title}</div>
+                          {detail.projectName ? (
+                            <div className="text-primary-foreground/80">
+                              {t("provider.sessionProjectLabel", {
+                                defaultValue: "项目",
+                              })}
+                              : {detail.projectName}
+                            </div>
+                          ) : null}
+                          <div className="text-primary-foreground/80">
+                            {t("provider.sessionIdLabel", {
+                              defaultValue: "会话",
+                            })}
+                            : {detail.sessionId.slice(0, 8)}
+                          </div>
+                        </div>
+                      ))}
+                      {remainingOccupancyCount > 0 && (
+                        <div className="text-primary-foreground/80">
+                          {t("provider.sessionOccupancyMore", {
+                            defaultValue: "还有 {{count}} 个会话",
+                            count: remainingOccupancyCount,
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-primary-foreground/80">
+                      {t("provider.sessionOccupancyHint", {
+                        defaultValue: "活跃会话占用数：{{count}}",
+                        count: sessionCount,
+                      })}
+                    </p>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
           )}
           <span
             className={cn(
@@ -4425,7 +4400,7 @@ function SortableProviderTableRow({
 
       <td
         className={cn(
-          "sticky right-0 z-20 px-3 py-2 align-top",
+          "sticky right-0 z-20 px-3 py-2 align-middle",
           stickyCellBgClass,
         )}
         style={{
@@ -4433,7 +4408,7 @@ function SortableProviderTableRow({
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
         }}
       >
-        <div className="min-w-[220px]">
+        <div className="min-w-[190px]">
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}

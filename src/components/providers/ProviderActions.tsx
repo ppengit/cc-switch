@@ -81,7 +81,7 @@ export function ProviderActions({
   onSetAsDefault,
 }: ProviderActionsProps) {
   const { t } = useTranslation();
-  const iconButtonClass = "h-8 w-8 p-1";
+  const iconButtonClass = "h-7 w-7 p-1";
   const hasRecentTargets = (recentTerminalTargets?.length ?? 0) > 0;
 
   // 累加模式应用（OpenCode 非 OMO 和 OpenClaw）
@@ -233,7 +233,7 @@ export function ProviderActions({
 
       {isFailoverMode ? (
         <div
-          className="flex h-8 items-center gap-2 rounded-md border border-border px-2"
+          className="flex h-8 items-center rounded-md border border-border px-2"
           title={t("failover.queueToggleHint", {
             defaultValue: "加入/移除故障转移队列",
           })}
@@ -241,15 +241,10 @@ export function ProviderActions({
           <Switch
             checked={isInFailoverQueue}
             onCheckedChange={(checked) => onToggleFailover?.(checked)}
-            aria-label={t("failover.bulkToggleAll", {
-              defaultValue: "启用/禁用故障转移",
+            aria-label={t("failover.queueToggleHint", {
+              defaultValue: "加入/移除故障转移队列",
             })}
           />
-          <span className="whitespace-nowrap text-xs text-muted-foreground">
-            {isInFailoverQueue
-              ? t("failover.inQueue", { defaultValue: "已加入" })
-              : t("failover.addQueue", { defaultValue: "加入" })}
-          </span>
         </div>
       ) : (
         <Button
@@ -257,7 +252,7 @@ export function ProviderActions({
           variant={buttonState.variant}
           onClick={handleMainButtonClick}
           disabled={buttonState.disabled}
-          className={cn("w-[4.5rem] px-2.5", buttonState.className)}
+          className={cn("w-16 px-2", buttonState.className)}
         >
           {buttonState.icon}
           {buttonState.text}

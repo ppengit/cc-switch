@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
+import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
+import {
+  GEMINI_QUICK_TOGGLE_OPTIONS,
+  type GeminiQuickToggleKey,
+} from "@/components/providers/forms/configQuickToggles";
 
 interface GeminiEnvSectionProps {
   value: string;
@@ -169,10 +174,7 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
   }, [value]);
 
   const handleToggle = useCallback(
-    (
-      toggleKey: "inlineThinking" | "showModelInfo" | "enableAgents",
-      checked: boolean,
-    ) => {
+    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
       try {
         const config = JSON.parse(value || "{}");
         if (toggleKey === "inlineThinking") {
@@ -226,45 +228,17 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
       </label>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={toggleStates.inlineThinking}
-            onChange={(e) => handleToggle("inlineThinking", e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-          />
-          <span>
-            {t("geminiConfig.inlineThinking", {
-              defaultValue: "扩展思考",
+        {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
+          <QuickConfigToggle
+            key={option.key}
+            checked={toggleStates[option.key]}
+            onChange={(checked) => handleToggle(option.key, checked)}
+            label={t(option.labelKey, { defaultValue: option.defaultLabel })}
+            description={t(option.descriptionKey, {
+              defaultValue: option.defaultDescription,
             })}
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={toggleStates.showModelInfo}
-            onChange={(e) => handleToggle("showModelInfo", e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
           />
-          <span>
-            {t("geminiConfig.showModelInfo", {
-              defaultValue: "显示模型信息",
-            })}
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={toggleStates.enableAgents}
-            onChange={(e) => handleToggle("enableAgents", e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-          />
-          <span>
-            {t("geminiConfig.enableAgents", {
-              defaultValue: "启用代理模式",
-            })}
-          </span>
-        </label>
+        ))}
       </div>
 
       <JsonEditor

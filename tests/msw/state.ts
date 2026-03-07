@@ -1,5 +1,5 @@
 import type { AppId } from "@/lib/api/types";
-import type { McpServer, Provider, Settings } from "@/types";
+import type { McpServer, Provider, SessionMeta, Settings } from "@/types";
 import type {
   AppProxyConfig,
   ProviderSessionOccupancy,
@@ -408,6 +408,8 @@ export const getProviderSessionOccupancy = (
     }))
     .sort((a, b) => a.providerName.localeCompare(b.providerName));
 };
+
+export const listSessions = (): SessionMeta[] => [];
 
 export const getSettings = () =>
   JSON.parse(JSON.stringify(settingsState)) as Settings;

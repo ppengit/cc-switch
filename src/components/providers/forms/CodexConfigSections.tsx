@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
+import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
 import {
-  getTomlStringValue,
-  removeTomlKeyIfMatch,
-  upsertTomlStringValue,
-} from "@/utils/tomlKeyUtils";
+  CODEX_QUICK_TOGGLE_OPTIONS,
+  getCodexQuickToggleStates,
+  toggleCodexQuickOption,
+  type CodexQuickToggleKey,
+} from "@/components/providers/forms/configQuickToggles";
 
 interface CodexAuthSectionProps {
   value: string;
@@ -120,24 +122,11 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  const toggleStates = useMemo(() => {
-    return {
-      fullAccess:
-        getTomlStringValue(value, "sandbox_mode") === "danger-full-access",
-    };
-  }, [value]);
+  const toggleStates = useMemo(() => getCodexQuickToggleStates(value), [value]);
 
   const handleToggle = useCallback(
-    (toggleKey: "fullAccess", checked: boolean) => {
-      let nextValue = value;
-      switch (toggleKey) {
-        case "fullAccess":
-          nextValue = checked
-            ? upsertTomlStringValue(value, "sandbox_mode", "danger-full-access")
-            : removeTomlKeyIfMatch(value, "sandbox_mode", "danger-full-access");
-          break;
-      }
-      onChange(nextValue);
+    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
+      onChange(toggleCodexQuickOption(value, toggleKey, checked));
     },
     [value, onChange],
   );
@@ -180,17 +169,17 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
       )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={toggleStates.fullAccess}
-            onChange={(e) => handleToggle("fullAccess", e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+        {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
+          <QuickConfigToggle
+            key={option.key}
+            checked={toggleStates[option.key]}
+            onChange={(checked) => handleToggle(option.key, checked)}
+            label={t(option.labelKey, { defaultValue: option.defaultLabel })}
+            description={t(option.descriptionKey, {
+              defaultValue: option.defaultDescription,
+            })}
           />
-          <span>
-            {t("codexConfig.fullAccess", { defaultValue: "完全访问权限" })}
-          </span>
-        </label>
+        ))}
       </div>
 
       <JsonEditor

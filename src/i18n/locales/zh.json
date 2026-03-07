@@ -64,7 +64,14 @@
     "alwaysThinking": "扩展思考",
     "enableTeammates": "Teammates 模式",
     "skipAllPermissions": "跳过所有权限",
-    "fastMode": "Fast 模式"
+    "fastMode": "Fast 模式",
+    "tooltips": {
+      "hideAttribution": "隐藏 Claude Code 自动附带的提交或 PR 署名，适合不希望在提交记录里暴露 AI 标记时使用。",
+      "alwaysThinking": "让 Claude 更倾向于先做更深入的思考，通常更稳，但响应也会更慢。",
+      "enableTeammates": "开启实验性的多代理协作能力，适合拆分复杂任务，但稳定性可能不如默认模式。",
+      "skipAllPermissions": "默认直接放行本地操作，不再频繁弹出权限确认。适合受控环境，但风险更高。",
+      "fastMode": "优先更低延迟。官方说明质量不变，但成本更高，而且第三方上游可能不支持。"
+    }
   },
   "header": {
     "viewOnGithub": "在 GitHub 上查看",
@@ -128,6 +135,10 @@
     "activeFilters": "筛选 {{count}}",
     "sessionOccupancy": "占用 {{count}}",
     "sessionOccupancyHint": "活跃会话占用数：{{count}}",
+    "sessionOccupancyDetailsTitle": "活跃会话占用数：{{count}}",
+    "sessionOccupancyMore": "还有 {{count}} 个会话",
+    "sessionProjectLabel": "项目",
+    "sessionIdLabel": "会话",
     "idHint": "供应商唯一标识",
     "statusHint": {
       "inUse": "当前应用已切换到该供应商",
@@ -809,7 +820,19 @@
     "extractFromCurrent": "从编辑内容提取",
     "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
     "extractFailed": "提取失败: {{error}}",
-    "saveFailed": "保存失败: {{error}}"
+    "saveFailed": "保存失败: {{error}}",
+    "fullAccess": "完全访问权限",
+    "fastTier": "Fast 服务层",
+    "highReasoning": "高强度推理",
+    "conciseReasoningSummary": "简短推理摘要",
+    "verboseOutput": "详细输出",
+    "tooltips": {
+      "fullAccess": "把沙箱改成 danger-full-access，让 Codex 可以直接读写工作区并执行命令，适合本机受控环境。",
+      "fastTier": "设置 service_tier = fast，优先更低延迟，适合高频交互式编辑。",
+      "highReasoning": "提高 reasoning effort，让 Codex 在复杂任务上投入更多思考预算，通常更稳但更慢。",
+      "conciseReasoningSummary": "为回答附带简短的 reasoning summary，便于快速看懂模型为什么这么做。",
+      "verboseOutput": "提高 model_verbosity，让 Codex 输出更详细的说明，适合调试和审计。"
+    }
   },
   "geminiConfig": {
     "envFile": "环境变量 (.env)",
@@ -830,7 +853,15 @@
     "commonConfigInvalidValues": "通用配置片段的值必须是字符串",
     "noCommonConfigToApply": "通用配置片段为空或没有可写入的内容",
     "configMergeFailed": "配置合并失败: {{error}}",
-    "configReplaceFailed": "配置替换失败: {{error}}"
+    "configReplaceFailed": "配置替换失败: {{error}}",
+    "inlineThinking": "扩展思考",
+    "showModelInfo": "显示模型信息",
+    "enableAgents": "启用代理模式",
+    "tooltips": {
+      "inlineThinking": "在对话里直接展示更完整的思考内容，便于排查和理解，但输出会更长。",
+      "showModelInfo": "在聊天界面显示当前实际使用的模型，适合核对路由和配置是否生效。",
+      "enableAgents": "打开 Gemini CLI 的实验性 Agents 能力，适合复杂流程，但可能有兼容性变化。"
+    }
   },
   "opencode": {
     "npmPackage": "接口格式",
@@ -1814,10 +1845,13 @@
       "description": "开启后，该应用所有经过本地代理的请求都会统一改写为指定模型。",
       "notice": "此设置只影响通过本地代理转发的请求，不会回写 provider live 配置；关闭后会立即恢复当前流程。",
       "inputLabel": "模型名称",
-      "inputHint": "请填写上游实际支持的模型 ID；如果上游不支持，请求会直接返回错误。",
+      "inputHint": "请填写上游实际支持的模型 ID；如果上游不支持，将自动按未开启强制模型时的流程继续请求。",
       "validationRequired": "开启强制模型时，模型名称不能为空。",
       "saved": "强制模型配置已保存。",
       "loadFailed": "加载强制模型配置失败。"
+    },
+    "sessionRouting": {
+      "enabledBadge": "已启用"
     }
   },
   "streamCheck": {

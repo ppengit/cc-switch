@@ -624,7 +624,7 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![app_type, provider_id, cutoff], |row| {
-                Ok(row.get::<_, String>(0)?)
+                row.get::<_, String>(0)
             })
             .map_err(|e| AppError::Database(e.to_string()))?;
 

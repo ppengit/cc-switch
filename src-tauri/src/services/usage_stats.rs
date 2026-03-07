@@ -264,7 +264,7 @@ impl Database {
 
         if let Some(last_cleanup_at) = config.last_cleanup_at {
             let elapsed = now_timestamp - last_cleanup_at;
-            if elapsed >= 0 && elapsed < REQUEST_LOG_AUTO_CLEANUP_INTERVAL_SECONDS {
+            if (0..REQUEST_LOG_AUTO_CLEANUP_INTERVAL_SECONDS).contains(&elapsed) {
                 return Ok(None);
             }
         }
