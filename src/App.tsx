@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -41,6 +40,7 @@ import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
+import { listenWhenBridgeReady } from "@/lib/tauriBridge";
 import { isWindows, isLinux } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
@@ -383,14 +383,19 @@ function App() {
 
     const setupListener = async () => {
       try {
-        unsubscribe = await listen("universal-provider-synced", async () => {
-          await queryClient.invalidateQueries({ queryKey: ["providers"] });
-          try {
-            await providersApi.updateTrayMenu();
-          } catch (error) {
-            console.error("[App] Failed to update tray menu", error);
-          }
-        });
+        unsubscribe =
+          (await listenWhenBridgeReady(
+            "universal-provider-synced",
+            async () => {
+              await queryClient.invalidateQueries({ queryKey: ["providers"] });
+              try {
+                await providersApi.updateTrayMenu();
+              } catch (error) {
+                console.error("[App] Failed to update tray menu", error);
+              }
+            },
+            { label: "universal-provider-synced listener" },
+          )) ?? undefined;
       } catch (error) {
         console.error(
           "[App] Failed to subscribe universal-provider-synced event",
@@ -411,7 +416,7 @@ function App() {
 
     const setupListener = async () => {
       try {
-        const off = await listen(
+        const off = await listenWhenBridgeReady<WebDavSyncStatusUpdatedPayload>(
           "webdav-sync-status-updated",
           async (event) => {
             const payload = (event.payload ??
@@ -428,12 +433,13 @@ function App() {
               }),
             );
           },
+          { label: "webdav-sync-status-updated listener" },
         );
         if (!active) {
-          off();
+          off?.();
           return;
         }
-        unsubscribe = off;
+        unsubscribe = off ?? undefined;
       } catch (error) {
         console.error(
           "[App] Failed to subscribe webdav-sync-status-updated event",

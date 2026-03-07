@@ -130,8 +130,15 @@ const resolveNsisInstaller = async () => {
       const entries = await fs.readdir(nsisDir);
       const candidates = entries
         .filter((name) => /^CC Switch_.*_x64-setup\.exe$/i.test(name))
-        .map((name) => path.join(nsisDir, name));
-      return candidates.at(-1) ?? "";
+        .map((name) => ({
+          name,
+          version:
+            name.match(/^CC Switch_(.+?)_x64-setup\.exe$/i)?.[1] ?? "",
+        }))
+        .sort((left, right) => compareVersionsDesc(left.version, right.version));
+      return candidates.length > 0
+        ? path.join(nsisDir, candidates[0].name)
+        : "";
     } catch {
       return "";
     }

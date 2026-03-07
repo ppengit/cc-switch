@@ -33,3 +33,31 @@ if (
     configurable: true,
   });
 }
+
+if (typeof globalThis.matchMedia === "undefined") {
+  Object.defineProperty(globalThis, "matchMedia", {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}
+
+if (typeof document.startViewTransition === "undefined") {
+  document.startViewTransition = ((callback: () => void) => {
+    callback();
+    return {
+      ready: Promise.resolve(),
+      finished: Promise.resolve(),
+      updateCallbackDone: Promise.resolve(),
+      skipTransition: () => {},
+    };
+  }) as typeof document.startViewTransition;
+}

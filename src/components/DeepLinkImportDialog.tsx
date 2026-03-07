@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { DeepLinkImportRequest, deeplinkApi } from "@/lib/api/deeplink";
+import { listenWhenBridgeReady } from "@/lib/tauriBridge";
 import {
   Dialog,
   DialogContent,
@@ -49,45 +50,69 @@ export function DeepLinkImportDialog() {
   };
 
   useEffect(() => {
-    // Listen for deep link import events
-    const unlistenImport = listen<DeepLinkImportRequest>(
-      "deeplink-import",
-      async (event) => {
-        // If config is present, merge it to get the complete configuration
-        if (event.payload.config || event.payload.configUrl) {
-          try {
-            const mergedRequest = await deeplinkApi.mergeDeeplinkConfig(
-              event.payload,
-            );
-            setRequest(mergedRequest);
-          } catch (error) {
-            console.error("Failed to merge config:", error);
-            toast.error(t("deeplink.configMergeError"), {
-              description:
-                error instanceof Error ? error.message : String(error),
+    let disposed = false;
+    let unlistenImport: UnlistenFn | null = null;
+    let unlistenError: UnlistenFn | null = null;
+
+    const subscribe = async () => {
+      try {
+        const importOff = await listenWhenBridgeReady<DeepLinkImportRequest>(
+          "deeplink-import",
+          async (event) => {
+            // If config is present, merge it to get the complete configuration
+            if (event.payload.config || event.payload.configUrl) {
+              try {
+                const mergedRequest = await deeplinkApi.mergeDeeplinkConfig(
+                  event.payload,
+                );
+                setRequest(mergedRequest);
+              } catch (error) {
+                console.error("Failed to merge config:", error);
+                toast.error(t("deeplink.configMergeError"), {
+                  description:
+                    error instanceof Error ? error.message : String(error),
+                });
+                // Fall back to original request
+                setRequest(event.payload);
+              }
+            } else {
+              setRequest(event.payload);
+            }
+
+            setIsOpen(true);
+          },
+          { label: "deeplink-import listener" },
+        );
+        const errorOff = await listenWhenBridgeReady<DeeplinkError>(
+          "deeplink-error",
+          (event) => {
+            console.error("Deep link error:", event.payload);
+            toast.error(t("deeplink.parseError"), {
+              description: event.payload.error,
             });
-            // Fall back to original request
-            setRequest(event.payload);
-          }
-        } else {
-          setRequest(event.payload);
+          },
+          { label: "deeplink-error listener" },
+        );
+
+        if (disposed) {
+          importOff?.();
+          errorOff?.();
+          return;
         }
 
-        setIsOpen(true);
-      },
-    );
+        unlistenImport = importOff;
+        unlistenError = errorOff;
+      } catch (error) {
+        console.error("Failed to subscribe deep link listeners", error);
+      }
+    };
 
-    // Listen for deep link error events
-    const unlistenError = listen<DeeplinkError>("deeplink-error", (event) => {
-      console.error("Deep link error:", event.payload);
-      toast.error(t("deeplink.parseError"), {
-        description: event.payload.error,
-      });
-    });
+    void subscribe();
 
     return () => {
-      unlistenImport.then((fn) => fn());
-      unlistenError.then((fn) => fn());
+      disposed = true;
+      unlistenImport?.();
+      unlistenError?.();
     };
   }, [t]);
 
