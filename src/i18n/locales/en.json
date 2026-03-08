@@ -92,7 +92,12 @@
     "importCurrentDescription": "Import current live config as default provider",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
+    "setCurrent": "Set Current",
+    "current": "Current",
     "inUse": "In Use",
+    "sessionDefault": "Default (No Session)",
+    "activeTraffic": "Active Traffic",
+    "failoverPriorityShort": "Queue P{{priority}}",
     "editProvider": "Edit Provider",
     "editProviderHint": "Configuration will be applied to the current provider immediately after update.",
     "deleteProvider": "Delete Provider",
@@ -135,13 +140,18 @@
     "sessionIdLabel": "Session",
     "idHint": "Provider unique ID",
     "statusHint": {
+      "current": "This provider is the app's current default target",
       "inUse": "Currently selected for this app",
       "available": "Available to switch",
       "activeRouting": "Session routing is using this provider",
+      "activeTraffic": "The proxy is currently forwarding traffic to this provider",
       "disabled": "Provider disabled",
       "inConfig": "Written to app config and available",
       "notInConfig": "Not in app config",
-      "defaultModel": "OpenClaw default primary model"
+      "defaultModel": "OpenClaw default primary model",
+      "sessionDefault": "Requests without a session ID use this provider first",
+      "sessionDefaultFollowCurrent": "Requests without a session ID follow the current provider, which currently points here",
+      "failoverPriority": "When failover is enabled, requests fall back to this provider according to queue order"
     },
     "noSearchResults": "No providers match your search.",
     "showFilters": "Show filters",
@@ -1851,7 +1861,13 @@
       "loadFailed": "Failed to load force model settings."
     },
     "sessionRouting": {
-      "enabledBadge": "Enabled"
+      "enabledBadge": "Enabled",
+      "defaultProvider": "Default provider for requests without session ID",
+      "defaultProviderFollowCurrent": "Follow current provider",
+      "defaultProviderHint": "Requests without a session ID always try this provider first and do not create a session binding.",
+      "defaultProviderHintWithFailover": "Requests without a session ID try this provider first; if it fails, they fall back through the failover queue.",
+      "defaultProviderFollowCurrentHint": "Leave empty to follow the current provider. This is the app-default fallback behavior in session routing mode.",
+      "defaultProviderFollowCurrentHintWithFailover": "Leave empty to follow the current provider first; if it fails, continue through the failover queue."
     }
   },
   "streamCheck": {

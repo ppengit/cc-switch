@@ -126,6 +126,7 @@ impl Database {
             force_model TEXT NOT NULL DEFAULT '',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
             session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
+            session_default_provider_id TEXT NOT NULL DEFAULT '',
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
             session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
             session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
@@ -508,6 +509,13 @@ impl Database {
                         );
                         Self::migrate_v7_to_v8(conn)?;
                         Self::set_user_version(conn, 8)?;
+                    }
+                    8 => {
+                        log::info!(
+                            "Migrating database from v8 to v9 (add session default provider setting)"
+                        );
+                        Self::migrate_v8_to_v9(conn)?;
+                        Self::set_user_version(conn, 9)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1418,6 +1426,45 @@ impl Database {
             "force_model",
             "TEXT NOT NULL DEFAULT ''",
         )?;
+        Ok(())
+    }
+
+    fn migrate_v8_to_v9(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_default_provider_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+
+        if !Self::table_exists(conn, "providers")? {
+            return Ok(());
+        }
+
+        conn.execute(
+            "UPDATE proxy_config
+             SET session_default_provider_id = COALESCE(
+                    NULLIF(session_default_provider_id, ''),
+                    (
+                        SELECT p.id
+                        FROM providers p
+                        WHERE p.app_type = proxy_config.app_type AND p.is_current = 1
+                        ORDER BY COALESCE(p.sort_index, 999999), p.created_at ASC, p.id ASC
+                        LIMIT 1
+                    ),
+                    ''
+                )
+             WHERE COALESCE(session_default_provider_id, '') = ''",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!("backfill session_default_provider_id failed: {e}"))
+        })?;
+
         Ok(())
     }
 

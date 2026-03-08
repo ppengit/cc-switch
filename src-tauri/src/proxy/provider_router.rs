@@ -155,6 +155,81 @@ impl ProviderRouter {
         Ok(result)
     }
 
+    pub async fn select_session_default_providers(
+        &self,
+        app_type: &str,
+        preferred_provider_id: Option<&str>,
+        auto_failover_enabled: bool,
+    ) -> Result<Vec<Provider>, AppError> {
+        let all_providers = self.db.get_all_providers(app_type)?;
+        let mut ordered_provider_ids = Vec::new();
+
+        if let Some(provider_id) = preferred_provider_id
+            .map(str::trim)
+            .filter(|provider_id| !provider_id.is_empty())
+        {
+            ordered_provider_ids.push(provider_id.to_string());
+        }
+
+        if auto_failover_enabled {
+            for item in self.db.get_failover_queue(app_type)? {
+                if !ordered_provider_ids.contains(&item.provider_id) {
+                    ordered_provider_ids.push(item.provider_id);
+                }
+            }
+        } else if ordered_provider_ids.is_empty() {
+            let current_id = AppType::from_str(app_type)
+                .ok()
+                .and_then(|app_enum| {
+                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
+                        .ok()
+                        .flatten()
+                })
+                .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
+
+            if let Some(current_id) = current_id {
+                ordered_provider_ids.push(current_id);
+            }
+        }
+
+        if ordered_provider_ids.is_empty() {
+            return Err(AppError::NoProvidersConfigured);
+        }
+
+        let mut result = Vec::new();
+        let mut total_providers = 0usize;
+        let mut circuit_open_count = 0usize;
+
+        for provider_id in ordered_provider_ids {
+            let Some(provider) = all_providers.get(&provider_id).cloned() else {
+                continue;
+            };
+            total_providers += 1;
+
+            if !auto_failover_enabled {
+                result.push(provider);
+                continue;
+            }
+
+            let circuit_key = format!("{app_type}:{}", provider.id);
+            let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+            if breaker.is_available().await {
+                result.push(provider);
+            } else {
+                circuit_open_count += 1;
+            }
+        }
+
+        if result.is_empty() {
+            if total_providers > 0 && circuit_open_count == total_providers {
+                return Err(AppError::AllProvidersCircuitOpen);
+            }
+            return Err(AppError::NoProvidersConfigured);
+        }
+
+        Ok(result)
+    }
+
     /// 请求执行前获取熔断器“放行许可”
     ///
     /// - Closed：直接放行
@@ -622,6 +697,113 @@ mod tests {
         assert_eq!(providers.len(), 2);
         assert_eq!(providers[0].id, "a");
         assert_eq!(providers[1].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_routing_priority_uses_provider_order_not_failover_queue() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_routing_providers("codex")
+            .await
+            .unwrap();
+
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].id, "a");
+        assert_eq!(providers[1].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_prefers_explicit_default_without_failover() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", Some("b"), false)
+            .await
+            .unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_falls_back_to_current_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", None, false)
+            .await
+            .unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_uses_failover_queue_as_fallback() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        let provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.save_provider("codex", &provider_c).unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        db.add_to_failover_queue("codex", "c").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", Some("a"), true)
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
     #[tokio::test]

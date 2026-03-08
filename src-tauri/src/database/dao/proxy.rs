@@ -201,8 +201,9 @@ impl Database {
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests,
-                        session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                        session_allow_shared_when_exhausted, session_idle_ttl_minutes
+                        session_routing_enabled, session_routing_strategy, session_default_provider_id,
+                        session_max_sessions_per_provider, session_allow_shared_when_exhausted,
+                        session_idle_ttl_minutes
                  FROM proxy_config WHERE app_type = ?1",
                 [app_type],
                 |row| {
@@ -223,9 +224,10 @@ impl Database {
                         circuit_min_requests: row.get::<_, i32>(13)? as u32,
                         session_routing_enabled: row.get::<_, i32>(14)? != 0,
                         session_routing_strategy: row.get(15)?,
-                        session_max_sessions_per_provider: row.get::<_, i32>(16)? as u32,
-                        session_allow_shared_when_exhausted: row.get::<_, i32>(17)? != 0,
-                        session_idle_ttl_minutes: row.get::<_, i32>(18)? as u32,
+                        session_default_provider_id: row.get(16)?,
+                        session_max_sessions_per_provider: row.get::<_, i32>(17)? as u32,
+                        session_allow_shared_when_exhausted: row.get::<_, i32>(18)? != 0,
+                        session_idle_ttl_minutes: row.get::<_, i32>(19)? as u32,
                     })
                 },
             )
@@ -254,6 +256,7 @@ impl Database {
                     circuit_min_requests: 10,
                     session_routing_enabled: false,
                     session_routing_strategy: "priority".to_string(),
+                    session_default_provider_id: String::new(),
                     session_max_sessions_per_provider: 1,
                     session_allow_shared_when_exhausted: true,
                     session_idle_ttl_minutes: 30,
@@ -287,9 +290,10 @@ impl Database {
                 circuit_min_requests = ?14,
                 session_routing_enabled = ?15,
                 session_routing_strategy = ?16,
-                session_max_sessions_per_provider = ?17,
-                session_allow_shared_when_exhausted = ?18,
-                session_idle_ttl_minutes = ?19,
+                session_default_provider_id = ?17,
+                session_max_sessions_per_provider = ?18,
+                session_allow_shared_when_exhausted = ?19,
+                session_idle_ttl_minutes = ?20,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
@@ -309,6 +313,7 @@ impl Database {
                 config.circuit_min_requests as i32,
                 if config.session_routing_enabled { 1 } else { 0 },
                 config.session_routing_strategy,
+                config.session_default_provider_id,
                 config.session_max_sessions_per_provider as i32,
                 if config.session_allow_shared_when_exhausted {
                     1
@@ -952,6 +957,22 @@ mod tests {
                 ..
             }
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_session_default_provider_round_trip() -> Result<(), AppError> {
+        let db = Database::memory()?;
+
+        let mut config = db.get_proxy_config_for_app("codex").await?;
+        assert_eq!(config.session_default_provider_id, "");
+
+        config.session_default_provider_id = "provider-b".to_string();
+        db.update_proxy_config_for_app(config).await?;
+
+        let updated = db.get_proxy_config_for_app("codex").await?;
+        assert_eq!(updated.session_default_provider_id, "provider-b");
 
         Ok(())
     }

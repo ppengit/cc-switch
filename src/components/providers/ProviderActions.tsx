@@ -190,7 +190,7 @@ export function ProviderActions({
         className:
           "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
         icon: <Check className="h-4 w-4" />,
-        text: t("provider.inUse"),
+        text: t("provider.current", { defaultValue: "当前" }),
       };
     }
 
@@ -201,7 +201,7 @@ export function ProviderActions({
         ? "bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700"
         : "",
       icon: <Play className="h-4 w-4" />,
-      text: t("provider.enable"),
+      text: t("provider.setCurrent", { defaultValue: "设为当前" }),
     };
   };
 
@@ -252,7 +252,7 @@ export function ProviderActions({
           variant={buttonState.variant}
           onClick={handleMainButtonClick}
           disabled={buttonState.disabled}
-          className={cn("w-16 px-2", buttonState.className)}
+          className={cn("min-w-[88px] px-2", buttonState.className)}
         >
           {buttonState.icon}
           {buttonState.text}

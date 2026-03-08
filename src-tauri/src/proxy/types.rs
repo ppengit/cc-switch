@@ -200,6 +200,9 @@ pub struct AppProxyConfig {
     pub session_routing_enabled: bool,
     /// 会话调度策略：fixed / round_robin / least_active / priority
     pub session_routing_strategy: String,
+    /// 未显式携带会话 ID 的请求默认使用的供应商；为空时跟随当前 provider
+    #[serde(default)]
+    pub session_default_provider_id: String,
     /// 单个供应商可绑定的最大并发会话数（0 表示不限制）
     pub session_max_sessions_per_provider: u32,
     /// 当全部供应商达到并发上限时，是否允许共享分配

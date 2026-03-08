@@ -4,6 +4,11 @@ import path from "node:path";
 const MAX_KEEP_VERSIONS = 3;
 const root = process.cwd();
 const distDir = path.join(root, "dist");
+const preservedInstallerDir = path.join(
+  root,
+  ".release-cache",
+  "preserved-installers",
+);
 
 const exePath = path.join(
   root,
@@ -102,7 +107,7 @@ const pruneDistArtifacts = async () => {
 
   const keepVersions = new Set(versions.slice(0, MAX_KEEP_VERSIONS));
   const removeTargets = versionedArtifacts.filter(
-    (item) => !keepVersions.has(item.version),
+    (item) => item.kind === "runtime" && !keepVersions.has(item.version),
   );
 
   for (const item of removeTargets) {
@@ -110,6 +115,37 @@ const pruneDistArtifacts = async () => {
     await fs.unlink(target);
     console.log(`Removed old artifact: ${target}`);
   }
+};
+
+const restorePreservedInstallers = async () => {
+  let entries = [];
+  try {
+    entries = await fs.readdir(preservedInstallerDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const installers = entries.filter(
+    (entry) =>
+      entry.isFile() && /^CC Switch_.*_x64-setup\.exe$/i.test(entry.name),
+  );
+
+  for (const entry of installers) {
+    const src = path.join(preservedInstallerDir, entry.name);
+    const dest = path.join(distDir, entry.name);
+
+    try {
+      await fs.access(dest);
+      continue;
+    } catch {
+      // restore only missing installers
+    }
+
+    await fs.copyFile(src, dest);
+    console.log(`Restored preserved installer: ${src} -> ${dest}`);
+  }
+
+  await fs.rm(preservedInstallerDir, { recursive: true, force: true });
 };
 
 const resolveNsisInstaller = async () => {
@@ -132,10 +168,11 @@ const resolveNsisInstaller = async () => {
         .filter((name) => /^CC Switch_.*_x64-setup\.exe$/i.test(name))
         .map((name) => ({
           name,
-          version:
-            name.match(/^CC Switch_(.+?)_x64-setup\.exe$/i)?.[1] ?? "",
+          version: name.match(/^CC Switch_(.+?)_x64-setup\.exe$/i)?.[1] ?? "",
         }))
-        .sort((left, right) => compareVersionsDesc(left.version, right.version));
+        .sort((left, right) =>
+          compareVersionsDesc(left.version, right.version),
+        );
       return candidates.length > 0
         ? path.join(nsisDir, candidates[0].name)
         : "";
@@ -175,4 +212,5 @@ for (const { src, destName } of copyTargets) {
   console.log(`Copied ${src} -> ${dest}`);
 }
 
+await restorePreservedInstallers();
 await pruneDistArtifacts();

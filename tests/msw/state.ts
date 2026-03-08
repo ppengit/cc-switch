@@ -96,6 +96,7 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   circuitMinRequests: 5,
   sessionRoutingEnabled: false,
   sessionRoutingStrategy: "priority",
+  sessionDefaultProviderId: "",
   sessionMaxSessionsPerProvider: 1,
   sessionAllowSharedWhenExhausted: false,
   sessionIdleTtlMinutes: 30,

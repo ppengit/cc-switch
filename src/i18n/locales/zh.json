@@ -92,7 +92,12 @@
     "importCurrentDescription": "将当前正在使用的配置导入为默认供应商",
     "currentlyUsing": "当前使用",
     "enable": "启用",
+    "setCurrent": "设为当前",
+    "current": "当前",
     "inUse": "使用中",
+    "sessionDefault": "无会话默认",
+    "activeTraffic": "当前流量",
+    "failoverPriorityShort": "队列 P{{priority}}",
     "editProvider": "编辑供应商",
     "editProviderHint": "更新配置后将立即应用到当前供应商。",
     "deleteProvider": "删除供应商",
@@ -141,13 +146,18 @@
     "sessionIdLabel": "会话",
     "idHint": "供应商唯一标识",
     "statusHint": {
+      "current": "当前应用使用此供应商作为默认目标",
       "inUse": "当前应用已切换到该供应商",
       "available": "可切换为当前供应商",
       "activeRouting": "会话路由开启时，该会话正在使用此供应商",
+      "activeTraffic": "代理当前正在把流量转发到此供应商",
       "disabled": "该供应商未启用",
       "inConfig": "已写入应用配置，可被选择使用",
       "notInConfig": "未写入应用配置，当前不会被使用",
-      "defaultModel": "OpenClaw 默认主模型"
+      "defaultModel": "OpenClaw 默认主模型",
+      "sessionDefault": "未携带会话 ID 的请求默认先使用此供应商",
+      "sessionDefaultFollowCurrent": "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+      "failoverPriority": "故障转移开启时，请求会按队列顺序回落到此供应商"
     },
     "noSearchResults": "没有符合搜索条件的供应商。",
     "duplicate": "复制",
@@ -1851,7 +1861,13 @@
       "loadFailed": "加载强制模型配置失败。"
     },
     "sessionRouting": {
-      "enabledBadge": "已启用"
+      "enabledBadge": "已启用",
+      "defaultProvider": "无会话默认提供商",
+      "defaultProviderFollowCurrent": "跟随当前 Provider",
+      "defaultProviderHint": "未携带会话 ID 的请求会固定先使用该提供商，不参与会话绑定。",
+      "defaultProviderHintWithFailover": "未携带会话 ID 的请求会先使用该提供商；失败后再按故障转移队列继续回落。",
+      "defaultProviderFollowCurrentHint": "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
+      "defaultProviderFollowCurrentHintWithFailover": "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。"
     }
   },
   "streamCheck": {

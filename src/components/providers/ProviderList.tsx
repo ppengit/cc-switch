@@ -151,10 +151,12 @@ type SortDirection = "asc" | "desc";
 type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
 type ProviderResizableColumnKey = "notes" | "model" | "status" | "actions";
 interface ProviderStatusMeta {
-  label: string;
   sortValue: number;
-  className: string;
-  description?: string;
+  badges: Array<{
+    label: string;
+    className: string;
+    description?: string;
+  }>;
 }
 
 interface ProviderOccupancyDetail {
@@ -176,8 +178,8 @@ const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
 }> = [
   {
     value: "priority",
-    label: "故障转移优先级",
-    description: "按照故障转移队列优先级（P1→P2→...）进行分配。",
+    label: "列表顺序优先",
+    description: "按照当前提供商列表顺序分配，会话路由不再依赖故障转移队列。",
   },
   {
     value: "least_active",
@@ -652,6 +654,16 @@ export function ProviderList({
     () => new Set((failoverQueue ?? []).map((item) => item.providerId)),
     [failoverQueue],
   );
+  const failoverPriorityMap = useMemo(
+    () =>
+      new Map(
+        (failoverQueue ?? []).map((item, index) => [
+          item.providerId,
+          index + 1,
+        ]),
+      ),
+    [failoverQueue],
+  );
 
   const enabledFailoverCount = useMemo(
     () =>
@@ -803,16 +815,51 @@ export function ProviderList({
   const [sessionRoutingForm, setSessionRoutingForm] = useState({
     enabled: false,
     strategy: "priority" as SessionRoutingStrategy,
+    defaultProviderId: "",
     maxSessionsPerProvider: "1",
     allowSharedWhenExhausted: false,
     idleTtlMinutes: "30",
   });
+
+  const sessionRoutingProviderOptions = useMemo(
+    () =>
+      Object.values(providers).sort((left, right) => {
+        const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
+        const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
+        if (leftSort !== rightSort) {
+          return leftSort - rightSort;
+        }
+
+        const leftCreatedAt = left.createdAt ?? Number.MAX_SAFE_INTEGER;
+        const rightCreatedAt = right.createdAt ?? Number.MAX_SAFE_INTEGER;
+        if (leftCreatedAt !== rightCreatedAt) {
+          return leftCreatedAt - rightCreatedAt;
+        }
+
+        return left.name.localeCompare(right.name);
+      }),
+    [providers],
+  );
+  const effectiveSessionDefaultProviderId = useMemo(() => {
+    const explicitProviderId = appProxyConfig?.sessionDefaultProviderId?.trim();
+    if (explicitProviderId) {
+      return explicitProviderId;
+    }
+    return currentProviderId;
+  }, [appProxyConfig?.sessionDefaultProviderId, currentProviderId]);
+  const currentProviderName = useMemo(() => {
+    if (!currentProviderId) {
+      return "";
+    }
+    return providers[currentProviderId]?.name ?? currentProviderId;
+  }, [currentProviderId, providers]);
 
   useEffect(() => {
     if (!appProxyConfig) return;
     setSessionRoutingForm({
       enabled: appProxyConfig.sessionRoutingEnabled,
       strategy: appProxyConfig.sessionRoutingStrategy,
+      defaultProviderId: appProxyConfig.sessionDefaultProviderId || "",
       maxSessionsPerProvider: String(
         appProxyConfig.sessionMaxSessionsPerProvider,
       ),
@@ -826,6 +873,8 @@ export function ProviderList({
     return (
       sessionRoutingForm.enabled !== appProxyConfig.sessionRoutingEnabled ||
       sessionRoutingForm.strategy !== appProxyConfig.sessionRoutingStrategy ||
+      sessionRoutingForm.defaultProviderId !==
+        (appProxyConfig.sessionDefaultProviderId || "") ||
       Number(sessionRoutingForm.maxSessionsPerProvider || 0) !==
         appProxyConfig.sessionMaxSessionsPerProvider ||
       sessionRoutingForm.allowSharedWhenExhausted !==
@@ -875,6 +924,7 @@ export function ProviderList({
         ...appProxyConfig,
         sessionRoutingEnabled: sessionRoutingForm.enabled,
         sessionRoutingStrategy: sessionRoutingForm.strategy,
+        sessionDefaultProviderId: sessionRoutingForm.defaultProviderId,
         sessionMaxSessionsPerProvider: maxSessions,
         sessionAllowSharedWhenExhausted:
           sessionRoutingForm.allowSharedWhenExhausted,
@@ -1921,54 +1971,76 @@ export function ProviderList({
         const current = isCurrentProvider(provider);
         return current
           ? {
-              label: t("provider.inUse", { defaultValue: "使用中" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-              description: t("provider.statusHint.inUse", {
-                defaultValue: "当前应用已切换到该供应商",
-              }),
+              badges: [
+                {
+                  label: t("provider.current", { defaultValue: "当前" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.current", {
+                    defaultValue: "当前应用使用此供应商作为默认目标",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.disabled", { defaultValue: "未启用" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
-              description: t("provider.statusHint.disabled", {
-                defaultValue: "该供应商未启用",
-              }),
+              badges: [
+                {
+                  label: t("provider.disabled", { defaultValue: "未启用" }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.disabled", {
+                    defaultValue: "该供应商未启用",
+                  }),
+                },
+              ],
             };
       }
 
       if (appId === "openclaw") {
         if (isProviderDefaultModel(provider.id)) {
           return {
-            label: t("provider.isDefault", { defaultValue: "默认模型" }),
             sortValue: 4,
-            className:
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-            description: t("provider.statusHint.defaultModel", {
-              defaultValue: "OpenClaw 默认主模型",
-            }),
+            badges: [
+              {
+                label: t("provider.isDefault", { defaultValue: "默认模型" }),
+                className:
+                  "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                description: t("provider.statusHint.defaultModel", {
+                  defaultValue: "OpenClaw 默认主模型",
+                }),
+              },
+            ],
           };
         }
         const inConfig = isProviderInConfig(provider.id);
         return inConfig
           ? {
-              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-              description: t("provider.statusHint.inConfig", {
-                defaultValue: "已写入应用配置，可被选择使用",
-              }),
+              badges: [
+                {
+                  label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.inConfig", {
+                    defaultValue: "已写入应用配置，可被选择使用",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
-              description: t("provider.statusHint.notInConfig", {
-                defaultValue: "未写入应用配置，当前不会被使用",
-              }),
+              badges: [
+                {
+                  label: t("provider.notInConfig", {
+                    defaultValue: "未加入配置",
+                  }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.notInConfig", {
+                    defaultValue: "未写入应用配置，当前不会被使用",
+                  }),
+                },
+              ],
             };
       }
 
@@ -1976,59 +2048,114 @@ export function ProviderList({
         const inConfig = isProviderInConfig(provider.id);
         return inConfig
           ? {
-              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-              description: t("provider.statusHint.inConfig", {
-                defaultValue: "已写入应用配置，可被选择使用",
-              }),
+              badges: [
+                {
+                  label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.inConfig", {
+                    defaultValue: "已写入应用配置，可被选择使用",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
-              description: t("provider.statusHint.notInConfig", {
-                defaultValue: "未写入应用配置，当前不会被使用",
-              }),
+              badges: [
+                {
+                  label: t("provider.notInConfig", {
+                    defaultValue: "未加入配置",
+                  }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.notInConfig", {
+                    defaultValue: "未写入应用配置，当前不会被使用",
+                  }),
+                },
+              ],
             };
       }
 
+      const badges: ProviderStatusMeta["badges"] = [];
+      let sortValue = 0;
+
       if (isProxyTakeover && activeProviderId === provider.id) {
-        return {
-          label: t("provider.activeRouting", { defaultValue: "当前路由" }),
-          sortValue: 5,
+        badges.push({
+          label: t("provider.activeTraffic", { defaultValue: "当前流量" }),
           className:
             "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-          description: t("provider.statusHint.activeRouting", {
-            defaultValue: "会话路由开启时，该会话正在使用此供应商",
+          description: t("provider.statusHint.activeTraffic", {
+            defaultValue: "代理正在把当前流量转发到此供应商",
           }),
-        };
+        });
+        sortValue += 400;
       }
 
-      const current = isCurrentProvider(provider);
-      return current
-        ? {
-            label: t("provider.inUse", { defaultValue: "使用中" }),
-            sortValue: 4,
+      if (isCurrentProvider(provider)) {
+        badges.push({
+          label: t("provider.current", { defaultValue: "当前" }),
+          className:
+            "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          description: t("provider.statusHint.current", {
+            defaultValue: "当前应用使用此供应商作为默认目标",
+          }),
+        });
+        sortValue += 200;
+      }
+
+      if (
+        appProxyConfig?.sessionRoutingEnabled &&
+        effectiveSessionDefaultProviderId === provider.id
+      ) {
+        badges.push({
+          label: t("provider.sessionDefault", {
+            defaultValue: "无会话默认",
+          }),
+          className:
+            "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+          description: appProxyConfig.sessionDefaultProviderId
+            ? t("provider.statusHint.sessionDefault", {
+                defaultValue: "未携带会话 ID 的请求默认先使用此供应商",
+              })
+            : t("provider.statusHint.sessionDefaultFollowCurrent", {
+                defaultValue:
+                  "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+              }),
+        });
+        sortValue += 120;
+      }
+
+      if (isAutoFailoverActive) {
+        const priority = failoverPriorityMap.get(provider.id);
+        if (priority != null) {
+          badges.push({
+            label: t("provider.failoverPriorityShort", {
+              defaultValue: "队列 P{{priority}}",
+              priority,
+            }),
             className:
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-            description: t("provider.statusHint.inUse", {
-              defaultValue: "当前应用已切换到该供应商",
+              "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
+            description: t("provider.statusHint.failoverPriority", {
+              defaultValue: "故障转移开启时，请求会按队列顺序回落到此供应商",
             }),
-          }
-        : {
-            label: t("provider.available", { defaultValue: "可切换" }),
-            sortValue: 2,
-            className: "bg-muted text-muted-foreground",
-            description: t("provider.statusHint.available", {
-              defaultValue: "可切换为当前供应商",
-            }),
-          };
+          });
+          sortValue += Math.max(1, 80 - priority);
+        }
+      }
+
+      return {
+        sortValue,
+        badges,
+      };
     },
     [
       activeProviderId,
       appId,
+      appProxyConfig?.sessionDefaultProviderId,
+      appProxyConfig?.sessionRoutingEnabled,
+      effectiveSessionDefaultProviderId,
+      failoverPriorityMap,
+      isAutoFailoverActive,
       isCurrentProvider,
       isProviderDefaultModel,
       isProviderInConfig,
@@ -3451,6 +3578,68 @@ export function ProviderList({
                 </p>
               </div>
 
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  {t("proxy.sessionRouting.defaultProvider", {
+                    defaultValue: "无会话默认提供商",
+                  })}
+                </Label>
+                <select
+                  value={sessionRoutingForm.defaultProviderId}
+                  onChange={(event) =>
+                    setSessionRoutingForm((current) => ({
+                      ...current,
+                      defaultProviderId: event.target.value,
+                    }))
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  disabled={updateAppProxyConfig.isPending}
+                >
+                  <option value="">
+                    {t("proxy.sessionRouting.defaultProviderFollowCurrent", {
+                      defaultValue: currentProviderName
+                        ? `跟随当前 Provider（${currentProviderName}）`
+                        : "跟随当前 Provider（应用默认）",
+                    })}
+                  </option>
+                  {sessionRoutingProviderOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {sessionRoutingForm.defaultProviderId
+                    ? isAutoFailoverActive
+                      ? t(
+                          "proxy.sessionRouting.defaultProviderHintWithFailover",
+                          {
+                            defaultValue:
+                              "未携带会话 ID 的请求会先使用该提供商；失败后再按故障转移队列继续回落。",
+                          },
+                        )
+                      : t("proxy.sessionRouting.defaultProviderHint", {
+                          defaultValue:
+                            "未携带会话 ID 的请求会固定先使用该提供商，不参与会话绑定。",
+                        })
+                    : isAutoFailoverActive
+                      ? t(
+                          "proxy.sessionRouting.defaultProviderFollowCurrentHintWithFailover",
+                          {
+                            defaultValue:
+                              "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。",
+                          },
+                        )
+                      : t(
+                          "proxy.sessionRouting.defaultProviderFollowCurrentHint",
+                          {
+                            defaultValue:
+                              "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
+                          },
+                        )}
+                </p>
+              </div>
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">
@@ -4319,7 +4508,7 @@ function SortableProviderTableRow({
           minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
         }}
       >
-        <div className="flex items-center gap-2 flex-nowrap">
+        <div className="flex items-center gap-2 flex-wrap">
           {showHealthBadge && (
             <ProviderHealthBadge
               consecutiveFailures={health.consecutive_failures}
@@ -4386,15 +4575,18 @@ function SortableProviderTableRow({
               </TooltipContent>
             </Tooltip>
           )}
-          <span
-            className={cn(
-              "inline-flex rounded-md px-2 py-0.5 text-xs",
-              statusMeta.className,
-            )}
-            title={statusMeta.description ?? undefined}
-          >
-            {statusMeta.label}
-          </span>
+          {statusMeta.badges.map((badge, index) => (
+            <span
+              key={`${badge.label}-${index}`}
+              className={cn(
+                "inline-flex rounded-md px-2 py-0.5 text-xs",
+                badge.className,
+              )}
+              title={badge.description ?? undefined}
+            >
+              {badge.label}
+            </span>
+          ))}
         </div>
       </td>
 
