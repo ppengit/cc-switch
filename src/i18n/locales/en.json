@@ -64,7 +64,14 @@
     "alwaysThinking": "Extended Thinking",
     "enableTeammates": "Teammates Mode",
     "skipAllPermissions": "Skip All Permissions",
-    "fastMode": "Fast Mode"
+    "fastMode": "Fast Mode",
+    "tooltips": {
+      "hideAttribution": "Hides Claude Code commit or PR attribution so AI markers are not automatically written into your workflow.",
+      "alwaysThinking": "Makes Claude spend more effort thinking through the task. Usually steadier, but slower.",
+      "enableTeammates": "Turns on experimental multi-agent collaboration. Useful for larger tasks, but less stable than the default mode.",
+      "skipAllPermissions": "Bypasses local permission prompts by default. Convenient in trusted environments, but higher risk.",
+      "fastMode": "Prioritizes lower latency. Claude docs say quality stays the same, but cost is higher and some third-party upstreams may not support it."
+    }
   },
   "header": {
     "viewOnGithub": "View on GitHub",
@@ -85,7 +92,12 @@
     "importCurrentDescription": "Import current live config as default provider",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
+    "setCurrent": "Set Current",
+    "current": "Current",
     "inUse": "In Use",
+    "sessionDefault": "Default (No Session)",
+    "activeTraffic": "Active Traffic",
+    "failoverPriorityShort": "Queue P{{priority}}",
     "editProvider": "Edit Provider",
     "editProviderHint": "Configuration will be applied to the current provider immediately after update.",
     "deleteProvider": "Delete Provider",
@@ -109,11 +121,45 @@
     "dragToReorder": "Drag to reorder",
     "dragHandle": "Drag to reorder",
     "searchPlaceholder": "Search name, notes, or URL...",
+    "filterKeywordPlaceholder": "Filter by name, URL, notes, or {{field}}",
     "searchAriaLabel": "Search providers",
     "searchScopeHint": "Matches provider name, notes, and URL.",
     "searchCloseHint": "Press Esc to close",
     "searchCloseAriaLabel": "Close provider search",
+    "filterField": "Filter field",
+    "filterAll": "All fields",
+    "filterByName": "Provider name",
+    "filterByWebsite": "Website URL",
+    "filterByNotes": "Notes",
+    "fuzzyFilter": "Fuzzy match",
+    "sessionOccupancy": "In use {{count}}",
+    "sessionOccupancyHint": "Active session count: {{count}}",
+    "sessionOccupancyDetailsTitle": "Active session count: {{count}}",
+    "sessionOccupancyMore": "And {{count}} more sessions",
+    "sessionProjectLabel": "Project",
+    "sessionIdLabel": "Session",
+    "idHint": "Provider unique ID",
+    "statusHint": {
+      "current": "This provider is the app's current default target",
+      "inUse": "Currently selected for this app",
+      "available": "Available to switch",
+      "activeRouting": "Session routing is using this provider",
+      "activeTraffic": "The proxy is currently forwarding traffic to this provider",
+      "disabled": "Provider disabled",
+      "inConfig": "Written to app config and available",
+      "notInConfig": "Not in app config",
+      "defaultModel": "OpenClaw default primary model",
+      "sessionDefault": "Requests without a session ID use this provider first",
+      "sessionDefaultFollowCurrent": "Requests without a session ID follow the current provider, which currently points here",
+      "failoverPriority": "When failover is enabled, requests fall back to this provider according to queue order"
+    },
     "noSearchResults": "No providers match your search.",
+    "showFilters": "Show filters",
+    "hideFilters": "Hide filters",
+    "activeFilters": "Filters {{count}}",
+    "modelFilterLabelIdle": "Filter by {{field}}",
+    "modelFilterLabelSelected": "{{field}} ({{count}})",
+    "modelFilterMultiSelect": "Multi-select {{field}}",
     "duplicate": "Duplicate",
     "sortUpdateFailed": "Failed to update sort order",
     "configureUsage": "Configure usage query",
@@ -149,13 +195,7 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    },
-    "sortTitle": "Sort",
-    "sortByManual": "Failover Priority",
-    "sortByName": "Name",
-    "sortByCreatedAt": "Added time",
-    "sortOrderAsc": "Ascending",
-    "sortOrderDesc": "Descending"
+    }
   },
   "notifications": {
     "providerAdded": "Provider added",
@@ -621,6 +661,7 @@
     "associatedProviderShort": "Provider",
     "bindingPinnedShort": "Pinned",
     "bindingAutoShort": "Auto",
+    "projectName": "Project",
     "bindingModePinned": "Mode: pinned",
     "bindingModeAuto": "Mode: auto",
     "bindingModeNone": "Mode: unbound",
@@ -789,7 +830,19 @@
     "extractFromCurrent": "Extract from Editor",
     "extractNoCommonConfig": "No common config available to extract from editor",
     "extractFailed": "Extract failed: {{error}}",
-    "saveFailed": "Save failed: {{error}}"
+    "saveFailed": "Save failed: {{error}}",
+    "fullAccess": "Full Access",
+    "fastTier": "Fast Tier",
+    "highReasoning": "High Reasoning",
+    "conciseReasoningSummary": "Concise Reasoning Summary",
+    "verboseOutput": "Verbose Output",
+    "tooltips": {
+      "fullAccess": "Sets sandbox_mode to danger-full-access so Codex can read, write, and run commands without sandbox restrictions.",
+      "fastTier": "Sets service_tier = fast to prefer lower latency for interactive editing sessions.",
+      "highReasoning": "Sets a higher reasoning effort so Codex spends more thinking budget on harder tasks. Usually steadier, but slower.",
+      "conciseReasoningSummary": "Adds a short reasoning summary so you can quickly understand why Codex responded that way.",
+      "verboseOutput": "Raises model_verbosity so Codex gives more detailed explanations, which is useful for debugging and review."
+    }
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -810,7 +863,15 @@
     "commonConfigInvalidValues": "Common config snippet values must be strings",
     "noCommonConfigToApply": "Common config snippet is empty or has no applicable entries",
     "configMergeFailed": "Config merge failed: {{error}}",
-    "configReplaceFailed": "Config replace failed: {{error}}"
+    "configReplaceFailed": "Config replace failed: {{error}}",
+    "inlineThinking": "Inline Thinking",
+    "showModelInfo": "Show Model Info",
+    "enableAgents": "Enable Agents",
+    "tooltips": {
+      "inlineThinking": "Shows more of Gemini CLI's thinking inline in chat. Helpful for debugging, but responses get longer.",
+      "showModelInfo": "Displays the actual model being used in chat so you can verify routing and config changes.",
+      "enableAgents": "Enables Gemini CLI's experimental Agents mode. Useful for complex workflows, but behavior may change."
+    }
   },
   "opencode": {
     "npmPackage": "API Format",
@@ -919,6 +980,12 @@
     "searchProviderPlaceholder": "Search provider...",
     "searchModelPlaceholder": "Search model...",
     "timeRange": "Time Range",
+    "invalidTimeRange": "Please choose a complete start/end time",
+    "invalidTimeRangeOrder": "Start time cannot be later than end time",
+    "timeRangeTooLarge": "Time range too large, please narrow it",
+    "sessionRouting": "Session routing",
+    "sessionRoutingActive": "Enabled",
+    "sessionRoutingInactive": "Disabled",
     "input": "Input",
     "output": "Output",
     "cacheWrite": "Creation",
@@ -941,9 +1008,18 @@
     "cleanupRetentionValidation": "Retention days must be between 1 and 3650",
     "cleanupConfigSaved": "Request log cleanup settings saved",
     "cleanupConfigSaveFailed": "Failed to save request log cleanup settings",
+    "cleanupControls": "Log cleanup",
     "cleanupNow": "Clean up now",
     "cleanupNowSuccess": "Cleanup complete, removed {{count}} logs",
+    "cleanupNowNoop": "No logs removed: all records are still within retention",
     "cleanupNowFailed": "Failed to clean request logs now",
+    "cleanupNowHint": "\"Clean up now\" only removes logs beyond retention; use \"Clear all logs\" for a full wipe.",
+    "clearAllLogs": "Clear all logs",
+    "clearAllLogsTitle": "Clear all logs",
+    "clearAllLogsAction": "Clear",
+    "clearAllLogsConfirm": "This will permanently delete all request logs. Continue?",
+    "clearAllLogsSuccess": "Cleared all request logs, removed {{count}} records",
+    "clearAllLogsFailed": "Failed to clear all request logs",
     "cleanupLastRun": "Last cleanup: {{time}}",
     "cleanupNeverRun": "Last cleanup: never",
     "cleanupHint": "When auto-cleanup is enabled, logs are cleaned in the background by retention days (triggered at most once per hour)."
@@ -1601,7 +1677,9 @@
     "degraded": "Degraded",
     "failed": "Failed",
     "circuitOpen": "Circuit Open",
-    "consecutiveFailures": "{{count}} consecutive failures"
+    "consecutiveFailures": "{{count}} consecutive failures",
+    "circuitReason": "Circuit reason: {{reason}}",
+    "circuitReasonUnavailable": "No detailed reason available yet, please check logs"
   },
   "failover": {
     "enabled": "{{app}} failover enabled",
@@ -1609,6 +1687,7 @@
     "toggleFailed": "Operation failed: {{detail}}",
     "inQueue": "In queue",
     "addQueue": "Add",
+    "queueToggleHint": "Add/remove failover queue",
     "priority": {
       "tooltip": "Failover priority {{priority}}"
     },
@@ -1770,6 +1849,25 @@
       "successThresholdExplain": "In half-open state, close circuit breaker after this many successes, making provider available again",
       "errorRateLabel": "Error Rate Threshold",
       "errorRateExplain": "Open circuit breaker when error rate exceeds this value, even if failure threshold not reached"
+    },
+    "forceModel": {
+      "title": "Force Model",
+      "description": "When enabled, all requests from this app that pass through the local proxy are rewritten to the specified model.",
+      "notice": "This setting only affects requests forwarded through the local proxy. It does not overwrite the provider live config, and turning it off restores the normal flow immediately.",
+      "inputLabel": "Model name",
+      "inputHint": "Enter a model ID that the upstream provider actually supports. If the upstream rejects it, the request will automatically continue with the normal non-forced-model flow.",
+      "validationRequired": "Model name is required when force model is enabled.",
+      "saved": "Force model settings saved.",
+      "loadFailed": "Failed to load force model settings."
+    },
+    "sessionRouting": {
+      "enabledBadge": "Enabled",
+      "defaultProvider": "Default provider for requests without session ID",
+      "defaultProviderFollowCurrent": "Follow current provider",
+      "defaultProviderHint": "Requests without a session ID always try this provider first and do not create a session binding.",
+      "defaultProviderHintWithFailover": "Requests without a session ID try this provider first; if it fails, they fall back through the failover queue.",
+      "defaultProviderFollowCurrentHint": "Leave empty to follow the current provider. This is the app-default fallback behavior in session routing mode.",
+      "defaultProviderFollowCurrentHintWithFailover": "Leave empty to follow the current provider first; if it fails, continue through the failover queue."
     }
   },
   "streamCheck": {

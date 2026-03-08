@@ -14,8 +14,20 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { AppId } from "@/lib/api";
+import type { TerminalTargetMode } from "@/types";
 
 interface ProviderActionsProps {
   appId?: AppId;
@@ -32,7 +44,9 @@ interface ProviderActionsProps {
   onDelete: () => void;
   onRemoveFromConfig?: () => void;
   onDisableOmo?: () => void;
-  onOpenTerminal?: () => void;
+  onOpenTerminalWithMode?: (mode: TerminalTargetMode, path?: string) => void;
+  recentTerminalTargets?: string[];
+  onClearRecentTerminals?: () => void;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
@@ -56,7 +70,9 @@ export function ProviderActions({
   onDelete,
   onRemoveFromConfig,
   onDisableOmo,
-  onOpenTerminal,
+  onOpenTerminalWithMode,
+  recentTerminalTargets,
+  onClearRecentTerminals,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
   onToggleFailover,
@@ -65,7 +81,8 @@ export function ProviderActions({
   onSetAsDefault,
 }: ProviderActionsProps) {
   const { t } = useTranslation();
-  const iconButtonClass = "h-8 w-8 p-1";
+  const iconButtonClass = "h-7 w-7 p-1";
+  const hasRecentTargets = (recentTerminalTargets?.length ?? 0) > 0;
 
   // 累加模式应用（OpenCode 非 OMO 和 OpenClaw）
   const isAdditiveMode =
@@ -173,7 +190,7 @@ export function ProviderActions({
         className:
           "bg-gray-200 text-muted-foreground hover:bg-gray-200 hover:text-muted-foreground dark:bg-gray-700 dark:hover:bg-gray-700",
         icon: <Check className="h-4 w-4" />,
-        text: t("provider.inUse"),
+        text: t("provider.current", { defaultValue: "当前" }),
       };
     }
 
@@ -184,7 +201,7 @@ export function ProviderActions({
         ? "bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700"
         : "",
       icon: <Play className="h-4 w-4" />,
-      text: t("provider.enable"),
+      text: t("provider.setCurrent", { defaultValue: "设为当前" }),
     };
   };
 
@@ -214,16 +231,33 @@ export function ProviderActions({
         </Button>
       )}
 
-      <Button
-        size="sm"
-        variant={buttonState.variant}
-        onClick={handleMainButtonClick}
-        disabled={buttonState.disabled}
-        className={cn("w-[4.5rem] px-2.5", buttonState.className)}
-      >
-        {buttonState.icon}
-        {buttonState.text}
-      </Button>
+      {isFailoverMode ? (
+        <div
+          className="flex h-8 items-center rounded-md border border-border px-2"
+          title={t("failover.queueToggleHint", {
+            defaultValue: "加入/移除故障转移队列",
+          })}
+        >
+          <Switch
+            checked={isInFailoverQueue}
+            onCheckedChange={(checked) => onToggleFailover?.(checked)}
+            aria-label={t("failover.queueToggleHint", {
+              defaultValue: "加入/移除故障转移队列",
+            })}
+          />
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant={buttonState.variant}
+          onClick={handleMainButtonClick}
+          disabled={buttonState.disabled}
+          className={cn("min-w-[88px] px-2", buttonState.className)}
+        >
+          {buttonState.icon}
+          {buttonState.text}
+        </Button>
+      )}
 
       <div className="flex items-center gap-1">
         <Button
@@ -273,19 +307,67 @@ export function ProviderActions({
           <BarChart3 className="h-4 w-4" />
         </Button>
 
-        {onOpenTerminal && (
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onOpenTerminal}
-            title={t("provider.openTerminal", "打开终端")}
-            className={cn(
-              iconButtonClass,
-              "hover:text-emerald-600 dark:hover:text-emerald-400",
-            )}
-          >
-            <Terminal className="h-4 w-4" />
-          </Button>
+        {onOpenTerminalWithMode && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                title={t("provider.openTerminal", "打开终端")}
+                className={cn(
+                  iconButtonClass,
+                  "hover:text-emerald-600 dark:hover:text-emerald-400",
+                )}
+              >
+                <Terminal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[220px]">
+              <DropdownMenuItem
+                onClick={() => onOpenTerminalWithMode("manual")}
+              >
+                {t("provider.terminalTargetManual", {
+                  defaultValue: "手动选择",
+                })}
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  {t("provider.terminalTargetRecentOpened", {
+                    defaultValue: "最近打开",
+                  })}
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-[260px]">
+                  {hasRecentTargets ? (
+                    recentTerminalTargets?.map((path) => (
+                      <DropdownMenuItem
+                        key={path}
+                        title={path}
+                        onClick={() => onOpenTerminalWithMode("recent", path)}
+                      >
+                        <span className="truncate">{path}</span>
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled>
+                      {t("provider.terminalTargetRecentEmpty", {
+                        defaultValue: "空",
+                      })}
+                    </DropdownMenuItem>
+                  )}
+                  {hasRecentTargets && onClearRecentTerminals && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={onClearRecentTerminals}>
+                        {t("provider.terminalTargetRecentClear", {
+                          defaultValue: "清除最近打开",
+                        })}
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
         <Button

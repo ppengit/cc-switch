@@ -28,7 +28,6 @@ impl Database {
                  FROM providers
                  WHERE app_type = ?1
                  ORDER BY
-                   CASE WHEN in_failover_queue = 1 THEN 0 ELSE 1 END,
                    COALESCE(sort_index, 999999),
                    created_at ASC,
                    id ASC",

@@ -14,6 +14,7 @@ use crate::proxy::{
 };
 use axum::http::HeaderMap;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::time::Instant;
 
 /// 流式超时配置
@@ -60,6 +61,7 @@ pub struct RequestContext {
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
     pub session_routing_active: bool,
+    pub suppress_global_failover_switch: bool,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
 }
@@ -101,11 +103,15 @@ impl RequestContext {
             crate::settings::get_current_provider(&app_type).unwrap_or_default();
 
         // 从请求体提取模型名称
-        let request_model = body
-            .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let request_model = app_config
+            .effective_force_model()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                body.get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
 
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
@@ -123,6 +129,10 @@ impl RequestContext {
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
         let session_routing_active =
             app_config.session_routing_enabled && session_result.client_provided;
+        let session_default_routing_active =
+            app_config.session_routing_enabled && !session_result.client_provided;
+        let suppress_global_failover_switch =
+            session_routing_active || session_default_routing_active;
 
         let providers = if session_routing_active {
             Self::select_providers_with_session_routing(
@@ -132,6 +142,8 @@ impl RequestContext {
                 &app_config,
             )
             .await?
+        } else if session_default_routing_active {
+            Self::select_providers_with_session_default(state, app_type_str, &app_config).await?
         } else {
             state
                 .provider_router
@@ -167,6 +179,7 @@ impl RequestContext {
             app_type,
             session_id,
             session_routing_active,
+            suppress_global_failover_switch,
             rectifier_config,
         })
     }
@@ -317,6 +330,45 @@ impl RequestContext {
         Err(ProxyError::NoAvailableProvider)
     }
 
+    async fn select_providers_with_session_default(
+        state: &ProxyState,
+        app_type_str: &str,
+        app_config: &AppProxyConfig,
+    ) -> Result<Vec<Provider>, ProxyError> {
+        let preferred_provider_id =
+            Self::resolve_session_default_provider_id(state, app_type_str, app_config);
+
+        state
+            .provider_router
+            .select_session_default_providers(
+                app_type_str,
+                preferred_provider_id.as_deref(),
+                app_config.auto_failover_enabled,
+            )
+            .await
+            .map_err(Self::map_provider_selection_error)
+    }
+
+    fn resolve_session_default_provider_id(
+        state: &ProxyState,
+        app_type_str: &str,
+        app_config: &AppProxyConfig,
+    ) -> Option<String> {
+        let explicit_provider_id = app_config.session_default_provider_id.trim();
+        if !explicit_provider_id.is_empty() {
+            return Some(explicit_provider_id.to_string());
+        }
+
+        AppType::from_str(app_type_str)
+            .ok()
+            .and_then(|app_type| {
+                crate::settings::get_effective_current_provider(&state.db, &app_type)
+                    .ok()
+                    .flatten()
+            })
+            .or_else(|| state.db.get_current_provider(app_type_str).ok().flatten())
+    }
+
     fn reorder_providers_by_preferred(
         providers: Vec<Provider>,
         preferred_provider_id: &str,
@@ -378,6 +430,10 @@ impl RequestContext {
     }
 
     pub fn with_model_from_uri(mut self, uri: &axum::http::Uri) -> Self {
+        if self.app_config.effective_force_model().is_some() {
+            return self;
+        }
+
         let endpoint = uri
             .path_and_query()
             .map(|pq| pq.as_str())
@@ -429,7 +485,8 @@ impl RequestContext {
             self.current_provider_id.clone(),
             first_byte_timeout,
             idle_timeout,
-            self.session_routing_active,
+            self.suppress_global_failover_switch,
+            self.app_config.effective_force_model().map(str::to_string),
             self.rectifier_config.clone(),
         )
     }

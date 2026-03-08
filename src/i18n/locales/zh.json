@@ -64,7 +64,14 @@
     "alwaysThinking": "扩展思考",
     "enableTeammates": "Teammates 模式",
     "skipAllPermissions": "跳过所有权限",
-    "fastMode": "Fast 模式"
+    "fastMode": "Fast 模式",
+    "tooltips": {
+      "hideAttribution": "隐藏 Claude Code 自动附带的提交或 PR 署名，适合不希望在提交记录里暴露 AI 标记时使用。",
+      "alwaysThinking": "让 Claude 更倾向于先做更深入的思考，通常更稳，但响应也会更慢。",
+      "enableTeammates": "开启实验性的多代理协作能力，适合拆分复杂任务，但稳定性可能不如默认模式。",
+      "skipAllPermissions": "默认直接放行本地操作，不再频繁弹出权限确认。适合受控环境，但风险更高。",
+      "fastMode": "优先更低延迟。官方说明质量不变，但成本更高，而且第三方上游可能不支持。"
+    }
   },
   "header": {
     "viewOnGithub": "在 GitHub 上查看",
@@ -85,7 +92,12 @@
     "importCurrentDescription": "将当前正在使用的配置导入为默认供应商",
     "currentlyUsing": "当前使用",
     "enable": "启用",
+    "setCurrent": "设为当前",
+    "current": "当前",
     "inUse": "使用中",
+    "sessionDefault": "无会话默认",
+    "activeTraffic": "当前流量",
+    "failoverPriorityShort": "队列 P{{priority}}",
     "editProvider": "编辑供应商",
     "editProviderHint": "更新配置后将立即应用到当前供应商。",
     "deleteProvider": "删除供应商",
@@ -113,6 +125,40 @@
     "searchScopeHint": "根据名称、备注和官网链接匹配结果。",
     "searchCloseHint": "按 Esc 关闭",
     "searchCloseAriaLabel": "关闭供应商搜索",
+    "filterField": "筛选字段",
+    "filterAll": "全部字段",
+    "filterByName": "供应商名称",
+    "filterByWebsite": "官网链接",
+    "filterByNotes": "备注",
+    "fuzzyFilter": "模糊筛选",
+    "filterKeywordPlaceholder": "输入关键字筛选名称/网址/备注/{{field}}",
+    "modelFilterLabelIdle": "按{{field}}筛选",
+    "modelFilterLabelSelected": "{{field}}（{{count}}）",
+    "modelFilterMultiSelect": "按{{field}}多选",
+    "showFilters": "展开筛选",
+    "hideFilters": "收起筛选",
+    "activeFilters": "筛选 {{count}}",
+    "sessionOccupancy": "占用 {{count}}",
+    "sessionOccupancyHint": "活跃会话占用数：{{count}}",
+    "sessionOccupancyDetailsTitle": "活跃会话占用数：{{count}}",
+    "sessionOccupancyMore": "还有 {{count}} 个会话",
+    "sessionProjectLabel": "项目",
+    "sessionIdLabel": "会话",
+    "idHint": "供应商唯一标识",
+    "statusHint": {
+      "current": "当前应用使用此供应商作为默认目标",
+      "inUse": "当前应用已切换到该供应商",
+      "available": "可切换为当前供应商",
+      "activeRouting": "会话路由开启时，该会话正在使用此供应商",
+      "activeTraffic": "代理当前正在把流量转发到此供应商",
+      "disabled": "该供应商未启用",
+      "inConfig": "已写入应用配置，可被选择使用",
+      "notInConfig": "未写入应用配置，当前不会被使用",
+      "defaultModel": "OpenClaw 默认主模型",
+      "sessionDefault": "未携带会话 ID 的请求默认先使用此供应商",
+      "sessionDefaultFollowCurrent": "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+      "failoverPriority": "故障转移开启时，请求会按队列顺序回落到此供应商"
+    },
     "noSearchResults": "没有符合搜索条件的供应商。",
     "duplicate": "复制",
     "sortUpdateFailed": "排序更新失败",
@@ -149,13 +195,7 @@
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
       }
-    },
-    "sortTitle": "排序",
-    "sortByManual": "故障转移优先级",
-    "sortByName": "名称",
-    "sortByCreatedAt": "加入时间",
-    "sortOrderAsc": "正序",
-    "sortOrderDesc": "倒序"
+    }
   },
   "notifications": {
     "providerAdded": "供应商已添加",
@@ -621,6 +661,7 @@
     "associatedProviderShort": "关联",
     "bindingPinnedShort": "锁定",
     "bindingAutoShort": "自动",
+    "projectName": "项目",
     "bindingModePinned": "模式：已绑定（锁定）",
     "bindingModeAuto": "模式：自动",
     "bindingModeNone": "模式：未绑定",
@@ -789,7 +830,19 @@
     "extractFromCurrent": "从编辑内容提取",
     "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
     "extractFailed": "提取失败: {{error}}",
-    "saveFailed": "保存失败: {{error}}"
+    "saveFailed": "保存失败: {{error}}",
+    "fullAccess": "完全访问权限",
+    "fastTier": "Fast 服务层",
+    "highReasoning": "高强度推理",
+    "conciseReasoningSummary": "简短推理摘要",
+    "verboseOutput": "详细输出",
+    "tooltips": {
+      "fullAccess": "把沙箱改成 danger-full-access，让 Codex 可以直接读写工作区并执行命令，适合本机受控环境。",
+      "fastTier": "设置 service_tier = fast，优先更低延迟，适合高频交互式编辑。",
+      "highReasoning": "提高 reasoning effort，让 Codex 在复杂任务上投入更多思考预算，通常更稳但更慢。",
+      "conciseReasoningSummary": "为回答附带简短的 reasoning summary，便于快速看懂模型为什么这么做。",
+      "verboseOutput": "提高 model_verbosity，让 Codex 输出更详细的说明，适合调试和审计。"
+    }
   },
   "geminiConfig": {
     "envFile": "环境变量 (.env)",
@@ -810,7 +863,15 @@
     "commonConfigInvalidValues": "通用配置片段的值必须是字符串",
     "noCommonConfigToApply": "通用配置片段为空或没有可写入的内容",
     "configMergeFailed": "配置合并失败: {{error}}",
-    "configReplaceFailed": "配置替换失败: {{error}}"
+    "configReplaceFailed": "配置替换失败: {{error}}",
+    "inlineThinking": "扩展思考",
+    "showModelInfo": "显示模型信息",
+    "enableAgents": "启用代理模式",
+    "tooltips": {
+      "inlineThinking": "在对话里直接展示更完整的思考内容，便于排查和理解，但输出会更长。",
+      "showModelInfo": "在聊天界面显示当前实际使用的模型，适合核对路由和配置是否生效。",
+      "enableAgents": "打开 Gemini CLI 的实验性 Agents 能力，适合复杂流程，但可能有兼容性变化。"
+    }
   },
   "opencode": {
     "npmPackage": "接口格式",
@@ -919,6 +980,12 @@
     "searchProviderPlaceholder": "搜索供应商...",
     "searchModelPlaceholder": "搜索模型...",
     "timeRange": "时间范围",
+    "invalidTimeRange": "请选择完整的开始/结束时间",
+    "invalidTimeRangeOrder": "开始时间不能晚于结束时间",
+    "timeRangeTooLarge": "时间范围过大，请缩小范围",
+    "sessionRouting": "会话路由",
+    "sessionRoutingActive": "已启用",
+    "sessionRoutingInactive": "未启用",
     "input": "输入",
     "output": "输出",
     "cacheWrite": "创建",
@@ -936,14 +1003,23 @@
     "latency": "延迟",
     "errorMessage": "错误信息",
     "allFields": "全部字段",
+    "cleanupControls": "日志清理",
     "cleanupAutoSwitch": "自动清理请求日志",
     "cleanupRetentionDays": "保留天数",
     "cleanupRetentionValidation": "保留天数需在 1-3650 之间",
     "cleanupConfigSaved": "请求日志清理配置已保存",
     "cleanupConfigSaveFailed": "保存请求日志清理配置失败",
     "cleanupNow": "立即清理",
+    "cleanupNowNoop": "未删除日志：当前记录均在保留期内",
     "cleanupNowSuccess": "清理完成，已删除 {{count}} 条日志",
     "cleanupNowFailed": "立即清理请求日志失败",
+    "cleanupNowHint": "“立即清理”只会删除超出保留期的日志；如需彻底清空，请使用“清空全部日志”。",
+    "clearAllLogs": "清空全部日志",
+    "clearAllLogsTitle": "清空全部日志",
+    "clearAllLogsAction": "清空",
+    "clearAllLogsConfirm": "将清空全部请求日志（不限保留天数），该操作不可恢复。是否继续？",
+    "clearAllLogsSuccess": "已清空全部请求日志，共删除 {{count}} 条记录",
+    "clearAllLogsFailed": "清空全部请求日志失败",
     "cleanupLastRun": "上次清理：{{time}}",
     "cleanupNeverRun": "上次清理：从未",
     "cleanupHint": "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。"
@@ -1601,7 +1677,9 @@
     "degraded": "降级",
     "failed": "失败",
     "circuitOpen": "熔断",
-    "consecutiveFailures": "连续失败 {{count}} 次"
+    "consecutiveFailures": "连续失败 {{count}} 次",
+    "circuitReason": "熔断原因：{{reason}}",
+    "circuitReasonUnavailable": "暂无详细原因，请查看日志"
   },
   "failover": {
     "enabled": "{{app}} 故障转移已启用",
@@ -1609,6 +1687,7 @@
     "toggleFailed": "操作失败: {{detail}}",
     "inQueue": "已加入",
     "addQueue": "加入",
+    "queueToggleHint": "加入/移除故障转移队列",
     "priority": {
       "tooltip": "故障转移优先级 {{priority}}"
     },
@@ -1770,6 +1849,25 @@
       "successThresholdExplain": "半开状态下，成功达到此次数时关闭熔断器，供应商恢复可用",
       "errorRateLabel": "错误率阈值",
       "errorRateExplain": "错误率超过此值时，即使未达到失败阈值也会打开熔断器"
+    },
+    "forceModel": {
+      "title": "强制模型",
+      "description": "开启后，该应用所有经过本地代理的请求都会统一改写为指定模型。",
+      "notice": "此设置只影响通过本地代理转发的请求，不会回写 provider live 配置；关闭后会立即恢复当前流程。",
+      "inputLabel": "模型名称",
+      "inputHint": "请填写上游实际支持的模型 ID；如果上游不支持，将自动按未开启强制模型时的流程继续请求。",
+      "validationRequired": "开启强制模型时，模型名称不能为空。",
+      "saved": "强制模型配置已保存。",
+      "loadFailed": "加载强制模型配置失败。"
+    },
+    "sessionRouting": {
+      "enabledBadge": "已启用",
+      "defaultProvider": "无会话默认提供商",
+      "defaultProviderFollowCurrent": "跟随当前 Provider",
+      "defaultProviderHint": "未携带会话 ID 的请求会固定先使用该提供商，不参与会话绑定。",
+      "defaultProviderHintWithFailover": "未携带会话 ID 的请求会先使用该提供商；失败后再按故障转移队列继续回落。",
+      "defaultProviderFollowCurrentHint": "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
+      "defaultProviderFollowCurrentHintWithFailover": "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。"
     }
   },
   "streamCheck": {

@@ -1,7 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CC Switch",
+<<<<<<< HEAD
   "version": "3.12.2",
+=======
+  "version": "3.11.1+53",
+>>>>>>> 85caac05 (feat: 梳理会话路由模式并保留旧版安装包)
   "identifier": "com.ccswitch.desktop",
   "build": {
     "frontendDist": "../dist",

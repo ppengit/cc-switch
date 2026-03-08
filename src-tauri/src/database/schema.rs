@@ -4,7 +4,7 @@
 
 use super::{lock_conn, Database, SCHEMA_VERSION};
 use crate::error::AppError;
-use rusqlite::Connection;
+use rusqlite::{Connection, ErrorCode};
 
 impl Database {
     /// 创建所有数据库表
@@ -109,9 +109,9 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 8. Proxy Config 表（三行结构，app_type 主键）
+        // 8. Proxy Config 表（按 app_type 分行）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','opencode','openclaw')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -122,19 +122,22 @@ impl Database {
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
+            force_model_enabled INTEGER NOT NULL DEFAULT 0,
+            force_model TEXT NOT NULL DEFAULT '',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
             session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
+            session_default_provider_id TEXT NOT NULL DEFAULT '',
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
             session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
             session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 初始化三行数据（每应用不同默认值）
+        // 初始化默认数据（每应用不同默认值）
         //
         // 兼容旧数据库：
-        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行三行 seed insert；
-        // - 旧表会在 apply_schema_migrations() 中迁移为三行结构后再插入。
+        // - 老版本 proxy_config 是单例表（没有 app_type 列），此时不能执行 seed insert；
+        // - 旧表会在 apply_schema_migrations() 中迁移为 per-app 结构后再插入。
         if Self::has_column(conn, "proxy_config", "app_type")? {
             conn.execute(
                 "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
@@ -163,6 +166,41 @@ impl Database {
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+            // Compatibility: old v6 databases still enforce app_type CHECK for only
+            // ('claude','codex','gemini'). Ignore those specific constraint errors here;
+            // v6->v7 migration will expand the CHECK and seed missing rows.
+            if let Err(e) = conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests)
+                VALUES ('opencode', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+                [],
+            ) {
+                match e {
+                    rusqlite::Error::SqliteFailure(err, _)
+                        if err.code == ErrorCode::ConstraintViolation => {}
+                    other => {
+                        return Err(AppError::Database(other.to_string()));
+                    }
+                }
+            }
+            if let Err(e) = conn.execute(
+                "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
+                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                circuit_error_rate_threshold, circuit_min_requests)
+                VALUES ('openclaw', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+                [],
+            ) {
+                match e {
+                    rusqlite::Error::SqliteFailure(err, _)
+                        if err.code == ErrorCode::ConstraintViolation => {}
+                    other => {
+                        return Err(AppError::Database(other.to_string()));
+                    }
+                }
+            }
         }
 
         // 9. Provider Health 表
@@ -215,6 +253,30 @@ impl Database {
             provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Ensure legacy databases always receive newly introduced columns for request logs.
+        Self::add_column_if_missing(conn, "proxy_request_logs", "request_model", "TEXT")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "provider_type", "TEXT")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "is_streaming",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "cost_multiplier",
+            "TEXT NOT NULL DEFAULT '1.0'",
+        )?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
+        Self::add_column_if_missing(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_request_logs",
+            "session_routing_active",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -270,27 +332,6 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS proxy_live_backup (
             app_type TEXT PRIMARY KEY, original_config TEXT NOT NULL, backed_up_at TEXT NOT NULL
         )",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        // 17. Usage Daily Rollups 表 (日聚合统计)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS usage_daily_rollups (
-                date TEXT NOT NULL,
-                app_type TEXT NOT NULL,
-                provider_id TEXT NOT NULL,
-                model TEXT NOT NULL,
-                request_count INTEGER NOT NULL DEFAULT 0,
-                success_count INTEGER NOT NULL DEFAULT 0,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-                total_cost_usd TEXT NOT NULL DEFAULT '0',
-                avg_latency_ms INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (date, app_type, provider_id, model)
-            )",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -352,8 +393,22 @@ impl Database {
             "ALTER TABLE proxy_config ADD COLUMN session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30",
             [],
         );
+        if Self::table_exists(conn, "proxy_config")? {
+            let _ = Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "force_model_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
+            );
+            let _ = Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "force_model",
+                "TEXT NOT NULL DEFAULT ''",
+            );
+        }
 
-        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为三行结构
+        // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为 per-app 结构
         // 说明：user_version=2 时不会再触发 v1->v2 迁移，但新代码查询依赖 app_type 列。
         if Self::table_exists(conn, "proxy_config")?
             && !Self::has_column(conn, "proxy_config", "app_type")?
@@ -435,9 +490,32 @@ impl Database {
                         Self::set_user_version(conn, 5)?;
                     }
                     5 => {
-                        log::info!("迁移数据库从 v5 到 v6（使用量聚合表）");
+                        log::info!(
+                            "Migrating database from v5 to v6 (normalize proxy_request_logs.created_at)"
+                        );
                         Self::migrate_v5_to_v6(conn)?;
                         Self::set_user_version(conn, 6)?;
+                    }
+                    6 => {
+                        log::info!(
+                            "Migrating database from v6 to v7 (expand proxy_config app_type support)"
+                        );
+                        Self::migrate_v6_to_v7(conn)?;
+                        Self::set_user_version(conn, 7)?;
+                    }
+                    7 => {
+                        log::info!(
+                            "Migrating database from v7 to v8 (add app-level force model settings)"
+                        );
+                        Self::migrate_v7_to_v8(conn)?;
+                        Self::set_user_version(conn, 8)?;
+                    }
+                    8 => {
+                        log::info!(
+                            "Migrating database from v8 to v9 (add session default provider setting)"
+                        );
+                        Self::migrate_v8_to_v9(conn)?;
+                        Self::set_user_version(conn, 9)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -662,13 +740,13 @@ impl Database {
         // 重构 skills 表（添加 app_type 字段）
         Self::migrate_skills_table(conn)?;
 
-        // 重构 proxy_config 为三行结构（每应用独立配置）
+        // 重构 proxy_config 为 per-app 结构（每应用独立配置）
         Self::migrate_proxy_config_to_per_app(conn)?;
 
         Ok(())
     }
 
-    /// 将 proxy_config 迁移为三行结构（每应用独立配置）
+    /// 将 proxy_config 迁移为 per-app 结构（每应用独立配置）
     fn migrate_proxy_config_to_per_app(conn: &Connection) -> Result<(), AppError> {
         // 检查是否已经是新表结构（幂等性）
         if !Self::table_exists(conn, "proxy_config")? {
@@ -677,8 +755,8 @@ impl Database {
         }
 
         if Self::has_column(conn, "proxy_config", "app_type")? {
-            // 已经是三行结构，跳过迁移
-            log::info!("proxy_config 已经是三行结构，跳过迁移");
+            // 已经是 per-app 结构，跳过迁移
+            log::info!("proxy_config 已经是 per-app 结构，跳过迁移");
             return Ok(());
         }
 
@@ -758,12 +836,38 @@ impl Database {
                 old_cb.3,
                 old_cb.4,
             ),
+            (
+                "opencode",
+                get_bool("proxy_takeover_opencode"),
+                get_bool("auto_failover_enabled_opencode"),
+                3,
+                old_config.4,
+                old_config.5,
+                old_cb.0,
+                old_cb.1,
+                old_cb.2,
+                old_cb.3,
+                old_cb.4,
+            ),
+            (
+                "openclaw",
+                get_bool("proxy_takeover_openclaw"),
+                get_bool("auto_failover_enabled_openclaw"),
+                3,
+                old_config.4,
+                old_config.5,
+                old_cb.0,
+                old_cb.1,
+                old_cb.2,
+                old_cb.3,
+                old_cb.4,
+            ),
         ];
 
         // 创建新表
         conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])?;
         conn.execute("CREATE TABLE proxy_config_new (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','opencode','openclaw')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -782,7 +886,7 @@ impl Database {
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )", [])?;
 
-        // 插入三行配置
+        // 插入 per-app 配置
         for (app, takeover, failover, retries, fb, idle, cb_f, cb_s, cb_t, cb_r, cb_m) in apps {
             conn.execute(
                 "INSERT INTO proxy_config_new (app_type, proxy_enabled, listen_address, listen_port, enable_logging,
@@ -806,7 +910,7 @@ impl Database {
             [],
         )?;
 
-        log::info!("proxy_config 已迁移为三行结构");
+        log::info!("proxy_config 已迁移为 per-app 结构");
         Ok(())
     }
 
@@ -1005,35 +1109,365 @@ impl Database {
         Ok(())
     }
 
-    /// v5 -> v6 迁移：添加使用量日聚合表
-    fn migrate_v5_to_v6(conn: &Connection) -> Result<(), AppError> {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS usage_daily_rollups (
-                date TEXT NOT NULL,
-                app_type TEXT NOT NULL,
-                provider_id TEXT NOT NULL,
-                model TEXT NOT NULL,
-                request_count INTEGER NOT NULL DEFAULT 0,
-                success_count INTEGER NOT NULL DEFAULT 0,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-                total_cost_usd TEXT NOT NULL DEFAULT '0',
-                avg_latency_ms INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (date, app_type, provider_id, model)
-            )",
-            [],
-        )
-        .map_err(|e| AppError::Database(format!("创建 usage_daily_rollups 表失败: {e}")))?;
-
-        log::info!("v5 -> v6 迁移完成：已添加使用量日聚合表");
-        Ok(())
-    }
-
     /// 插入默认模型定价数据
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
+    /// v5 -> v6 migration: normalize proxy_request_logs.created_at to seconds
+    fn migrate_v5_to_v6(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_request_logs")? {
+            return Ok(());
+        }
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs WHERE created_at > 100000000000",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if count > 0 {
+            log::info!(
+                "Detected {count} request logs with millisecond created_at; normalizing to seconds."
+            );
+            conn.execute(
+                "UPDATE proxy_request_logs
+                 SET created_at = CAST(created_at / 1000 AS INTEGER)
+                 WHERE created_at > 100000000000",
+                [],
+            )
+            .map_err(|e| {
+                AppError::Database(format!("normalize request log created_at failed: {e}"))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// v6 -> v7 migration: expand proxy_config app_type support to all apps.
+    fn migrate_v6_to_v7(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+
+        // Some legacy test/edge schemas may only contain a subset of columns.
+        // Normalize missing columns first so the copy step can run safely.
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "proxy_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "listen_address",
+            "TEXT NOT NULL DEFAULT '127.0.0.1'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "listen_port",
+            "INTEGER NOT NULL DEFAULT 15721",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "enable_logging",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "auto_failover_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "max_retries",
+            "INTEGER NOT NULL DEFAULT 3",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "streaming_first_byte_timeout",
+            "INTEGER NOT NULL DEFAULT 60",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "streaming_idle_timeout",
+            "INTEGER NOT NULL DEFAULT 120",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "non_streaming_timeout",
+            "INTEGER NOT NULL DEFAULT 600",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "circuit_failure_threshold",
+            "INTEGER NOT NULL DEFAULT 4",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "circuit_success_threshold",
+            "INTEGER NOT NULL DEFAULT 2",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "circuit_timeout_seconds",
+            "INTEGER NOT NULL DEFAULT 60",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "circuit_error_rate_threshold",
+            "REAL NOT NULL DEFAULT 0.6",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "circuit_min_requests",
+            "INTEGER NOT NULL DEFAULT 10",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "default_cost_multiplier",
+            "TEXT NOT NULL DEFAULT '1'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "pricing_model_source",
+            "TEXT NOT NULL DEFAULT 'response'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_strategy",
+            "TEXT NOT NULL DEFAULT 'priority'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_max_sessions_per_provider",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_allow_shared_when_exhausted",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_idle_ttl_minutes",
+            "INTEGER NOT NULL DEFAULT 30",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "created_at",
+            "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'",
+        )?;
+
+        conn.execute("DROP TABLE IF EXISTS proxy_config_new", [])
+            .map_err(|e| AppError::Database(format!("drop proxy_config_new failed: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE proxy_config_new (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','opencode','openclaw')),
+                proxy_enabled INTEGER NOT NULL DEFAULT 0,
+                listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                listen_port INTEGER NOT NULL DEFAULT 15721,
+                enable_logging INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+                circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+                circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+                pricing_model_source TEXT NOT NULL DEFAULT 'response',
+                session_routing_enabled INTEGER NOT NULL DEFAULT 0,
+                session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
+                session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
+                session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
+                session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("create proxy_config_new failed: {e}")))?;
+
+        conn.execute(
+            "INSERT INTO proxy_config_new (
+                app_type, proxy_enabled, listen_address, listen_port, enable_logging,
+                enabled, auto_failover_enabled, max_retries, streaming_first_byte_timeout,
+                streaming_idle_timeout, non_streaming_timeout, circuit_failure_threshold,
+                circuit_success_threshold, circuit_timeout_seconds, circuit_error_rate_threshold,
+                circuit_min_requests, default_cost_multiplier, pricing_model_source,
+                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
+                session_allow_shared_when_exhausted, session_idle_ttl_minutes, created_at, updated_at
+            )
+            SELECT
+                app_type, proxy_enabled, listen_address, listen_port, enable_logging,
+                enabled, auto_failover_enabled, max_retries, streaming_first_byte_timeout,
+                streaming_idle_timeout, non_streaming_timeout, circuit_failure_threshold,
+                circuit_success_threshold, circuit_timeout_seconds, circuit_error_rate_threshold,
+                circuit_min_requests, default_cost_multiplier, pricing_model_source,
+                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
+                session_allow_shared_when_exhausted, session_idle_ttl_minutes, created_at, updated_at
+            FROM proxy_config
+            WHERE app_type IN ('claude','codex','gemini','opencode','openclaw')",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("copy proxy_config rows failed: {e}")))?;
+
+        let seed_rows = [
+            ("claude", 6, 90, 180, 8, 3, 90, 0.7, 15),
+            ("codex", 3, 60, 120, 4, 2, 60, 0.6, 10),
+            ("gemini", 5, 60, 120, 4, 2, 60, 0.6, 10),
+            ("opencode", 3, 60, 120, 4, 2, 60, 0.6, 10),
+            ("openclaw", 3, 60, 120, 4, 2, 60, 0.6, 10),
+        ];
+
+        for (
+            app,
+            retries,
+            fb_timeout,
+            idle_timeout,
+            cb_fail,
+            cb_succ,
+            cb_timeout,
+            cb_rate,
+            cb_min,
+        ) in seed_rows
+        {
+            conn.execute(
+                "INSERT OR IGNORE INTO proxy_config_new (
+                    app_type, max_retries,
+                    streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                    circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                    circuit_error_rate_threshold, circuit_min_requests,
+                    session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
+                    session_allow_shared_when_exhausted, session_idle_ttl_minutes
+                ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, 0, 'priority', 1, 1, 30)",
+                rusqlite::params![
+                    app,
+                    retries,
+                    fb_timeout,
+                    idle_timeout,
+                    cb_fail,
+                    cb_succ,
+                    cb_timeout,
+                    cb_rate,
+                    cb_min
+                ],
+            )
+            .map_err(|e| AppError::Database(format!("seed proxy_config row for {app} failed: {e}")))?;
+        }
+
+        conn.execute("DROP TABLE proxy_config", [])
+            .map_err(|e| AppError::Database(format!("drop proxy_config failed: {e}")))?;
+        conn.execute("ALTER TABLE proxy_config_new RENAME TO proxy_config", [])
+            .map_err(|e| AppError::Database(format!("rename proxy_config_new failed: {e}")))?;
+
+        log::info!("v6 -> v7 migration completed: proxy_config app_type constraint expanded");
+        Ok(())
+    }
+
+    fn migrate_v7_to_v8(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "force_model_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "force_model",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Ok(())
+    }
+
+    fn migrate_v8_to_v9(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_default_provider_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+
+        if !Self::table_exists(conn, "providers")? {
+            return Ok(());
+        }
+
+        conn.execute(
+            "UPDATE proxy_config
+             SET session_default_provider_id = COALESCE(
+                    NULLIF(session_default_provider_id, ''),
+                    (
+                        SELECT p.id
+                        FROM providers p
+                        WHERE p.app_type = proxy_config.app_type AND p.is_current = 1
+                        ORDER BY COALESCE(p.sort_index, 999999), p.created_at ASC, p.id ASC
+                        LIMIT 1
+                    ),
+                    ''
+                )
+             WHERE COALESCE(session_default_provider_id, '') = ''",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!("backfill session_default_provider_id failed: {e}"))
+        })?;
+
+        Ok(())
+    }
+
     fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_data = [
             // Claude 4.6 系列
@@ -1304,15 +1738,6 @@ impl Database {
                 "0.3",
                 "2.5",
                 "0.03",
-                "0",
-            ),
-            // StepFun 系列
-            (
-                "step-3.5-flash",
-                "Step 3.5 Flash",
-                "0.10",
-                "0.30",
-                "0.02",
                 "0",
             ),
             // ====== 国产模型 (CNY/1M tokens) ======

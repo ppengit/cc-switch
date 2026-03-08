@@ -17,6 +17,7 @@ import {
   Search,
   SlidersHorizontal,
   Terminal,
+  Waypoints,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -31,7 +32,8 @@ import type { AppId } from "@/lib/api";
 import { configApi, settingsApi } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
-import { useSettingsQuery } from "@/lib/query";
+import { useColumnResize } from "@/hooks/useColumnResize";
+import { useSessionsQuery, useSettingsQuery } from "@/lib/query";
 import {
   openclawKeys,
   useOpenClawLiveProviderIds,
@@ -53,7 +55,6 @@ import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
-import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -64,6 +65,7 @@ import {
 import {
   useAppProxyConfig,
   useProviderSessionOccupancy,
+  useSessionProviderBindings,
   useUpdateAppProxyConfig,
 } from "@/lib/query/proxy";
 import {
@@ -87,6 +89,11 @@ import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import JsonEditor from "@/components/JsonEditor";
 import { cn } from "@/lib/utils";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   getStreamCheckConfig,
   saveStreamCheckConfig,
   type StreamCheckConfig,
@@ -101,12 +108,19 @@ import {
   updateTomlCommonConfigSnippet,
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
-import {
-  getTomlStringValue,
-  removeTomlKeyIfMatch,
-  upsertTomlStringValue,
-} from "@/utils/tomlKeyUtils";
 import type { SessionRoutingStrategy } from "@/types/proxy";
+import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
+import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
+import {
+  CLAUDE_QUICK_TOGGLE_OPTIONS,
+  CODEX_QUICK_TOGGLE_OPTIONS,
+  GEMINI_QUICK_TOGGLE_OPTIONS,
+  getCodexQuickToggleStates,
+  toggleCodexQuickOption,
+  type ClaudeQuickToggleKey,
+  type CodexQuickToggleKey,
+  type GeminiQuickToggleKey,
+} from "@/components/providers/forms/configQuickToggles";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -132,20 +146,31 @@ interface ProviderListProps {
 }
 
 type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
-type ProviderSortKey =
-  | "default"
-  | "name"
-  | "websiteUrl"
-  | "notes"
-  | "model"
-  | "status";
+type ProviderSortKey = "default" | "name" | "notes" | "model" | "status";
 type SortDirection = "asc" | "desc";
 type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
+type ProviderResizableColumnKey = "notes" | "model" | "status" | "actions";
 interface ProviderStatusMeta {
-  label: string;
   sortValue: number;
-  className: string;
+  badges: Array<{
+    label: string;
+    className: string;
+    description?: string;
+  }>;
 }
+
+interface ProviderOccupancyDetail {
+  sessionId: string;
+  title: string;
+  projectName: string;
+}
+
+const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
+  notes: 180,
+  model: 200,
+  status: 260,
+  actions: 190,
+};
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
   label: string;
@@ -153,8 +178,8 @@ const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
 }> = [
   {
     value: "priority",
-    label: "故障转移优先级",
-    description: "按照故障转移队列优先级（P1→P2→...）进行分配。",
+    label: "列表顺序优先",
+    description: "按照当前提供商列表顺序分配，会话路由不再依赖故障转移队列。",
   },
   {
     value: "least_active",
@@ -629,6 +654,16 @@ export function ProviderList({
     () => new Set((failoverQueue ?? []).map((item) => item.providerId)),
     [failoverQueue],
   );
+  const failoverPriorityMap = useMemo(
+    () =>
+      new Map(
+        (failoverQueue ?? []).map((item, index) => [
+          item.providerId,
+          index + 1,
+        ]),
+      ),
+    [failoverQueue],
+  );
 
   const enabledFailoverCount = useMemo(
     () =>
@@ -713,10 +748,54 @@ export function ProviderList({
 
   const { data: appProxyConfig } = useAppProxyConfig(appId);
   const updateAppProxyConfig = useUpdateAppProxyConfig();
+  const { data: sessions = [] } = useSessionsQuery();
+  const { data: sessionProviderBindings = [] } = useSessionProviderBindings(
+    appId,
+    appProxyConfig?.sessionIdleTtlMinutes,
+  );
   const { data: providerSessionOccupancy = [] } = useProviderSessionOccupancy(
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
   );
+  const providerSessionCountMap = useMemo(() => {
+    return new Map(
+      providerSessionOccupancy.map((item) => [
+        item.providerId,
+        item.sessionCount,
+      ]),
+    );
+  }, [providerSessionOccupancy]);
+  const sessionMetaMap = useMemo(() => {
+    return new Map(
+      sessions
+        .filter((session) => session.providerId === appId)
+        .map((session) => [session.sessionId, session]),
+    );
+  }, [appId, sessions]);
+  const providerSessionDetailsMap = useMemo(() => {
+    const detailsMap = new Map<string, ProviderOccupancyDetail[]>();
+
+    for (const binding of sessionProviderBindings) {
+      if (!binding.isActive) continue;
+      const session = sessionMetaMap.get(binding.sessionId);
+      const detail: ProviderOccupancyDetail = {
+        sessionId: binding.sessionId,
+        title: session
+          ? formatSessionTitle(session)
+          : binding.sessionId.slice(0, 8),
+        projectName: session ? getBaseName(session.projectDir) : "",
+      };
+      const current = detailsMap.get(binding.providerId) ?? [];
+      current.push(detail);
+      detailsMap.set(binding.providerId, current);
+    }
+
+    for (const details of detailsMap.values()) {
+      details.sort((left, right) => left.title.localeCompare(right.title));
+    }
+
+    return detailsMap;
+  }, [sessionMetaMap, sessionProviderBindings]);
   const activeSessionCount = useMemo(
     () =>
       providerSessionOccupancy.reduce(
@@ -736,16 +815,51 @@ export function ProviderList({
   const [sessionRoutingForm, setSessionRoutingForm] = useState({
     enabled: false,
     strategy: "priority" as SessionRoutingStrategy,
+    defaultProviderId: "",
     maxSessionsPerProvider: "1",
     allowSharedWhenExhausted: false,
     idleTtlMinutes: "30",
   });
+
+  const sessionRoutingProviderOptions = useMemo(
+    () =>
+      Object.values(providers).sort((left, right) => {
+        const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
+        const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
+        if (leftSort !== rightSort) {
+          return leftSort - rightSort;
+        }
+
+        const leftCreatedAt = left.createdAt ?? Number.MAX_SAFE_INTEGER;
+        const rightCreatedAt = right.createdAt ?? Number.MAX_SAFE_INTEGER;
+        if (leftCreatedAt !== rightCreatedAt) {
+          return leftCreatedAt - rightCreatedAt;
+        }
+
+        return left.name.localeCompare(right.name);
+      }),
+    [providers],
+  );
+  const effectiveSessionDefaultProviderId = useMemo(() => {
+    const explicitProviderId = appProxyConfig?.sessionDefaultProviderId?.trim();
+    if (explicitProviderId) {
+      return explicitProviderId;
+    }
+    return currentProviderId;
+  }, [appProxyConfig?.sessionDefaultProviderId, currentProviderId]);
+  const currentProviderName = useMemo(() => {
+    if (!currentProviderId) {
+      return "";
+    }
+    return providers[currentProviderId]?.name ?? currentProviderId;
+  }, [currentProviderId, providers]);
 
   useEffect(() => {
     if (!appProxyConfig) return;
     setSessionRoutingForm({
       enabled: appProxyConfig.sessionRoutingEnabled,
       strategy: appProxyConfig.sessionRoutingStrategy,
+      defaultProviderId: appProxyConfig.sessionDefaultProviderId || "",
       maxSessionsPerProvider: String(
         appProxyConfig.sessionMaxSessionsPerProvider,
       ),
@@ -759,6 +873,8 @@ export function ProviderList({
     return (
       sessionRoutingForm.enabled !== appProxyConfig.sessionRoutingEnabled ||
       sessionRoutingForm.strategy !== appProxyConfig.sessionRoutingStrategy ||
+      sessionRoutingForm.defaultProviderId !==
+        (appProxyConfig.sessionDefaultProviderId || "") ||
       Number(sessionRoutingForm.maxSessionsPerProvider || 0) !==
         appProxyConfig.sessionMaxSessionsPerProvider ||
       sessionRoutingForm.allowSharedWhenExhausted !==
@@ -808,6 +924,7 @@ export function ProviderList({
         ...appProxyConfig,
         sessionRoutingEnabled: sessionRoutingForm.enabled,
         sessionRoutingStrategy: sessionRoutingForm.strategy,
+        sessionDefaultProviderId: sessionRoutingForm.defaultProviderId,
         sessionMaxSessionsPerProvider: maxSessions,
         sessionAllowSharedWhenExhausted:
           sessionRoutingForm.allowSharedWhenExhausted,
@@ -824,6 +941,7 @@ export function ProviderList({
   const [selectedModelFilters, setSelectedModelFilters] = useState<string[]>(
     [],
   );
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const [sortState, setSortState] = useState<{
     key: ProviderSortKey;
@@ -831,6 +949,18 @@ export function ProviderList({
   }>({
     key: "default",
     direction: "asc",
+  });
+  const {
+    widths: providerColumnWidths,
+    startResize: startProviderColumnResize,
+  } = useColumnResize<ProviderResizableColumnKey>({
+    initialWidths: {
+      notes: 220,
+      model: 240,
+      status: 280,
+      actions: 190,
+    },
+    minWidths: PROVIDER_COLUMN_MIN_WIDTHS,
   });
   const [selectedProviderIds, setSelectedProviderIds] = useState<
     Record<string, boolean>
@@ -1015,16 +1145,15 @@ export function ProviderList({
     };
   }, [appId, parsedGeminiSnippet.config]);
 
-  const codexSnippetFullAccess = useMemo(() => {
-    if (appId !== "codex") return false;
-    return (
-      getTomlStringValue(commonConfigSnippet, "sandbox_mode") ===
-      "danger-full-access"
-    );
+  const codexSnippetToggleStates = useMemo(() => {
+    if (appId !== "codex") {
+      return getCodexQuickToggleStates("");
+    }
+    return getCodexQuickToggleStates(commonConfigSnippet);
   }, [appId, commonConfigSnippet]);
 
   const handleClaudeSnippetToggle = useCallback(
-    (toggleKey: string, checked: boolean) => {
+    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
       if (appId !== "claude") return;
       try {
         const config = JSON.parse(commonConfigSnippet || "{}");
@@ -1083,10 +1212,7 @@ export function ProviderList({
   );
 
   const handleGeminiSnippetToggle = useCallback(
-    (
-      toggleKey: "inlineThinking" | "showModelInfo" | "enableAgents",
-      checked: boolean,
-    ) => {
+    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
       if (appId !== "gemini") return;
       if (parsedGeminiSnippet.error) return;
 
@@ -1132,20 +1258,11 @@ export function ProviderList({
   );
 
   const handleCodexSnippetToggle = useCallback(
-    (checked: boolean) => {
+    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
       if (appId !== "codex") return;
-      const nextSnippet = checked
-        ? upsertTomlStringValue(
-            commonConfigSnippet,
-            "sandbox_mode",
-            "danger-full-access",
-          )
-        : removeTomlKeyIfMatch(
-            commonConfigSnippet,
-            "sandbox_mode",
-            "danger-full-access",
-          );
-      setCommonConfigSnippet(nextSnippet);
+      setCommonConfigSnippet(
+        toggleCodexQuickOption(commonConfigSnippet, toggleKey, checked),
+      );
       setCommonConfigError("");
     },
     [appId, commonConfigSnippet],
@@ -1706,6 +1823,7 @@ export function ProviderList({
       const key = (event.key ?? "").toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
+        setIsFilterPanelOpen(true);
         requestAnimationFrame(() => {
           filterInputRef.current?.focus();
           filterInputRef.current?.select();
@@ -1770,19 +1888,23 @@ export function ProviderList({
         const env = isPlainObject(config.env)
           ? (config.env as Record<string, unknown>)
           : {};
-        return Array.from(
-          new Set(
-            [
-              env.ANTHROPIC_MODEL,
-              env.ANTHROPIC_REASONING_MODEL,
-              env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-              env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-              env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-            ]
-              .map((value) => (typeof value === "string" ? value.trim() : ""))
-              .filter((value) => value.length > 0),
-          ),
-        );
+        const primaryModel =
+          typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : "";
+        if (primaryModel.trim()) {
+          return [primaryModel.trim()];
+        }
+        const fallbackModelCandidates = [
+          env.ANTHROPIC_REASONING_MODEL,
+          env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+          env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+          env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        ];
+        for (const candidate of fallbackModelCandidates) {
+          if (typeof candidate === "string" && candidate.trim().length > 0) {
+            return [candidate.trim()];
+          }
+        }
+        return [];
       }
 
       if (appId === "gemini") {
@@ -1849,39 +1971,76 @@ export function ProviderList({
         const current = isCurrentProvider(provider);
         return current
           ? {
-              label: t("provider.inUse", { defaultValue: "使用中" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              badges: [
+                {
+                  label: t("provider.current", { defaultValue: "当前" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.current", {
+                    defaultValue: "当前应用使用此供应商作为默认目标",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.disabled", { defaultValue: "未启用" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
+              badges: [
+                {
+                  label: t("provider.disabled", { defaultValue: "未启用" }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.disabled", {
+                    defaultValue: "该供应商未启用",
+                  }),
+                },
+              ],
             };
       }
 
       if (appId === "openclaw") {
         if (isProviderDefaultModel(provider.id)) {
           return {
-            label: t("provider.isDefault", { defaultValue: "默认模型" }),
             sortValue: 4,
-            className:
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+            badges: [
+              {
+                label: t("provider.isDefault", { defaultValue: "默认模型" }),
+                className:
+                  "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                description: t("provider.statusHint.defaultModel", {
+                  defaultValue: "OpenClaw 默认主模型",
+                }),
+              },
+            ],
           };
         }
         const inConfig = isProviderInConfig(provider.id);
         return inConfig
           ? {
-              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              badges: [
+                {
+                  label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.inConfig", {
+                    defaultValue: "已写入应用配置，可被选择使用",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
+              badges: [
+                {
+                  label: t("provider.notInConfig", {
+                    defaultValue: "未加入配置",
+                  }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.notInConfig", {
+                    defaultValue: "未写入应用配置，当前不会被使用",
+                  }),
+                },
+              ],
             };
       }
 
@@ -1889,44 +2048,114 @@ export function ProviderList({
         const inConfig = isProviderInConfig(provider.id);
         return inConfig
           ? {
-              label: t("provider.inConfig", { defaultValue: "已加入配置" }),
               sortValue: 3,
-              className:
-                "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+              badges: [
+                {
+                  label: t("provider.inConfig", { defaultValue: "已加入配置" }),
+                  className:
+                    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                  description: t("provider.statusHint.inConfig", {
+                    defaultValue: "已写入应用配置，可被选择使用",
+                  }),
+                },
+              ],
             }
           : {
-              label: t("provider.notInConfig", { defaultValue: "未加入配置" }),
               sortValue: 1,
-              className: "bg-muted text-muted-foreground",
+              badges: [
+                {
+                  label: t("provider.notInConfig", {
+                    defaultValue: "未加入配置",
+                  }),
+                  className: "bg-muted text-muted-foreground",
+                  description: t("provider.statusHint.notInConfig", {
+                    defaultValue: "未写入应用配置，当前不会被使用",
+                  }),
+                },
+              ],
             };
       }
 
+      const badges: ProviderStatusMeta["badges"] = [];
+      let sortValue = 0;
+
       if (isProxyTakeover && activeProviderId === provider.id) {
-        return {
-          label: t("provider.activeRouting", { defaultValue: "当前路由" }),
-          sortValue: 5,
+        badges.push({
+          label: t("provider.activeTraffic", { defaultValue: "当前流量" }),
           className:
             "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-        };
+          description: t("provider.statusHint.activeTraffic", {
+            defaultValue: "代理正在把当前流量转发到此供应商",
+          }),
+        });
+        sortValue += 400;
       }
 
-      const current = isCurrentProvider(provider);
-      return current
-        ? {
-            label: t("provider.inUse", { defaultValue: "使用中" }),
-            sortValue: 4,
+      if (isCurrentProvider(provider)) {
+        badges.push({
+          label: t("provider.current", { defaultValue: "当前" }),
+          className:
+            "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          description: t("provider.statusHint.current", {
+            defaultValue: "当前应用使用此供应商作为默认目标",
+          }),
+        });
+        sortValue += 200;
+      }
+
+      if (
+        appProxyConfig?.sessionRoutingEnabled &&
+        effectiveSessionDefaultProviderId === provider.id
+      ) {
+        badges.push({
+          label: t("provider.sessionDefault", {
+            defaultValue: "无会话默认",
+          }),
+          className:
+            "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+          description: appProxyConfig.sessionDefaultProviderId
+            ? t("provider.statusHint.sessionDefault", {
+                defaultValue: "未携带会话 ID 的请求默认先使用此供应商",
+              })
+            : t("provider.statusHint.sessionDefaultFollowCurrent", {
+                defaultValue:
+                  "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+              }),
+        });
+        sortValue += 120;
+      }
+
+      if (isAutoFailoverActive) {
+        const priority = failoverPriorityMap.get(provider.id);
+        if (priority != null) {
+          badges.push({
+            label: t("provider.failoverPriorityShort", {
+              defaultValue: "队列 P{{priority}}",
+              priority,
+            }),
             className:
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-          }
-        : {
-            label: t("provider.available", { defaultValue: "可切换" }),
-            sortValue: 2,
-            className: "bg-muted text-muted-foreground",
-          };
+              "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
+            description: t("provider.statusHint.failoverPriority", {
+              defaultValue: "故障转移开启时，请求会按队列顺序回落到此供应商",
+            }),
+          });
+          sortValue += Math.max(1, 80 - priority);
+        }
+      }
+
+      return {
+        sortValue,
+        badges,
+      };
     },
     [
       activeProviderId,
       appId,
+      appProxyConfig?.sessionDefaultProviderId,
+      appProxyConfig?.sessionRoutingEnabled,
+      effectiveSessionDefaultProviderId,
+      failoverPriorityMap,
+      isAutoFailoverActive,
       isCurrentProvider,
       isProviderDefaultModel,
       isProviderInConfig,
@@ -2014,8 +2243,6 @@ export function ProviderList({
         comparison = (leftItem.index - rightItem.index) * directionFactor;
       } else if (sortState.key === "name") {
         comparison = compareText(left.name, right.name);
-      } else if (sortState.key === "websiteUrl") {
-        comparison = compareText(left.websiteUrl ?? "", right.websiteUrl ?? "");
       } else if (sortState.key === "notes") {
         comparison = compareText(left.notes ?? "", right.notes ?? "");
       } else if (sortState.key === "model") {
@@ -2139,15 +2366,39 @@ export function ProviderList({
   const supportsBatchModelEdit =
     appId === "claude" || appId === "codex" || appId === "gemini";
 
+  const modelFieldLabel = useMemo(() => {
+    if (appId === "claude") {
+      return t("provider.primaryModel", { defaultValue: "主模型" });
+    }
+    if (appId === "codex" || appId === "gemini") {
+      return t("provider.model", { defaultValue: "模型名称" });
+    }
+    return t("provider.model", { defaultValue: "模型" });
+  }, [appId, t]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filterField !== "all") count += 1;
+    if (filterKeyword.trim().length > 0) count += 1;
+    if (selectedModelFilters.length > 0) count += 1;
+    return count;
+  }, [filterField, filterKeyword, selectedModelFilters]);
+
   const modelFilterLabel =
     selectedModelFilters.length > 0
-      ? t("provider.modelFilterSelected", {
-          defaultValue: "模型 ({{count}})",
+      ? t("provider.modelFilterLabelSelected", {
+          defaultValue: "{{field}} ({{count}})",
+          field: modelFieldLabel,
           count: selectedModelFilters.length,
         })
-      : t("provider.modelFilter", {
-          defaultValue: "模型筛选",
+      : t("provider.modelFilterLabelIdle", {
+          field: modelFieldLabel,
+          defaultValue: "按{{field}}筛选",
         });
+
+  const filterToggleLabel = isFilterPanelOpen
+    ? t("provider.hideFilters", { defaultValue: "收起筛选" })
+    : t("provider.showFilters", { defaultValue: "展开筛选" });
 
   const handleSortChange = useCallback((key: ProviderSortKey) => {
     setSortState((current) => {
@@ -2173,6 +2424,19 @@ export function ProviderList({
       );
     },
     [sortState.direction, sortState.key],
+  );
+
+  const renderProviderColumnResizeHandle = useCallback(
+    (columnKey: ProviderResizableColumnKey) => (
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        className="absolute right-0 top-0 h-full w-2 cursor-col-resize select-none touch-none"
+        onMouseDown={(event) => startProviderColumnResize(columnKey, event)}
+        onClick={(event) => event.stopPropagation()}
+      />
+    ),
+    [startProviderColumnResize],
   );
 
   const handleApplyBatchModelUpdate = useCallback(async () => {
@@ -2414,28 +2678,59 @@ export function ProviderList({
       >
         <div className="rounded-xl border border-border/70 overflow-hidden">
           <div className="overflow-auto">
-            <table className="min-w-[1120px] w-full text-sm">
+            <table className="min-w-[1040px] w-full text-sm">
+              <colgroup>
+                <col style={{ width: 48, minWidth: 48 }} />
+                <col style={{ width: 40, minWidth: 40 }} />
+                <col style={{ width: 300, minWidth: 240 }} />
+                <col
+                  style={{
+                    width: providerColumnWidths.notes,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.model,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.status,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                  }}
+                />
+                <col
+                  style={{
+                    width: providerColumnWidths.actions,
+                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                  }}
+                />
+              </colgroup>
               <thead className="sticky top-0 z-10 bg-background">
                 <tr className="border-b border-border/70">
-                  <th className="sticky left-0 z-30 w-12 bg-background px-3 py-2 text-left">
-                    <Checkbox
-                      checked={
-                        allVisibleSelected
-                          ? true
-                          : someVisibleSelected
-                            ? "indeterminate"
-                            : false
-                      }
-                      onCheckedChange={(checked) =>
-                        toggleSelectAllVisible(checked === true)
-                      }
-                      aria-label={t("common.selectAll", {
-                        defaultValue: "全选当前筛选结果",
-                      })}
-                    />
+                  <th className="sticky left-0 z-30 w-12 bg-background px-3 py-2 text-left align-middle">
+                    <div className="flex items-center justify-center">
+                      <Checkbox
+                        checked={
+                          allVisibleSelected
+                            ? true
+                            : someVisibleSelected
+                              ? "indeterminate"
+                              : false
+                        }
+                        onCheckedChange={(checked) =>
+                          toggleSelectAllVisible(checked === true)
+                        }
+                        aria-label={t("common.selectAll", {
+                          defaultValue: "全选当前筛选结果",
+                        })}
+                      />
+                    </div>
                   </th>
-                  <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left" />
-                  <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left">
+                  <th className="sticky left-[48px] z-30 w-10 bg-background px-2 py-2 text-left align-middle" />
+                  <th className="sticky left-[88px] z-30 bg-background px-3 py-2 text-left align-middle">
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2445,17 +2740,13 @@ export function ProviderList({
                       {getSortIcon("name")}
                     </button>
                   </th>
-                  <th className="px-3 py-2 text-left">
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 text-sm font-medium"
-                      onClick={() => handleSortChange("websiteUrl")}
-                    >
-                      {t("provider.website", { defaultValue: "官网链接" })}
-                      {getSortIcon("websiteUrl")}
-                    </button>
-                  </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.notes,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2464,8 +2755,15 @@ export function ProviderList({
                       {t("provider.notes", { defaultValue: "备注" })}
                       {getSortIcon("notes")}
                     </button>
+                    {renderProviderColumnResizeHandle("notes")}
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.model,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2474,8 +2772,15 @@ export function ProviderList({
                       {t("provider.model", { defaultValue: "模型" })}
                       {getSortIcon("model")}
                     </button>
+                    {renderProviderColumnResizeHandle("model")}
                   </th>
-                  <th className="px-3 py-2 text-left">
+                  <th
+                    className="relative px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.status,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                    }}
+                  >
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
@@ -2484,9 +2789,17 @@ export function ProviderList({
                       {t("provider.status", { defaultValue: "默认状态" })}
                       {getSortIcon("status")}
                     </button>
+                    {renderProviderColumnResizeHandle("status")}
                   </th>
-                  <th className="sticky right-0 z-30 w-[360px] bg-background px-3 py-2 text-left">
+                  <th
+                    className="relative sticky right-0 z-30 bg-background px-3 py-2 text-left"
+                    style={{
+                      width: providerColumnWidths.actions,
+                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                    }}
+                  >
                     {t("common.actions", { defaultValue: "操作" })}
+                    {renderProviderColumnResizeHandle("actions")}
                   </th>
                 </tr>
               </thead>
@@ -2496,11 +2809,20 @@ export function ProviderList({
                     key={provider.id}
                     provider={provider}
                     rowIndex={index}
+                    showOrderNumber={sortState.key === "default"}
+                    columnWidths={providerColumnWidths}
                     dragEnabled={isDragEnabled}
                     isSelected={Boolean(selectedProviderIds[provider.id])}
                     onToggleSelected={toggleProviderSelection}
                     modelSummary={resolveProviderModelSummary(provider)}
                     statusMeta={resolveProviderStatus(provider)}
+                    sessionCount={providerSessionCountMap.get(provider.id) ?? 0}
+                    occupancyDetails={
+                      providerSessionDetailsMap.get(provider.id) ?? []
+                    }
+                    showSessionOccupancy={Boolean(
+                      appProxyConfig?.sessionRoutingEnabled,
+                    )}
                     isCurrent={isCurrentProvider(provider)}
                     isInConfig={isProviderInConfig(provider.id)}
                     isOmo={provider.category === "omo"}
@@ -2657,29 +2979,17 @@ export function ProviderList({
                 className="h-8 gap-2 border-border/70 bg-background/80 hover:bg-muted/70 hover:text-foreground dark:hover:bg-muted/50 dark:hover:text-foreground"
                 onClick={() => setIsSessionRoutingDialogOpen(true)}
               >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <Waypoints className="h-3.5 w-3.5" />
                 {t("proxy.sessionRouting.title", {
                   defaultValue: "会话路由",
                 })}
-                <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  {t("proxy.sessionRouting.activeSessions", {
-                    defaultValue: "活跃会话",
-                  })}
-                  : {activeSessionCount}
-                </span>
-                <span
-                  className={cn(
-                    "rounded-md px-1.5 py-0.5 text-[11px]",
-                    appProxyConfig.sessionRoutingEnabled
-                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                      : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {t("proxy.sessionRouting.app", { defaultValue: "当前应用" })}:{" "}
-                  {appProxyConfig.sessionRoutingEnabled
-                    ? t("common.enabled", { defaultValue: "开" })
-                    : t("common.disabled", { defaultValue: "关" })}
-                </span>
+                {appProxyConfig.sessionRoutingEnabled && (
+                  <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    {t("proxy.sessionRouting.enabledBadge", {
+                      defaultValue: "已启用",
+                    })}
+                  </span>
+                )}
               </Button>
             )}
 
@@ -2802,149 +3112,171 @@ export function ProviderList({
                 {t("common.clearSelection", { defaultValue: "清空选择" })}
               </Button>
             )}
-          </div>
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-end gap-2">
-          <div className="w-[190px] space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.filterField", { defaultValue: "筛选字段" })}
-            </Label>
-            <select
-              value={filterField}
-              onChange={(event) =>
-                setFilterField(event.target.value as ProviderFilterField)
-              }
-              className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Button
+              type="button"
+              size="icon"
+              variant={isFilterPanelOpen ? "default" : "outline"}
+              className="h-8 w-8"
+              onClick={() => setIsFilterPanelOpen((current) => !current)}
+              aria-label={filterToggleLabel}
+              title={filterToggleLabel}
             >
-              <option value="all">
-                {t("provider.filterAll", { defaultValue: "全部字段" })}
-              </option>
-              <option value="name">
-                {t("provider.filterByName", { defaultValue: "供应商名称" })}
-              </option>
-              <option value="websiteUrl">
-                {t("provider.filterByWebsite", { defaultValue: "官网链接" })}
-              </option>
-              <option value="notes">
-                {t("provider.filterByNotes", { defaultValue: "备注" })}
-              </option>
-              <option value="model">
-                {t("provider.filterByModel", { defaultValue: "模型名称" })}
-              </option>
-            </select>
-          </div>
-
-          <div className="relative min-w-[220px] flex-1 space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.fuzzyFilter", { defaultValue: "模糊筛选" })}
-            </Label>
-            <Search className="pointer-events-none absolute left-2.5 top-[30px] h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              ref={filterInputRef}
-              value={filterKeyword}
-              onChange={(event) => setFilterKeyword(event.target.value)}
-              placeholder={t("provider.searchPlaceholder", {
-                defaultValue: "输入关键字筛选名称/网址/备注/模型",
-              })}
-              className="h-8 pl-8 pr-8 text-sm"
-            />
-            {filterKeyword.trim().length > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-1 top-[24px] h-6 w-6"
-                onClick={() => setFilterKeyword("")}
-                aria-label={t("common.clear", { defaultValue: "清空" })}
-              >
-                <X className="h-3.5 w-3.5" />
-              </Button>
+              <Search className="h-3.5 w-3.5" />
+            </Button>
+            {activeFilterCount > 0 && (
+              <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                {t("provider.activeFilters", {
+                  defaultValue: "筛选 {{count}}",
+                  count: activeFilterCount,
+                })}
+              </span>
             )}
           </div>
-
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">
-              {t("provider.modelFilter", {
-                defaultValue: "模型名称 distinct 多选",
-              })}
-            </Label>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="outline" className="h-8">
-                  {modelFilterLabel}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="max-h-72 w-64 overflow-y-auto"
-              >
-                <DropdownMenuItem
-                  onSelect={(event) => {
-                    event.preventDefault();
-                    setSelectedModelFilters([]);
-                  }}
-                  disabled={selectedModelFilters.length === 0}
-                >
-                  {t("common.clear", { defaultValue: "清空" })}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {availableModelFilters.length === 0 ? (
-                  <DropdownMenuItem disabled>
-                    {t("provider.noModelOptions", {
-                      defaultValue: "暂无模型可选",
-                    })}
-                  </DropdownMenuItem>
-                ) : (
-                  availableModelFilters.map((modelName) => (
-                    <DropdownMenuCheckboxItem
-                      key={modelName}
-                      checked={selectedModelFilterSet.has(modelName)}
-                      onCheckedChange={(checked) => {
-                        setSelectedModelFilters((current) => {
-                          if (checked === true) {
-                            if (current.includes(modelName)) return current;
-                            return [...current, modelName];
-                          }
-                          return current.filter((item) => item !== modelName);
-                        });
-                      }}
-                      onSelect={(event) => event.preventDefault()}
-                    >
-                      <span
-                        className="max-w-[220px] truncate"
-                        title={modelName}
-                      >
-                        {modelName}
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8"
-            onClick={() => setSortState({ key: "default", direction: "asc" })}
-            disabled={
-              sortState.key === "default" && sortState.direction === "asc"
-            }
-          >
-            {t("provider.defaultOrder", { defaultValue: "默认顺序" })}
-          </Button>
-
-          {!isDragEnabled && (
-            <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-              {t("provider.dragDisabledForSort", {
-                defaultValue: "当前为临时排序，拖拽已禁用",
-              })}
-            </span>
-          )}
         </div>
+
+        {isFilterPanelOpen && (
+          <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+            <div className="w-[190px] space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.filterField", { defaultValue: "筛选字段" })}
+              </Label>
+              <select
+                value={filterField}
+                onChange={(event) =>
+                  setFilterField(event.target.value as ProviderFilterField)
+                }
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value="all">
+                  {t("provider.filterAll", { defaultValue: "全部字段" })}
+                </option>
+                <option value="name">
+                  {t("provider.filterByName", { defaultValue: "供应商名称" })}
+                </option>
+                <option value="websiteUrl">
+                  {t("provider.filterByWebsite", { defaultValue: "官网链接" })}
+                </option>
+                <option value="notes">
+                  {t("provider.filterByNotes", { defaultValue: "备注" })}
+                </option>
+                <option value="model">{modelFieldLabel}</option>
+              </select>
+            </div>
+
+            <div className="relative min-w-[220px] flex-1 space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.fuzzyFilter", { defaultValue: "模糊筛选" })}
+              </Label>
+              <Search className="pointer-events-none absolute left-2.5 top-[30px] h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                ref={filterInputRef}
+                data-testid="provider-filter-keyword-input"
+                value={filterKeyword}
+                onChange={(event) => setFilterKeyword(event.target.value)}
+                placeholder={t("provider.filterKeywordPlaceholder", {
+                  field: modelFieldLabel,
+                  defaultValue: "输入关键字筛选名称/网址/备注/{{field}}",
+                })}
+                className="h-8 pl-8 pr-8 text-sm"
+              />
+              {filterKeyword.trim().length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-[24px] h-6 w-6"
+                  onClick={() => setFilterKeyword("")}
+                  aria-label={t("common.clear", { defaultValue: "清空" })}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {t("provider.modelFilterMultiSelect", {
+                  field: modelFieldLabel,
+                  defaultValue: "按{{field}}多选",
+                })}
+              </Label>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" className="h-8">
+                    {modelFilterLabel}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="max-h-72 w-64 overflow-y-auto"
+                >
+                  <DropdownMenuItem
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      setSelectedModelFilters([]);
+                    }}
+                    disabled={selectedModelFilters.length === 0}
+                  >
+                    {t("common.clear", { defaultValue: "清空" })}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {availableModelFilters.length === 0 ? (
+                    <DropdownMenuItem disabled>
+                      {t("provider.noModelOptions", {
+                        defaultValue: "暂无模型可选",
+                      })}
+                    </DropdownMenuItem>
+                  ) : (
+                    availableModelFilters.map((modelName) => (
+                      <DropdownMenuCheckboxItem
+                        key={modelName}
+                        checked={selectedModelFilterSet.has(modelName)}
+                        onCheckedChange={(checked) => {
+                          setSelectedModelFilters((current) => {
+                            if (checked === true) {
+                              if (current.includes(modelName)) return current;
+                              return [...current, modelName];
+                            }
+                            return current.filter((item) => item !== modelName);
+                          });
+                        }}
+                        onSelect={(event) => event.preventDefault()}
+                      >
+                        <span
+                          className="max-w-[220px] truncate"
+                          title={modelName}
+                        >
+                          {modelName}
+                        </span>
+                      </DropdownMenuCheckboxItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => setSortState({ key: "default", direction: "asc" })}
+              disabled={
+                sortState.key === "default" && sortState.direction === "asc"
+              }
+            >
+              {t("provider.defaultOrder", { defaultValue: "默认顺序" })}
+            </Button>
+
+            {!isDragEnabled && (
+              <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                {t("provider.dragDisabledForSort", {
+                  defaultValue: "当前为临时排序，拖拽已禁用",
+                })}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -3246,6 +3578,68 @@ export function ProviderList({
                 </p>
               </div>
 
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  {t("proxy.sessionRouting.defaultProvider", {
+                    defaultValue: "无会话默认提供商",
+                  })}
+                </Label>
+                <select
+                  value={sessionRoutingForm.defaultProviderId}
+                  onChange={(event) =>
+                    setSessionRoutingForm((current) => ({
+                      ...current,
+                      defaultProviderId: event.target.value,
+                    }))
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  disabled={updateAppProxyConfig.isPending}
+                >
+                  <option value="">
+                    {t("proxy.sessionRouting.defaultProviderFollowCurrent", {
+                      defaultValue: currentProviderName
+                        ? `跟随当前 Provider（${currentProviderName}）`
+                        : "跟随当前 Provider（应用默认）",
+                    })}
+                  </option>
+                  {sessionRoutingProviderOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {sessionRoutingForm.defaultProviderId
+                    ? isAutoFailoverActive
+                      ? t(
+                          "proxy.sessionRouting.defaultProviderHintWithFailover",
+                          {
+                            defaultValue:
+                              "未携带会话 ID 的请求会先使用该提供商；失败后再按故障转移队列继续回落。",
+                          },
+                        )
+                      : t("proxy.sessionRouting.defaultProviderHint", {
+                          defaultValue:
+                            "未携带会话 ID 的请求会固定先使用该提供商，不参与会话绑定。",
+                        })
+                    : isAutoFailoverActive
+                      ? t(
+                          "proxy.sessionRouting.defaultProviderFollowCurrentHintWithFailover",
+                          {
+                            defaultValue:
+                              "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。",
+                          },
+                        )
+                      : t(
+                          "proxy.sessionRouting.defaultProviderFollowCurrentHint",
+                          {
+                            defaultValue:
+                              "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
+                          },
+                        )}
+                </p>
+              </div>
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">
@@ -3504,22 +3898,24 @@ export function ProviderList({
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 z-10 bg-background">
                     <tr className="border-b border-border/60">
-                      <th className="w-10 px-3 py-2 text-left">
-                        <Checkbox
-                          checked={
-                            batchSelectionStatus.allSelected
-                              ? true
-                              : batchSelectionStatus.partial
-                                ? "indeterminate"
-                                : false
-                          }
-                          onCheckedChange={(checked) =>
-                            handleToggleAllBatchSelections(checked === true)
-                          }
-                          aria-label={t("common.selectAll", {
-                            defaultValue: "全选",
-                          })}
-                        />
+                      <th className="w-10 px-3 py-2 text-center align-middle">
+                        <div className="flex items-center justify-center">
+                          <Checkbox
+                            checked={
+                              batchSelectionStatus.allSelected
+                                ? true
+                                : batchSelectionStatus.partial
+                                  ? "indeterminate"
+                                  : false
+                            }
+                            onCheckedChange={(checked) =>
+                              handleToggleAllBatchSelections(checked === true)
+                            }
+                            aria-label={t("common.selectAll", {
+                              defaultValue: "全选",
+                            })}
+                          />
+                        </div>
                       </th>
                       <th className="px-3 py-2 text-left">
                         {t("provider.name", { defaultValue: "供应商" })}
@@ -3599,19 +3995,21 @@ export function ProviderList({
                             isSelected ? "bg-background" : "opacity-70",
                           )}
                         >
-                          <td className="px-3 py-2">
-                            <Checkbox
-                              checked={isSelected}
-                              onCheckedChange={(checked) =>
-                                handleToggleBatchSelection(
-                                  provider.id,
-                                  checked === true,
-                                )
-                              }
-                              aria-label={t("common.select", {
-                                defaultValue: "选择",
-                              })}
-                            />
+                          <td className="px-3 py-2 align-middle">
+                            <div className="flex items-center justify-center">
+                              <Checkbox
+                                checked={isSelected}
+                                onCheckedChange={(checked) =>
+                                  handleToggleBatchSelection(
+                                    provider.id,
+                                    checked === true,
+                                  )
+                                }
+                                aria-label={t("common.select", {
+                                  defaultValue: "选择",
+                                })}
+                              />
+                            </div>
                           </td>
                           <td className="px-3 py-2">
                             <div className="font-medium">{provider.name}</div>
@@ -3706,7 +4104,7 @@ export function ProviderList({
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-nowrap">
                 <Button
                   type="button"
                   variant="outline"
@@ -3749,151 +4147,57 @@ export function ProviderList({
 
             {appId === "codex" ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={codexSnippetFullAccess}
-                    onChange={(e) => handleCodexSnippetToggle(e.target.checked)}
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("codexConfig.fullAccess", {
-                      defaultValue: "完全访问权限",
+                {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={codexSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleCodexSnippetToggle(option.key, checked)
+                    }
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
+                    })}
+                  />
+                ))}
               </div>
             ) : appId === "gemini" ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.inlineThinking}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "inlineThinking",
-                        e.target.checked,
-                      )
+                {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={geminiSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleGeminiSnippetToggle(option.key, checked)
                     }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("geminiConfig.inlineThinking", {
-                      defaultValue: "扩展思考",
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.showModelInfo}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "showModelInfo",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("geminiConfig.showModelInfo", {
-                      defaultValue: "显示模型信息",
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={geminiSnippetToggleStates.enableAgents}
-                    onChange={(e) =>
-                      handleGeminiSnippetToggle(
-                        "enableAgents",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
                   />
-                  <span>
-                    {t("geminiConfig.enableAgents", {
-                      defaultValue: "启用代理模式",
-                    })}
-                  </span>
-                </label>
+                ))}
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.hideAttribution}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "hideAttribution",
-                        e.target.checked,
-                      )
+                {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
+                  <QuickConfigToggle
+                    key={option.key}
+                    checked={claudeSnippetToggleStates[option.key]}
+                    onChange={(checked) =>
+                      handleClaudeSnippetToggle(option.key, checked)
                     }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.hideAttribution")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.alwaysThinking}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "alwaysThinking",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.alwaysThinking")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.teammates}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle("teammates", e.target.checked)
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>{t("claudeConfig.enableTeammates")}</span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.skipAllPermissions}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle(
-                        "skipAllPermissions",
-                        e.target.checked,
-                      )
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("claudeConfig.skipAllPermissions", {
-                      defaultValue: "跳过所有权限",
+                    label={t(option.labelKey, {
+                      defaultValue: option.defaultLabel,
                     })}
-                  </span>
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={claudeSnippetToggleStates.fastMode}
-                    onChange={(e) =>
-                      handleClaudeSnippetToggle("fastMode", e.target.checked)
-                    }
-                    className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-                  />
-                  <span>
-                    {t("claudeConfig.fastMode", {
-                      defaultValue: "Fast 模式",
+                    description={t(option.descriptionKey, {
+                      defaultValue: option.defaultDescription,
                     })}
-                  </span>
-                </label>
+                  />
+                ))}
               </div>
             )}
 
@@ -3958,11 +4262,16 @@ export function ProviderList({
 interface SortableProviderTableRowProps {
   provider: Provider;
   rowIndex: number;
+  showOrderNumber: boolean;
+  columnWidths: Record<ProviderResizableColumnKey, number>;
   dragEnabled: boolean;
   isSelected: boolean;
   onToggleSelected: (providerId: string, checked: boolean) => void;
   modelSummary: string;
   statusMeta: ProviderStatusMeta;
+  sessionCount?: number;
+  occupancyDetails?: ProviderOccupancyDetail[];
+  showSessionOccupancy?: boolean;
   isCurrent: boolean;
   isInConfig: boolean;
   isOmo: boolean;
@@ -3997,11 +4306,16 @@ interface SortableProviderTableRowProps {
 function SortableProviderTableRow({
   provider,
   rowIndex,
+  showOrderNumber,
+  columnWidths,
   dragEnabled,
   isSelected,
   onToggleSelected,
   modelSummary,
   statusMeta,
+  sessionCount = 0,
+  occupancyDetails = [],
+  showSessionOccupancy = false,
   isCurrent,
   isInConfig,
   isOmo,
@@ -4058,6 +4372,12 @@ function SortableProviderTableRow({
   const disableOmoHandler = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
   const showHealthBadge =
     isInFailoverQueue && health != null && !isOmo && !isOmoSlim;
+  const showOccupancyBadge = showSessionOccupancy && sessionCount > 0;
+  const visibleOccupancyDetails = occupancyDetails.slice(0, 4);
+  const remainingOccupancyCount = Math.max(
+    occupancyDetails.length - visibleOccupancyDetails.length,
+    0,
+  );
 
   return (
     <tr
@@ -4065,36 +4385,38 @@ function SortableProviderTableRow({
       style={style}
       data-state={isSelected ? "selected" : undefined}
       className={cn(
-        "border-b border-border/60 align-top transition-colors hover:bg-muted/45",
+        "border-b border-border/60 transition-colors hover:bg-muted/45",
         rowClass,
         isDragging && "z-10 bg-accent/40",
       )}
     >
       <td
         className={cn(
-          "sticky left-0 z-20 px-3 py-2 align-top",
+          "sticky left-0 z-20 px-3 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
-        <Checkbox
-          checked={isSelected}
-          onCheckedChange={(checked) =>
-            onToggleSelected(provider.id, checked === true)
-          }
-          aria-label={t("common.select", { defaultValue: "选择" })}
-        />
+        <div className="flex items-center justify-center">
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={(checked) =>
+              onToggleSelected(provider.id, checked === true)
+            }
+            aria-label={t("common.select", { defaultValue: "选择" })}
+          />
+        </div>
       </td>
 
       <td
         className={cn(
-          "sticky left-[48px] z-20 px-2 py-2 align-top",
+          "sticky left-[48px] z-20 px-2 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
         <button
           type="button"
           className={cn(
-            "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
+            "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1 text-muted-foreground transition-colors tabular-nums",
             dragEnabled
               ? "cursor-grab hover:bg-muted active:cursor-grabbing"
               : "cursor-not-allowed opacity-40",
@@ -4104,67 +4426,57 @@ function SortableProviderTableRow({
           {...(dragEnabled ? attributes : {})}
           {...(dragEnabled ? listeners : {})}
         >
-          <svg
-            className="h-4 w-4"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <circle cx="5" cy="4" r="1" />
-            <circle cx="11" cy="4" r="1" />
-            <circle cx="5" cy="8" r="1" />
-            <circle cx="11" cy="8" r="1" />
-            <circle cx="5" cy="12" r="1" />
-            <circle cx="11" cy="12" r="1" />
-          </svg>
+          {showOrderNumber ? (
+            <span className="text-xs font-semibold">{rowIndex + 1}</span>
+          ) : (
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <circle cx="5" cy="4" r="1" />
+              <circle cx="11" cy="4" r="1" />
+              <circle cx="5" cy="8" r="1" />
+              <circle cx="11" cy="8" r="1" />
+              <circle cx="5" cy="12" r="1" />
+              <circle cx="11" cy="12" r="1" />
+            </svg>
+          )}
         </button>
       </td>
 
       <td
         className={cn(
-          "sticky left-[88px] z-20 min-w-[220px] px-3 py-2 align-top",
+          "sticky left-[88px] z-20 min-w-[240px] px-3 py-2 align-middle",
           stickyCellBgClass,
         )}
       >
-        <div className="flex items-start gap-2">
-          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md border border-border bg-muted">
-            <ProviderIcon
-              icon={provider.icon}
-              name={provider.name}
-              color={provider.iconColor}
-              size={16}
-            />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate font-medium" title={provider.name}>
-              {provider.name}
-            </div>
-            <div
-              className="truncate text-xs text-muted-foreground"
-              title={provider.id}
-            >
-              {provider.id}
-            </div>
+        <div className="min-w-0">
+          <div className="truncate font-medium" title={provider.name}>
+            {website ? (
+              <button
+                type="button"
+                className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
+                title={website}
+                onClick={() => onOpenWebsite(website)}
+              >
+                {provider.name}
+              </button>
+            ) : (
+              provider.name
+            )}
           </div>
         </div>
       </td>
 
-      <td className="max-w-[260px] px-3 py-2 align-top">
-        {website ? (
-          <button
-            type="button"
-            className="max-w-full truncate text-left text-blue-500 hover:underline dark:text-blue-400"
-            title={website}
-            onClick={() => onOpenWebsite(website)}
-          >
-            {website}
-          </button>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </td>
-
-      <td className="max-w-[240px] px-3 py-2 align-top">
+      <td
+        className="px-3 py-2 align-middle"
+        style={{
+          width: columnWidths.notes,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.notes,
+        }}
+      >
         {notes ? (
           <span className="block truncate text-muted-foreground" title={notes}>
             {notes}
@@ -4174,7 +4486,13 @@ function SortableProviderTableRow({
         )}
       </td>
 
-      <td className="max-w-[260px] px-3 py-2 align-top">
+      <td
+        className="px-3 py-2 align-middle"
+        style={{
+          width: columnWidths.model,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.model,
+        }}
+      >
         <span
           className="block truncate text-muted-foreground"
           title={modelSummary}
@@ -4184,31 +4502,105 @@ function SortableProviderTableRow({
       </td>
 
       <td
-        className={cn(
-          "sticky right-0 z-20 px-3 py-2 align-top",
-          stickyCellBgClass,
-        )}
+        className="px-3 py-2 align-middle"
+        style={{
+          width: columnWidths.status,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+        }}
       >
-        <div className="flex flex-col items-start gap-1">
+        <div className="flex items-center gap-2 flex-wrap">
           {showHealthBadge && (
             <ProviderHealthBadge
               consecutiveFailures={health.consecutive_failures}
               lastError={health.last_error}
             />
           )}
-          <span
-            className={cn(
-              "inline-flex rounded-md px-2 py-0.5 text-xs",
-              statusMeta.className,
-            )}
-          >
-            {statusMeta.label}
-          </span>
+          {showOccupancyBadge && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                  {t("provider.sessionOccupancy", {
+                    defaultValue: "占用 {{count}}",
+                    count: sessionCount,
+                  })}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-sm text-left leading-relaxed">
+                <div className="space-y-2">
+                  <p className="font-medium">
+                    {t("provider.sessionOccupancyDetailsTitle", {
+                      defaultValue: "活跃会话占用数：{{count}}",
+                      count: sessionCount,
+                    })}
+                  </p>
+                  {visibleOccupancyDetails.length > 0 ? (
+                    <div className="space-y-1">
+                      {visibleOccupancyDetails.map((detail) => (
+                        <div key={detail.sessionId} className="space-y-0.5">
+                          <div className="font-medium">{detail.title}</div>
+                          {detail.projectName ? (
+                            <div className="text-primary-foreground/80">
+                              {t("provider.sessionProjectLabel", {
+                                defaultValue: "项目",
+                              })}
+                              : {detail.projectName}
+                            </div>
+                          ) : null}
+                          <div className="text-primary-foreground/80">
+                            {t("provider.sessionIdLabel", {
+                              defaultValue: "会话",
+                            })}
+                            : {detail.sessionId.slice(0, 8)}
+                          </div>
+                        </div>
+                      ))}
+                      {remainingOccupancyCount > 0 && (
+                        <div className="text-primary-foreground/80">
+                          {t("provider.sessionOccupancyMore", {
+                            defaultValue: "还有 {{count}} 个会话",
+                            count: remainingOccupancyCount,
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-primary-foreground/80">
+                      {t("provider.sessionOccupancyHint", {
+                        defaultValue: "活跃会话占用数：{{count}}",
+                        count: sessionCount,
+                      })}
+                    </p>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {statusMeta.badges.map((badge, index) => (
+            <span
+              key={`${badge.label}-${index}`}
+              className={cn(
+                "inline-flex rounded-md px-2 py-0.5 text-xs",
+                badge.className,
+              )}
+              title={badge.description ?? undefined}
+            >
+              {badge.label}
+            </span>
+          ))}
         </div>
       </td>
 
-      <td className="px-3 py-2 align-top">
-        <div className="min-w-[330px]">
+      <td
+        className={cn(
+          "sticky right-0 z-20 px-3 py-2 align-middle",
+          stickyCellBgClass,
+        )}
+        style={{
+          width: columnWidths.actions,
+          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+        }}
+      >
+        <div className="min-w-[190px]">
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}
