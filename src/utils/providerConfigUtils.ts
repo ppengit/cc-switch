@@ -2,6 +2,7 @@
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import { normalizeQuotes } from "@/utils/textNormalization";
+import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 
 const isPlainObject = (value: unknown): value is Record<string, any> => {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -83,23 +84,44 @@ export interface UpdateCommonConfigResult {
   error?: string;
 }
 
+export interface ParseJsonObjectResult {
+  value?: Record<string, any>;
+  error?: string;
+}
+
+export const safeParseJsonObject = (
+  value: string,
+  fieldName: string = "配置",
+): ParseJsonObjectResult => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: {} };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return {
+      error: `${fieldName}JSON格式错误，请检查语法`,
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      error: `${fieldName}必须是 JSON 对象`,
+    };
+  }
+
+  return { value: parsed as Record<string, any> };
+};
+
 // 验证JSON配置格式
 export const validateJsonConfig = (
   value: string,
   fieldName: string = "配置",
 ): string => {
-  if (!value.trim()) {
-    return "";
-  }
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return `${fieldName}必须是 JSON 对象`;
-    }
-    return "";
-  } catch {
-    return `${fieldName}JSON格式错误，请检查语法`;
-  }
+  return safeParseJsonObject(value, fieldName).error ?? "";
 };
 
 // 将通用配置片段写入/移除 settingsConfig
@@ -108,15 +130,14 @@ export const updateCommonConfigSnippet = (
   snippetString: string,
   enabled: boolean,
 ): UpdateCommonConfigResult => {
-  let config: Record<string, any>;
-  try {
-    config = jsonString ? JSON.parse(jsonString) : {};
-  } catch (err) {
+  const configResult = safeParseJsonObject(jsonString, "配置");
+  if (configResult.error) {
     return {
       updatedConfig: jsonString,
       error: "配置 JSON 解析失败，无法写入通用配置",
     };
   }
+  const config = configResult.value ?? {};
 
   if (!snippetString.trim()) {
     return {
@@ -133,7 +154,8 @@ export const updateCommonConfigSnippet = (
     };
   }
 
-  const snippet = JSON.parse(snippetString) as Record<string, any>;
+  const snippet =
+    safeParseJsonObject(snippetString, "通用配置片段").value ?? {};
 
   if (enabled) {
     const merged = deepMerge(deepClone(config), snippet);
@@ -154,15 +176,17 @@ export const hasCommonConfigSnippet = (
   jsonString: string,
   snippetString: string,
 ): boolean => {
-  try {
-    if (!snippetString.trim()) return false;
-    const config = jsonString ? JSON.parse(jsonString) : {};
-    const snippet = JSON.parse(snippetString);
-    if (!isPlainObject(snippet)) return false;
-    return isSubset(config, snippet);
-  } catch (err) {
+  if (!snippetString.trim()) {
     return false;
   }
+
+  const config = safeParseJsonObject(jsonString, "配置").value;
+  const snippet = safeParseJsonObject(snippetString, "通用配置片段").value;
+  if (!config || !snippet) {
+    return false;
+  }
+
+  return isSubset(config, snippet);
 };
 
 // 读取配置中的 API Key（支持 Claude, Codex, Gemini）
@@ -359,6 +383,19 @@ export interface UpdateTomlCommonConfigResult {
   error?: string;
 }
 
+const formatTomlValidationError = (
+  message: string,
+  fieldName: string = "TOML 配置",
+) => {
+  if (!message) {
+    return `${fieldName}格式错误，请检查语法`;
+  }
+  if (message === "mustBeObject" || message === "parseError") {
+    return `${fieldName}格式错误，请检查语法`;
+  }
+  return `TOML 解析错误: ${fieldName}: ${message}`;
+};
+
 const COMMON_SNIPPET_START = "# cc-switch common config start";
 const COMMON_SNIPPET_END = "# cc-switch common config end";
 
@@ -390,6 +427,14 @@ export const updateTomlCommonConfigSnippet = (
     };
   }
 
+  const snippetError = validateTomlText(snippetString);
+  if (snippetError) {
+    return {
+      updatedConfig: tomlString,
+      error: formatTomlValidationError(snippetError, "通用配置片段"),
+    };
+  }
+
   const stripped = tomlString.replace(COMMON_SNIPPET_REGEX, "");
   const trimmedSnippet = snippetString.trim();
   const cleaned = trimmedSnippet
@@ -403,15 +448,32 @@ export const updateTomlCommonConfigSnippet = (
     // 添加通用配置（始终插入到文件开头，避免落在表格内造成重复 key）
     const block = buildCommonSnippetBlock(snippetString);
     const trimmed = cleaned.trimStart();
+    const updatedConfig = trimmed ? block + trimmed : block.trimEnd() + "\n";
+    const mergedError = validateTomlText(updatedConfig);
+    if (mergedError) {
+      return {
+        updatedConfig: tomlString,
+        error: formatTomlValidationError(mergedError, "合并后的 config.toml"),
+      };
+    }
     return {
-      updatedConfig: trimmed ? block + trimmed : block.trimEnd() + "\n",
+      updatedConfig,
+    };
+  }
+
+  const updatedConfig = cleaned.replace(/\n{3,}/g, "\n\n").trim()
+    ? cleaned.replace(/\n{3,}/g, "\n\n").trim() + "\n"
+    : "";
+  const cleanedError = validateTomlText(updatedConfig);
+  if (cleanedError) {
+    return {
+      updatedConfig: tomlString,
+      error: formatTomlValidationError(cleanedError, "config.toml"),
     };
   }
 
   return {
-    updatedConfig: cleaned.replace(/\n{3,}/g, "\n\n").trim()
-      ? cleaned.replace(/\n{3,}/g, "\n\n").trim() + "\n"
-      : "",
+    updatedConfig,
   };
 };
 

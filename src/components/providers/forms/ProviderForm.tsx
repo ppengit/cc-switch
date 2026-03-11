@@ -42,6 +42,7 @@ import type { UniversalProviderPreset } from "@/config/universalProviderPresets"
 import {
   applyTemplateValues,
   hasApiKeyField,
+  safeParseJsonObject,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
@@ -88,6 +89,7 @@ import {
   OPENCLAW_DEFAULT_CONFIG,
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
+import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 
 type PresetEntry = {
   id: string;
@@ -432,16 +434,17 @@ export function ProviderForm({
       key: "GEMINI_API_KEY" | "GOOGLE_GEMINI_BASE_URL" | "GEMINI_MODEL",
       value: string,
     ) => {
-      try {
-        const config = JSON.parse(form.getValues("settingsConfig") || "{}") as {
-          env?: Record<string, unknown>;
-        };
-        if (!config.env || typeof config.env !== "object") {
-          config.env = {};
-        }
-        config.env[key] = value;
-        form.setValue("settingsConfig", JSON.stringify(config, null, 2));
-      } catch {}
+      const parsed = safeParseJsonObject(
+        form.getValues("settingsConfig") || "{}",
+      );
+      const config = (parsed.value ?? {}) as {
+        env?: Record<string, unknown>;
+      };
+      if (!config.env || typeof config.env !== "object") {
+        config.env = {};
+      }
+      config.env[key] = value;
+      form.setValue("settingsConfig", JSON.stringify(config, null, 2));
     },
     [form],
   );
@@ -660,27 +663,76 @@ export function ProviderForm({
     let settingsConfig: string;
 
     if (appId === "codex") {
-      try {
-        const authJson = JSON.parse(codexAuth);
-        const configObj = {
-          auth: authJson,
-          config: codexConfig ?? "",
-        };
-        settingsConfig = JSON.stringify(configObj);
-      } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
+      const codexTomlError = validateTomlText(codexConfig);
+      if (codexTomlError) {
+        const message =
+          codexTomlError === "mustBeObject" || codexTomlError === "parseError"
+            ? t("mcp.error.tomlInvalid", {
+                defaultValue: "TOML 格式错误，请检查",
+              })
+            : `TOML 解析错误: config.toml: ${codexTomlError}`;
+        form.setError("settingsConfig", {
+          type: "manual",
+          message,
+        });
+        toast.error(message);
+        return;
       }
+
+      const authResult = safeParseJsonObject(
+        codexAuth,
+        t("codexConfig.authConfig", {
+          defaultValue: "认证配置",
+        }),
+      );
+      if (authResult.error) {
+        form.setError("settingsConfig", {
+          type: "manual",
+          message: authResult.error,
+        });
+        toast.error(authResult.error);
+        return;
+      }
+      const configObj = {
+        auth: authResult.value ?? {},
+        config: codexConfig ?? "",
+      };
+      settingsConfig = JSON.stringify(configObj);
     } else if (appId === "gemini") {
       try {
         const envObj = envStringToObj(geminiEnv);
-        const configObj = geminiConfig.trim() ? JSON.parse(geminiConfig) : {};
+        const configResult = safeParseJsonObject(
+          geminiConfig,
+          t("geminiConfig.customConfig", {
+            defaultValue: "自定义配置",
+          }),
+        );
+        if (configResult.error) {
+          form.setError("settingsConfig", {
+            type: "manual",
+            message: configResult.error,
+          });
+          toast.error(configResult.error);
+          return;
+        }
         const combined = {
           env: envObj,
-          config: configObj,
+          config: configResult.value ?? {},
         };
         settingsConfig = JSON.stringify(combined);
-      } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : t("providerForm.invalidConfigJson", {
+                defaultValue: "配置 JSON 格式错误，请检查后重试",
+              });
+        form.setError("settingsConfig", {
+          type: "manual",
+          message,
+        });
+        toast.error(message);
+        return;
       }
     } else if (
       appId === "opencode" &&
@@ -726,6 +778,8 @@ export function ProviderForm({
     } else {
       settingsConfig = values.settingsConfig.trim();
     }
+
+    form.clearErrors("settingsConfig");
 
     const payload: ProviderFormValues = {
       ...values,

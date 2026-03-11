@@ -60,6 +60,7 @@
     "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
     "extractFailed": "提取失败: {{error}}",
     "saveFailed": "保存失败: {{error}}",
+    "commonConfigSnippet": "通用配置片段",
     "hideAttribution": "隐藏 AI 署名",
     "alwaysThinking": "扩展思考",
     "enableTeammates": "Teammates 模式",
@@ -565,6 +566,8 @@
     "updatingTool": "更新中",
     "toolUpdateStarted": "已开始更新，请查看终端输出",
     "toolUpdateFailed": "更新失败，请查看日志",
+    "toolInstallSourceNative": "Native",
+    "toolInstallSourceNpm": "npm",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -831,17 +834,29 @@
     "extractNoCommonConfig": "当前编辑内容没有可提取的通用配置",
     "extractFailed": "提取失败: {{error}}",
     "saveFailed": "保存失败: {{error}}",
+    "workspaceWrite": "工作区写入",
     "fullAccess": "完全访问权限",
+    "approvalOnRequest": "按需审批",
+    "approvalNever": "永不审批",
     "fastTier": "Fast 服务层",
     "highReasoning": "高强度推理",
+    "planHighReasoning": "计划模式高推理",
     "conciseReasoningSummary": "简短推理摘要",
+    "detailedReasoningSummary": "详细推理摘要",
     "verboseOutput": "详细输出",
+    "rawAgentReasoning": "原始代理推理",
     "tooltips": {
+      "workspaceWrite": "把 sandbox_mode 设为 workspace-write，允许在工作区内修改文件，但比完全访问更克制。",
       "fullAccess": "把沙箱改成 danger-full-access，让 Codex 可以直接读写工作区并执行命令，适合本机受控环境。",
+      "approvalOnRequest": "把 approval_policy 设为 on-request，需要时再人工批准执行高风险动作。",
+      "approvalNever": "把 approval_policy 设为 never，不再请求审批，适合你完全信任当前环境时使用。",
       "fastTier": "设置 service_tier = fast，优先更低延迟，适合高频交互式编辑。",
       "highReasoning": "提高 reasoning effort，让 Codex 在复杂任务上投入更多思考预算，通常更稳但更慢。",
+      "planHighReasoning": "把 plan_mode_reasoning_effort 设为 high，让规划阶段也使用更高推理强度。",
       "conciseReasoningSummary": "为回答附带简短的 reasoning summary，便于快速看懂模型为什么这么做。",
-      "verboseOutput": "提高 model_verbosity，让 Codex 输出更详细的说明，适合调试和审计。"
+      "detailedReasoningSummary": "把 model_reasoning_summary 设为 detailed，返回更完整的推理摘要，适合排查复杂行为。",
+      "verboseOutput": "提高 model_verbosity，让 Codex 输出更详细的说明，适合调试和审计。",
+      "rawAgentReasoning": "开启 show_raw_agent_reasoning，直接显示代理的原始推理内容，更适合诊断而不是日常使用。"
     }
   },
   "geminiConfig": {

@@ -199,6 +199,7 @@ export const settingsApi = {
       version: string | null;
       latest_version: string | null;
       error: string | null;
+      install_source: "native" | "npm" | null;
       env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
       wsl_distro: string | null;
     }>
@@ -208,12 +209,17 @@ export const settingsApi = {
 
   async updateTool(
     tool: string,
-    options?: { envType?: string; wslDistro?: string },
+    options?: {
+      envType?: string;
+      wslDistro?: string;
+      installSource?: "native" | "npm" | null;
+    },
   ): Promise<boolean> {
     return await invoke("update_tool", {
       tool,
       envType: options?.envType,
       wslDistro: options?.wslDistro,
+      installSource: options?.installSource,
     });
   },
 

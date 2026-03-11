@@ -10,6 +10,7 @@ import {
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
 import { providersApi, vscodeApi, type AppId } from "@/lib/api";
+import { safeParseJsonObject } from "@/utils/providerConfigUtils";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -141,20 +142,17 @@ export function EditProviderDialog({
 
       // 注意：values.settingsConfig 已经是最终的配置字符串
       // ProviderForm 已经为不同的 app 类型（Claude/Codex/Gemini）正确组装了配置
-      let parsedConfig: Record<string, unknown>;
-      try {
-        parsedConfig = JSON.parse(values.settingsConfig) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        toast.error(
-          t("providerForm.invalidConfigJson", {
-            defaultValue: "配置 JSON 格式错误，请检查后重试",
-          }),
-        );
+      const parsedConfigResult = safeParseJsonObject(
+        values.settingsConfig,
+        t("provider.configJson", {
+          defaultValue: "配置 JSON",
+        }),
+      );
+      if (parsedConfigResult.error) {
+        toast.error(parsedConfigResult.error);
         return;
       }
+      const parsedConfig = parsedConfigResult.value ?? {};
 
       const updatedProvider: Provider = {
         ...provider,

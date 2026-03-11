@@ -60,6 +60,7 @@
     "extractNoCommonConfig": "編集内容から抽出できる共通設定がありません",
     "extractFailed": "抽出に失敗しました: {{error}}",
     "saveFailed": "保存に失敗しました: {{error}}",
+    "commonConfigSnippet": "共通設定スニペット",
     "hideAttribution": "AI署名を非表示",
     "alwaysThinking": "拡張思考",
     "enableTeammates": "Teammates モード",
@@ -552,6 +553,8 @@
     "updatingTool": "更新中",
     "toolUpdateStarted": "更新を開始しました。ターミナル出力を確認してください",
     "toolUpdateFailed": "更新に失敗しました。ログを確認してください",
+    "toolInstallSourceNative": "Native",
+    "toolInstallSourceNpm": "npm",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -818,17 +821,29 @@
     "extractNoCommonConfig": "編集内容から抽出できる共通設定がありません",
     "extractFailed": "抽出に失敗しました: {{error}}",
     "saveFailed": "保存に失敗しました: {{error}}",
+    "workspaceWrite": "ワークスペース書き込み",
     "fullAccess": "フルアクセス",
+    "approvalOnRequest": "必要時承認",
+    "approvalNever": "承認なし",
     "fastTier": "Fast ティア",
     "highReasoning": "高推論",
+    "planHighReasoning": "計画モード高推論",
     "conciseReasoningSummary": "簡潔な推論要約",
+    "detailedReasoningSummary": "詳細な推論要約",
     "verboseOutput": "詳細出力",
+    "rawAgentReasoning": "生のエージェント推論",
     "tooltips": {
+      "workspaceWrite": "sandbox_mode を workspace-write に設定し、ワークスペース内のファイル編集を許可します（フルアクセスより制限的）。",
       "fullAccess": "sandbox_mode を danger-full-access にして、Codex がワークスペースを直接読み書きし、コマンド実行できるようにします。",
+      "approvalOnRequest": "approval_policy を on-request に設定し、リスクのある操作だけ承認を求めます。",
+      "approvalNever": "approval_policy を never に設定し、承認プロンプトを無効にします。",
       "fastTier": "service_tier = fast を設定し、対話的な編集で低遅延を優先します。",
       "highReasoning": "reasoning effort を高めて、難しいタスクで Codex がより多く考えるようにします。通常は安定しますが遅くなります。",
+      "planHighReasoning": "plan_mode_reasoning_effort を high に設定し、計画フェーズでも推論負荷を上げます。",
       "conciseReasoningSummary": "短い reasoning summary を付けて、なぜその応答になったかを素早く把握しやすくします。",
-      "verboseOutput": "model_verbosity を上げて、Codex の説明をより詳しくし、デバッグやレビューに向けます。"
+      "detailedReasoningSummary": "model_reasoning_summary を detailed に設定し、より詳細な推論要約を返します。",
+      "verboseOutput": "model_verbosity を上げて、Codex の説明をより詳しくし、デバッグやレビューに向けます。",
+      "rawAgentReasoning": "show_raw_agent_reasoning を有効にして、診断向けに生の推論出力を表示します。"
     }
   },
   "geminiConfig": {

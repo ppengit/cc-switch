@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   updateCommonConfigSnippet,
   hasCommonConfigSnippet,
+  safeParseJsonObject,
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
@@ -131,28 +132,39 @@ export function useCommonConfigSnippet({
       hasInitializedNewMode.current = true;
 
       // 检查片段是否有实质内容
-      try {
-        const snippetObj = JSON.parse(commonConfigSnippet);
-        const hasContent = Object.keys(snippetObj).length > 0;
-        if (hasContent) {
-          setUseCommonConfig(true);
-          // 合并通用配置到当前配置
-          const { updatedConfig, error } = updateCommonConfigSnippet(
-            settingsConfig,
-            commonConfigSnippet,
-            true,
-          );
-          if (!error) {
-            isUpdatingFromCommonConfig.current = true;
-            onConfigChange(updatedConfig);
-            setTimeout(() => {
-              isUpdatingFromCommonConfig.current = false;
-            }, 0);
-          }
-        }
-      } catch {
-        // ignore parse error
+      const parsedSnippet = safeParseJsonObject(
+        commonConfigSnippet,
+        t("claudeConfig.commonConfigSnippet", {
+          defaultValue: "通用配置片段",
+        }),
+      );
+      if (parsedSnippet.error) {
+        setCommonConfigError(parsedSnippet.error);
+        return;
       }
+      const snippetObj = parsedSnippet.value ?? {};
+      const hasContent = Object.keys(snippetObj).length > 0;
+      if (!hasContent) return;
+
+      // 合并通用配置到当前配置
+      const { updatedConfig, error } = updateCommonConfigSnippet(
+        settingsConfig,
+        commonConfigSnippet,
+        true,
+      );
+      if (error) {
+        setCommonConfigError(error);
+        setUseCommonConfig(false);
+        return;
+      }
+
+      setCommonConfigError("");
+      setUseCommonConfig(true);
+      isUpdatingFromCommonConfig.current = true;
+      onConfigChange(updatedConfig);
+      setTimeout(() => {
+        isUpdatingFromCommonConfig.current = false;
+      }, 0);
     }
   }, [
     enabled,
@@ -161,6 +173,7 @@ export function useCommonConfigSnippet({
     isLoading,
     settingsConfig,
     onConfigChange,
+    t,
   ]);
 
   // 处理通用配置开关

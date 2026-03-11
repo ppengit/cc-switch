@@ -60,6 +60,7 @@
     "extractNoCommonConfig": "No common config available to extract from editor",
     "extractFailed": "Extract failed: {{error}}",
     "saveFailed": "Save failed: {{error}}",
+    "commonConfigSnippet": "Common Config Snippet",
     "hideAttribution": "Hide AI Attribution",
     "alwaysThinking": "Extended Thinking",
     "enableTeammates": "Teammates Mode",
@@ -565,6 +566,8 @@
     "updatingTool": "Updating",
     "toolUpdateStarted": "Update started, check terminal output",
     "toolUpdateFailed": "Update failed, check logs",
+    "toolInstallSourceNative": "Native",
+    "toolInstallSourceNpm": "npm",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -831,17 +834,29 @@
     "extractNoCommonConfig": "No common config available to extract from editor",
     "extractFailed": "Extract failed: {{error}}",
     "saveFailed": "Save failed: {{error}}",
+    "workspaceWrite": "Workspace Write",
     "fullAccess": "Full Access",
+    "approvalOnRequest": "Approval on Request",
+    "approvalNever": "Approval Never",
     "fastTier": "Fast Tier",
     "highReasoning": "High Reasoning",
+    "planHighReasoning": "Plan Mode High Reasoning",
     "conciseReasoningSummary": "Concise Reasoning Summary",
+    "detailedReasoningSummary": "Detailed Reasoning Summary",
     "verboseOutput": "Verbose Output",
+    "rawAgentReasoning": "Raw Agent Reasoning",
     "tooltips": {
+      "workspaceWrite": "Sets sandbox_mode to workspace-write so Codex can modify files in the workspace without full system access.",
       "fullAccess": "Sets sandbox_mode to danger-full-access so Codex can read, write, and run commands without sandbox restrictions.",
+      "approvalOnRequest": "Sets approval_policy to on-request, requiring approval only for risky actions.",
+      "approvalNever": "Sets approval_policy to never, removing approval prompts when you fully trust the environment.",
       "fastTier": "Sets service_tier = fast to prefer lower latency for interactive editing sessions.",
       "highReasoning": "Sets a higher reasoning effort so Codex spends more thinking budget on harder tasks. Usually steadier, but slower.",
+      "planHighReasoning": "Sets plan_mode_reasoning_effort to high so planning uses more reasoning effort too.",
       "conciseReasoningSummary": "Adds a short reasoning summary so you can quickly understand why Codex responded that way.",
-      "verboseOutput": "Raises model_verbosity so Codex gives more detailed explanations, which is useful for debugging and review."
+      "detailedReasoningSummary": "Sets model_reasoning_summary to detailed for a more complete reasoning summary when debugging.",
+      "verboseOutput": "Raises model_verbosity so Codex gives more detailed explanations, which is useful for debugging and review.",
+      "rawAgentReasoning": "Enables show_raw_agent_reasoning to display the agent's raw reasoning output for diagnostics."
     }
   },
   "geminiConfig": {

@@ -5,6 +5,7 @@ import {
   hasTomlCommonConfigSnippet,
 } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
+import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
 const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
@@ -126,14 +127,23 @@ export function useCodexCommonConfig({
       });
 
       if (hasContent) {
-        setUseCommonConfig(true);
-        // 合并通用配置到当前配置
-        const { updatedConfig, error } = updateTomlCommonConfigSnippet(
-          codexConfig,
-          commonConfigSnippet,
-          true,
-        );
-        if (!error) {
+        const snippetError = validateTomlText(commonConfigSnippet);
+        if (snippetError) {
+          setCommonConfigError(`TOML 解析错误: 通用配置片段: ${snippetError}`);
+          setUseCommonConfig(false);
+        } else {
+          setUseCommonConfig(true);
+          // 合并通用配置到当前配置
+          const { updatedConfig, error } = updateTomlCommonConfigSnippet(
+            codexConfig,
+            commonConfigSnippet,
+            true,
+          );
+          if (error) {
+            setCommonConfigError(error);
+            setUseCommonConfig(false);
+            return;
+          }
           isUpdatingFromCommonConfig.current = true;
           onConfigChange(updatedConfig);
           setTimeout(() => {
@@ -153,15 +163,22 @@ export function useCodexCommonConfig({
   // 处理通用配置开关
   const handleCommonConfigToggle = useCallback(
     (checked: boolean) => {
-      const { updatedConfig, error: snippetError } =
+      const snippetError = validateTomlText(commonConfigSnippet);
+      if (checked && snippetError) {
+        setCommonConfigError(`TOML 解析错误: 通用配置片段: ${snippetError}`);
+        setUseCommonConfig(false);
+        return;
+      }
+
+      const { updatedConfig, error: updateError } =
         updateTomlCommonConfigSnippet(
           codexConfig,
           commonConfigSnippet,
           checked,
         );
 
-      if (snippetError) {
-        setCommonConfigError(snippetError);
+      if (updateError) {
+        setCommonConfigError(updateError);
         setUseCommonConfig(false);
         return;
       }
@@ -210,6 +227,12 @@ export function useCodexCommonConfig({
       }
 
       // TOML 格式校验较为复杂，暂时不做校验，直接清空错误
+      const validationError = validateTomlText(value);
+      if (validationError) {
+        setCommonConfigError(`TOML 解析错误: 通用配置片段: ${validationError}`);
+        return;
+      }
+
       setCommonConfigError("");
       // 保存到 config.json
       configApi

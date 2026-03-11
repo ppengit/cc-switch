@@ -19,6 +19,7 @@ import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
+import { safeParseJsonObject } from "@/utils/providerConfigUtils";
 
 interface AddProviderDialogProps {
   open: boolean;
@@ -82,20 +83,17 @@ export function AddProviderDialog({
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
-      let parsedConfig: Record<string, unknown>;
-      try {
-        parsedConfig = JSON.parse(values.settingsConfig) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        toast.error(
-          t("providerForm.invalidConfigJson", {
-            defaultValue: "配置 JSON 格式错误，请检查后重试",
-          }),
-        );
+      const parsedConfigResult = safeParseJsonObject(
+        values.settingsConfig,
+        t("provider.configJson", {
+          defaultValue: "配置 JSON",
+        }),
+      );
+      if (parsedConfigResult.error) {
+        toast.error(parsedConfigResult.error);
         return;
       }
+      const parsedConfig = parsedConfigResult.value ?? {};
 
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {

@@ -1,6 +1,9 @@
 import {
+  getTomlBoolValue,
   getTomlStringValue,
+  removeTomlKey,
   removeTomlKeyIfMatch,
+  upsertTomlBoolValue,
   upsertTomlStringValue,
 } from "@/utils/tomlKeyUtils";
 
@@ -99,15 +102,29 @@ export const GEMINI_QUICK_TOGGLE_OPTIONS: Array<
 ];
 
 export type CodexQuickToggleKey =
+  | "workspaceWrite"
   | "fullAccess"
+  | "approvalOnRequest"
+  | "approvalNever"
   | "fastTier"
   | "highReasoning"
+  | "planHighReasoning"
   | "conciseReasoningSummary"
-  | "verboseOutput";
+  | "detailedReasoningSummary"
+  | "verboseOutput"
+  | "rawAgentReasoning";
 
 export const CODEX_QUICK_TOGGLE_OPTIONS: Array<
   QuickToggleOption<CodexQuickToggleKey>
 > = [
+  {
+    key: "workspaceWrite",
+    labelKey: "codexConfig.workspaceWrite",
+    defaultLabel: "工作区写入",
+    descriptionKey: "codexConfig.tooltips.workspaceWrite",
+    defaultDescription:
+      "把 sandbox_mode 设为 workspace-write，允许在工作区内修改文件，但比完全访问更克制。",
+  },
   {
     key: "fullAccess",
     labelKey: "codexConfig.fullAccess",
@@ -115,6 +132,22 @@ export const CODEX_QUICK_TOGGLE_OPTIONS: Array<
     descriptionKey: "codexConfig.tooltips.fullAccess",
     defaultDescription:
       "把沙箱改成 danger-full-access，让 Codex 可以直接读写工作区并执行命令，适合本机受控环境。",
+  },
+  {
+    key: "approvalOnRequest",
+    labelKey: "codexConfig.approvalOnRequest",
+    defaultLabel: "按需审批",
+    descriptionKey: "codexConfig.tooltips.approvalOnRequest",
+    defaultDescription:
+      "把 approval_policy 设为 on-request，需要时再人工批准执行高风险动作。",
+  },
+  {
+    key: "approvalNever",
+    labelKey: "codexConfig.approvalNever",
+    defaultLabel: "永不审批",
+    descriptionKey: "codexConfig.tooltips.approvalNever",
+    defaultDescription:
+      "把 approval_policy 设为 never，不再请求审批，适合你完全信任当前环境时使用。",
   },
   {
     key: "fastTier",
@@ -133,12 +166,28 @@ export const CODEX_QUICK_TOGGLE_OPTIONS: Array<
       "设置更高的 reasoning effort，让 Codex 在复杂任务上花更多思考预算，通常更稳但更慢。",
   },
   {
+    key: "planHighReasoning",
+    labelKey: "codexConfig.planHighReasoning",
+    defaultLabel: "计划模式高推理",
+    descriptionKey: "codexConfig.tooltips.planHighReasoning",
+    defaultDescription:
+      "把 plan_mode_reasoning_effort 设为 high，让规划阶段也使用更高推理强度。",
+  },
+  {
     key: "conciseReasoningSummary",
     labelKey: "codexConfig.conciseReasoningSummary",
     defaultLabel: "简短推理摘要",
     descriptionKey: "codexConfig.tooltips.conciseReasoningSummary",
     defaultDescription:
       "为回答附带简短的 reasoning summary，便于快速看懂模型为什么这么做。",
+  },
+  {
+    key: "detailedReasoningSummary",
+    labelKey: "codexConfig.detailedReasoningSummary",
+    defaultLabel: "详细推理摘要",
+    descriptionKey: "codexConfig.tooltips.detailedReasoningSummary",
+    defaultDescription:
+      "把 model_reasoning_summary 设为 detailed，返回更完整的推理摘要，适合排查复杂行为。",
   },
   {
     key: "verboseOutput",
@@ -148,16 +197,35 @@ export const CODEX_QUICK_TOGGLE_OPTIONS: Array<
     defaultDescription:
       "提高 model_verbosity，让 Codex 输出更详细的说明，适合调试和审计。",
   },
+  {
+    key: "rawAgentReasoning",
+    labelKey: "codexConfig.rawAgentReasoning",
+    defaultLabel: "原始代理推理",
+    descriptionKey: "codexConfig.tooltips.rawAgentReasoning",
+    defaultDescription:
+      "开启 show_raw_agent_reasoning，直接显示代理的原始推理内容，更适合诊断而不是日常使用。",
+  },
 ];
 
 export const getCodexQuickToggleStates = (value: string) => ({
+  workspaceWrite:
+    getTomlStringValue(value, "sandbox_mode") === "workspace-write",
   fullAccess:
     getTomlStringValue(value, "sandbox_mode") === "danger-full-access",
+  approvalOnRequest:
+    getTomlStringValue(value, "approval_policy") === "on-request",
+  approvalNever: getTomlStringValue(value, "approval_policy") === "never",
   fastTier: getTomlStringValue(value, "service_tier") === "fast",
   highReasoning: getTomlStringValue(value, "model_reasoning_effort") === "high",
+  planHighReasoning:
+    getTomlStringValue(value, "plan_mode_reasoning_effort") === "high",
   conciseReasoningSummary:
     getTomlStringValue(value, "model_reasoning_summary") === "concise",
+  detailedReasoningSummary:
+    getTomlStringValue(value, "model_reasoning_summary") === "detailed",
   verboseOutput: getTomlStringValue(value, "model_verbosity") === "high",
+  rawAgentReasoning:
+    getTomlBoolValue(value, "show_raw_agent_reasoning") === true,
 });
 
 export const toggleCodexQuickOption = (
@@ -166,10 +234,22 @@ export const toggleCodexQuickOption = (
   checked: boolean,
 ): string => {
   switch (toggleKey) {
+    case "workspaceWrite":
+      return checked
+        ? upsertTomlStringValue(value, "sandbox_mode", "workspace-write")
+        : removeTomlKeyIfMatch(value, "sandbox_mode", "workspace-write");
     case "fullAccess":
       return checked
         ? upsertTomlStringValue(value, "sandbox_mode", "danger-full-access")
         : removeTomlKeyIfMatch(value, "sandbox_mode", "danger-full-access");
+    case "approvalOnRequest":
+      return checked
+        ? upsertTomlStringValue(value, "approval_policy", "on-request")
+        : removeTomlKeyIfMatch(value, "approval_policy", "on-request");
+    case "approvalNever":
+      return checked
+        ? upsertTomlStringValue(value, "approval_policy", "never")
+        : removeTomlKeyIfMatch(value, "approval_policy", "never");
     case "fastTier":
       return checked
         ? upsertTomlStringValue(value, "service_tier", "fast")
@@ -178,14 +258,28 @@ export const toggleCodexQuickOption = (
       return checked
         ? upsertTomlStringValue(value, "model_reasoning_effort", "high")
         : removeTomlKeyIfMatch(value, "model_reasoning_effort", "high");
+    case "planHighReasoning":
+      return checked
+        ? upsertTomlStringValue(value, "plan_mode_reasoning_effort", "high")
+        : removeTomlKeyIfMatch(value, "plan_mode_reasoning_effort", "high");
     case "conciseReasoningSummary":
       return checked
         ? upsertTomlStringValue(value, "model_reasoning_summary", "concise")
         : removeTomlKeyIfMatch(value, "model_reasoning_summary", "concise");
+    case "detailedReasoningSummary":
+      return checked
+        ? upsertTomlStringValue(value, "model_reasoning_summary", "detailed")
+        : removeTomlKeyIfMatch(value, "model_reasoning_summary", "detailed");
     case "verboseOutput":
       return checked
         ? upsertTomlStringValue(value, "model_verbosity", "high")
         : removeTomlKeyIfMatch(value, "model_verbosity", "high");
+    case "rawAgentReasoning":
+      return checked
+        ? upsertTomlBoolValue(value, "show_raw_agent_reasoning", true)
+        : getTomlBoolValue(value, "show_raw_agent_reasoning") === true
+          ? removeTomlKey(value, "show_raw_agent_reasoning")
+          : value;
     default:
       return value;
   }

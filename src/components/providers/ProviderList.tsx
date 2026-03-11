@@ -99,10 +99,12 @@ import {
   type StreamCheckConfig,
   type StreamCheckResult,
 } from "@/lib/api/model-test";
+import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 import {
   hasCommonConfigSnippet,
   hasTomlCommonConfigSnippet,
   extractCodexModelName,
+  safeParseJsonObject,
   setCodexModelName,
   updateCommonConfigSnippet,
   updateTomlCommonConfigSnippet,
@@ -1105,28 +1107,18 @@ export function ProviderList({
         fastMode: false,
       };
     }
-    try {
-      const config = JSON.parse(commonConfigSnippet || "{}");
-      return {
-        hideAttribution:
-          config?.attribution?.commit === "" && config?.attribution?.pr === "",
-        alwaysThinking: config?.alwaysThinkingEnabled === true,
-        teammates:
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
-        skipAllPermissions:
-          config?.permissions?.defaultMode === "bypassPermissions",
-        fastMode: config?.fastMode === true,
-      };
-    } catch {
-      return {
-        hideAttribution: false,
-        alwaysThinking: false,
-        teammates: false,
-        skipAllPermissions: false,
-        fastMode: false,
-      };
-    }
+    const config = safeParseJsonObject(commonConfigSnippet || "{}").value;
+    return {
+      hideAttribution:
+        config?.attribution?.commit === "" && config?.attribution?.pr === "",
+      alwaysThinking: config?.alwaysThinkingEnabled === true,
+      teammates:
+        config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
+        config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
+      skipAllPermissions:
+        config?.permissions?.defaultMode === "bypassPermissions",
+      fastMode: config?.fastMode === true,
+    };
   }, [appId, commonConfigSnippet]);
 
   const geminiSnippetToggleStates = useMemo(() => {
@@ -1155,60 +1147,67 @@ export function ProviderList({
   const handleClaudeSnippetToggle = useCallback(
     (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
       if (appId !== "claude") return;
-      try {
-        const config = JSON.parse(commonConfigSnippet || "{}");
-        switch (toggleKey) {
-          case "hideAttribution":
-            if (checked) {
-              config.attribution = { commit: "", pr: "" };
-            } else {
-              delete config.attribution;
-            }
-            break;
-          case "alwaysThinking":
-            if (checked) {
-              config.alwaysThinkingEnabled = true;
-            } else {
-              delete config.alwaysThinkingEnabled;
-            }
-            break;
-          case "teammates":
-            if (!config.env) config.env = {};
-            if (checked) {
-              config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
-            } else {
-              delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
-              if (Object.keys(config.env).length === 0) delete config.env;
-            }
-            break;
-          case "skipAllPermissions":
-            if (!config.permissions) config.permissions = {};
-            if (checked) {
-              config.permissions.defaultMode = "bypassPermissions";
-              delete config.permissions.disableBypassPermissionsMode;
-            } else if (config.permissions.defaultMode === "bypassPermissions") {
-              delete config.permissions.defaultMode;
-            }
-            if (Object.keys(config.permissions).length === 0) {
-              delete config.permissions;
-            }
-            break;
-          case "fastMode":
-            if (checked) {
-              config.fastMode = true;
-            } else {
-              delete config.fastMode;
-            }
-            break;
-        }
-
-        setCommonConfigSnippet(JSON.stringify(config, null, 2));
-        setCommonConfigError("");
-      } catch {
-        // ignore invalid JSON
+      const parsed = safeParseJsonObject(
+        commonConfigSnippet || "{}",
+        t("claudeConfig.commonConfigSnippet", {
+          defaultValue: "通用配置片段",
+        }),
+      );
+      if (parsed.error) {
+        setCommonConfigError(parsed.error);
+        return;
       }
+      const config = parsed.value ?? {};
+
+      switch (toggleKey) {
+        case "hideAttribution":
+          if (checked) {
+            config.attribution = { commit: "", pr: "" };
+          } else {
+            delete config.attribution;
+          }
+          break;
+        case "alwaysThinking":
+          if (checked) {
+            config.alwaysThinkingEnabled = true;
+          } else {
+            delete config.alwaysThinkingEnabled;
+          }
+          break;
+        case "teammates":
+          if (!config.env) config.env = {};
+          if (checked) {
+            config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
+          } else {
+            delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+            if (Object.keys(config.env).length === 0) delete config.env;
+          }
+          break;
+        case "skipAllPermissions":
+          if (!config.permissions) config.permissions = {};
+          if (checked) {
+            config.permissions.defaultMode = "bypassPermissions";
+            delete config.permissions.disableBypassPermissionsMode;
+          } else if (config.permissions.defaultMode === "bypassPermissions") {
+            delete config.permissions.defaultMode;
+          }
+          if (Object.keys(config.permissions).length === 0) {
+            delete config.permissions;
+          }
+          break;
+        case "fastMode":
+          if (checked) {
+            config.fastMode = true;
+          } else {
+            delete config.fastMode;
+          }
+          break;
+      }
+
+      setCommonConfigSnippet(JSON.stringify(config, null, 2));
+      setCommonConfigError("");
     },
-    [appId, commonConfigSnippet],
+    [appId, commonConfigSnippet, t],
   );
 
   const handleGeminiSnippetToggle = useCallback(
@@ -1573,6 +1572,16 @@ export function ProviderList({
           defaultValue: "通用配置片段",
         }),
       );
+    } else if (appId === "codex") {
+      const tomlError = validateTomlText(commonConfigSnippet);
+      if (tomlError) {
+        validationError =
+          tomlError === "mustBeObject" || tomlError === "parseError"
+            ? t("mcp.error.tomlInvalid", {
+                defaultValue: "TOML 格式错误，请检查",
+              })
+            : `TOML 解析错误: 通用配置片段: ${tomlError}`;
+      }
     } else if (appId === "gemini") {
       if (parsedGeminiSnippet.error) {
         validationError = parsedGeminiSnippet.error;
@@ -1659,7 +1668,17 @@ export function ProviderList({
               if (updatedConfig === originalConfig) {
                 continue;
               }
-              const updatedSettingsConfig = JSON.parse(updatedConfig);
+              const updatedSettingsConfigResult = safeParseJsonObject(
+                updatedConfig,
+                t("provider.configJson", {
+                  defaultValue: "配置 JSON",
+                }),
+              );
+              if (updatedSettingsConfigResult.error) {
+                throw new Error(updatedSettingsConfigResult.error);
+              }
+              const updatedSettingsConfig =
+                updatedSettingsConfigResult.value ?? {};
               await providersApi.update(
                 { ...provider, settingsConfig: updatedSettingsConfig },
                 appId,
@@ -1682,6 +1701,17 @@ export function ProviderList({
               }
               if (updatedConfig === originalConfig) {
                 continue;
+              }
+              const mergedTomlError = validateTomlText(updatedConfig);
+              if (mergedTomlError) {
+                throw new Error(
+                  mergedTomlError === "mustBeObject" ||
+                  mergedTomlError === "parseError"
+                    ? t("mcp.error.tomlInvalid", {
+                        defaultValue: "TOML 格式错误，请检查",
+                      })
+                    : `TOML 解析错误: config.toml: ${mergedTomlError}`,
+                );
               }
               const updatedSettingsConfig = {
                 ...(provider.settingsConfig ?? {}),

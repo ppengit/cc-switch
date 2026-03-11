@@ -34,6 +34,7 @@ interface ToolVersion {
   version: string | null;
   latest_version: string | null;
   error: string | null;
+  install_source: "native" | "npm" | null;
   env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
   wsl_distro: string | null;
 }
@@ -85,6 +86,21 @@ const ENV_BADGE_CONFIG: Record<
     labelKey: "settings.envBadge.linux",
     className:
       "bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20",
+  },
+};
+
+const INSTALL_SOURCE_BADGE_CONFIG: Record<
+  string,
+  { labelKey: string; className: string }
+> = {
+  native: {
+    labelKey: "settings.toolInstallSourceNative",
+    className:
+      "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+  },
+  npm: {
+    labelKey: "settings.toolInstallSourceNpm",
+    className: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
   },
 };
 
@@ -266,6 +282,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         await settingsApi.updateTool(toolName, {
           envType: tool.env_type,
           wslDistro: tool.wsl_distro ?? undefined,
+          installSource: tool.install_source,
         });
         toast.success(
           t("settings.toolUpdateStarted", {
@@ -567,6 +584,17 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                         {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
                       </span>
                     )}
+                    {tool?.install_source &&
+                      INSTALL_SOURCE_BADGE_CONFIG[tool.install_source] && (
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded-full border ${INSTALL_SOURCE_BADGE_CONFIG[tool.install_source].className}`}
+                        >
+                          {t(
+                            INSTALL_SOURCE_BADGE_CONFIG[tool.install_source]
+                              .labelKey,
+                          )}
+                        </span>
+                      )}
                     {/* WSL Shell Selector */}
                     {tool?.env_type === "wsl" && (
                       <Select
