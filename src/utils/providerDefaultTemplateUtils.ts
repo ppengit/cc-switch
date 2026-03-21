@@ -1,4 +1,5 @@
 import type { AppId } from "@/lib/api";
+import { validateToml } from "@/utils/tomlUtils";
 
 type SupportedTemplateApp = Extract<AppId, "claude" | "codex" | "gemini">;
 
@@ -15,7 +16,7 @@ const ALLOWED_PROVIDER_TEMPLATE_PLACEHOLDERS: Record<
     "sonnet_model",
     "opus_model",
   ],
-  codex: ["api_key", "base_url", "model", "reasoning_effort"],
+  codex: ["base_url", "model", "reasoning_effort"],
   gemini: ["api_key", "base_url", "model"],
 };
 
@@ -32,12 +33,17 @@ const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<SupportedTemplateApp, string> 
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "{{opus_model}}"
   }
 }`,
-    codex: `{
-  "auth": {
-    "OPENAI_API_KEY": "{{api_key}}"
-  },
-  "config": "model_provider = \\"custom\\"\\nmodel = \\"{{model}}\\"\\nmodel_reasoning_effort = \\"{{reasoning_effort}}\\"\\ndisable_response_storage = true\\n\\n[model_providers.custom]\\nname = \\"custom\\"\\nwire_api = \\"responses\\"\\nrequires_openai_auth = true\\nbase_url = \\"{{base_url}}\\"\\n"
-}`,
+    codex: `model_provider = "custom"
+model = "{{model}}"
+model_reasoning_effort = "{{reasoning_effort}}"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "{{base_url}}"
+`,
     gemini: `{
   "env": {
     "GOOGLE_GEMINI_BASE_URL": "{{base_url}}",
@@ -62,7 +68,6 @@ const FALLBACK_PROVIDER_DEFAULT_VALUES: Record<
     opus_model: "claude-sonnet-4-20250514",
   },
   codex: {
-    api_key: "",
     base_url: "",
     model: "gpt-5.4",
     reasoning_effort: "xhigh",
@@ -101,10 +106,17 @@ export function validateProviderDefaultTemplate(
     return "";
   }
 
-  try {
-    JSON.parse(trimmed);
-  } catch {
-    return "默认 Provider 模板必须是合法 JSON";
+  if (appId === "codex") {
+    const tomlError = validateToml(trimmed);
+    if (tomlError) {
+      return `默认供应商模板必须是合法的 TOML: ${tomlError}`;
+    }
+  } else {
+    try {
+      JSON.parse(trimmed);
+    } catch {
+      return "默认供应商模板必须是合法 JSON";
+    }
   }
 
   const allowed = new Set(ALLOWED_PROVIDER_TEMPLATE_PLACEHOLDERS[appId]);
@@ -112,7 +124,7 @@ export function validateProviderDefaultTemplate(
   for (const match of matches) {
     const placeholder = (match[1] || "").trim();
     if (!allowed.has(placeholder)) {
-      return `默认 Provider 模板包含不支持的占位符: {{${placeholder}}}`;
+      return `默认供应商模板包含不支持的占位符: {{${placeholder}}}`;
     }
   }
 
@@ -136,6 +148,10 @@ export function renderProviderDefaultTemplate(
   const rendered = Object.entries(values).reduce((acc, [key, value]) => {
     return acc.split(`{{${key}}}`).join(value ?? "");
   }, templateSource);
+
+  if (appId === "codex") {
+    return rendered;
+  }
 
   try {
     const parsed = JSON.parse(rendered);

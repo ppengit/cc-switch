@@ -1,5 +1,11 @@
 import type { AppId } from "@/lib/api/types";
-import type { McpServer, Provider, Settings } from "@/types";
+import type {
+  McpServer,
+  Provider,
+  SessionMessage,
+  SessionMeta,
+  Settings,
+} from "@/types";
 import type {
   AppProxyConfig,
   ProviderSessionOccupancy,
@@ -11,6 +17,9 @@ type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
 type AppProxyConfigState = Record<AppId, AppProxyConfig>;
 type SessionBindingsState = Record<AppId, Record<string, SessionProviderBinding>>;
+type ProviderDefaultTemplateState = Partial<
+  Record<"claude" | "codex" | "gemini", string | null>
+>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -99,13 +108,6 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   sessionIdleTtlMinutes: 30,
 });
 
-export const setSessionFixtures = (
-  _sessions: unknown[],
-  _messages: Record<string, unknown>,
-) => {
-  // Session fixture state is not modeled in this lightweight MSW store yet.
-};
-
 const createDefaultAppProxyConfigs = (): AppProxyConfigState => ({
   claude: createDefaultAppProxyConfig("claude"),
   codex: createDefaultAppProxyConfig("codex"),
@@ -136,6 +138,13 @@ let settingsState: Settings = {
   language: "zh",
 };
 let appConfigDirOverride: string | null = null;
+let providerDefaultTemplates: ProviderDefaultTemplateState = {
+  claude: null,
+  codex: null,
+  gemini: null,
+};
+let sessionsState: SessionMeta[] = [];
+let sessionMessagesState: Record<string, SessionMessage[]> = {};
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
@@ -184,6 +193,13 @@ export const resetProviderState = () => {
     language: "zh",
   };
   appConfigDirOverride = null;
+  providerDefaultTemplates = {
+    claude: null,
+    codex: null,
+    gemini: null,
+  };
+  sessionsState = [];
+  sessionMessagesState = {};
   mcpConfigs = {
     claude: {
       sample: {
@@ -213,6 +229,16 @@ export const resetProviderState = () => {
     opencode: {},
     openclaw: {},
   };
+};
+
+export const setSessionFixtures = (
+  sessions: SessionMeta[],
+  messages: Record<string, SessionMessage[]>,
+) => {
+  sessionsState = JSON.parse(JSON.stringify(sessions)) as SessionMeta[];
+  sessionMessagesState = JSON.parse(
+    JSON.stringify(messages),
+  ) as Record<string, SessionMessage[]>;
 };
 
 export const getProviders = (appType: AppId) =>
@@ -393,6 +419,44 @@ export const getAppConfigDirOverride = () => appConfigDirOverride;
 
 export const setAppConfigDirOverrideState = (value: string | null) => {
   appConfigDirOverride = value;
+};
+
+export const getProviderDefaultTemplateState = (
+  appType: "claude" | "codex" | "gemini",
+) => providerDefaultTemplates[appType] ?? null;
+
+export const setProviderDefaultTemplateState = (
+  appType: "claude" | "codex" | "gemini",
+  value: string | null,
+) => {
+  providerDefaultTemplates[appType] = value;
+};
+
+export const listSessions = (): SessionMeta[] =>
+  JSON.parse(JSON.stringify(sessionsState)) as SessionMeta[];
+
+export const getSessionMessages = (
+  providerId: string,
+  sourcePath: string,
+): SessionMessage[] => {
+  const key = `${providerId}:${sourcePath}`;
+  return JSON.parse(JSON.stringify(sessionMessagesState[key] ?? [])) as SessionMessage[];
+};
+
+export const deleteSession = (
+  providerId: string,
+  sessionId: string,
+  sourcePath: string,
+) => {
+  sessionsState = sessionsState.filter(
+    (session) =>
+      !(
+        session.providerId === providerId &&
+        session.sessionId === sessionId &&
+        session.sourcePath === sourcePath
+      ),
+  );
+  delete sessionMessagesState[`${providerId}:${sourcePath}`];
 };
 
 export const getMcpConfig = (appType: AppId) => {

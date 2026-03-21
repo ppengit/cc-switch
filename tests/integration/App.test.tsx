@@ -149,6 +149,7 @@ const renderApp = (AppComponent: ComponentType) => {
 describe("App integration with MSW", () => {
   beforeEach(() => {
     resetProviderState();
+    window.localStorage.clear();
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
   });

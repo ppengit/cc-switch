@@ -31,6 +31,7 @@ import { providersApi } from "@/lib/api/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Select,
   SelectContent,
@@ -126,6 +127,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     appId as ProviderFilter,
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   // 娴ｈ法鏁?FlexSearch 閸忋劍鏋冮幖婊呭偍
   const { search: searchSessions } = useSessionSearch({
@@ -387,6 +389,41 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       toast.error(extractErrorMessage(error) || t("sessionManager.openFailed"));
     }
   };
+
+  const handleDeleteSession = async () => {
+    if (
+      !selectedSession?.providerId ||
+      !selectedSession.sessionId ||
+      !selectedSession.sourcePath
+    ) {
+      return;
+    }
+
+    try {
+      await sessionsApi.delete({
+        providerId: selectedSession.providerId,
+        sessionId: selectedSession.sessionId,
+        sourcePath: selectedSession.sourcePath,
+      });
+      setDeleteDialogOpen(false);
+      toast.success(
+        t("sessionManager.deleteSuccess", {
+          defaultValue: "会话已删除",
+        }),
+      );
+      await refetch();
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.deleteFailed", {
+            defaultValue: "删除会话失败",
+          }),
+      );
+    }
+  };
+  const deleteSessionTitle = selectedSession
+    ? formatSessionTitle(selectedSession)
+    : "";
 
   return (
     <TooltipProvider>
@@ -961,6 +998,32 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 })}
                           </TooltipContent>
                         </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="gap-1.5 text-rose-500 hover:text-rose-600"
+                              onClick={() => setDeleteDialogOpen(true)}
+                              disabled={!selectedSession.sourcePath}
+                              aria-label={t("sessionManager.delete", {
+                                defaultValue: "删除会话",
+                              })}
+                            >
+                              <X className="size-3.5" />
+                              <span className="hidden sm:inline">
+                                {t("sessionManager.delete", {
+                                  defaultValue: "删除会话",
+                                })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("sessionManager.deleteTooltip", {
+                              defaultValue: "从本地列表中删除此会话记录",
+                            })}
+                          </TooltipContent>
+                        </Tooltip>
                       </div>
                     </div>
 
@@ -1073,6 +1136,23 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        isOpen={deleteDialogOpen}
+        title={t("sessionManager.deleteConfirmTitle", {
+          defaultValue: "删除会话",
+        })}
+        message={t("sessionManager.deleteConfirmMessage", {
+          defaultValue: `确认删除会话 “${deleteSessionTitle}” 吗？`,
+        })}
+        confirmText={t("sessionManager.delete", {
+          defaultValue: "删除会话",
+        })}
+        cancelText={t("common.cancel", {
+          defaultValue: "取消",
+        })}
+        onConfirm={() => void handleDeleteSession()}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
     </TooltipProvider>
   );
 }

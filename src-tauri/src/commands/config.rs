@@ -58,7 +58,7 @@ fn validate_provider_default_template_placeholders(
             "sonnet_model",
             "opus_model",
         ],
-        "codex" => &["api_key", "base_url", "model", "reasoning_effort"],
+        "codex" => &["base_url", "model", "reasoning_effort"],
         "gemini" => &["api_key", "base_url", "model"],
         _ => return Ok(()),
     };
@@ -70,7 +70,7 @@ fn validate_provider_default_template_placeholders(
         let placeholder = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
         if !allowed.contains(&placeholder) {
             return Err(format!(
-                "默认 Provider 模板包含不支持的占位符: {{{{{placeholder}}}}}"
+                "默认供应商模板包含不支持的占位符: {{{{{placeholder}}}}}"
             ));
         }
     }
@@ -384,7 +384,14 @@ pub async fn set_provider_default_template(
     }
 
     if !template.trim().is_empty() {
-        serde_json::from_str::<serde_json::Value>(&template).map_err(invalid_json_format_error)?;
+        if app_type == "codex" {
+            template
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(invalid_toml_format_error)?;
+        } else {
+            serde_json::from_str::<serde_json::Value>(&template)
+                .map_err(invalid_json_format_error)?;
+        }
         validate_provider_default_template_placeholders(&app_type, &template)?;
     }
 
@@ -424,7 +431,7 @@ mod tests {
     #[test]
     fn validate_provider_default_template_placeholders_rejects_unknown_placeholder() {
         let err =
-            validate_provider_default_template_placeholders("codex", r#"{"config":"{{unknown}}"}"#)
+            validate_provider_default_template_placeholders("codex", r#"model = "{{unknown}}""#)
                 .expect_err("unknown placeholder should be rejected");
         assert!(err.contains("unknown"));
     }

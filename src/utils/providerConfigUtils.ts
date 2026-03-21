@@ -2,7 +2,7 @@
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import { normalizeTomlText } from "@/utils/textNormalization";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 
 const isPlainObject = (value: unknown): value is Record<string, any> => {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -364,52 +364,247 @@ export interface UpdateTomlCommonConfigResult {
   error?: string;
 }
 
-// Write/remove common config snippet to/from TOML config (structural merge)
+const CODEX_PROVIDER_CONFIG_PLACEHOLDER = "{{provider.config}}";
+const CODEX_MCP_CONFIG_PLACEHOLDER = "{{mcp.config}}";
+
+const buildCommonSnippetBlock = (snippetString: string) => {
+  const normalizedSnippet = normalizeLineEndings(snippetString).trim();
+  if (!normalizedSnippet) {
+    return "";
+  }
+
+  return [
+    "# cc-switch common config start",
+    normalizedSnippet,
+    "# cc-switch common config end",
+    "",
+  ].join("\n");
+};
+
+const stripManagedTomlCommonSnippetBlock = (tomlString: string) => {
+  const lines = normalizeLineEndings(tomlString).split("\n");
+  const output: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "# cc-switch common config start") {
+      skipping = true;
+      continue;
+    }
+
+    if (trimmed === "# cc-switch common config end") {
+      skipping = false;
+      continue;
+    }
+
+    if (!skipping) {
+      output.push(line);
+    }
+  }
+
+  return output.join("\n");
+};
+
+const stripLegacyLeadingTomlCommonSnippetBlock = (
+  tomlString: string,
+  snippetString: string,
+) => {
+  const normalizedConfig = normalizeLineEndings(tomlString);
+  const normalizedSnippet = normalizeLineEndings(snippetString).trim();
+
+  if (!normalizedSnippet) {
+    return normalizedConfig;
+  }
+
+  const configTrimmedStart = normalizedConfig.trimStart();
+  if (!configTrimmedStart.startsWith(normalizedSnippet)) {
+    return normalizedConfig;
+  }
+
+  const leadingWhitespaceLength =
+    normalizedConfig.length - configTrimmedStart.length;
+  let remainder = configTrimmedStart.slice(normalizedSnippet.length);
+  remainder = remainder.replace(/^\s*\n/, "");
+
+  return `${normalizedConfig.slice(0, leadingWhitespaceLength)}${remainder}`;
+};
+
+const normalizeLineEndings = (value: string) => value.replace(/\r\n?/g, "\n");
+
+const finalizeTomlCommonSnippetDocument = (tomlString: string) => {
+  const normalized = normalizeLineEndings(tomlString)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return normalized ? `${normalized}\n` : "";
+};
+
+const CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS = [
+  /^\s*\[mcp_servers(?:\.[^\]]+)?\]\s*$/m,
+  /^\s*\[mcp\.servers(?:\.[^\]]+)?\]\s*$/m,
+  /^\s*mcp_servers\s*=/m,
+];
+
+const CODEX_PROVIDER_CONFIG_STUB = `model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.com"`;
+
+const CODEX_MCP_CONFIG_STUB = `[mcp_servers.example]
+type = "stdio"
+command = "echo"`;
+
+const buildCodexTomlValidationSource = (value: string) =>
+  value
+    .split(CODEX_PROVIDER_CONFIG_PLACEHOLDER)
+    .join(CODEX_PROVIDER_CONFIG_STUB)
+    .split(CODEX_MCP_CONFIG_PLACEHOLDER)
+    .join(CODEX_MCP_CONFIG_STUB);
+
+const formatTomlValidationError = (error: string, fieldName: string) =>
+  `${fieldName}格式错误（TOML）：${error}`;
+
+export const validateCodexCommonConfigSnippet = (
+  snippetString: string,
+): string => {
+  const trimmed = snippetString.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const providerPlaceholderCount = (
+    trimmed.match(/\{\{provider\.config\}\}/g) ?? []
+  ).length;
+  if (providerPlaceholderCount !== 1) {
+    return "Codex 通用配置必须且只能包含一个 {{provider.config}} 占位符";
+  }
+
+  const mcpPlaceholderCount = (trimmed.match(/\{\{mcp\.config\}\}/g) ?? [])
+    .length;
+  if (mcpPlaceholderCount > 1) {
+    return "Codex 通用配置最多只能包含一个 {{mcp.config}} 占位符";
+  }
+
+  if (
+    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) => pattern.test(trimmed))
+  ) {
+    return "通用配置片段不能直接包含 mcp_servers，MCP 请使用 {{mcp.config}} 占位符";
+  }
+
+  const validationSource = buildCodexTomlValidationSource(trimmed);
+  const tomlError = validateTomlText(validationSource);
+  if (tomlError) {
+    return formatTomlValidationError(tomlError, "通用配置片段");
+  }
+
+  return "";
+};
+
+// 将通用配置片段写入/移除 TOML 配置
 export const updateTomlCommonConfigSnippet = (
   tomlString: string,
   snippetString: string,
   enabled: boolean,
 ): UpdateTomlCommonConfigResult => {
-  if (!snippetString.trim()) {
-    return { updatedConfig: tomlString };
-  }
+  const trimmedSnippet = snippetString.trim();
+  const strippedManaged = stripManagedTomlCommonSnippetBlock(tomlString);
 
-  try {
-    const config = parseToml(normalizeTomlText(tomlString || ""));
-    const snippet = parseToml(normalizeTomlText(snippetString));
-
+  if (!trimmedSnippet) {
     if (enabled) {
-      const merged = deepMerge(
-        deepClone(config) as Record<string, any>,
-        deepClone(snippet) as Record<string, any>,
-      );
-      return { updatedConfig: stringifyToml(merged) };
-    } else {
-      const result = deepClone(config) as Record<string, any>;
-      deepRemove(result, snippet as Record<string, any>);
-      return { updatedConfig: stringifyToml(result) };
+      return {
+        updatedConfig: tomlString,
+      };
     }
-  } catch (e) {
-    return { updatedConfig: tomlString, error: String(e) };
+
+    const updatedConfig = finalizeTomlCommonSnippetDocument(strippedManaged);
+    const cleanedError = validateTomlText(
+      buildCodexTomlValidationSource(updatedConfig),
+    );
+    if (cleanedError) {
+      return {
+        updatedConfig: tomlString,
+        error: formatTomlValidationError(cleanedError, "config.toml"),
+      };
+    }
+
+    return {
+      updatedConfig,
+    };
   }
+
+  const validationError = validateCodexCommonConfigSnippet(snippetString);
+  if (validationError) {
+    return {
+      updatedConfig: tomlString,
+      error: validationError,
+    };
+  }
+
+  const cleaned = stripLegacyLeadingTomlCommonSnippetBlock(
+    strippedManaged,
+    trimmedSnippet,
+  );
+
+  if (enabled) {
+    const block = buildCommonSnippetBlock(snippetString);
+    const trimmed = cleaned.trimStart();
+    const updatedConfig = trimmed ? block + trimmed : `${block.trimEnd()}\n`;
+    const mergedError = validateTomlText(
+      buildCodexTomlValidationSource(updatedConfig),
+    );
+    if (mergedError) {
+      return {
+        updatedConfig: tomlString,
+        error: formatTomlValidationError(mergedError, "合并后的 config.toml"),
+      };
+    }
+
+    return {
+      updatedConfig,
+    };
+  }
+
+  const updatedConfig = finalizeTomlCommonSnippetDocument(cleaned);
+  const cleanedError = validateTomlText(
+    buildCodexTomlValidationSource(updatedConfig),
+  );
+  if (cleanedError) {
+    return {
+      updatedConfig: tomlString,
+      error: formatTomlValidationError(cleanedError, "config.toml"),
+    };
+  }
+
+  return {
+    updatedConfig,
+  };
 };
 
-// Check if TOML config already contains the common config snippet (structural subset check)
+// 检查当前配置是否已包含通用配置片段
 export const hasTomlCommonConfigSnippet = (
   tomlString: string,
   snippetString: string,
 ): boolean => {
-  if (!snippetString.trim()) return false;
+  const snippet = snippetString.trim();
+  if (!snippet) return false;
 
-  try {
-    const config = parseToml(normalizeTomlText(tomlString || ""));
-    const snippet = parseToml(normalizeTomlText(snippetString));
-    return isSubset(config, snippet);
-  } catch {
-    // Fallback to text-based matching if TOML parsing fails
-    const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-    return norm(tomlString).includes(norm(snippetString));
+  const normalizedConfig = normalizeLineEndings(tomlString).trim();
+  if (!normalizedConfig) return false;
+
+  const block = buildCommonSnippetBlock(snippetString).trim();
+  if (block && normalizedConfig.includes(block)) {
+    return true;
   }
+
+  const cleanedConfig = stripManagedTomlCommonSnippetBlock(tomlString);
+  return normalizeLineEndings(cleanedConfig).trimStart().startsWith(snippet);
 };
 
 // ========== Codex base_url utils ==========

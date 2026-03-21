@@ -7,21 +7,26 @@ import {
   deleteProvider,
   getAppProxyConfig,
   getCurrentProviderId,
+  getProviderDefaultTemplateState,
   getProviderSessionOccupancy,
   getProviders,
+  getSessionMessages,
   getSessionProviderBinding,
   getSessionRoutingMasterEnabledState,
+  listSessions,
   listProviders,
   listSessionProviderBindings,
   removeSessionProviderBinding,
   resetProviderState,
   setAppProxyConfig,
   setCurrentProviderId,
+  setProviderDefaultTemplateState,
   setSessionProviderBindingPin,
   setSessionRoutingMasterEnabledState,
   switchSessionProviderBinding,
   updateProvider,
   updateSortOrder,
+  deleteSession as deleteSessionState,
   getSettings,
   setSettings,
   getAppConfigDirOverride,
@@ -117,6 +122,20 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
   http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_provider_default_template`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: "claude" | "codex" | "gemini" }>(
+      request,
+    );
+    return success(getProviderDefaultTemplateState(appType));
+  }),
+  http.post(`${TAURI_ENDPOINT}/set_provider_default_template`, async ({ request }) => {
+    const { appType, template } = await withJson<{
+      appType: "claude" | "codex" | "gemini";
+      template: string;
+    }>(request);
+    setProviderDefaultTemplateState(appType, template || null);
+    return success(true);
+  }),
   http.post(`${TAURI_ENDPOINT}/get_stream_check_config`, () =>
     success({
       timeoutSecs: 45,
@@ -266,6 +285,24 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/sync_current_providers_live`, () =>
     success({ success: true }),
   ),
+
+  http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
+  http.post(`${TAURI_ENDPOINT}/get_session_messages`, async ({ request }) => {
+    const { providerId, sourcePath } = await withJson<{
+      providerId: string;
+      sourcePath: string;
+    }>(request);
+    return success(getSessionMessages(providerId, sourcePath));
+  }),
+  http.post(`${TAURI_ENDPOINT}/delete_session`, async ({ request }) => {
+    const { providerId, sessionId, sourcePath } = await withJson<{
+      providerId: string;
+      sessionId: string;
+      sourcePath: string;
+    }>(request);
+    deleteSessionState(providerId, sessionId, sourcePath);
+    return success(true);
+  }),
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
   http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {

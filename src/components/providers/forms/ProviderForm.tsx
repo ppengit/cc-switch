@@ -402,21 +402,9 @@ export function ProviderForm({
       return;
     }
 
-    let template: {
-      auth?: Record<string, unknown>;
-      config?: string;
-    } = {};
-    try {
-      template = JSON.parse(renderedDefaultProviderSettingsConfig) as {
-        auth?: Record<string, unknown>;
-        config?: string;
-      };
-    } catch {
-      template = {};
-    }
     resetCodexConfig(
-      template.auth ?? { OPENAI_API_KEY: "" },
-      typeof template.config === "string" ? template.config : "",
+      { OPENAI_API_KEY: "" },
+      renderedDefaultProviderSettingsConfig,
     );
   }, [
     appId,
@@ -1067,18 +1055,9 @@ export function ProviderForm({
       form.reset(defaultValues);
 
       if (appId === "codex") {
-        let template: { auth?: Record<string, unknown>; config?: string } = {};
-        try {
-          template = JSON.parse(renderedDefaultProviderSettingsConfig) as {
-            auth?: Record<string, unknown>;
-            config?: string;
-          };
-        } catch {
-          template = {};
-        }
         resetCodexConfig(
-          template.auth ?? { OPENAI_API_KEY: "" },
-          typeof template.config === "string" ? template.config : "",
+          { OPENAI_API_KEY: "" },
+          renderedDefaultProviderSettingsConfig,
         );
       }
       if (appId === "gemini") {
