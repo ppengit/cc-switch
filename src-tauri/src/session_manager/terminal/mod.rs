@@ -1,31 +1,56 @@
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 pub fn launch_terminal(
     target: &str,
     command: &str,
     cwd: Option<&str>,
-    custom_config: Option<&str>,
+    _custom_config: Option<&str>,
 ) -> Result<(), String> {
     if command.trim().is_empty() {
         return Err("Resume command is empty".to_string());
     }
 
-    if !cfg!(target_os = "macos") {
-        return Err("Terminal resume is only supported on macOS".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        return match target {
+            "terminal" => launch_macos_terminal(command, cwd),
+            "iTerm" | "iterm" => launch_iterm(command, cwd),
+            "ghostty" => launch_ghostty(command, cwd),
+            "kitty" => launch_kitty(command, cwd),
+            "wezterm" => launch_wezterm(command, cwd),
+            "alacritty" => launch_alacritty(command, cwd),
+            "custom" => launch_custom(command, cwd, _custom_config),
+            _ => Err(format!("Unsupported terminal target: {target}")),
+        };
     }
 
-    match target {
-        "terminal" => launch_macos_terminal(command, cwd),
-        "iTerm" | "iterm" => launch_iterm(command, cwd),
-        "ghostty" => launch_ghostty(command, cwd),
-        "kitty" => launch_kitty(command, cwd),
-        "wezterm" => launch_wezterm(command, cwd),
-        "alacritty" => launch_alacritty(command, cwd),
-        "custom" => launch_custom(command, cwd, custom_config),
-        _ => Err(format!("Unsupported terminal target: {target}")),
+    #[cfg(target_os = "windows")]
+    {
+        if target == "custom" {
+            return Err("Custom terminal resume is not supported on Windows".to_string());
+        }
+        return launch_windows_terminal_command(command, cwd);
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        if target == "custom" {
+            return Err("Custom terminal resume is not supported on Linux".to_string());
+        }
+        return launch_linux_terminal_command(command, cwd);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Err("Unsupported OS for terminal resume".to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn launch_macos_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
     let full_command = build_shell_command(command, cwd);
     let escaped = escape_osascript(&full_command);
@@ -49,6 +74,7 @@ end tell"#
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_iterm(command: &str, cwd: Option<&str>) -> Result<(), String> {
     let full_command = build_shell_command(command, cwd);
     let escaped = escape_osascript(&full_command);
@@ -76,6 +102,7 @@ end tell"#
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_ghostty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     // Ghostty usage: open -na Ghostty --args +work-dir=... -e shell -c command
 
@@ -120,6 +147,7 @@ fn launch_ghostty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_kitty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     let full_command = build_shell_command(command, cwd);
 
@@ -145,6 +173,7 @@ fn launch_kitty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_wezterm(command: &str, cwd: Option<&str>) -> Result<(), String> {
     // wezterm start --cwd ... -- command
     // To invoke via `open`, we use `open -na "WezTerm" --args start ...`
@@ -177,6 +206,7 @@ fn launch_wezterm(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_alacritty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     // Alacritty: open -na Alacritty --args --working-directory ... -e shell -c command
     let full_command = build_shell_command(command, None);
@@ -206,6 +236,7 @@ fn launch_alacritty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn launch_custom(
     command: &str,
     cwd: Option<&str>,
@@ -238,6 +269,180 @@ fn launch_custom(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn launch_windows_terminal_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    let preferred = crate::settings::get_preferred_terminal();
+    let terminal = preferred.as_deref().unwrap_or("cmd");
+
+    let temp_dir = std::env::temp_dir();
+    let bat_file = temp_dir.join(format!(
+        "cc_switch_session_resume_{}.bat",
+        uuid::Uuid::new_v4()
+    ));
+
+    let cd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd /d \"{}\"\r\n", value.replace('\"', "\"\"")))
+        .unwrap_or_default();
+
+    let content = format!(
+        "@echo off\r\n\
+setlocal\r\n\
+{cd_line}\
+call {command}\r\n\
+endlocal\r\n\
+del \"%~f0\" >nul 2>&1\r\n",
+        cd_line = cd_line,
+        command = command
+    );
+
+    std::fs::write(&bat_file, &content)
+        .map_err(|e| format!("写入会话恢复脚本失败: {e}"))?;
+
+    let bat_path = bat_file.to_string_lossy().to_string();
+    let bat_path_quoted = format!("\"{}\"", bat_path.replace('\"', "\"\""));
+    let ps_cmd = format!("& {}", bat_path_quoted);
+
+    let result = match terminal {
+        "powershell" => run_windows_start_command(
+            &["powershell", "-NoExit", "-Command", &ps_cmd],
+            "PowerShell",
+        ),
+        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal"),
+        _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"),
+    };
+
+    if result.is_err() && terminal != "cmd" {
+        log::warn!(
+            "首选终端 {} 启动失败，回退到 cmd: {:?}",
+            terminal,
+            result.as_ref().err()
+        );
+        return run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd");
+    }
+
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
+    let mut full_args = vec!["/C", "start", ""];
+    full_args.extend(args);
+
+    let output = Command::new("cmd")
+        .args(&full_args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("启动 {} 失败: {e}", terminal_name))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "{} 启动失败 (exit code: {:?}): {}",
+            terminal_name,
+            output.status.code(),
+            stderr
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn launch_linux_terminal_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let preferred = crate::settings::get_preferred_terminal();
+
+    let default_terminals = [
+        ("gnome-terminal", vec!["--"]),
+        ("konsole", vec!["-e"]),
+        ("xfce4-terminal", vec!["-e"]),
+        ("mate-terminal", vec!["--"]),
+        ("lxterminal", vec!["-e"]),
+        ("alacritty", vec!["-e"]),
+        ("kitty", vec!["-e"]),
+        ("ghostty", vec!["-e"]),
+    ];
+
+    let temp_dir = std::env::temp_dir();
+    let script_file = temp_dir.join(format!(
+        "cc_switch_session_resume_{}.sh",
+        uuid::Uuid::new_v4()
+    ));
+
+    let cwd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd \"{}\"", escape_shell_path(value)))
+        .unwrap_or_default();
+
+    let script_content = format!(
+        r#"#!/bin/bash
+trap 'rm -f "{script_file}"' EXIT
+{cwd_line}
+{command}
+exec bash --norc --noprofile
+"#,
+        script_file = script_file.display(),
+        cwd_line = cwd_line,
+        command = command
+    );
+
+    std::fs::write(&script_file, &script_content)
+        .map_err(|e| format!("写入会话恢复脚本失败: {e}"))?;
+
+    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("设置脚本权限失败: {e}"))?;
+
+    let terminals_to_try: Vec<(&str, Vec<&str>)> = if let Some(ref pref) = preferred {
+        let pref_args = default_terminals
+            .iter()
+            .find(|(name, _)| *name == pref.as_str())
+            .map(|(_, args)| args.iter().map(|s| *s).collect::<Vec<&str>>())
+            .unwrap_or_else(|| vec!["-e"]);
+
+        let mut list = vec![(pref.as_str(), pref_args)];
+        for (name, args) in &default_terminals {
+            if *name != pref.as_str() {
+                list.push((*name, args.iter().map(|s| *s).collect()));
+            }
+        }
+        list
+    } else {
+        default_terminals
+            .iter()
+            .map(|(name, args)| (*name, args.iter().map(|s| *s).collect()))
+            .collect()
+    };
+
+    let mut last_error = String::from("未找到可用的终端");
+    for (terminal, args) in terminals_to_try {
+        let terminal_exists = std::path::Path::new(&format!("/usr/bin/{}", terminal)).exists()
+            || std::path::Path::new(&format!("/bin/{}", terminal)).exists()
+            || std::path::Path::new(&format!("/usr/local/bin/{}", terminal)).exists()
+            || which_command(terminal);
+
+        if terminal_exists {
+            let result = Command::new(terminal)
+                .args(&args)
+                .arg("bash")
+                .arg(script_file.to_string_lossy().as_ref())
+                .spawn();
+
+            match result {
+                Ok(_) => return Ok(()),
+                Err(e) => last_error = format!("执行 {} 失败: {}", terminal, e),
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&script_file);
+    Err(last_error)
+}
+
+#[cfg(target_os = "macos")]
 fn build_shell_command(command: &str, cwd: Option<&str>) -> String {
     match cwd {
         Some(dir) if !dir.trim().is_empty() => {
@@ -247,11 +452,34 @@ fn build_shell_command(command: &str, cwd: Option<&str>) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn shell_escape(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }
 
+#[cfg(target_os = "macos")]
 fn escape_osascript(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "linux")]
+fn escape_shell_path(value: &str) -> String {
+    value.replace('"', "\\\"")
+}
+
+#[cfg(target_os = "linux")]
+fn which_command(cmd: &str) -> bool {
+    use std::env;
+    use std::path::Path;
+
+    if let Ok(path_var) = env::var("PATH") {
+        for path in env::split_paths(&path_var) {
+            let full = path.join(cmd);
+            if Path::new(&full).exists() {
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -2362,9 +2362,9 @@ export function ProviderList({
 
       <div
         ref={listScrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden scroll-visible px-1 pb-4"
+        className="flex-1 overflow-y-auto overflow-x-hidden scroll-visible px-1 pb-2"
       >
-        <div className="space-y-4">
+        <div className="space-y-4 pb-4">
           {filteredProviders.length === 0 ? (
             <div className="px-6 py-8 text-sm text-center border border-dashed rounded-lg border-border text-muted-foreground">
               {t("provider.noSearchResults", {

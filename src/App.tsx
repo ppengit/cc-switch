@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -33,7 +34,7 @@ import {
 } from "@/lib/api";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
 import { useProviderActions } from "@/hooks/useProviderActions";
-import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
+import { openclawKeys } from "@/hooks/useOpenClaw";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
@@ -47,7 +48,6 @@ import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
@@ -70,7 +70,6 @@ import WorkspaceFilesPanel from "@/components/workspace/WorkspaceFilesPanel";
 import EnvPanel from "@/components/openclaw/EnvPanel";
 import ToolsPanel from "@/components/openclaw/ToolsPanel";
 import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
-import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 
 type View =
   | "providers"
@@ -97,7 +96,17 @@ const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
 
+const formatDisplayVersion = (version?: string | null): string => {
+  if (!version) return "-";
+  const [core, build] = version.split("+");
+  if (build && /^\d+$/.test(build)) {
+    return `${core}.${build}`;
+  }
+  return version;
+};
+
 const STORAGE_KEY = "cc-switch-last-app";
+const SESSION_APP_STORAGE_KEY = "cc-switch-last-session-app";
 const VALID_APPS: AppId[] = [
   "claude",
   "codex",
@@ -105,6 +114,16 @@ const VALID_APPS: AppId[] = [
   "opencode",
   "openclaw",
 ];
+const SESSION_SUPPORTED_APPS: AppId[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "opencode",
+  "openclaw",
+];
+
+const isSessionSupportedApp = (app: AppId): boolean =>
+  SESSION_SUPPORTED_APPS.includes(app);
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -112,6 +131,14 @@ const getInitialApp = (): AppId => {
     return saved;
   }
   return "claude";
+};
+
+const getStoredSessionApp = (): AppId | null => {
+  const saved = localStorage.getItem(SESSION_APP_STORAGE_KEY) as AppId | null;
+  if (saved && SESSION_SUPPORTED_APPS.includes(saved)) {
+    return saved;
+  }
+  return null;
 };
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
@@ -147,10 +174,36 @@ function App() {
   const [currentView, setCurrentView] = useState<View>(getInitialView);
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [displayVersion, setDisplayVersion] = useState<string>("-");
+  const sessionAppResolvedRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(VIEW_STORAGE_KEY, currentView);
   }, [currentView]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, activeApp);
+  }, [activeApp]);
+
+  useEffect(() => {
+    let active = true;
+    const loadVersion = async () => {
+      try {
+        const version = await getVersion();
+        if (active) {
+          setDisplayVersion(formatDisplayVersion(version));
+        }
+      } catch {
+        if (active) {
+          setDisplayVersion("-");
+        }
+      }
+    };
+    void loadVersion();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const { data: settingsData } = useSettingsQuery();
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
@@ -170,24 +223,50 @@ function App() {
     return "claude"; // fallback
   };
 
+  const getPreferredSessionApp = useCallback((): AppId => {
+    const savedSessionApp = getStoredSessionApp();
+    if (
+      savedSessionApp &&
+      visibleApps[savedSessionApp] &&
+      isSessionSupportedApp(savedSessionApp)
+    ) {
+      return savedSessionApp;
+    }
+    if (visibleApps[activeApp] && isSessionSupportedApp(activeApp)) {
+      return activeApp;
+    }
+    return getFirstVisibleApp();
+  }, [activeApp, visibleApps]);
+
   useEffect(() => {
     if (!visibleApps[activeApp]) {
       setActiveApp(getFirstVisibleApp());
     }
   }, [visibleApps, activeApp]);
 
+  useEffect(() => {
+    if (currentView !== "sessions") {
+      sessionAppResolvedRef.current = false;
+      return;
+    }
+    if (sessionAppResolvedRef.current) return;
+    sessionAppResolvedRef.current = true;
+    const preferredSessionApp = getPreferredSessionApp();
+    if (preferredSessionApp !== activeApp) {
+      setActiveApp(preferredSessionApp);
+    }
+  }, [activeApp, currentView, getPreferredSessionApp]);
+
   // Fallback from sessions view when switching to an app without session support
   useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini"
-    ) {
+    if (currentView === "sessions" && !isSessionSupportedApp(activeApp)) {
       setCurrentView("providers");
     }
+  }, [activeApp, currentView]);
+
+  useEffect(() => {
+    if (currentView !== "sessions" || !isSessionSupportedApp(activeApp)) return;
+    localStorage.setItem(SESSION_APP_STORAGE_KEY, activeApp);
   }, [activeApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
@@ -230,23 +309,8 @@ function App() {
   });
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
-  const isOpenClawView =
-    activeApp === "openclaw" &&
-    (currentView === "providers" ||
-      currentView === "workspace" ||
-      currentView === "sessions" ||
-      currentView === "openclawEnv" ||
-      currentView === "openclawTools" ||
-      currentView === "openclawAgents");
-  const { data: openclawHealthWarnings = [] } =
-    useOpenClawHealth(isOpenClawView);
   const hasSkillsSupport = true;
-  const hasSessionSupport =
-    activeApp === "claude" ||
-    activeApp === "codex" ||
-    activeApp === "opencode" ||
-    activeApp === "openclaw" ||
-    activeApp === "gemini";
+  const hasSessionSupport = isSessionSupportedApp(activeApp);
 
   const {
     addProvider,
@@ -319,7 +383,6 @@ function App() {
 
     const setupListener = async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
         unsubscribe = await listen("universal-provider-synced", async () => {
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
           try {
@@ -555,9 +618,6 @@ function App() {
         await queryClient.invalidateQueries({
           queryKey: openclawKeys.liveProviderIds,
         });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
       }
       toast.success(
         t("notifications.removeFromConfigSuccess", {
@@ -646,9 +706,12 @@ function App() {
     await addProvider(duplicatedProvider);
   };
 
-  const handleOpenTerminal = async (provider: Provider) => {
+  const handleOpenTerminal = async (
+    provider: Provider,
+    options?: { cwd?: string },
+  ) => {
     try {
-      await providersApi.openTerminal(provider.id, activeApp);
+      await providersApi.openTerminal(provider.id, activeApp, options);
       toast.success(
         t("provider.terminalOpened", {
           defaultValue: "终端已打开",
@@ -656,6 +719,25 @@ function App() {
       );
     } catch (error) {
       console.error("[App] Failed to open terminal", error);
+      const errorMessage = extractErrorMessage(error);
+      toast.error(
+        t("provider.terminalOpenFailed", {
+          defaultValue: "打开终端失败",
+        }) + (errorMessage ? `: ${errorMessage}` : ""),
+      );
+    }
+  };
+
+  const handleOpenAppTerminal = async (options?: { cwd?: string }) => {
+    try {
+      await providersApi.openAppTerminal(activeApp, options);
+      toast.success(
+        t("provider.terminalOpened", {
+          defaultValue: "终端已打开",
+        }),
+      );
+    } catch (error) {
+      console.error("[App] Failed to open app terminal", error);
       const errorMessage = extractErrorMessage(error);
       toast.error(
         t("provider.terminalOpenFailed", {
@@ -685,6 +767,14 @@ function App() {
       console.error("[App] Failed to refresh tray menu", error);
     }
   };
+
+  const handleOpenSessionsView = useCallback(() => {
+    const preferredSessionApp = getPreferredSessionApp();
+    if (preferredSessionApp !== activeApp) {
+      setActiveApp(preferredSessionApp);
+    }
+    setCurrentView("sessions");
+  }, [activeApp, getPreferredSessionApp]);
 
   const renderContent = () => {
     const content = (() => {
@@ -738,7 +828,7 @@ function App() {
           );
         case "universal":
           return (
-            <div className="px-6 pt-4">
+            <div className="px-6 pt-4 pb-8">
               <UniversalProviderPanel />
             </div>
           );
@@ -755,62 +845,61 @@ function App() {
           return <AgentsDefaultsPanel />;
         default:
           return (
-            <div className="px-6 flex flex-col h-[calc(100vh-8rem)] overflow-hidden">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeApp}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <ProviderList
-                      providers={providers}
-                      currentProviderId={currentProviderId}
-                      appId={activeApp}
-                      isLoading={isLoading}
-                      isProxyRunning={isProxyRunning}
-                      isProxyTakeover={
-                        isProxyRunning && isCurrentAppTakeoverActive
-                      }
-                      activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
-                      onDelete={(provider) =>
-                        setConfirmAction({ provider, action: "delete" })
-                      }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" || activeApp === "openclaw"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
-                      onDuplicate={handleDuplicateProvider}
-                      onConfigureUsage={setUsageProvider}
-                      onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
-                      onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw" ? setAsDefaultModel : undefined
-                      }
-                    />
-                  </motion.div>
-                </AnimatePresence>
-              </div>
+            <div className="px-6 pb-6 flex flex-col h-full min-h-0 overflow-hidden">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeApp}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex-1 min-h-0"
+                >
+                  <ProviderList
+                    providers={providers}
+                    currentProviderId={currentProviderId}
+                    appId={activeApp}
+                    isLoading={isLoading}
+                    isProxyRunning={isProxyRunning}
+                    isProxyTakeover={
+                      isProxyRunning && isCurrentAppTakeoverActive
+                    }
+                    activeProviderId={activeProviderId}
+                    onSwitch={switchProvider}
+                    onEdit={(provider) => {
+                      setEditingProvider(provider);
+                    }}
+                    onDelete={(provider) =>
+                      setConfirmAction({ provider, action: "delete" })
+                    }
+                    onRemoveFromConfig={
+                      activeApp === "opencode" || activeApp === "openclaw"
+                        ? (provider) =>
+                            setConfirmAction({ provider, action: "remove" })
+                        : undefined
+                    }
+                    onDisableOmo={
+                      activeApp === "opencode" ? handleDisableOmo : undefined
+                    }
+                    onDisableOmoSlim={
+                      activeApp === "opencode"
+                        ? handleDisableOmoSlim
+                        : undefined
+                    }
+                    onDuplicate={handleDuplicateProvider}
+                    onConfigureUsage={setUsageProvider}
+                    onOpenWebsite={handleOpenWebsite}
+                    onOpenTerminal={
+                      activeApp === "claude" ? handleOpenTerminal : undefined
+                    }
+                    onOpenAppTerminal={handleOpenAppTerminal}
+                    onCreate={() => setIsAddOpen(true)}
+                    onSetAsDefault={
+                      activeApp === "openclaw" ? setAsDefaultModel : undefined
+                    }
+                  />
+                </motion.div>
+              </AnimatePresence>
             </div>
           );
       }
@@ -931,13 +1020,13 @@ function App() {
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
-                      "text-xl font-semibold transition-colors",
+                      "flex flex-col leading-tight transition-colors",
                       isProxyRunning && isCurrentAppTakeoverActive
                         ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
                         : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
                     )}
                   >
-                    CC Switch
+                    <span className="text-xl font-semibold">CC Switch</span>
                   </a>
                 </div>
                 <Button
@@ -952,12 +1041,6 @@ function App() {
                 >
                   <Settings className="w-4 h-4" />
                 </Button>
-                <UpdateBadge
-                  onClick={() => {
-                    setSettingsDefaultTab("about");
-                    setCurrentView("settings");
-                  }}
-                />
                 {isCurrentAppTakeoverActive && (
                   <Button
                     variant="ghost"
@@ -979,27 +1062,36 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
+            <div className="text-xs text-muted-foreground whitespace-nowrap pr-2">
+              {`CC Switch v${displayVersion}`}
+            </div>
             {currentView === "providers" &&
               activeApp !== "opencode" &&
-              activeApp !== "openclaw" && (
+              activeApp !== "openclaw" &&
+              settingsData?.enableLocalProxy && (
                 <div
                   className="flex shrink-0 items-center gap-1.5"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
-                  {settingsData?.enableLocalProxy && (
-                    <ProxyToggle activeApp={activeApp} />
-                  )}
-                  {settingsData?.enableFailoverToggle && (
+                  <ProxyToggle activeApp={activeApp} />
+                  <div
+                    className={cn(
+                      "transition-all duration-300 ease-in-out overflow-hidden",
+                      isCurrentAppTakeoverActive
+                        ? "opacity-100 max-w-[100px] scale-100"
+                        : "opacity-0 max-w-0 scale-75 pointer-events-none",
+                    )}
+                  >
                     <FailoverToggle activeApp={activeApp} />
-                  )}
+                  </div>
                 </div>
               )}
             <div
               ref={toolbarRef}
-              className="flex flex-1 min-w-0 overflow-x-hidden items-center"
+              className="flex flex-1 min-w-0 overflow-x-hidden justify-end items-center"
             >
               <div
-                className="flex shrink-0 items-center gap-1.5 ml-auto"
+                className="flex shrink-0 items-center gap-1.5"
                 style={{ WebkitAppRegion: "no-drag" } as any}
               >
                 {currentView === "prompts" && (
@@ -1154,7 +1246,7 @@ function App() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setCurrentView("sessions")}
+                                onClick={handleOpenSessionsView}
                                 className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                 title={t("sessionManager.title")}
                               >
@@ -1190,7 +1282,7 @@ function App() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setCurrentView("sessions")}
+                                onClick={handleOpenSessionsView}
                                 className={cn(
                                   "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
                                   "transition-all duration-200 ease-in-out overflow-hidden",
@@ -1233,9 +1325,6 @@ function App() {
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
-        {isOpenClawView && openclawHealthWarnings.length > 0 && (
-          <OpenClawHealthBanner warnings={openclawHealthWarnings} />
-        )}
         {renderContent()}
       </main>
 
