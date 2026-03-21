@@ -3,12 +3,15 @@
 //! 提供代理服务器的启动、停止和配置管理
 
 use crate::app_config::AppType;
-use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{delete_file, get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::types::*;
-use crate::services::provider::write_live_snapshot;
+use crate::services::provider::{
+    build_claude_live_snapshot_from_provider, build_codex_live_snapshot_from_provider,
+    build_gemini_live_snapshot_from_provider, write_live_snapshot,
+};
 use serde_json::{json, Value};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -537,6 +540,32 @@ impl ProxyService {
                                 log::info!("已同步 Codex Token 到数据库 (provider: {provider_id})");
                             }
                         }
+
+                        if let Some(config_text) = live_config
+                            .get("config")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.trim().is_empty())
+                        {
+                            if let Some(root) = provider.settings_config.as_object_mut() {
+                                root.insert("config".to_string(), json!(config_text));
+                            } else {
+                                log::warn!(
+                                    "Codex provider settings_config 格式异常（非对象），跳过写入 config.toml (provider: {provider_id})"
+                                );
+                            }
+
+                            if let Err(e) = self.db.update_provider_settings_config(
+                                "codex",
+                                &provider_id,
+                                &provider.settings_config,
+                            ) {
+                                log::warn!("同步 Codex config.toml 到数据库失败: {e}");
+                            } else {
+                                log::info!(
+                                    "已同步 Codex config.toml 到数据库 (provider: {provider_id})"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -588,6 +617,28 @@ impl ProxyService {
                             } else {
                                 log::info!(
                                     "已同步 Gemini Token 到数据库 (provider: {provider_id})"
+                                );
+                            }
+                        }
+
+                        if let Some(config_value) = live_config.get("config") {
+                            if let Some(root) = provider.settings_config.as_object_mut() {
+                                root.insert("config".to_string(), config_value.clone());
+                            } else {
+                                log::warn!(
+                                    "Gemini provider settings_config 格式异常（非对象），跳过写入 settings.json (provider: {provider_id})"
+                                );
+                            }
+
+                            if let Err(e) = self.db.update_provider_settings_config(
+                                "gemini",
+                                &provider_id,
+                                &provider.settings_config,
+                            ) {
+                                log::warn!("同步 Gemini settings.json 到数据库失败: {e}");
+                            } else {
+                                log::info!(
+                                    "已同步 Gemini settings.json 到数据库 (provider: {provider_id})"
                                 );
                             }
                         }
@@ -881,15 +932,20 @@ impl ProxyService {
         // Codex: 修改 config.toml 的 base_url，auth.json 的 OPENAI_API_KEY（代理会注入真实 Token）
         if let Ok(mut live_config) = self.read_codex_live() {
             // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
-            if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-                auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-            }
+            let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) else {
+                return Err("Codex auth.json 格式错误：根节点必须是 JSON 对象".to_string());
+            };
+            auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
 
             // 2. 修改 config.toml 中的 base_url
             let config_str = live_config
                 .get("config")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            if !config_str.trim().is_empty() {
+                toml::from_str::<toml::Value>(config_str)
+                    .map_err(|e| format!("解析 Codex config.toml 失败，无法接管: {e}"))?;
+            }
             let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
             live_config["config"] = json!(updated_config);
 
@@ -964,14 +1020,19 @@ impl ProxyService {
             AppType::Codex => {
                 let mut live_config = self.read_codex_live()?;
 
-                if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-                    auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                }
+                let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) else {
+                    return Err("Codex auth.json 格式错误：根节点必须是 JSON 对象".to_string());
+                };
+                auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
 
                 let config_str = live_config
                     .get("config")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                if !config_str.trim().is_empty() {
+                    toml::from_str::<toml::Value>(config_str)
+                        .map_err(|e| format!("解析 Codex config.toml 失败，无法接管: {e}"))?;
+                }
                 let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
                 live_config["config"] = json!(updated_config);
 
@@ -1266,8 +1327,25 @@ impl ProxyService {
             return Ok(false);
         };
 
-        write_live_snapshot(app_type, provider)
-            .map_err(|e| format!("写入 {app_type:?} Live 配置失败: {e}"))?;
+        match app_type {
+            AppType::Codex => {
+                let snapshot = build_codex_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Codex 配置失败: {e}"))?;
+                self.write_codex_live(&snapshot)?;
+            }
+            AppType::Gemini => {
+                let snapshot = build_gemini_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Gemini 配置失败: {e}"))?;
+                self.write_gemini_live(&snapshot)?;
+            }
+            AppType::Claude => {
+                let snapshot = build_claude_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Claude 配置失败: {e}"))?;
+                self.write_claude_live(&snapshot)?;
+            }
+            _ => write_live_snapshot(&self.db, app_type, provider)
+                .map_err(|e| format!("写入 {app_type:?} Live 配置失败: {e}"))?,
+        }
 
         Ok(true)
     }
@@ -1357,50 +1435,17 @@ impl ProxyService {
     }
 
     fn remove_local_toml_base_url(toml_str: &str) -> String {
-        use toml_edit::DocumentMut;
-
-        let mut doc = match toml_str.parse::<DocumentMut>() {
-            Ok(doc) => doc,
-            Err(_) => return toml_str.to_string(),
-        };
-
-        let model_provider = doc
-            .get("model_provider")
-            .and_then(|item| item.as_str())
-            .map(str::to_string);
-
-        if let Some(provider_key) = model_provider {
-            if let Some(model_providers) = doc
-                .get_mut("model_providers")
-                .and_then(|v| v.as_table_mut())
+        if let Some(provider_key) = Self::resolve_codex_provider_key(toml_str) {
+            let section_name = format!("model_providers.{provider_key}");
+            if let Some(updated) =
+                Self::rewrite_section_toml_base_url(toml_str, &section_name, None, true)
             {
-                if let Some(provider_table) = model_providers
-                    .get_mut(provider_key.as_str())
-                    .and_then(|v| v.as_table_mut())
-                {
-                    let should_remove = provider_table
-                        .get("base_url")
-                        .and_then(|item| item.as_str())
-                        .map(Self::is_local_proxy_url)
-                        .unwrap_or(false);
-                    if should_remove {
-                        provider_table.remove("base_url");
-                    }
-                }
+                return updated;
             }
         }
 
-        // 兜底：清理顶层 base_url（仅当它看起来像本地代理地址）
-        let should_remove_root = doc
-            .get("base_url")
-            .and_then(|item| item.as_str())
-            .map(Self::is_local_proxy_url)
-            .unwrap_or(false);
-        if should_remove_root {
-            doc.as_table_mut().remove("base_url");
-        }
-
-        doc.to_string()
+        Self::rewrite_root_toml_base_url(toml_str, None, true)
+            .unwrap_or_else(|| toml_str.to_string())
     }
 
     fn cleanup_gemini_takeover_placeholders_in_live(&self) -> Result<(), String> {
@@ -1530,24 +1575,21 @@ impl ProxyService {
     ) -> Result<(), String> {
         let backup_json = match app_type {
             "claude" => {
-                // Claude: settings_config 直接作为备份
-                serde_json::to_string(&provider.settings_config)
+                let snapshot = build_claude_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Claude 配置失败: {e}"))?;
+                serde_json::to_string(&snapshot)
                     .map_err(|e| format!("序列化 Claude 配置失败: {e}"))?
             }
             "codex" => {
-                // Codex: settings_config 包含 {"auth": ..., "config": ...}，直接使用
-                serde_json::to_string(&provider.settings_config)
+                let snapshot = build_codex_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Codex 配置失败: {e}"))?;
+                serde_json::to_string(&snapshot)
                     .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?
             }
             "gemini" => {
-                // Gemini: 只提取 env 字段（与原始备份格式一致）
-                // proxy.rs 的 read_gemini_live() 返回 {"env": {...}}
-                let env_backup = if let Some(env) = provider.settings_config.get("env") {
-                    json!({ "env": env })
-                } else {
-                    json!({ "env": {} })
-                };
-                serde_json::to_string(&env_backup)
+                let snapshot = build_gemini_live_snapshot_from_provider(&self.db, provider)
+                    .map_err(|e| format!("构建 Gemini 配置失败: {e}"))?;
+                serde_json::to_string(&snapshot)
                     .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
             }
             _ => return Err(format!("未知的应用类型: {app_type}")),
@@ -1614,49 +1656,224 @@ impl ProxyService {
 
     // ==================== Live 配置读写辅助方法 ====================
 
-    /// 更新 TOML 字符串中的 base_url
-    fn update_toml_base_url(toml_str: &str, new_url: &str) -> String {
-        use toml_edit::DocumentMut;
+    fn detect_line_ending(text: &str) -> &'static str {
+        if text.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    }
 
-        let mut doc = match toml_str.parse::<DocumentMut>() {
-            Ok(doc) => doc,
-            Err(_) => return toml_str.to_string(),
-        };
+    fn normalize_to_lines(text: &str) -> Vec<String> {
+        text.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .split('\n')
+            .map(ToString::to_string)
+            .collect()
+    }
 
-        // Codex 的 config.toml 通常是：
-        // model_provider = "any"
-        //
-        // [model_providers.any]
-        // base_url = "https://.../v1"
-        //
-        // 所以接管时要“精准”修改当前 model_provider 对应的 model_providers.<name>.base_url，
-        // 避免写错位置导致 Codex 仍然走旧地址。
-        let model_provider = doc
-            .get("model_provider")
-            .and_then(|item| item.as_str())
-            .map(str::to_string);
+    fn parse_toml_section_header(line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('[') {
+            return None;
+        }
+        let end = trimmed.find(']')?;
+        Some(trimmed[1..end].trim().to_string())
+    }
 
-        if let Some(provider_key) = model_provider {
-            if doc.get("model_providers").is_none() {
-                doc["model_providers"] = toml_edit::table();
+    fn is_toml_key_line(line: &str, key: &str) -> bool {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            return false;
+        }
+        match trimmed.strip_prefix(key) {
+            Some(rest) => rest.trim_start().starts_with('='),
+            None => false,
+        }
+    }
+
+    fn extract_toml_string_value(line: &str) -> Option<String> {
+        let (_, rhs) = line.split_once('=')?;
+        let trimmed = rhs.trim_start();
+        let quote = trimmed.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let rest = &trimmed[quote.len_utf8()..];
+        let end = rest.find(quote)?;
+        Some(rest[..end].to_string())
+    }
+
+    fn resolve_codex_provider_key(toml_str: &str) -> Option<String> {
+        let parsed = toml::from_str::<toml::Value>(toml_str).ok()?;
+        if let Some(model_provider) = parsed.get("model_provider").and_then(|v| v.as_str()) {
+            return Some(model_provider.to_string());
+        }
+
+        let model_providers = parsed.get("model_providers").and_then(|v| v.as_table())?;
+        if model_providers.contains_key("custom") {
+            return Some("custom".to_string());
+        }
+
+        let keys: Vec<String> = model_providers.keys().cloned().collect();
+        if keys.len() == 1 {
+            return keys.first().cloned();
+        }
+
+        None
+    }
+
+    fn rewrite_root_toml_base_url(
+        toml_str: &str,
+        new_url: Option<&str>,
+        remove_only_if_local: bool,
+    ) -> Option<String> {
+        let eol = Self::detect_line_ending(toml_str);
+        let mut lines = Self::normalize_to_lines(toml_str);
+        let mut first_section_idx: Option<usize> = None;
+        let mut base_idx: Option<usize> = None;
+
+        for (idx, line) in lines.iter().enumerate() {
+            if Self::parse_toml_section_header(line).is_some() {
+                first_section_idx = Some(idx);
+                break;
             }
-
-            if let Some(model_providers) = doc["model_providers"].as_table_mut() {
-                if !model_providers.contains_key(&provider_key) {
-                    model_providers[&provider_key] = toml_edit::table();
-                }
-
-                if let Some(provider_table) = model_providers[&provider_key].as_table_mut() {
-                    provider_table["base_url"] = toml_edit::value(new_url);
-                    return doc.to_string();
-                }
+            if Self::is_toml_key_line(line, "base_url") {
+                base_idx = Some(idx);
+                break;
             }
         }
 
-        // 兜底：如果没有 model_provider 或结构不符合预期，则退回修改顶层 base_url。
-        doc["base_url"] = toml_edit::value(new_url);
+        if let Some(idx) = base_idx {
+            if remove_only_if_local {
+                let current = Self::extract_toml_string_value(&lines[idx]).unwrap_or_default();
+                if !Self::is_local_proxy_url(&current) {
+                    return Some(toml_str.to_string());
+                }
+                lines.remove(idx);
+            } else {
+                let indent: String = lines[idx]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .collect();
+                lines[idx] = format!("{indent}base_url = \"{}\"", new_url.unwrap_or_default());
+            }
+            return Some(lines.join(eol));
+        }
 
-        doc.to_string()
+        if remove_only_if_local {
+            return Some(toml_str.to_string());
+        }
+
+        let insert_idx = first_section_idx.unwrap_or(lines.len());
+        let replacement = format!("base_url = \"{}\"", new_url.unwrap_or_default());
+        lines.insert(insert_idx, replacement);
+        Some(lines.join(eol))
+    }
+
+    fn rewrite_section_toml_base_url(
+        toml_str: &str,
+        section_header: &str,
+        new_url: Option<&str>,
+        remove_only_if_local: bool,
+    ) -> Option<String> {
+        let eol = Self::detect_line_ending(toml_str);
+        let mut lines = Self::normalize_to_lines(toml_str);
+        let mut inside_section = false;
+        let mut header_idx: Option<usize> = None;
+        let mut base_idx: Option<usize> = None;
+
+        for (idx, line) in lines.iter().enumerate() {
+            if let Some(header) = Self::parse_toml_section_header(line) {
+                if inside_section {
+                    break;
+                }
+                if header == section_header {
+                    inside_section = true;
+                    header_idx = Some(idx);
+                }
+                continue;
+            }
+
+            if inside_section && Self::is_toml_key_line(line, "base_url") {
+                base_idx = Some(idx);
+                break;
+            }
+        }
+
+        if let Some(idx) = base_idx {
+            if remove_only_if_local {
+                let current = Self::extract_toml_string_value(&lines[idx]).unwrap_or_default();
+                if !Self::is_local_proxy_url(&current) {
+                    return Some(toml_str.to_string());
+                }
+                lines.remove(idx);
+            } else {
+                let indent: String = lines[idx]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .collect();
+                lines[idx] = format!("{indent}base_url = \"{}\"", new_url.unwrap_or_default());
+            }
+            return Some(lines.join(eol));
+        }
+
+        if let Some(idx) = header_idx {
+            if remove_only_if_local {
+                return Some(toml_str.to_string());
+            }
+            lines.insert(
+                idx + 1,
+                format!("base_url = \"{}\"", new_url.unwrap_or_default()),
+            );
+            return Some(lines.join(eol));
+        }
+
+        None
+    }
+
+    fn append_codex_model_provider_section(
+        toml_str: &str,
+        provider_key: &str,
+        new_url: &str,
+    ) -> String {
+        let eol = Self::detect_line_ending(toml_str);
+        let trimmed = toml_str.trim_end_matches(['\r', '\n']);
+        let separator = if trimmed.is_empty() { "" } else { eol };
+        format!(
+            "{trimmed}{separator}[model_providers.{provider_key}]{eol}base_url = \"{new_url}\"{eol}"
+        )
+    }
+
+    /// 更新 TOML 字符串中的 base_url，同时尽量保留原有格式与注释。
+    fn update_toml_base_url(toml_str: &str, new_url: &str) -> String {
+        if toml_str.trim().is_empty() {
+            return format!("base_url = \"{new_url}\"\n");
+        }
+
+        let parsed = match toml::from_str::<toml::Value>(toml_str) {
+            Ok(value) => value,
+            Err(_) => return toml_str.to_string(),
+        };
+
+        if let Some(provider_key) = Self::resolve_codex_provider_key(toml_str) {
+            let section_name = format!("model_providers.{provider_key}");
+            if let Some(updated) =
+                Self::rewrite_section_toml_base_url(toml_str, &section_name, Some(new_url), false)
+            {
+                return updated;
+            }
+
+            return Self::append_codex_model_provider_section(toml_str, &provider_key, new_url);
+        }
+
+        if parsed.get("base_url").is_some() {
+            return Self::rewrite_root_toml_base_url(toml_str, Some(new_url), false)
+                .unwrap_or_else(|| toml_str.to_string());
+        }
+
+        Self::rewrite_root_toml_base_url(toml_str, Some(new_url), false)
+            .unwrap_or_else(|| toml_str.to_string())
     }
 
     fn read_claude_live(&self) -> Result<Value, String> {
@@ -1723,14 +1940,14 @@ impl ProxyService {
 
     fn write_codex_live(&self, config: &Value) -> Result<(), String> {
         use crate::codex_config::{
-            get_codex_auth_path, get_codex_config_path, write_codex_live_atomic,
+            get_codex_auth_path, get_codex_config_path, write_codex_live_exact_atomic,
         };
 
         let auth = config.get("auth");
         let config_str = config.get("config").and_then(|v| v.as_str());
 
         match (auth, config_str) {
-            (Some(auth), Some(cfg)) => write_codex_live_atomic(auth, Some(cfg))
+            (Some(auth), Some(cfg)) => write_codex_live_exact_atomic(auth, Some(cfg))
                 .map_err(|e| format!("写入 Codex 配置失败: {e}"))?,
             (Some(auth), None) => {
                 let auth_path = get_codex_auth_path();
@@ -1749,7 +1966,9 @@ impl ProxyService {
     }
 
     fn read_gemini_live(&self) -> Result<Value, String> {
-        use crate::gemini_config::{env_to_json, get_gemini_env_path, read_gemini_env};
+        use crate::gemini_config::{
+            env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+        };
 
         let env_path = get_gemini_env_path();
         if !env_path.exists() {
@@ -1757,14 +1976,45 @@ impl ProxyService {
         }
 
         let env_map = read_gemini_env().map_err(|e| format!("读取 Gemini env 失败: {e}"))?;
-        Ok(env_to_json(&env_map))
+        let env_json = env_to_json(&env_map);
+        let env_obj = env_json.get("env").cloned().unwrap_or_else(|| json!({}));
+
+        let settings_path = get_gemini_settings_path();
+        let config_obj = if settings_path.exists() {
+            read_json_file(&settings_path)
+                .map_err(|e| format!("读取 Gemini settings.json 失败: {e}"))?
+        } else {
+            Value::Null
+        };
+
+        Ok(json!({
+            "env": env_obj,
+            "config": config_obj
+        }))
     }
 
     fn write_gemini_live(&self, config: &Value) -> Result<(), String> {
-        use crate::gemini_config::{json_to_env, write_gemini_env_atomic};
+        use crate::gemini_config::{
+            get_gemini_settings_path, json_to_env, write_gemini_env_atomic,
+        };
 
         let env_map = json_to_env(config).map_err(|e| format!("转换 Gemini 配置失败: {e}"))?;
         write_gemini_env_atomic(&env_map).map_err(|e| format!("写入 Gemini env 失败: {e}"))?;
+
+        let settings_path = get_gemini_settings_path();
+        if let Some(config_value) = config.get("config") {
+            if config_value.is_null() {
+                if settings_path.exists() {
+                    delete_file(&settings_path)
+                        .map_err(|e| format!("删除 Gemini settings.json 失败: {e}"))?;
+                }
+            } else if config_value.is_object() {
+                write_json_file(&settings_path, config_value)
+                    .map_err(|e| format!("写入 Gemini settings.json 失败: {e}"))?;
+            } else {
+                return Err("Gemini settings.json 配置必须是对象或 null".to_string());
+            }
+        }
         Ok(())
     }
 
@@ -2018,6 +2268,46 @@ model = "gpt-5.1-codex"
         assert_eq!(base_url, new_url);
     }
 
+    #[test]
+    fn update_toml_base_url_prefers_custom_provider_section_when_model_provider_missing() {
+        let input = r#"# keep comment
+model = "gpt-5.1-codex"
+
+[model_providers.custom]
+name = "custom"
+# preserve comment
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+        let new_url = "http://127.0.0.1:5000/v1";
+        let output = ProxyService::update_toml_base_url(input, new_url);
+
+        assert!(
+            output.contains("# keep comment"),
+            "top-level comments should be preserved"
+        );
+        assert!(
+            output.contains("# preserve comment"),
+            "section comments should be preserved"
+        );
+
+        let parsed: toml::Value =
+            toml::from_str(&output).expect("updated config should be valid TOML");
+        let base_url = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("custom"))
+            .and_then(|v| v.get("base_url"))
+            .and_then(|v| v.as_str())
+            .expect("model_providers.custom.base_url should exist");
+
+        assert_eq!(base_url, new_url);
+        assert!(
+            parsed.get("base_url").is_none(),
+            "should not create a top-level base_url when custom section exists"
+        );
+    }
+
     #[tokio::test]
     #[serial]
     async fn sync_claude_token_does_not_add_anthropic_api_key() {
@@ -2190,5 +2480,148 @@ model = "gpt-5.1-codex"
             .expect("backup exists");
         let expected = serde_json::to_string(&provider_b.settings_config).expect("serialize");
         assert_eq!(backup.original_config, expected);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn update_live_backup_from_provider_codex_preserves_current_mcp_servers() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let current_live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+        let current_live_config = r#"model_provider = "custom"
+model = "gpt-5.2"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://live.example/v1"
+wire_api = "responses"
+
+[mcp_servers.echo]
+type = "stdio"
+command = "echo"
+"#;
+        crate::codex_config::write_codex_live_exact_atomic(
+            &current_live_auth,
+            Some(current_live_config),
+        )
+        .expect("seed current codex live");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "provider-key" },
+                "config": r#"model_provider = "custom"
+model = "gpt-5.2"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://provider.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+
+        service
+            .update_live_backup_from_provider("codex", &provider)
+            .await
+            .expect("update codex live backup");
+
+        let backup = db
+            .get_live_backup("codex")
+            .await
+            .expect("get backup")
+            .expect("backup exists");
+        let backup_json: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup json");
+        let backup_config = backup_json
+            .get("config")
+            .and_then(|v| v.as_str())
+            .expect("backup config string");
+
+        assert!(
+            backup_config.contains("[mcp_servers.echo]"),
+            "live backup should preserve current MCP tables"
+        );
+        assert!(
+            backup_config.contains("https://provider.example/v1"),
+            "live backup should use target provider base_url"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn update_live_backup_from_provider_gemini_preserves_current_settings_json() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let gemini_dir = crate::gemini_config::get_gemini_dir();
+        std::fs::create_dir_all(&gemini_dir).expect("create gemini dir");
+        crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([(
+            "GEMINI_API_KEY".to_string(),
+            "live-key".to_string(),
+        )]))
+        .expect("seed gemini env");
+        let settings_path = crate::gemini_config::get_gemini_settings_path();
+        write_json_file(
+            &settings_path,
+            &json!({
+                "theme": "dark",
+                "security": { "auth": { "selectedType": "oauth-personal" } }
+            }),
+        )
+        .expect("seed gemini settings");
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "provider-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://provider.example"
+                }
+            }),
+            None,
+        );
+
+        service
+            .update_live_backup_from_provider("gemini", &provider)
+            .await
+            .expect("update gemini live backup");
+
+        let backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("get backup")
+            .expect("backup exists");
+        let backup_json: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup json");
+
+        assert_eq!(
+            backup_json
+                .pointer("/env/GEMINI_API_KEY")
+                .and_then(|v| v.as_str()),
+            Some("provider-key")
+        );
+        assert_eq!(
+            backup_json
+                .pointer("/config/theme")
+                .and_then(|v| v.as_str()),
+            Some("dark")
+        );
+        assert_eq!(
+            backup_json
+                .pointer("/config/security/auth/selectedType")
+                .and_then(|v| v.as_str()),
+            Some("oauth-personal")
+        );
     }
 }

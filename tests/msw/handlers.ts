@@ -28,9 +28,11 @@ import {
   getAppConfigDirOverride,
   setAppConfigDirOverrideState,
   getMcpConfig,
+  getProviderDefaultTemplateState,
   setMcpServerEnabled,
   upsertMcpServer,
   deleteMcpServer,
+  setProviderDefaultTemplateState,
 } from "./state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -119,6 +121,18 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
   http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_provider_default_template`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: "claude" | "codex" | "gemini" }>(request);
+    return success(getProviderDefaultTemplateState(appType));
+  }),
+  http.post(`${TAURI_ENDPOINT}/set_provider_default_template`, async ({ request }) => {
+    const { appType, template } = await withJson<{
+      appType: "claude" | "codex" | "gemini";
+      template: string;
+    }>(request);
+    setProviderDefaultTemplateState(appType, template || null);
+    return success(true);
+  }),
   http.post(`${TAURI_ENDPOINT}/get_stream_check_config`, () =>
     success({
       timeoutSecs: 45,

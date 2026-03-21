@@ -46,8 +46,8 @@ const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
     opusModel: "claude-sonnet-4-20250514",
   },
   codex: {
-    model: "gpt-4o",
-    reasoningEffort: "high",
+    model: "gpt-5.4",
+    reasoningEffort: "xhigh",
   },
   gemini: {
     model: "gemini-2.5-pro",

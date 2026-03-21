@@ -48,6 +48,19 @@ export async function setCommonConfigSnippet(
   return invoke("set_common_config_snippet", { appType, snippet });
 }
 
+export async function getProviderDefaultTemplate(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+): Promise<string | null> {
+  return invoke<string | null>("get_provider_default_template", { appType });
+}
+
+export async function setProviderDefaultTemplate(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+  template: string,
+): Promise<void> {
+  return invoke("set_provider_default_template", { appType, template });
+}
+
 /**
  * 提取通用配置片段
  *

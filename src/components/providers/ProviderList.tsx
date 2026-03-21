@@ -99,18 +99,18 @@ import {
   type StreamCheckConfig,
   type StreamCheckResult,
 } from "@/lib/api/model-test";
-import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 import {
-  hasCommonConfigSnippet,
-  hasTomlCommonConfigSnippet,
   extractCodexModelName,
-  safeParseJsonObject,
   setCodexModelName,
-  updateCommonConfigSnippet,
-  updateTomlCommonConfigSnippet,
   validateCodexCommonConfigSnippet,
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
+import {
+  getFallbackProviderDefaultTemplate,
+  getAllowedProviderTemplatePlaceholders,
+  isSupportedProviderTemplateApp,
+  validateProviderDefaultTemplate,
+} from "@/utils/providerDefaultTemplateUtils";
 import type { SessionRoutingStrategy } from "@/types/proxy";
 import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
 
@@ -345,11 +345,13 @@ export function ProviderList({
 
   const [commonConfigSnippet, setCommonConfigSnippet] = useState("");
   const [commonConfigError, setCommonConfigError] = useState("");
+  const [providerDefaultTemplate, setProviderDefaultTemplate] = useState("");
+  const [providerDefaultTemplateError, setProviderDefaultTemplateError] =
+    useState("");
   const [isCommonConfigOpen, setIsCommonConfigOpen] = useState(false);
   const [isBatchTestOpen, setIsBatchTestOpen] = useState(false);
   const [isCommonConfigSaving, setIsCommonConfigSaving] = useState(false);
   const [isCommonConfigLoading, setIsCommonConfigLoading] = useState(false);
-  const [isApplyingCommonConfig, setIsApplyingCommonConfig] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const listScrollRef = useRef<HTMLDivElement>(null);
 
@@ -672,18 +674,27 @@ export function ProviderList({
     if (!supportsCommonConfig) return;
     let active = true;
 
-    const loadCommonConfigSnippet = async () => {
+    const loadCommonConfigData = async () => {
       try {
         setIsCommonConfigLoading(true);
         setCommonConfigError("");
+        setProviderDefaultTemplateError("");
         const snippet = await configApi.getCommonConfigSnippet(
           appId as "claude" | "codex" | "gemini",
         );
         if (!active) return;
         setCommonConfigSnippet(snippet || "");
+
+        if (isSupportedProviderTemplateApp(appId)) {
+          const template = await configApi.getProviderDefaultTemplate(appId);
+          if (!active) return;
+          setProviderDefaultTemplate(
+            template?.trim() || getFallbackProviderDefaultTemplate(appId),
+          );
+        }
       } catch (error) {
         console.error(
-          "[ProviderList] Failed to load common config snippet",
+          "[ProviderList] Failed to load common config data",
           error,
         );
       } finally {
@@ -693,7 +704,7 @@ export function ProviderList({
       }
     };
 
-    loadCommonConfigSnippet();
+    void loadCommonConfigData();
     return () => {
       active = false;
     };
@@ -1208,171 +1219,6 @@ export function ProviderList({
     return parseGeminiSnippet(commonConfigSnippet);
   }, [appId, commonConfigSnippet, parseGeminiSnippet]);
 
-  const hasGeminiConfigSnippet = useCallback(
-    (
-      configObj: Record<string, unknown>,
-      snippetConfig: Record<string, unknown>,
-    ): boolean => {
-      for (const [key, value] of Object.entries(snippetConfig)) {
-        if (!(key in configObj)) return false;
-        const targetValue = configObj[key];
-        if (isPlainObject(value) && isPlainObject(targetValue)) {
-          if (
-            !hasGeminiConfigSnippet(
-              targetValue as Record<string, unknown>,
-              value as Record<string, unknown>,
-            )
-          ) {
-            return false;
-          }
-        } else if (targetValue !== value) {
-          return false;
-        }
-      }
-      return true;
-    },
-    [],
-  );
-
-  const mergeGeminiConfigSnippet = useCallback(
-    (
-      configObj: Record<string, unknown>,
-      snippetConfig: Record<string, unknown>,
-    ) => {
-      const next = { ...configObj };
-      for (const [key, value] of Object.entries(snippetConfig)) {
-        if (isPlainObject(value) && isPlainObject(next[key])) {
-          next[key] = mergeGeminiConfigSnippet(
-            next[key] as Record<string, unknown>,
-            value as Record<string, unknown>,
-          );
-        } else {
-          next[key] = value;
-        }
-      }
-      return next;
-    },
-    [],
-  );
-
-  const removeGeminiConfigSnippet = useCallback(
-    (
-      configObj: Record<string, unknown>,
-      snippetConfig: Record<string, unknown>,
-    ) => {
-      const next = { ...configObj };
-      for (const [key, value] of Object.entries(snippetConfig)) {
-        if (!(key in next)) continue;
-        if (isPlainObject(value) && isPlainObject(next[key])) {
-          const nested = removeGeminiConfigSnippet(
-            next[key] as Record<string, unknown>,
-            value as Record<string, unknown>,
-          );
-          if (Object.keys(nested).length === 0) {
-            delete next[key];
-          } else {
-            next[key] = nested;
-          }
-        } else if (next[key] === value) {
-          delete next[key];
-        }
-      }
-      return next;
-    },
-    [],
-  );
-
-  const hasCommonConfigForProvider = useCallback(
-    (provider: Provider): boolean => {
-      if (!commonConfigSnippet.trim()) return false;
-
-      if (appId === "claude") {
-        const jsonString = JSON.stringify(provider.settingsConfig ?? {});
-        return hasCommonConfigSnippet(jsonString, commonConfigSnippet);
-      }
-
-      if (appId === "codex") {
-        const configText =
-          typeof provider.settingsConfig?.config === "string"
-            ? provider.settingsConfig.config
-            : "";
-        return hasTomlCommonConfigSnippet(configText, commonConfigSnippet);
-      }
-
-      if (appId === "gemini") {
-        if (parsedGeminiSnippet.error) return false;
-        const envEntries = Object.entries(parsedGeminiSnippet.env);
-        const configEntries = Object.entries(parsedGeminiSnippet.config);
-        if (envEntries.length === 0 && configEntries.length === 0) return false;
-
-        const rawEnv = isPlainObject(provider.settingsConfig?.env)
-          ? (provider.settingsConfig?.env as Record<string, unknown>)
-          : {};
-        const envObj: Record<string, string> = {};
-        for (const [key, value] of Object.entries(rawEnv)) {
-          if (typeof value === "string") {
-            envObj[key] = value;
-          }
-        }
-
-        const envMatches =
-          envEntries.length === 0 ||
-          envEntries.every(([key, value]) => envObj[key] === value);
-
-        const rawConfig = isPlainObject(provider.settingsConfig?.config)
-          ? (provider.settingsConfig?.config as Record<string, unknown>)
-          : {};
-        const configMatches =
-          configEntries.length === 0 ||
-          hasGeminiConfigSnippet(rawConfig, parsedGeminiSnippet.config);
-
-        return envMatches && configMatches;
-      }
-
-      return false;
-    },
-    [appId, commonConfigSnippet, parsedGeminiSnippet, hasGeminiConfigSnippet],
-  );
-
-  const commonConfigStatus = useMemo(() => {
-    const total = sortedProviders.length;
-    if (!supportsCommonConfig || total === 0) {
-      return {
-        total,
-        appliedCount: 0,
-        allApplied: false,
-        partial: false,
-      };
-    }
-    if (!commonConfigSnippet.trim()) {
-      return {
-        total,
-        appliedCount: 0,
-        allApplied: false,
-        partial: false,
-      };
-    }
-
-    let appliedCount = 0;
-    for (const provider of sortedProviders) {
-      if (hasCommonConfigForProvider(provider)) {
-        appliedCount += 1;
-      }
-    }
-
-    return {
-      total,
-      appliedCount,
-      allApplied: appliedCount === total && total > 0,
-      partial: appliedCount > 0 && appliedCount < total,
-    };
-  }, [
-    supportsCommonConfig,
-    sortedProviders,
-    commonConfigSnippet,
-    hasCommonConfigForProvider,
-  ]);
-
   const batchSelectionStatus = useMemo(() => {
     const total = sortedProviders.length;
     if (total === 0) {
@@ -1577,13 +1423,32 @@ export function ProviderList({
       return;
     }
 
+    let templateValidationError = "";
+    if (isSupportedProviderTemplateApp(appId)) {
+      templateValidationError = validateProviderDefaultTemplate(
+        appId,
+        providerDefaultTemplate,
+      );
+    }
+    if (templateValidationError) {
+      setProviderDefaultTemplateError(templateValidationError);
+      return;
+    }
+
     try {
       setIsCommonConfigSaving(true);
       setCommonConfigError("");
+      setProviderDefaultTemplateError("");
       await configApi.setCommonConfigSnippet(
         appId as "claude" | "codex" | "gemini",
         commonConfigSnippet.trim(),
       );
+      if (isSupportedProviderTemplateApp(appId)) {
+        await configApi.setProviderDefaultTemplate(
+          appId,
+          providerDefaultTemplate.trim(),
+        );
+      }
       setIsCommonConfigOpen(false);
       toast.success(
         t("common.saved", {
@@ -1605,217 +1470,10 @@ export function ProviderList({
     supportsCommonConfig,
     appId,
     commonConfigSnippet,
+    providerDefaultTemplate,
     parsedGeminiSnippet,
     t,
   ]);
-
-  const handleApplyCommonConfigToAll = useCallback(
-    async (enabled: boolean) => {
-      if (!supportsCommonConfig) return;
-      if (sortedProviders.length === 0) return;
-
-      const snippet = commonConfigSnippet.trim();
-      if (!snippet) {
-        toast.error(
-          t("provider.commonConfigEmpty", {
-            defaultValue: "通用配置片段为空",
-          }),
-        );
-        return;
-      }
-
-      if (appId === "gemini" && parsedGeminiSnippet.error) {
-        setCommonConfigError(parsedGeminiSnippet.error);
-        toast.error(parsedGeminiSnippet.error);
-        return;
-      }
-
-      if (appId === "codex") {
-        const codexSnippetError =
-          validateCodexCommonConfigSnippet(commonConfigSnippet);
-        if (codexSnippetError) {
-          setCommonConfigError(codexSnippetError);
-          toast.error(codexSnippetError);
-          return;
-        }
-      }
-
-      setIsApplyingCommonConfig(true);
-      setCommonConfigError("");
-      try {
-        const failed: { name: string; reason: string }[] = [];
-
-        for (const provider of sortedProviders) {
-          try {
-            if (appId === "claude") {
-              const originalConfig = JSON.stringify(
-                provider.settingsConfig ?? {},
-              );
-              const { updatedConfig, error } = updateCommonConfigSnippet(
-                originalConfig,
-                snippet,
-                enabled,
-              );
-              if (error) {
-                throw new Error(error);
-              }
-              if (updatedConfig === originalConfig) {
-                continue;
-              }
-              const updatedSettingsConfigResult = safeParseJsonObject(
-                updatedConfig,
-                t("provider.configJson", {
-                  defaultValue: "配置 JSON",
-                }),
-              );
-              if (updatedSettingsConfigResult.error) {
-                throw new Error(updatedSettingsConfigResult.error);
-              }
-              const updatedSettingsConfig =
-                updatedSettingsConfigResult.value ?? {};
-              await providersApi.update(
-                { ...provider, settingsConfig: updatedSettingsConfig },
-                appId,
-              );
-              continue;
-            }
-
-            if (appId === "codex") {
-              const originalConfig =
-                typeof provider.settingsConfig?.config === "string"
-                  ? provider.settingsConfig.config
-                  : "";
-              const { updatedConfig, error } = updateTomlCommonConfigSnippet(
-                originalConfig,
-                snippet,
-                enabled,
-              );
-              if (error) {
-                throw new Error(error);
-              }
-              if (updatedConfig === originalConfig) {
-                continue;
-              }
-              const mergedTomlError = validateTomlText(updatedConfig);
-              if (mergedTomlError) {
-                throw new Error(
-                  mergedTomlError === "mustBeObject" ||
-                  mergedTomlError === "parseError"
-                    ? t("mcp.error.tomlInvalid", {
-                        defaultValue: "TOML 格式错误，请检查",
-                      })
-                    : `TOML 解析错误: config.toml: ${mergedTomlError}`,
-                );
-              }
-              const updatedSettingsConfig = {
-                ...(provider.settingsConfig ?? {}),
-                config: updatedConfig,
-              };
-              await providersApi.update(
-                { ...provider, settingsConfig: updatedSettingsConfig },
-                appId,
-              );
-              continue;
-            }
-
-            if (appId === "gemini") {
-              const rawEnv = isPlainObject(provider.settingsConfig?.env)
-                ? (provider.settingsConfig?.env as Record<string, unknown>)
-                : {};
-              const envObj: Record<string, string> = {};
-              for (const [key, value] of Object.entries(rawEnv)) {
-                if (typeof value === "string") {
-                  envObj[key] = value;
-                }
-              }
-
-              const snippetEnv = parsedGeminiSnippet.env;
-              const updatedEnv = { ...envObj };
-              for (const [key, value] of Object.entries(snippetEnv)) {
-                if (enabled) {
-                  updatedEnv[key] = value;
-                } else if (updatedEnv[key] === value) {
-                  delete updatedEnv[key];
-                }
-              }
-
-              const rawConfig = isPlainObject(provider.settingsConfig?.config)
-                ? (provider.settingsConfig?.config as Record<string, unknown>)
-                : {};
-              const snippetConfig = parsedGeminiSnippet.config;
-              const updatedConfig =
-                Object.keys(snippetConfig).length === 0
-                  ? rawConfig
-                  : enabled
-                    ? mergeGeminiConfigSnippet(rawConfig, snippetConfig)
-                    : removeGeminiConfigSnippet(rawConfig, snippetConfig);
-
-              const updatedSettingsConfig = {
-                ...(provider.settingsConfig ?? {}),
-                env: updatedEnv,
-                config: updatedConfig,
-              };
-
-              if (
-                JSON.stringify(updatedSettingsConfig) ===
-                JSON.stringify(provider.settingsConfig ?? {})
-              ) {
-                continue;
-              }
-
-              await providersApi.update(
-                { ...provider, settingsConfig: updatedSettingsConfig },
-                appId,
-              );
-            }
-          } catch (error) {
-            const reason =
-              error instanceof Error ? error.message : String(error);
-            failed.push({ name: provider.name, reason });
-            console.error(
-              `[ProviderList] Failed to apply common config for ${provider.name}`,
-              error,
-            );
-          }
-        }
-
-        await queryClient.invalidateQueries({
-          queryKey: ["providers", appId],
-        });
-
-        if (failed.length > 0) {
-          const first = failed[0];
-          toast.error(
-            t("provider.commonConfigApplyFailed", {
-              defaultValue: "通用配置批量更新失败",
-            }),
-            {
-              description: first ? `${first.name}: ${first.reason}` : undefined,
-            },
-          );
-        } else {
-          toast.success(
-            t("provider.commonConfigApplied", {
-              defaultValue: enabled ? "已批量应用通用配置" : "已移除通用配置",
-            }),
-          );
-        }
-      } finally {
-        setIsApplyingCommonConfig(false);
-      }
-    },
-    [
-      supportsCommonConfig,
-      sortedProviders,
-      commonConfigSnippet,
-      appId,
-      parsedGeminiSnippet,
-      mergeGeminiConfigSnippet,
-      removeGeminiConfigSnippet,
-      queryClient,
-      t,
-    ],
-  );
 
   const importMutation = useMutation({
     mutationFn: async (): Promise<boolean> => {
@@ -3001,34 +2659,10 @@ export function ProviderList({
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                 </Button>
-                <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
-                  <Switch
-                    checked={commonConfigStatus.allApplied}
-                    onCheckedChange={handleApplyCommonConfigToAll}
-                    disabled={
-                      isApplyingCommonConfig ||
-                      isCommonConfigLoading ||
-                      !commonConfigSnippet.trim()
-                    }
-                  />
-                  <div className="text-xs">
-                    <span className="font-medium">
-                      {t("provider.commonConfigApplyAll", {
-                        defaultValue: "通用配置",
-                      })}
-                    </span>
-                    <span className="ml-1 text-muted-foreground">
-                      {commonConfigStatus.appliedCount}/
-                      {commonConfigStatus.total}
-                    </span>
-                    {commonConfigStatus.partial && (
-                      <span className="ml-2 text-amber-500">
-                        {t("provider.commonConfigPartial", {
-                          defaultValue: "部分已应用",
-                        })}
-                      </span>
-                    )}
-                  </div>
+                <div className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
+                  {t("provider.commonConfigApplyAll", {
+                    defaultValue: "通用配置模板",
+                  })}
                 </div>
               </div>
             )}
@@ -4247,21 +3881,9 @@ export function ProviderList({
           footer={
             <div className="flex w-full items-center justify-between">
               <div className="text-xs text-muted-foreground">
-                <span className="font-medium">
-                  {t("provider.commonConfigApplyAll", {
-                    defaultValue: "通用配置",
-                  })}
-                </span>
-                <span className="ml-1">
-                  {commonConfigStatus.appliedCount}/{commonConfigStatus.total}
-                </span>
-                {commonConfigStatus.partial && (
-                  <span className="ml-2 text-amber-500">
-                    {t("provider.commonConfigPartial", {
-                      defaultValue: "部分已应用",
-                    })}
-                  </span>
-                )}
+                {t("provider.commonConfigApplyAll", {
+                  defaultValue: "通用配置模板",
+                })}
               </div>
               <div className="flex items-center gap-2 flex-nowrap">
                 <Button
@@ -4292,15 +3914,18 @@ export function ProviderList({
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               {appId === "codex"
-                ? t("codexConfig.commonConfigHint")
+                ? t("codexConfig.commonConfigHint", {
+                    defaultValue:
+                      "该模板会在写入 live config.toml 时渲染；请使用 {{provider.config}}，可选 {{mcp.config}}",
+                  })
                 : appId === "gemini"
                   ? t("geminiConfig.commonConfigHint", {
                       defaultValue:
-                        "该片段支持 env / config 两部分（env 不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY）",
+                        "该片段是 Gemini live 配置模板的公共部分；系统会在写入时叠加当前供应商和 MCP 配置",
                     })
                   : t("claudeConfig.commonConfigHint", {
                       defaultValue:
-                        "通用配置片段将合并到所有启用它的供应商配置中",
+                        "该片段是 Claude live 配置模板的公共部分；系统会在写入时叠加当前供应商和 MCP 配置",
                     })}
             </p>
 
@@ -4312,7 +3937,11 @@ export function ProviderList({
               }}
               placeholder={
                 appId === "codex"
-                  ? `# Common Codex config\n\n# Add your common TOML configuration here`
+                  ? `developer_instructions = "请使用中文回答,务必使用清晰详细准确的风格。"
+
+{{provider.config}}
+
+{{mcp.config}}`
                   : appId === "gemini"
                     ? `{\n  \"env\": {\n    \"GEMINI_MODEL\": \"gemini-3-pro-preview\"\n  },\n  \"config\": {\n    \"ui\": {\n      \"inlineThinkingMode\": \"full\"\n    }\n  }\n}`
                     : `{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://your-api-endpoint.com\"\n  }\n}`
@@ -4330,6 +3959,56 @@ export function ProviderList({
               <p className="text-sm text-red-500 dark:text-red-400">
                 {commonConfigError}
               </p>
+            )}
+
+            {isSupportedProviderTemplateApp(appId) && (
+              <div className="space-y-3 border-t border-border/60 pt-4">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {t("provider.defaultTemplate", {
+                      defaultValue: "默认 Provider 模板",
+                    })}
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {t("provider.defaultTemplateHint", {
+                      defaultValue:
+                        "用于新建自定义供应商的初始配置，可使用占位符如 {{api_key}}、{{base_url}}、{{model}}",
+                    })}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("provider.defaultTemplatePlaceholders", {
+                      defaultValue: "可用占位符: {{placeholders}}",
+                      placeholders: getAllowedProviderTemplatePlaceholders(appId)
+                        .map((item) => `{{${item}}}`)
+                        .join(", "),
+                    })}
+                  </p>
+                </div>
+
+                <JsonEditor
+                  value={providerDefaultTemplate}
+                  onChange={(value) => {
+                    setProviderDefaultTemplate(value);
+                    setProviderDefaultTemplateError("");
+                  }}
+                  placeholder={
+                    getFallbackProviderDefaultTemplate(appId)
+                  }
+                  darkMode={
+                    typeof document !== "undefined" &&
+                    document.documentElement.classList.contains("dark")
+                  }
+                  rows={16}
+                  showValidation={true}
+                  language="json"
+                />
+
+                {providerDefaultTemplateError && (
+                  <p className="text-sm text-red-500 dark:text-red-400">
+                    {providerDefaultTemplateError}
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </FullScreenPanel>

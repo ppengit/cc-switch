@@ -14,6 +14,7 @@ type SessionBindingsState = Record<
   AppId,
   Record<string, SessionProviderBinding>
 >;
+type ProviderDefaultTemplateState = Partial<Record<"claude" | "codex" | "gemini", string | null>>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -132,6 +133,11 @@ let settingsState: Settings = {
   language: "zh",
 };
 let appConfigDirOverride: string | null = null;
+let providerDefaultTemplates: ProviderDefaultTemplateState = {
+  claude: null,
+  codex: null,
+  gemini: null,
+};
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
@@ -192,6 +198,11 @@ export const resetProviderState = () => {
     language: "zh",
   };
   appConfigDirOverride = null;
+  providerDefaultTemplates = {
+    claude: null,
+    codex: null,
+    gemini: null,
+  };
   mcpConfigs = {
     claude: {
       sample: {
@@ -423,6 +434,17 @@ export const getAppConfigDirOverride = () => appConfigDirOverride;
 
 export const setAppConfigDirOverrideState = (value: string | null) => {
   appConfigDirOverride = value;
+};
+
+export const getProviderDefaultTemplateState = (
+  appType: "claude" | "codex" | "gemini",
+) => providerDefaultTemplates[appType] ?? null;
+
+export const setProviderDefaultTemplateState = (
+  appType: "claude" | "codex" | "gemini",
+  value: string | null,
+) => {
+  providerDefaultTemplates[appType] = value;
 };
 
 export const getMcpConfig = (appType: AppId) => {

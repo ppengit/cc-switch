@@ -28,6 +28,47 @@ fn invalid_json_format_error(error: serde_json::Error) -> String {
     }
 }
 
+fn provider_default_template_key(app_type: &str) -> String {
+    format!("provider_default_template_{app_type}")
+}
+
+fn validate_provider_default_template_placeholders(
+    app_type: &str,
+    template: &str,
+) -> Result<(), String> {
+    let allowed: &[&str] = match app_type {
+        "claude" => &[
+            "api_key",
+            "base_url",
+            "model",
+            "reasoning_model",
+            "haiku_model",
+            "sonnet_model",
+            "opus_model",
+        ],
+        "codex" => &["api_key", "base_url", "model", "reasoning_effort"],
+        "gemini" => &["api_key", "base_url", "model"],
+        _ => return Ok(()),
+    };
+
+    let placeholder_re =
+        regex::Regex::new(r"\{\{([^{}]+)\}\}").map_err(|e| format!("占位符校验初始化失败: {e}"))?;
+
+    for caps in placeholder_re.captures_iter(template) {
+        let placeholder = caps
+            .get(1)
+            .map(|m| m.as_str().trim())
+            .unwrap_or_default();
+        if !allowed.contains(&placeholder) {
+            return Err(format!(
+                "默认 Provider 模板包含不支持的占位符: {{{{{placeholder}}}}}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_config_status(app: String) -> Result<ConfigStatus, String> {
     match AppType::from_str(&app).map_err(|e| e.to_string())? {
@@ -219,7 +260,10 @@ pub async fn set_common_config_snippet(
                 serde_json::from_str::<serde_json::Value>(&snippet)
                     .map_err(invalid_json_format_error)?;
             }
-            "codex" => {}
+            "codex" => {
+                crate::codex_config::validate_codex_common_config_template(&snippet)
+                    .map_err(|e| e.to_string())?;
+            }
             _ => {}
         }
     }
@@ -234,6 +278,42 @@ pub async fn set_common_config_snippet(
         .db
         .set_config_snippet(&app_type, value)
         .map_err(|e| e.to_string())?;
+
+    if matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+        let app_enum = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
+        let current_id = crate::settings::get_effective_current_provider(&state.db, &app_enum)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(current_id) = current_id {
+            if let Some(provider) = state
+                .db
+                .get_provider_by_id(&current_id, &app_type)
+                .map_err(|e| e.to_string())?
+            {
+                let has_backup = state
+                    .db
+                    .get_live_backup(&app_type)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_some();
+                let live_taken_over = state
+                    .proxy_service
+                    .detect_takeover_in_live_config_for_app(&app_enum);
+                let is_proxy_running = state.proxy_service.is_running().await;
+
+                if (has_backup || live_taken_over) && is_proxy_running {
+                    state
+                        .proxy_service
+                        .update_live_backup_from_provider(&app_type, &provider)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    crate::services::provider::write_live_snapshot(&state.db, &app_enum, &provider)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
 
     if app_type == "omo"
         && state
@@ -261,6 +341,49 @@ pub async fn set_common_config_snippet(
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_provider_default_template(
+    app_type: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Option<String>, String> {
+    if !matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+        return Err(format!("不支持的应用类型: {app_type}"));
+    }
+
+    state
+        .db
+        .get_setting(&provider_default_template_key(&app_type))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_provider_default_template(
+    app_type: String,
+    template: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<(), String> {
+    if !matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+        return Err(format!("不支持的应用类型: {app_type}"));
+    }
+
+    if !template.trim().is_empty() {
+        serde_json::from_str::<serde_json::Value>(&template).map_err(invalid_json_format_error)?;
+        validate_provider_default_template_placeholders(&app_type, &template)?;
+    }
+
+    let key = provider_default_template_key(&app_type);
+    if template.trim().is_empty() {
+        state.db.set_setting(&key, "").map_err(|e| e.to_string())?;
+    } else {
+        state
+            .db
+            .set_setting(&key, &template)
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 

@@ -8,6 +8,7 @@ import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import type { AppId } from "@/lib/api";
+import { configApi } from "@/lib/api";
 import type {
   ProviderCategory,
   ProviderMeta,
@@ -45,9 +46,7 @@ import {
   safeParseJsonObject,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
-import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import CodexConfigEditor from "./CodexConfigEditor";
-import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
 import JsonEditor from "@/components/JsonEditor";
 import { Label } from "@/components/ui/label";
@@ -70,12 +69,9 @@ import {
   useCodexConfigState,
   useApiKeyLink,
   useTemplateValues,
-  useCommonConfigSnippet,
-  useCodexCommonConfig,
   useSpeedTestEndpoints,
   useCodexTomlValidation,
   useGeminiConfigState,
-  useGeminiCommonConfig,
   useOmoModelSource,
   useOpencodeFormState,
   useOmoDraftState,
@@ -83,13 +79,16 @@ import {
 } from "./hooks";
 import {
   CLAUDE_DEFAULT_CONFIG,
-  CODEX_DEFAULT_CONFIG,
-  GEMINI_DEFAULT_CONFIG,
   OPENCODE_DEFAULT_CONFIG,
   OPENCLAW_DEFAULT_CONFIG,
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
 import { validateToml as validateTomlText } from "@/utils/tomlUtils";
+import {
+  getFallbackProviderDefaultTemplate,
+  isSupportedProviderTemplateApp,
+  renderProviderDefaultTemplate,
+} from "@/utils/providerDefaultTemplateUtils";
 
 type PresetEntry = {
   id: string;
@@ -189,6 +188,12 @@ export function ProviderForm({
   const isOmoCategory = appId === "opencode" && category === "omo";
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";
   const isAnyOmoCategory = isOmoCategory || isOmoSlimCategory;
+  const [providerDefaultTemplate, setProviderDefaultTemplate] = useState(
+    () =>
+      isSupportedProviderTemplateApp(appId)
+        ? getFallbackProviderDefaultTemplate(appId)
+        : "",
+  );
 
   useEffect(() => {
     setSelectedPresetId(initialData ? null : "custom");
@@ -211,6 +216,47 @@ export function ProviderForm({
     });
   }, [appId, initialData]);
 
+  useEffect(() => {
+    if (!isSupportedProviderTemplateApp(appId)) {
+      setProviderDefaultTemplate("");
+      return;
+    }
+
+    let mounted = true;
+    const fallback = getFallbackProviderDefaultTemplate(appId);
+    setProviderDefaultTemplate(fallback);
+
+    void configApi
+      .getProviderDefaultTemplate(appId)
+      .then((template) => {
+        if (!mounted) return;
+        if (template && template.trim()) {
+          setProviderDefaultTemplate(template);
+        }
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setProviderDefaultTemplate(fallback);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [appId]);
+
+  const renderedDefaultProviderSettingsConfig = useMemo(() => {
+    if (isSupportedProviderTemplateApp(appId)) {
+      return renderProviderDefaultTemplate(appId, providerDefaultTemplate);
+    }
+    if (appId === "opencode") {
+      return OPENCODE_DEFAULT_CONFIG;
+    }
+    if (appId === "openclaw") {
+      return OPENCLAW_DEFAULT_CONFIG;
+    }
+    return CLAUDE_DEFAULT_CONFIG;
+  }, [appId, providerDefaultTemplate]);
+
   const defaultValues: ProviderFormData = useMemo(
     () => ({
       name: initialData?.name ?? "",
@@ -218,19 +264,11 @@ export function ProviderForm({
       notes: initialData?.notes ?? "",
       settingsConfig: initialData?.settingsConfig
         ? JSON.stringify(initialData.settingsConfig, null, 2)
-        : appId === "codex"
-          ? CODEX_DEFAULT_CONFIG
-          : appId === "gemini"
-            ? GEMINI_DEFAULT_CONFIG
-            : appId === "opencode"
-              ? OPENCODE_DEFAULT_CONFIG
-              : appId === "openclaw"
-                ? OPENCLAW_DEFAULT_CONFIG
-                : CLAUDE_DEFAULT_CONFIG,
+        : renderedDefaultProviderSettingsConfig,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
-    [initialData, appId],
+    [initialData, renderedDefaultProviderSettingsConfig],
   );
 
   const form = useForm<ProviderFormData>({
@@ -287,11 +325,13 @@ export function ProviderForm({
     codexApiKey,
     codexBaseUrl,
     codexModelName,
+    codexReasoningEffort,
     codexAuthError,
     setCodexAuth,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
+    handleCodexReasoningEffortChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
@@ -308,15 +348,10 @@ export function ProviderForm({
   );
 
   useEffect(() => {
-    if (appId === "codex" && !initialData && selectedPresetId === "custom") {
-      const template = getCodexCustomTemplate();
-      resetCodexConfig(template.auth, template.config);
+    if (initialData || selectedPresetId === "custom" || selectedPresetId === null) {
+      form.reset(defaultValues);
     }
-  }, [appId, initialData, selectedPresetId, resetCodexConfig]);
-
-  useEffect(() => {
-    form.reset(defaultValues);
-  }, [defaultValues, form]);
+  }, [defaultValues, form, initialData, selectedPresetId]);
 
   const presetCategoryLabels: Record<string, string> = useMemo(
     () => ({
@@ -379,37 +414,6 @@ export function ProviderForm({
   });
 
   const {
-    useCommonConfig,
-    commonConfigSnippet,
-    commonConfigError,
-    handleCommonConfigToggle,
-    handleCommonConfigSnippetChange,
-    isExtracting: isClaudeExtracting,
-    handleExtract: handleClaudeExtract,
-  } = useCommonConfigSnippet({
-    settingsConfig: form.getValues("settingsConfig"),
-    onConfigChange: (config) => form.setValue("settingsConfig", config),
-    initialData: appId === "claude" ? initialData : undefined,
-    selectedPresetId: selectedPresetId ?? undefined,
-    enabled: appId === "claude",
-  });
-
-  const {
-    useCommonConfig: useCodexCommonConfigFlag,
-    commonConfigSnippet: codexCommonConfigSnippet,
-    commonConfigError: codexCommonConfigError,
-    handleCommonConfigToggle: handleCodexCommonConfigToggle,
-    handleCommonConfigSnippetChange: handleCodexCommonConfigSnippetChange,
-    isExtracting: isCodexExtracting,
-    handleExtract: handleCodexExtract,
-  } = useCodexCommonConfig({
-    codexConfig,
-    onConfigChange: handleCodexConfigChange,
-    initialData: appId === "codex" ? initialData : undefined,
-    selectedPresetId: selectedPresetId ?? undefined,
-  });
-
-  const {
     geminiEnv,
     geminiConfig,
     geminiApiKey,
@@ -424,7 +428,6 @@ export function ProviderForm({
     handleGeminiConfigChange,
     resetGeminiConfig,
     envStringToObj,
-    envObjToString,
   } = useGeminiConfigState({
     initialData: appId === "gemini" ? initialData : undefined,
   });
@@ -476,25 +479,6 @@ export function ProviderForm({
     [originalHandleGeminiModelChange, updateGeminiEnvField],
   );
 
-  const {
-    useCommonConfig: useGeminiCommonConfigFlag,
-    commonConfigSnippet: geminiCommonConfigSnippet,
-    commonConfigError: geminiCommonConfigError,
-    handleCommonConfigToggle: handleGeminiCommonConfigToggle,
-    handleCommonConfigSnippetChange: handleGeminiCommonConfigSnippetChange,
-    isExtracting: isGeminiExtracting,
-    handleExtract: handleGeminiExtract,
-  } = useGeminiCommonConfig({
-    envValue: geminiEnv,
-    onEnvChange: handleGeminiEnvChange,
-    configValue: geminiConfig,
-    onConfigChange: handleGeminiConfigChange,
-    envStringToObj,
-    envObjToString,
-    initialData: appId === "gemini" ? initialData : undefined,
-    selectedPresetId: selectedPresetId ?? undefined,
-  });
-
   // ── Extracted hooks: OpenCode / OMO / OpenClaw ─────────────────────
 
   const {
@@ -532,8 +516,6 @@ export function ProviderForm({
     onSettingsConfigChange: (config) => form.setValue("settingsConfig", config),
     getSettingsConfig: () => form.getValues("settingsConfig"),
   });
-
-  const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
 
   const handleSubmit = (values: ProviderFormData) => {
     if (appId === "claude" && templateValueEntries.length > 0) {
@@ -980,6 +962,50 @@ export function ProviderForm({
     initialData,
   });
 
+  const applyCodexDefaultTemplate = useCallback(() => {
+    const parsed = safeParseJsonObject(
+      renderedDefaultProviderSettingsConfig,
+      t("provider.configJson", {
+        defaultValue: "配置 JSON",
+      }),
+    ).value;
+
+    const auth =
+      parsed && typeof parsed.auth === "object" && parsed.auth !== null
+        ? (parsed.auth as Record<string, unknown>)
+        : {};
+    const config =
+      parsed && typeof parsed.config === "string" ? parsed.config : "";
+
+    resetCodexConfig(auth, config);
+  }, [renderedDefaultProviderSettingsConfig, resetCodexConfig, t]);
+
+  const applyGeminiDefaultTemplate = useCallback(() => {
+    const parsed = safeParseJsonObject(
+      renderedDefaultProviderSettingsConfig,
+      t("provider.configJson", {
+        defaultValue: "配置 JSON",
+      }),
+    ).value;
+
+    const env =
+      parsed && typeof parsed.env === "object" && parsed.env !== null
+        ? (parsed.env as Record<string, unknown>)
+        : {};
+    const config =
+      parsed && typeof parsed.config === "object" && parsed.config !== null
+        ? (parsed.config as Record<string, unknown>)
+        : {};
+
+    resetGeminiConfig(env, config);
+  }, [renderedDefaultProviderSettingsConfig, resetGeminiConfig, t]);
+
+  useEffect(() => {
+    if (appId === "codex" && !initialData && selectedPresetId === "custom") {
+      applyCodexDefaultTemplate();
+    }
+  }, [appId, applyCodexDefaultTemplate, initialData, selectedPresetId]);
+
   const handlePresetChange = (value: string) => {
     setSelectedPresetId(value);
     if (value === "custom") {
@@ -987,11 +1013,10 @@ export function ProviderForm({
       form.reset(defaultValues);
 
       if (appId === "codex") {
-        const template = getCodexCustomTemplate();
-        resetCodexConfig(template.auth, template.config);
+        applyCodexDefaultTemplate();
       }
       if (appId === "gemini") {
-        resetGeminiConfig({}, {});
+        applyGeminiDefaultTemplate();
       }
       if (appId === "opencode") {
         opencodeForm.resetOpencodeState();
@@ -1348,6 +1373,8 @@ export function ProviderForm({
             shouldShowModelField={category !== "official"}
             modelName={codexModelName}
             onModelNameChange={handleCodexModelNameChange}
+            reasoningEffort={codexReasoningEffort}
+            onReasoningEffortChange={handleCodexReasoningEffortChange}
             speedTestEndpoints={speedTestEndpoints}
           />
         )}
@@ -1448,15 +1475,8 @@ export function ProviderForm({
               configValue={codexConfig}
               onAuthChange={setCodexAuth}
               onConfigChange={handleCodexConfigChange}
-              useCommonConfig={useCodexCommonConfigFlag}
-              onCommonConfigToggle={handleCodexCommonConfigToggle}
-              commonConfigSnippet={codexCommonConfigSnippet}
-              onCommonConfigSnippetChange={handleCodexCommonConfigSnippetChange}
-              commonConfigError={codexCommonConfigError}
               authError={codexAuthError}
               configError={codexConfigError}
-              onExtract={handleCodexExtract}
-              isExtracting={isCodexExtracting}
             />
             {settingsConfigErrorField}
           </>
@@ -1467,17 +1487,8 @@ export function ProviderForm({
               configValue={geminiConfig}
               onEnvChange={handleGeminiEnvChange}
               onConfigChange={handleGeminiConfigChange}
-              useCommonConfig={useGeminiCommonConfigFlag}
-              onCommonConfigToggle={handleGeminiCommonConfigToggle}
-              commonConfigSnippet={geminiCommonConfigSnippet}
-              onCommonConfigSnippetChange={
-                handleGeminiCommonConfigSnippetChange
-              }
-              commonConfigError={geminiCommonConfigError}
               envError={envError}
               configError={geminiConfigError}
-              onExtract={handleGeminiExtract}
-              isExtracting={isGeminiExtracting}
             />
             {settingsConfigErrorField}
           </>
@@ -1547,20 +1558,22 @@ export function ProviderForm({
           </>
         ) : (
           <>
-            <CommonConfigEditor
-              value={form.getValues("settingsConfig")}
-              onChange={(value) => form.setValue("settingsConfig", value)}
-              useCommonConfig={useCommonConfig}
-              onCommonConfigToggle={handleCommonConfigToggle}
-              commonConfigSnippet={commonConfigSnippet}
-              onCommonConfigSnippetChange={handleCommonConfigSnippetChange}
-              commonConfigError={commonConfigError}
-              onEditClick={() => setIsCommonConfigModalOpen(true)}
-              isModalOpen={isCommonConfigModalOpen}
-              onModalClose={() => setIsCommonConfigModalOpen(false)}
-              onExtract={handleClaudeExtract}
-              isExtracting={isClaudeExtracting}
-            />
+            <div className="space-y-2">
+              <Label htmlFor="settingsConfig">{t("provider.configJson")}</Label>
+              <JsonEditor
+                value={form.getValues("settingsConfig")}
+                onChange={(value) => form.setValue("settingsConfig", value)}
+                placeholder={`{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com",
+    "ANTHROPIC_AUTH_TOKEN": "your-api-key-here"
+  }
+}`}
+                rows={14}
+                showValidation={true}
+                language="json"
+              />
+            </div>
             {settingsConfigErrorField}
           </>
         )}

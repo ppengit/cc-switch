@@ -40,7 +40,8 @@ export function generateThirdPartyAuth(apiKey: string): Record<string, any> {
 export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
-  modelName = "gpt-5.1-codex",
+  modelName = "gpt-5.4",
+  reasoningEffort = "xhigh",
 ): string {
   // 清理供应商名称，确保符合TOML键名规范
   const cleanProviderName =
@@ -51,7 +52,7 @@ export function generateThirdPartyConfig(
 
   return `model_provider = "${cleanProviderName}"
 model = "${modelName}"
-model_reasoning_effort = "high"
+model_reasoning_effort = "${reasoningEffort}"
 disable_response_storage = true
 
 [model_providers.${cleanProviderName}]
@@ -85,8 +86,8 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     isOfficial: true,
     auth: generateThirdPartyAuth(""),
     config: `model_provider = "azure"
-model = "gpt-5.2"
-model_reasoning_effort = "high"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.azure]
@@ -113,7 +114,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aihubmix",
       "https://aihubmix.com/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: [
       "https://aihubmix.com/v1",
@@ -128,7 +129,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "dmxapi",
       "https://www.dmxapi.cn/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: ["https://www.dmxapi.cn/v1"],
     isPartner: true, // 合作伙伴
@@ -143,7 +144,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "packycode",
       "https://www.packyapi.com/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: [
       "https://www.packyapi.com/v1",
@@ -161,7 +162,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "cubence",
       "https://api.cubence.com/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: [
       "https://api.cubence.com/v1",
@@ -184,7 +185,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aigocode",
       "https://api.aigocode.com",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: ["https://api.aigocode.com"],
     isPartner: true, // 合作伙伴
@@ -200,7 +201,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "rightcode",
       "https://right.codes/codex/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     category: "third_party",
     isPartner: true,
@@ -216,7 +217,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aicodemirror",
       "https://api.aicodemirror.com/api/codex/backend-api/codex",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     endpointCandidates: [
       "https://api.aicodemirror.com/api/codex/backend-api/codex",
@@ -235,7 +236,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "aicoding",
       "https://api.aicoding.sh",
-      "gpt-5.3-codex",
+      "gpt-5.4",
     ),
     endpointCandidates: ["https://api.aicoding.sh"],
     isPartner: true,
@@ -251,7 +252,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "crazyrouter",
       "https://crazyrouter.com/v1",
-      "gpt-5.3-codex",
+      "gpt-5.4",
     ),
     endpointCandidates: ["https://crazyrouter.com/v1"],
     isPartner: true,
@@ -267,7 +268,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "sssaicode",
       "https://node-hk.sssaicode.com/api",
-      "gpt-5.3-codex",
+      "gpt-5.4",
     ),
     endpointCandidates: [
       "https://node-hk.sssaicode.com/api/v1",
@@ -288,7 +289,7 @@ requires_openai_auth = true`,
     config: generateThirdPartyConfig(
       "openrouter",
       "https://openrouter.ai/api/v1",
-      "gpt-5.2",
+      "gpt-5.4",
     ),
     category: "aggregator",
     icon: "openrouter",

@@ -398,6 +398,8 @@ const formatTomlValidationError = (
 
 const COMMON_SNIPPET_START = "# cc-switch common config start";
 const COMMON_SNIPPET_END = "# cc-switch common config end";
+const CODEX_PROVIDER_CONFIG_PLACEHOLDER = "{{provider.config}}";
+const CODEX_MCP_CONFIG_PLACEHOLDER = "{{mcp.config}}";
 
 const escapeRegExp = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -449,6 +451,26 @@ const CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS = [
   /^\s*mcp_servers\s*=/m,
 ];
 
+const CODEX_PROVIDER_CONFIG_STUB = `model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.com"`;
+
+const CODEX_MCP_CONFIG_STUB = `[mcp_servers.example]
+type = "stdio"
+command = "echo"`;
+
+const buildCodexTomlValidationSource = (value: string) =>
+  value
+    .replaceAll(CODEX_PROVIDER_CONFIG_PLACEHOLDER, CODEX_PROVIDER_CONFIG_STUB)
+    .replaceAll(CODEX_MCP_CONFIG_PLACEHOLDER, CODEX_MCP_CONFIG_STUB);
+
 export const validateCodexCommonConfigSnippet = (
   snippetString: string,
 ): string => {
@@ -457,18 +479,30 @@ export const validateCodexCommonConfigSnippet = (
     return "";
   }
 
-  const tomlError = validateTomlText(snippetString);
-  if (tomlError) {
-    return formatTomlValidationError(tomlError, "通用配置片段");
+  const providerPlaceholderCount = (
+    trimmed.match(/\{\{provider\.config\}\}/g) ?? []
+  ).length;
+  if (providerPlaceholderCount !== 1) {
+    return "Codex 通用配置必须且只能包含一个 {{provider.config}} 占位符";
   }
 
-  const normalizedSnippet = normalizeLineEndings(snippetString);
+  const mcpPlaceholderCount = (trimmed.match(/\{\{mcp\.config\}\}/g) ?? [])
+    .length;
+  if (mcpPlaceholderCount > 1) {
+    return "Codex 通用配置最多只能包含一个 {{mcp.config}} 占位符";
+  }
+
   if (
-    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) =>
-      pattern.test(normalizedSnippet),
-    )
+    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) => pattern.test(trimmed))
   ) {
-    return "通用配置片段不能包含 mcp_servers，MCP 请通过 MCP 面板单独同步";
+    return "通用配置片段不能直接包含 mcp_servers，MCP 请使用 {{mcp.config}} 占位符";
+  }
+
+  const validationSource = buildCodexTomlValidationSource(trimmed);
+
+  const tomlError = validateTomlText(validationSource);
+  if (tomlError) {
+    return formatTomlValidationError(tomlError, "通用配置片段");
   }
 
   return "";
@@ -491,7 +525,9 @@ export const updateTomlCommonConfigSnippet = (
     }
 
     const updatedConfig = finalizeTomlCommonSnippetDocument(strippedManaged);
-    const cleanedError = validateTomlText(updatedConfig);
+    const cleanedError = validateTomlText(
+      buildCodexTomlValidationSource(updatedConfig),
+    );
     if (cleanedError) {
       return {
         updatedConfig: tomlString,
@@ -522,7 +558,9 @@ export const updateTomlCommonConfigSnippet = (
     const block = buildCommonSnippetBlock(snippetString);
     const trimmed = cleaned.trimStart();
     const updatedConfig = trimmed ? block + trimmed : block.trimEnd() + "\n";
-    const mergedError = validateTomlText(updatedConfig);
+    const mergedError = validateTomlText(
+      buildCodexTomlValidationSource(updatedConfig),
+    );
     if (mergedError) {
       return {
         updatedConfig: tomlString,
@@ -535,7 +573,9 @@ export const updateTomlCommonConfigSnippet = (
   }
 
   const updatedConfig = finalizeTomlCommonSnippetDocument(cleaned);
-  const cleanedError = validateTomlText(updatedConfig);
+  const cleanedError = validateTomlText(
+    buildCodexTomlValidationSource(updatedConfig),
+  );
   if (cleanedError) {
     return {
       updatedConfig: tomlString,
@@ -652,6 +692,22 @@ export const extractCodexModelName = (
   }
 };
 
+// 从 Codex 的 TOML 配置文本中提取 model_reasoning_effort 字段（支持单/双引号）
+export const extractCodexReasoningEffort = (
+  configText: string | undefined | null,
+): string | undefined => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeQuotes(raw);
+    if (!text) return undefined;
+
+    const m = text.match(/^model_reasoning_effort\s*=\s*(['"])([^'"]+)\1/m);
+    return m && m[2] ? m[2] : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 // 在 Codex 的 TOML 配置文本中写入或更新 model 字段
 export const setCodexModelName = (
   configText: string,
@@ -693,4 +749,53 @@ export const setCodexModelName = (
   // 在文件开头插入
   const lines = normalizedText.split("\n");
   return `${replacementLine}\n${lines.join("\n")}`;
+};
+
+// 在 Codex 的 TOML 配置文本中写入或更新 model_reasoning_effort 字段
+export const setCodexReasoningEffort = (
+  configText: string,
+  reasoningEffort: string,
+): string => {
+  const trimmed = reasoningEffort.trim();
+  if (!trimmed) {
+    return configText;
+  }
+
+  const normalizedText = normalizeQuotes(configText);
+  const replacementLine = `model_reasoning_effort = "${trimmed}"`;
+  const pattern = /^model_reasoning_effort\s*=\s*["']([^"']+)["']/m;
+
+  if (pattern.test(normalizedText)) {
+    return normalizedText.replace(pattern, replacementLine);
+  }
+
+  const modelPattern = /^model\s*=\s*["'][^"']+["']/m;
+  const modelMatch = normalizedText.match(modelPattern);
+  if (modelMatch && modelMatch.index !== undefined) {
+    const endOfLine = normalizedText.indexOf("\n", modelMatch.index);
+    if (endOfLine !== -1) {
+      return (
+        normalizedText.slice(0, endOfLine + 1) +
+        replacementLine +
+        "\n" +
+        normalizedText.slice(endOfLine + 1)
+      );
+    }
+  }
+
+  const providerPattern = /^model_provider\s*=\s*["'][^"']+["']/m;
+  const providerMatch = normalizedText.match(providerPattern);
+  if (providerMatch && providerMatch.index !== undefined) {
+    const endOfLine = normalizedText.indexOf("\n", providerMatch.index);
+    if (endOfLine !== -1) {
+      return (
+        normalizedText.slice(0, endOfLine + 1) +
+        replacementLine +
+        "\n" +
+        normalizedText.slice(endOfLine + 1)
+      );
+    }
+  }
+
+  return `${replacementLine}\n${normalizedText}`;
 };

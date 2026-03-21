@@ -4,6 +4,8 @@ import {
   setCodexBaseUrl as setCodexBaseUrlInConfig,
   extractCodexModelName,
   setCodexModelName as setCodexModelNameInConfig,
+  extractCodexReasoningEffort,
+  setCodexReasoningEffort as setCodexReasoningEffortInConfig,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
 
@@ -23,10 +25,12 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexApiKey, setCodexApiKey] = useState("");
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
   const [codexModelName, setCodexModelName] = useState("");
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState("");
   const [codexAuthError, setCodexAuthError] = useState("");
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
   const isUpdatingCodexModelNameRef = useRef(false);
+  const isUpdatingCodexReasoningEffortRef = useRef(false);
 
   // 初始化 Codex 配置（编辑模式）
   useEffect(() => {
@@ -56,6 +60,10 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       if (initialModelName) {
         setCodexModelName(initialModelName);
       }
+
+      setCodexReasoningEffort(
+        extractCodexReasoningEffort(configStr) || "xhigh",
+      );
 
       // 提取 API Key
       try {
@@ -89,6 +97,17 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       setCodexModelName(extracted);
     }
   }, [codexConfig, codexModelName]);
+
+  // 与 TOML 配置保持推理深度同步
+  useEffect(() => {
+    if (isUpdatingCodexReasoningEffortRef.current) {
+      return;
+    }
+    const extracted = extractCodexReasoningEffort(codexConfig) || "";
+    if (extracted !== codexReasoningEffort) {
+      setCodexReasoningEffort(extracted);
+    }
+  }, [codexConfig, codexReasoningEffort]);
 
   // 获取 API Key（从 auth JSON）
   const getCodexAuthApiKey = useCallback((authString: string): string => {
@@ -197,7 +216,28 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     [setCodexConfig],
   );
 
-  // 处理 config 变化（同步 Base URL 和 Model Name）
+  // 处理 Codex 推理深度变化
+  const handleCodexReasoningEffortChange = useCallback(
+    (reasoningEffort: string) => {
+      const trimmed = reasoningEffort.trim();
+      setCodexReasoningEffort(trimmed);
+
+      if (!trimmed) {
+        return;
+      }
+
+      isUpdatingCodexReasoningEffortRef.current = true;
+      setCodexConfig((prev) =>
+        setCodexReasoningEffortInConfig(prev, trimmed),
+      );
+      setTimeout(() => {
+        isUpdatingCodexReasoningEffortRef.current = false;
+      }, 0);
+    },
+    [setCodexConfig],
+  );
+
+  // 处理 config 变化（同步 Base URL、Model Name 和推理深度）
   const handleCodexConfigChange = useCallback(
     (value: string) => {
       // 归一化中文/全角/弯引号，避免 TOML 解析报错
@@ -217,8 +257,21 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
           setCodexModelName(extractedModel);
         }
       }
+
+      if (!isUpdatingCodexReasoningEffortRef.current) {
+        const extractedReasoningEffort =
+          extractCodexReasoningEffort(normalized) || "";
+        if (extractedReasoningEffort !== codexReasoningEffort) {
+          setCodexReasoningEffort(extractedReasoningEffort);
+        }
+      }
     },
-    [setCodexConfig, codexBaseUrl, codexModelName],
+    [
+      setCodexConfig,
+      codexBaseUrl,
+      codexModelName,
+      codexReasoningEffort,
+    ],
   );
 
   // 重置配置（用于预设切换）
@@ -240,6 +293,8 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         setCodexModelName("");
       }
 
+      setCodexReasoningEffort(extractCodexReasoningEffort(config) || "xhigh");
+
       // 提取 API Key
       try {
         if (auth && typeof auth.OPENAI_API_KEY === "string") {
@@ -260,12 +315,14 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexApiKey,
     codexBaseUrl,
     codexModelName,
+    codexReasoningEffort,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
+    handleCodexReasoningEffortChange,
     handleCodexConfigChange,
     resetCodexConfig,
     getCodexAuthApiKey,

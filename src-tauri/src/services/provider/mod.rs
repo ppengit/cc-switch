@@ -26,8 +26,12 @@ pub use live::{
 };
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::write_live_snapshot;
+pub(crate) use live::{
+    build_claude_live_snapshot_from_provider, build_codex_live_snapshot_from_provider,
+    build_gemini_live_snapshot_from_provider, extract_provider_settings_from_live,
+    sanitize_claude_settings_for_live,
+};
 
 // Internal re-exports
 use live::{
@@ -230,7 +234,7 @@ impl ProviderService {
                 // Users must explicitly switch/apply an OMO provider to activate it.
                 return Ok(true);
             }
-            write_live_snapshot(&app_type, &provider)?;
+            write_live_snapshot(&state.db, &app_type, &provider)?;
             return Ok(true);
         }
 
@@ -241,7 +245,7 @@ impl ProviderService {
             state
                 .db
                 .set_current_provider(app_type.as_str(), &provider.id)?;
-            write_live_snapshot(&app_type, &provider)?;
+            write_live_snapshot(&state.db, &app_type, &provider)?;
         }
 
         Ok(true)
@@ -293,7 +297,7 @@ impl ProviderService {
                 }
                 return Ok(true);
             }
-            write_live_snapshot(&app_type, &provider)?;
+            write_live_snapshot(&state.db, &app_type, &provider)?;
             return Ok(true);
         }
 
@@ -322,7 +326,7 @@ impl ProviderService {
                 )
                 .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
             } else {
-                write_live_snapshot(&app_type, &provider)?;
+                write_live_snapshot(&state.db, &app_type, &provider)?;
                 // Sync MCP
                 McpService::sync_all_enabled(state)?;
             }
@@ -609,7 +613,11 @@ impl ProviderService {
                     // Only backfill when switching to a different provider
                     if let Ok(live_config) = read_live_settings(app_type.clone()) {
                         if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                            current_provider.settings_config = live_config;
+                            current_provider.settings_config = extract_provider_settings_from_live(
+                                &state.db,
+                                &app_type,
+                                &live_config,
+                            )?;
                             if let Err(e) =
                                 state.db.save_provider(app_type.as_str(), &current_provider)
                             {
@@ -634,7 +642,7 @@ impl ProviderService {
         }
 
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
-        write_live_snapshot(&app_type, provider)?;
+        write_live_snapshot(&state.db, &app_type, provider)?;
 
         // Sync MCP
         McpService::sync_all_enabled(state)?;

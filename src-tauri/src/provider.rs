@@ -441,10 +441,10 @@ impl UniversalProvider {
         let models = self.models.codex.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "gpt-4o".to_string());
+            .unwrap_or_else(|| "gpt-5.4".to_string());
         let reasoning_effort = models
             .and_then(|m| m.reasoning_effort.clone())
-            .unwrap_or_else(|| "high".to_string());
+            .unwrap_or_else(|| "xhigh".to_string());
 
         // Codex/OpenAI 的 base_url 既可能是纯 origin（需要补 /v1），也可能包含自定义前缀（不应强行补版本）
         let base_trimmed = self.base_url.trim_end_matches('/');
@@ -462,13 +462,13 @@ impl UniversalProvider {
 
         // 生成 Codex 的 config.toml 内容
         let config_toml = format!(
-            r#"model_provider = "newapi"
+            r#"model_provider = "custom"
 model = "{model}"
 model_reasoning_effort = "{reasoning_effort}"
 disable_response_storage = true
 
-[model_providers.newapi]
-name = "NewAPI"
+[model_providers.custom]
+name = "custom"
 base_url = "{codex_base_url}"
 wire_api = "responses"
 requires_openai_auth = true"#

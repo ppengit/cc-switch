@@ -15,18 +15,20 @@ base_url = "https://example.com"
     expect(hasTomlCommonConfigSnippet(configText, snippet)).toBe(false);
   });
 
-  it("does not remove matching nested values when enabling common config", () => {
+  it("accepts codex templates with provider placeholder and keeps nested MCP values", () => {
     const configText = `[mcp_servers.echo]
 base_url = "https://example.com"
 `;
-    const snippet = `base_url = "https://example.com"`;
+    const snippet = `{{provider.config}}
+
+[tool]
+base_url = "https://example.com"`;
 
     const result = updateTomlCommonConfigSnippet(configText, snippet, true);
 
     expect(result.error).toBeUndefined();
-    expect(
-      result.updatedConfig.match(/base_url = "https:\/\/example\.com"/g),
-    ).toHaveLength(2);
+    expect(result.updatedConfig).toContain("{{provider.config}}");
+    expect(result.updatedConfig).toContain("[tool]");
     expect(result.updatedConfig).toContain("[mcp_servers.echo]");
   });
 
@@ -46,7 +48,9 @@ model = "gpt-4.1"
   });
 
   it("rejects MCP sections inside codex common config snippets", () => {
-    const snippet = `[mcp_servers.echo]
+    const snippet = `{{provider.config}}
+
+[mcp_servers.echo]
 type = "stdio"
 command = "echo"
 `;
