@@ -24,8 +24,8 @@ interface CommonConfigEditorProps {
 export function CommonConfigEditor({
   value,
   onChange,
-  useCommonConfig,
-  onCommonConfigToggle,
+  useCommonConfig: _useCommonConfig,
+  onCommonConfigToggle: _onCommonConfigToggle,
   commonConfigSnippet,
   onCommonConfigSnippetChange,
   commonConfigError,
@@ -74,22 +74,11 @@ export function CommonConfigEditor({
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="settingsConfig">{t("provider.configJson")}</Label>
-          <div className="flex items-center gap-2">
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                id="useCommonConfig"
-                checked={useCommonConfig}
-                onChange={(e) => onCommonConfigToggle(e.target.checked)}
-                className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-              />
-              <span>
-                {t("claudeConfig.writeCommonConfig", {
-                  defaultValue: "写入通用配置",
-                })}
-              </span>
-            </label>
-          </div>
+          <span className="text-xs text-muted-foreground">
+            {t("provider.commonConfigApplyAll", {
+              defaultValue: "应用配置模板",
+            })}
+          </span>
         </div>
         <div className="flex items-center justify-end">
           <button
@@ -126,7 +115,7 @@ export function CommonConfigEditor({
       <FullScreenPanel
         isOpen={isModalOpen}
         title={t("claudeConfig.editCommonConfigTitle", {
-          defaultValue: "编辑通用配置片段",
+          defaultValue: "编辑 Claude 应用配置模板",
         })}
         onClose={onModalClose}
         footer={
@@ -162,7 +151,8 @@ export function CommonConfigEditor({
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
             {t("claudeConfig.commonConfigHint", {
-              defaultValue: "通用配置片段将合并到所有启用它的供应商配置中",
+              defaultValue:
+                "这是 Claude 的应用配置模板。写入 live 配置时，系统会注入当前供应商配置和 MCP 配置。",
             })}
           </p>
           <JsonEditor

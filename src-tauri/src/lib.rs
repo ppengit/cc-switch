@@ -84,7 +84,10 @@ fn persist_main_window_size(app: &tauri::AppHandle) {
         return;
     };
 
-    let (width, height) = clamp_main_window_size(size.width, size.height);
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+    let logical = size.to_logical::<f64>(scale_factor);
+    let (width, height) =
+        clamp_main_window_size(logical.width.round() as u32, logical.height.round() as u32);
     if let Err(err) = crate::settings::set_main_window_size(width, height) {
         log::warn!("Failed to persist main window size: {err}");
     }
@@ -96,13 +99,24 @@ fn apply_startup_window_size(app: &tauri::AppHandle) {
     };
 
     if let Some(saved) = crate::settings::get_main_window_size() {
-        let (width, height) = clamp_main_window_size(saved.width, saved.height);
+        let (mut width, mut height) = clamp_main_window_size(saved.width, saved.height);
+
+        // Clamp to current monitor bounds to avoid oversized windows from legacy DPI bugs.
+        if let Ok(monitor) = window.current_monitor() {
+            if let Some(monitor) = monitor.or_else(|| window.primary_monitor().ok().flatten()) {
+                let scale_factor = monitor.scale_factor();
+                let logical = monitor.size().to_logical::<f64>(scale_factor);
+                width = width.min(logical.width.round() as u32);
+                height = height.min(logical.height.round() as u32);
+            }
+        }
         if let Err(err) = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
             width: width as f64,
             height: height as f64,
         })) {
             log::warn!("Failed to restore main window size: {err}");
         }
+        let _ = window.center();
         return;
     }
 
@@ -113,6 +127,7 @@ fn apply_startup_window_size(app: &tauri::AppHandle) {
                 width: DEFAULT_MAIN_WINDOW_WIDTH as f64,
                 height: DEFAULT_MAIN_WINDOW_HEIGHT as f64,
             }));
+            let _ = window.center();
         }
     }
 }
@@ -690,8 +705,10 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id("main")
-                .on_tray_icon_event(|_tray, event| match event {
-                    // 左键点击已通过 show_menu_on_left_click(true) 打开菜单，这里不再额外处理
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::DoubleClick { .. } => {
+                        tray::show_main_window(tray.app_handle());
+                    }
                     TrayIconEvent::Click { .. } => {}
                     _ => log::debug!("unhandled event {event:?}"),
                 })
@@ -699,7 +716,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
@@ -880,6 +897,11 @@ pub fn run() {
             commands::get_claude_code_config_path,
             commands::get_config_dir,
             commands::open_config_folder,
+            commands::get_live_config_files,
+            commands::open_live_config_file,
+            commands::get_app_config_preview,
+            commands::get_config_health_report,
+            commands::repair_config_health,
             commands::pick_directory,
             commands::open_external,
             commands::get_init_error,

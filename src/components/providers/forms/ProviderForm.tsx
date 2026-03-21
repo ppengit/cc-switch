@@ -490,8 +490,7 @@ export function ProviderForm({
     settingsConfig: form.getValues("settingsConfig"),
     onConfigChange: handleSettingsConfigChange,
     initialData: appId === "claude" ? initialData : undefined,
-    initialEnabled:
-      appId === "claude" ? initialData?.meta?.commonConfigEnabled : undefined,
+    initialEnabled: appId === "claude" ? true : undefined,
     selectedPresetId: selectedPresetId ?? undefined,
     enabled: appId === "claude",
   });
@@ -509,8 +508,7 @@ export function ProviderForm({
     codexConfig,
     onConfigChange: handleCodexConfigChange,
     initialData: appId === "codex" ? initialData : undefined,
-    initialEnabled:
-      appId === "codex" ? initialData?.meta?.commonConfigEnabled : undefined,
+    initialEnabled: appId === "codex" ? true : undefined,
     selectedPresetId: selectedPresetId ?? undefined,
   });
 
@@ -595,8 +593,7 @@ export function ProviderForm({
     envStringToObj,
     envObjToString,
     initialData: appId === "gemini" ? initialData : undefined,
-    initialEnabled:
-      appId === "gemini" ? initialData?.meta?.commonConfigEnabled : undefined,
+    initialEnabled: appId === "gemini" ? true : undefined,
     selectedPresetId: selectedPresetId ?? undefined,
   });
 
@@ -919,14 +916,6 @@ export function ProviderForm({
       payload.meta ?? (initialData?.meta ? { ...initialData.meta } : undefined);
     payload.meta = {
       ...(baseMeta ?? {}),
-      commonConfigEnabled:
-        appId === "claude"
-          ? useCommonConfig
-          : appId === "codex"
-            ? useCodexCommonConfigFlag
-            : appId === "gemini"
-              ? useGeminiCommonConfigFlag
-              : undefined,
       endpointAutoSelect,
       testConfig: testConfig.enabled ? testConfig : undefined,
       proxyConfig: proxyConfig.enabled ? proxyConfig : undefined,

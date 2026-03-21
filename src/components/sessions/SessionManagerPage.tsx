@@ -27,6 +27,7 @@ import {
   useSwitchSessionProviderBinding,
 } from "@/lib/query/proxy";
 import { sessionsApi } from "@/lib/api";
+import { proxyApi } from "@/lib/api/proxy";
 import { providersApi } from "@/lib/api/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +60,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { cn } from "@/lib/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
@@ -191,6 +193,26 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
     );
   }, [providersMap]);
+  const { data: selectedCurrentProviderId = "" } = useQuery({
+    queryKey: ["sessionManagerCurrentProvider", selectedSessionAppType],
+    queryFn: () => providersApi.getCurrent(selectedSessionAppType as AppId),
+    enabled: Boolean(selectedSessionAppType),
+    staleTime: 30 * 1000,
+  });
+  const { data: sessionOccupancy = [] } = useQuery({
+    queryKey: [
+      "sessionManagerProviderOccupancy",
+      selectedSessionAppType,
+      selectedAppProxyConfig?.sessionIdleTtlMinutes,
+    ],
+    queryFn: () =>
+      proxyApi.getProviderSessionOccupancy(
+        selectedSessionAppType as string,
+        selectedAppProxyConfig?.sessionIdleTtlMinutes,
+      ),
+    enabled: Boolean(selectedSessionAppType && isSessionRoutingEnabledForSelection),
+    refetchInterval: 5000,
+  });
   const { data: codexBindings = [] } = useSessionProviderBindings("codex");
   const { data: claudeBindings = [] } = useSessionProviderBindings("claude");
   const { data: opencodeBindings = [] } =
@@ -317,6 +339,87 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       );
     }
   };
+
+  const occupancyMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of sessionOccupancy) {
+      map.set(item.providerId, item.sessionCount);
+    }
+    return map;
+  }, [sessionOccupancy]);
+
+  const routingStrategyLabel = useMemo(() => {
+    const strategy = selectedAppProxyConfig?.sessionRoutingStrategy;
+    if (!strategy) return "-";
+    return t(`proxy.routingStrategy.${strategy}`, {
+      defaultValue: strategy,
+    });
+  }, [selectedAppProxyConfig?.sessionRoutingStrategy, t]);
+
+  const sessionRoutingExplainRows = useMemo(() => {
+    return providerOptions.map((provider) => {
+      const sessionCount = occupancyMap.get(provider.id) ?? 0;
+      const isBound = sessionBinding?.providerId === provider.id;
+      const isPinned = isBound && sessionBinding?.pinned;
+      const isCurrentProvider = selectedCurrentProviderId === provider.id;
+      const isDefaultProvider =
+        !!selectedAppProxyConfig?.sessionDefaultProviderId &&
+        selectedAppProxyConfig.sessionDefaultProviderId === provider.id;
+      const maxSessions =
+        selectedAppProxyConfig?.sessionMaxSessionsPerProvider ?? 0;
+      const isAtCapacity = maxSessions > 0 && sessionCount >= maxSessions;
+
+      const reasons = [
+        isBound
+          ? isPinned
+            ? t("sessionManager.routingReasonPinned", {
+                defaultValue: "当前会话已锁定到此 provider",
+              })
+            : t("sessionManager.routingReasonBound", {
+                defaultValue: "当前会话当前绑定到此 provider",
+              })
+          : null,
+        isDefaultProvider
+          ? t("sessionManager.routingReasonDefault", {
+              defaultValue: "这是会话路由默认 provider",
+            })
+          : null,
+        !selectedAppProxyConfig?.sessionDefaultProviderId && isCurrentProvider
+          ? t("sessionManager.routingReasonFollowCurrent", {
+              defaultValue: "默认策略为空时，会跟随当前 provider",
+            })
+          : null,
+        isAtCapacity
+          ? t("sessionManager.routingReasonAtCapacity", {
+              defaultValue: "已达到会话上限",
+            })
+          : t("sessionManager.routingReasonCapacityOk", {
+              defaultValue: "仍可承载更多会话",
+            }),
+      ].filter(Boolean) as string[];
+
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        sessionCount,
+        isBound,
+        isPinned,
+        isCurrentProvider,
+        isDefaultProvider,
+        isAtCapacity,
+        reasons,
+      };
+    });
+  }, [
+    occupancyMap,
+    providerOptions,
+    selectedAppProxyConfig?.sessionDefaultProviderId,
+    selectedAppProxyConfig?.sessionMaxSessionsPerProvider,
+    selectedCurrentProviderId,
+    sessionBinding?.pinned,
+    sessionBinding?.providerId,
+    t,
+  ]);
 
   const { data: messages = [], isLoading: isLoadingMessages } =
     useSessionMessagesQuery(
@@ -969,6 +1072,157 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           </div>
                         </div>
                       </div>
+
+                      {selectedSession && (
+                        <div className="mt-3 rounded-lg border border-border/60 bg-muted/30 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="text-[11px]">
+                              {t("sessionManager.routingStrategy", {
+                                defaultValue: "策略：{{strategy}}",
+                                strategy: routingStrategyLabel,
+                              })}
+                            </Badge>
+                            <Badge variant="outline" className="text-[11px]">
+                              {selectedAppProxyConfig?.sessionDefaultProviderId
+                                ? t("sessionManager.routingDefaultProvider", {
+                                    defaultValue: "默认：{{provider}}",
+                                    provider:
+                                      providersMap[
+                                        selectedAppProxyConfig
+                                          .sessionDefaultProviderId
+                                      ]?.name ??
+                                      selectedAppProxyConfig
+                                        .sessionDefaultProviderId,
+                                  })
+                                : t("sessionManager.routingDefaultFollowCurrent", {
+                                    defaultValue: "默认：跟随当前 provider",
+                                  })}
+                            </Badge>
+                            <Badge variant="outline" className="text-[11px]">
+                              {t("sessionManager.routingCapacityRule", {
+                                defaultValue:
+                                  "容量：{{max}} / 共享{{shared}}",
+                                max:
+                                  selectedAppProxyConfig?.sessionMaxSessionsPerProvider ??
+                                  0,
+                                shared:
+                                  selectedAppProxyConfig?.sessionAllowSharedWhenExhausted
+                                    ? "ON"
+                                    : "OFF",
+                              })}
+                            </Badge>
+                          </div>
+
+                          {isSessionRoutingEnabledForSelection ? (
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              {sessionRoutingExplainRows.map((row) => (
+                                <div
+                                  key={row.providerId}
+                                  className={cn(
+                                    "rounded-lg border px-3 py-2",
+                                    row.isBound
+                                      ? "border-primary/40 bg-primary/5"
+                                      : "border-border/60 bg-background/70",
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-medium">
+                                        {row.providerName}
+                                      </div>
+                                      <div className="text-[11px] text-muted-foreground">
+                                        {row.providerId}
+                                      </div>
+                                    </div>
+                                    <Badge
+                                      variant="secondary"
+                                      className="shrink-0 text-[11px]"
+                                    >
+                                      {t("sessionManager.routingOccupancy", {
+                                        defaultValue: "占用 {{count}}",
+                                        count: row.sessionCount,
+                                      })}
+                                    </Badge>
+                                  </div>
+
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {row.isBound && (
+                                      <Badge className="text-[10px]">
+                                        {row.isPinned
+                                          ? t(
+                                              "sessionManager.routingBadgePinned",
+                                              {
+                                                defaultValue: "已锁定",
+                                              },
+                                            )
+                                          : t(
+                                              "sessionManager.routingBadgeBound",
+                                              {
+                                                defaultValue: "当前绑定",
+                                              },
+                                            )}
+                                      </Badge>
+                                    )}
+                                    {row.isDefaultProvider && (
+                                      <Badge
+                                        variant="outline"
+                                        className="text-[10px]"
+                                      >
+                                        {t(
+                                          "sessionManager.routingBadgeDefault",
+                                          {
+                                            defaultValue: "默认 provider",
+                                          },
+                                        )}
+                                      </Badge>
+                                    )}
+                                    {row.isCurrentProvider && (
+                                      <Badge
+                                        variant="outline"
+                                        className="text-[10px]"
+                                      >
+                                        {t(
+                                          "sessionManager.routingBadgeCurrent",
+                                          {
+                                            defaultValue: "当前 provider",
+                                          },
+                                        )}
+                                      </Badge>
+                                    )}
+                                    {row.isAtCapacity && (
+                                      <Badge
+                                        variant="outline"
+                                        className="text-[10px]"
+                                      >
+                                        {t(
+                                          "sessionManager.routingBadgeAtCapacity",
+                                          {
+                                            defaultValue: "达到上限",
+                                          },
+                                        )}
+                                      </Badge>
+                                    )}
+                                  </div>
+
+                                  <ul className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                                    {row.reasons.map((reason) => (
+                                      <li key={`${row.providerId}:${reason}`}>
+                                        {reason}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-[11px] text-muted-foreground">
+                              {t("sessionManager.bindingDisabled", {
+                                defaultValue: "当前应用未启用会话路由",
+                              })}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* 閸欏厖鏅堕敍姘惙娴ｆ粍瀵滈柦顔剧矋 */}
                       <div className="flex items-center gap-2 shrink-0">

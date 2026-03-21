@@ -33,6 +33,25 @@ pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     v
 }
 
+fn merge_claude_mcp_servers_from_existing(settings: &mut Value) {
+    let path = get_claude_settings_path();
+    if !path.exists() {
+        return;
+    }
+
+    let Ok(existing) = read_json_file::<Value>(&path) else {
+        return;
+    };
+
+    let Some(mcp_servers) = existing.get("mcpServers").cloned() else {
+        return;
+    };
+
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("mcpServers".to_string(), mcp_servers);
+    }
+}
+
 fn json_is_subset(target: &Value, source: &Value) -> bool {
     match source {
         Value::Object(source_map) => {
@@ -195,6 +214,7 @@ fn toml_remove_array_items(target: &mut toml_edit::Array, source: &toml_edit::Ar
     }
 }
 
+#[allow(dead_code)]
 fn toml_item_is_subset(target: &Item, source: &Item) -> bool {
     if let Some(source_table) = source.as_table_like() {
         let Some(target_table) = target.as_table_like() else {
@@ -291,6 +311,7 @@ fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
     }
 }
 
+#[allow(dead_code)]
 fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
     let trimmed = snippet.trim();
     if trimmed.is_empty() {
@@ -338,19 +359,14 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
 
 pub(crate) fn provider_uses_common_config(
     app_type: &AppType,
-    provider: &Provider,
+    _provider: &Provider,
     snippet: Option<&str>,
 ) -> bool {
-    match provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.common_config_enabled)
-    {
-        Some(explicit) => explicit && snippet.is_some_and(|value| !value.trim().is_empty()),
-        None => snippet.is_some_and(|value| {
-            settings_contain_common_config(app_type, &provider.settings_config, value)
-        }),
+    if matches!(app_type, AppType::OpenCode | AppType::OpenClaw) {
+        return false;
     }
+
+    snippet.is_some_and(|value| !value.trim().is_empty())
 }
 
 pub(crate) fn remove_common_config_from_settings(
@@ -607,16 +623,21 @@ impl LiveSnapshot {
             LiveSnapshot::Codex { auth, config } => {
                 let auth_path = get_codex_auth_path();
                 let config_path = get_codex_config_path();
-                if let Some(value) = auth {
-                    write_json_file(&auth_path, value)?;
-                } else if auth_path.exists() {
-                    delete_file(&auth_path)?;
-                }
-
-                if let Some(text) = config {
-                    crate::config::write_text_file(&config_path, text)?;
-                } else if config_path.exists() {
-                    delete_file(&config_path)?;
+                match (auth, config.as_deref()) {
+                    (Some(value), maybe_config) => {
+                        crate::codex_config::write_codex_live_exact_atomic(value, maybe_config)?;
+                    }
+                    (None, Some(text)) => {
+                        crate::config::write_text_file(&config_path, text)?;
+                    }
+                    (None, None) => {
+                        if auth_path.exists() {
+                            delete_file(&auth_path)?;
+                        }
+                        if config_path.exists() {
+                            delete_file(&config_path)?;
+                        }
+                    }
                 }
             }
             LiveSnapshot::Gemini { env, .. } => {
@@ -653,7 +674,8 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
     match app_type {
         AppType::Claude => {
             let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            let mut settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            merge_claude_mcp_servers_from_existing(&mut settings);
             write_json_file(&path, &settings)?;
         }
         AppType::Codex => {
@@ -667,11 +689,7 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             let config_str = obj.get("config").and_then(|v| v.as_str()).ok_or_else(|| {
                 AppError::Config("Codex 供应商配置缺少 'config' 字段或不是字符串".to_string())
             })?;
-
-            let auth_path = get_codex_auth_path();
-            write_json_file(&auth_path, auth)?;
-            let config_path = get_codex_config_path();
-            std::fs::write(&config_path, config_str).map_err(|e| AppError::io(&config_path, e))?;
+            crate::codex_config::write_codex_live_atomic(auth, Some(config_str))?;
         }
         AppType::Gemini => {
             // Delegate to write_gemini_live which handles env file writing correctly

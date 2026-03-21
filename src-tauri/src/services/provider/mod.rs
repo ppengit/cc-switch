@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_codex_common_config_preserves_mcp_servers_base_url() {
+    fn extract_codex_common_config_removes_mcp_servers_and_model_sections() {
         let config_toml = r#"model_provider = "azure"
 model = "gpt-4"
 disable_response_storage = true
@@ -125,8 +125,12 @@ base_url = "http://localhost:8080"
             "should remove entire model_providers table"
         );
         assert!(
-            extracted.contains("http://localhost:8080"),
-            "should keep mcp_servers.* base_url"
+            !extracted.contains("[mcp_servers."),
+            "should remove mcp_servers table from common config"
+        );
+        assert!(
+            !extracted.contains("http://localhost:8080"),
+            "should not keep mcp_servers content in common config"
         );
     }
 }
@@ -727,7 +731,54 @@ impl ProviderService {
             return Ok(());
         }
 
-        Self::migrate_legacy_common_config_usage(state, app_type, &snippet)
+        let sanitized_snippet = match Self::sanitize_common_config_snippet_text(&app_type, &snippet)
+        {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!(
+                    "Failed to sanitize legacy common config snippet for {}: {err}",
+                    app_type.as_str()
+                );
+                snippet.clone()
+            }
+        };
+
+        if sanitized_snippet != snippet {
+            state
+                .db
+                .set_config_snippet(app_type.as_str(), Some(sanitized_snippet.clone()))?;
+        }
+
+        Self::migrate_legacy_common_config_usage(state, app_type, &sanitized_snippet)
+    }
+
+    fn sanitize_common_config_snippet_text(
+        app_type: &AppType,
+        snippet: &str,
+    ) -> Result<String, AppError> {
+        match app_type {
+            AppType::Claude => {
+                let parsed = serde_json::from_str::<Value>(snippet).map_err(|e| {
+                    AppError::Message(format!("Invalid Claude common config snippet: {e}"))
+                })?;
+                Self::extract_claude_common_config(&parsed)
+            }
+            AppType::Codex => {
+                Self::extract_codex_common_config(&serde_json::json!({ "config": snippet }))
+            }
+            AppType::Gemini => {
+                let parsed = serde_json::from_str::<Value>(snippet).map_err(|e| {
+                    AppError::Message(format!("Invalid Gemini common config snippet: {e}"))
+                })?;
+                let wrapped = if parsed.get("env").is_some() {
+                    parsed
+                } else {
+                    serde_json::json!({ "env": parsed })
+                };
+                Self::extract_gemini_common_config(&wrapped)
+            }
+            AppType::OpenCode | AppType::OpenClaw => Ok(snippet.to_string()),
+        }
     }
 
     /// Extract common config snippet from current provider
@@ -796,6 +847,8 @@ impl ProviderService {
             // Legacy model fields
             "primaryModel",
             "smallFastModel",
+            // MCP is app-global and should not be captured into common config.
+            "mcpServers",
         ];
 
         // Remove env fields
@@ -850,6 +903,19 @@ impl ProviderService {
 
         // Remove entire model_providers table (provider-specific configuration)
         root.remove("model_providers");
+        // MCP is app-global and should not be extracted into provider common config.
+        root.remove("mcp_servers");
+
+        let remove_mcp_root =
+            if let Some(mcp_table) = root.get_mut("mcp").and_then(|item| item.as_table_mut()) {
+                mcp_table.remove("servers");
+                mcp_table.is_empty()
+            } else {
+                false
+            };
+        if remove_mcp_root {
+            root.remove("mcp");
+        }
 
         // Clean up multiple empty lines (keep at most one blank line).
         let mut cleaned = String::new();

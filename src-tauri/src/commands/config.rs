@@ -7,6 +7,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::app_config::AppType;
 use crate::codex_config;
 use crate::config::{self, get_claude_settings_path, ConfigStatus};
+use crate::error::AppError;
 use crate::settings;
 
 #[tauri::command]
@@ -14,7 +15,162 @@ pub async fn get_claude_config_status() -> Result<ConfigStatus, String> {
     Ok(config::get_claude_config_status())
 }
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::str::FromStr;
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveConfigFileEntry {
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
+    pub modified_at: Option<i64>,
+    pub size_bytes: Option<u64>,
+}
+
+fn build_live_config_file_entry(label: &str, path: PathBuf) -> LiveConfigFileEntry {
+    let metadata = std::fs::metadata(&path).ok();
+    let modified_at = metadata
+        .as_ref()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64);
+    let size_bytes = metadata.as_ref().map(|meta| meta.len());
+
+    LiveConfigFileEntry {
+        label: label.to_string(),
+        exists: path.exists(),
+        path: path.to_string_lossy().to_string(),
+        modified_at,
+        size_bytes,
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigPreviewFile {
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
+    pub expected_text: String,
+    pub actual_text: String,
+    pub differs: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigPreview {
+    pub app: String,
+    pub current_provider_id: Option<String>,
+    pub current_provider_name: Option<String>,
+    pub files: Vec<AppConfigPreviewFile>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigHealthIssue {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigHealthReport {
+    pub app: String,
+    pub ok: bool,
+    pub issues: Vec<ConfigHealthIssue>,
+}
+
+fn normalize_text_for_compare(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n").trim().to_string()
+}
+
+fn build_config_preview_file(
+    label: &str,
+    path: PathBuf,
+    expected_text: String,
+    actual_text: String,
+) -> AppConfigPreviewFile {
+    AppConfigPreviewFile {
+        label: label.to_string(),
+        path: path.to_string_lossy().to_string(),
+        exists: path.exists(),
+        differs: normalize_text_for_compare(&expected_text) != normalize_text_for_compare(&actual_text),
+        expected_text,
+        actual_text,
+    }
+}
+
+fn stringify_json_pretty(value: &serde_json::Value) -> Result<String, AppError> {
+    serde_json::to_string_pretty(value)
+        .map_err(|e| AppError::Message(format!("JSON 序列化失败: {e}")))
+}
+
+fn merge_claude_mcp_servers(
+    rendered: &mut serde_json::Value,
+    live_settings: Option<&serde_json::Value>,
+) {
+    let Some(mcp_servers) = live_settings.and_then(|value| value.get("mcpServers")).cloned() else {
+        return;
+    };
+
+    if let Some(obj) = rendered.as_object_mut() {
+        obj.insert("mcpServers".to_string(), mcp_servers);
+    }
+}
+
+fn merge_gemini_settings_with_live(
+    rendered_config: Option<&serde_json::Value>,
+    live_settings: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut merged = live_settings
+        .and_then(|value| value.get("config"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if let Some(config_obj) = rendered_config.and_then(|value| value.as_object()) {
+        if let Some(merged_obj) = merged.as_object_mut() {
+            for (key, value) in config_obj {
+                merged_obj.insert(key.clone(), value.clone());
+            }
+        } else {
+            merged = serde_json::Value::Object(config_obj.clone());
+        }
+    }
+
+    merged
+}
+
+fn get_live_config_files_for_app(app_type: &AppType) -> Vec<LiveConfigFileEntry> {
+    match app_type {
+        AppType::Claude => vec![build_live_config_file_entry(
+            "settings.json",
+            get_claude_settings_path(),
+        )],
+        AppType::Codex => vec![
+            build_live_config_file_entry("config.toml", codex_config::get_codex_config_path()),
+            build_live_config_file_entry("auth.json", codex_config::get_codex_auth_path()),
+        ],
+        AppType::Gemini => vec![
+            build_live_config_file_entry(".env", crate::gemini_config::get_gemini_env_path()),
+            build_live_config_file_entry(
+                "settings.json",
+                crate::gemini_config::get_gemini_settings_path(),
+            ),
+        ],
+        AppType::OpenCode => vec![build_live_config_file_entry(
+            "opencode.json",
+            crate::opencode_config::get_opencode_config_path(),
+        )],
+        AppType::OpenClaw => vec![build_live_config_file_entry(
+            "config.json",
+            crate::openclaw_config::get_openclaw_config_path(),
+        )],
+    }
+}
 
 fn invalid_json_format_error(error: serde_json::Error) -> String {
     let lang = settings::get_settings()
@@ -89,9 +245,8 @@ fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), S
                 .map_err(invalid_json_format_error)?;
         }
         "codex" => {
-            snippet
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(invalid_toml_format_error)?;
+            codex_config::validate_codex_common_config_template(snippet)
+                .map_err(|e| e.to_string())?;
         }
         _ => {}
     }
@@ -180,6 +335,359 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         .map_err(|e| format!("打开文件夹失败: {e}"))?;
 
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_live_config_files(app: String) -> Result<Vec<LiveConfigFileEntry>, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let entries = get_live_config_files_for_app(&app_type);
+
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn open_live_config_file(handle: AppHandle, path: String) -> Result<bool, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(format!("配置文件不存在: {}", path.to_string_lossy()));
+    }
+
+    handle
+        .opener()
+        .open_path(path.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| format!("打开配置文件失败: {e}"))?;
+
+    Ok(true)
+}
+
+fn build_app_config_preview_internal(
+    state: &crate::store::AppState,
+    app_type: AppType,
+) -> Result<AppConfigPreview, AppError> {
+    let app = app_type.as_str().to_string();
+    let current_provider_id =
+        crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+    let current_provider = current_provider_id
+        .as_deref()
+        .and_then(|id| state.db.get_provider_by_id(id, app_type.as_str()).ok().flatten());
+    let current_provider_name = current_provider.as_ref().map(|provider| provider.name.clone());
+    let live_settings = crate::services::provider::read_live_settings(app_type.clone()).ok();
+
+    if matches!(app_type, AppType::OpenCode | AppType::OpenClaw) {
+        let files = get_live_config_files_for_app(&app_type)
+            .into_iter()
+            .map(|entry| {
+                let path = PathBuf::from(&entry.path);
+                let actual_text = std::fs::read_to_string(&path).unwrap_or_default();
+                build_config_preview_file(&entry.label, path, actual_text.clone(), actual_text)
+            })
+            .collect();
+
+        return Ok(AppConfigPreview {
+            app,
+            current_provider_id,
+            current_provider_name,
+            files,
+            note: Some("当前应用使用累加模式，预览显示的是当前 live 配置。".to_string()),
+        });
+    }
+
+    let Some(provider) = current_provider else {
+        return Ok(AppConfigPreview {
+            app,
+            current_provider_id,
+            current_provider_name,
+            files: Vec::new(),
+            note: Some("当前应用没有可预览的当前供应商。".to_string()),
+        });
+    };
+
+    let rendered_settings = crate::services::provider::build_effective_settings_with_common_config(
+        state.db.as_ref(),
+        &app_type,
+        &provider,
+    )?;
+
+    let files = match app_type {
+        AppType::Claude => {
+            let mut expected =
+                crate::services::provider::sanitize_claude_settings_for_live(&rendered_settings);
+            merge_claude_mcp_servers(&mut expected, live_settings.as_ref());
+            let actual = live_settings.unwrap_or_else(|| serde_json::json!({}));
+
+            vec![build_config_preview_file(
+                "settings.json",
+                get_claude_settings_path(),
+                stringify_json_pretty(&expected)?,
+                stringify_json_pretty(&actual)?,
+            )]
+        }
+        AppType::Codex => {
+            let expected_auth = rendered_settings
+                .get("auth")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let expected_config_base = rendered_settings
+                .get("config")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let actual_auth = live_settings
+                .as_ref()
+                .and_then(|value| value.get("auth"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let actual_config = live_settings
+                .as_ref()
+                .and_then(|value| value.get("config"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let expected_config = codex_config::merge_mcp_servers_from_existing(
+                &expected_config_base,
+                &actual_config,
+            )
+            .unwrap_or(expected_config_base);
+
+            vec![
+                build_config_preview_file(
+                    "auth.json",
+                    codex_config::get_codex_auth_path(),
+                    stringify_json_pretty(&expected_auth)?,
+                    stringify_json_pretty(&actual_auth)?,
+                ),
+                build_config_preview_file(
+                    "config.toml",
+                    codex_config::get_codex_config_path(),
+                    expected_config,
+                    actual_config,
+                ),
+            ]
+        }
+        AppType::Gemini => {
+            let expected_env_map = crate::gemini_config::json_to_env(&rendered_settings)?;
+            let expected_env_text = crate::gemini_config::serialize_env_file(&expected_env_map);
+            let actual_env_text = live_settings
+                .as_ref()
+                .and_then(|value| value.get("env"))
+                .and_then(|value| value.as_object())
+                .map(|env| {
+                    let mut env_map = HashMap::new();
+                    for (key, value) in env {
+                        if let Some(text) = value.as_str() {
+                            env_map.insert(key.clone(), text.to_string());
+                        }
+                    }
+                    crate::gemini_config::serialize_env_file(&env_map)
+                })
+                .unwrap_or_default();
+
+            let merged_config =
+                merge_gemini_settings_with_live(rendered_settings.get("config"), live_settings.as_ref());
+            let actual_settings_json = live_settings
+                .as_ref()
+                .and_then(|value| value.get("config"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            vec![
+                build_config_preview_file(
+                    ".env",
+                    crate::gemini_config::get_gemini_env_path(),
+                    expected_env_text,
+                    actual_env_text,
+                ),
+                build_config_preview_file(
+                    "settings.json",
+                    crate::gemini_config::get_gemini_settings_path(),
+                    stringify_json_pretty(&merged_config)?,
+                    stringify_json_pretty(&actual_settings_json)?,
+                ),
+            ]
+        }
+        AppType::OpenCode | AppType::OpenClaw => unreachable!(),
+    };
+
+    Ok(AppConfigPreview {
+        app,
+        current_provider_id,
+        current_provider_name,
+        files,
+        note: None,
+    })
+}
+
+fn validate_template_for_app(
+    state: &crate::store::AppState,
+    app_type: &AppType,
+) -> Result<(), String> {
+    let Some(snippet) = state
+        .db
+        .get_config_snippet(app_type.as_str())
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+
+    if snippet.trim().is_empty() {
+        return Ok(());
+    }
+
+    match app_type {
+        AppType::Claude | AppType::Gemini => {
+            serde_json::from_str::<serde_json::Value>(&snippet)
+                .map_err(invalid_json_format_error)?;
+        }
+        AppType::Codex => {
+            codex_config::validate_codex_common_config_template(&snippet)
+                .map_err(|e| e.to_string())?;
+        }
+        AppType::OpenCode | AppType::OpenClaw => {}
+    }
+
+    Ok(())
+}
+
+fn build_config_health_report_for_app(
+    state: &crate::store::AppState,
+    app_type: &AppType,
+) -> AppConfigHealthReport {
+    let mut issues = Vec::<ConfigHealthIssue>::new();
+
+    if let Err(err) = validate_template_for_app(state, app_type) {
+        issues.push(ConfigHealthIssue {
+            severity: "error".to_string(),
+            code: "template_invalid".to_string(),
+            message: format!("配置模板无效: {err}"),
+        });
+    }
+
+    for file in get_live_config_files_for_app(app_type) {
+        if !file.exists {
+            issues.push(ConfigHealthIssue {
+                severity: "warning".to_string(),
+                code: "live_file_missing".to_string(),
+                message: format!("{} 不存在: {}", file.label, file.path),
+            });
+            continue;
+        }
+
+        let path = PathBuf::from(&file.path);
+        let parse_result = match app_type {
+            AppType::Claude => config::read_json_file::<serde_json::Value>(&path).map(|_| ()),
+            AppType::Codex => {
+                if file.label == "auth.json" {
+                    config::read_json_file::<serde_json::Value>(&path).map(|_| ())
+                } else {
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| AppError::io(&path, e))
+                        .and_then(|text| codex_config::validate_config_toml(&text))
+                }
+            }
+            AppType::Gemini => {
+                if file.label == ".env" {
+                    crate::gemini_config::read_gemini_env().map(|_| ())
+                } else {
+                    config::read_json_file::<serde_json::Value>(&path).map(|_| ())
+                }
+            }
+            AppType::OpenCode => crate::opencode_config::read_opencode_config().map(|_| ()),
+            AppType::OpenClaw => crate::openclaw_config::read_openclaw_config().map(|_| ()),
+        };
+
+        if let Err(err) = parse_result {
+            issues.push(ConfigHealthIssue {
+                severity: "error".to_string(),
+                code: "live_file_invalid".to_string(),
+                message: format!("{} 解析失败: {err}", file.label),
+            });
+        }
+    }
+
+    if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        match build_app_config_preview_internal(state, app_type.clone()) {
+            Ok(preview) => {
+                if preview.current_provider_id.is_none() {
+                    issues.push(ConfigHealthIssue {
+                        severity: "warning".to_string(),
+                        code: "current_provider_missing".to_string(),
+                        message: "当前应用没有设置有效的当前供应商".to_string(),
+                    });
+                }
+
+                for file in preview.files.iter().filter(|file| file.differs) {
+                    issues.push(ConfigHealthIssue {
+                        severity: "warning".to_string(),
+                        code: "live_mismatch".to_string(),
+                        message: format!("{} 与预期渲染结果不一致", file.label),
+                    });
+                }
+            }
+            Err(err) => issues.push(ConfigHealthIssue {
+                severity: "error".to_string(),
+                code: "preview_failed".to_string(),
+                message: format!("配置预览失败: {err}"),
+            }),
+        }
+    }
+
+    AppConfigHealthReport {
+        app: app_type.as_str().to_string(),
+        ok: !issues.iter().any(|issue| issue.severity == "error"),
+        issues,
+    }
+}
+
+#[tauri::command]
+pub async fn get_app_config_preview(
+    app: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<AppConfigPreview, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    build_app_config_preview_internal(state.inner(), app_type).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_config_health_report(
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Vec<AppConfigHealthReport>, String> {
+    Ok(AppType::all()
+        .into_iter()
+        .map(|app_type| build_config_health_report_for_app(state.inner(), &app_type))
+        .collect())
+}
+
+#[tauri::command]
+pub async fn repair_config_health(
+    app: Option<String>,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Vec<AppConfigHealthReport>, String> {
+    let apps = if let Some(app) = app {
+        vec![AppType::from_str(&app).map_err(|e| e.to_string())?]
+    } else {
+        AppType::all().collect::<Vec<_>>()
+    };
+
+    for app_type in apps.iter() {
+        if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            let _ = crate::services::provider::ProviderService::migrate_legacy_common_config_usage_if_needed(
+                state.inner(),
+                app_type.clone(),
+            );
+        }
+
+        let _ = crate::services::provider::sync_current_provider_for_app_to_live(
+            state.inner(),
+            &app_type,
+        );
+    }
+
+    Ok(AppType::all()
+        .into_iter()
+        .map(|app_type| build_config_health_report_for_app(state.inner(), &app_type))
+        .collect())
 }
 
 #[tauri::command]
@@ -413,18 +921,25 @@ mod tests {
     use super::{validate_common_config_snippet, validate_provider_default_template_placeholders};
 
     #[test]
-    fn validate_common_config_snippet_accepts_comment_only_codex_snippet() {
-        validate_common_config_snippet("codex", "# comment only\n")
-            .expect("comment-only codex snippet should be valid");
+    fn validate_common_config_snippet_accepts_codex_template_with_provider_placeholder() {
+        validate_common_config_snippet(
+            "codex",
+            r#"approval_policy = "never"
+
+{{provider.config}}
+
+{{mcp.config}}"#,
+        )
+        .expect("codex template with provider placeholder should be valid");
     }
 
     #[test]
-    fn validate_common_config_snippet_rejects_invalid_codex_snippet() {
-        let err = validate_common_config_snippet("codex", "[broken")
-            .expect_err("invalid codex snippet should be rejected");
+    fn validate_common_config_snippet_rejects_codex_template_without_provider_placeholder() {
+        let err = validate_common_config_snippet("codex", "approval_policy = \"never\"")
+            .expect_err("codex template without provider placeholder should be rejected");
         assert!(
-            err.contains("TOML") || err.contains("toml") || err.contains("格式"),
-            "expected TOML validation error, got {err}"
+            err.contains("{{provider.config}}"),
+            "expected provider placeholder validation error, got {err}"
         );
     }
 

@@ -123,6 +123,62 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
   http.post(`${TAURI_ENDPOINT}/get_common_config_snippet`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_live_config_files`, async ({ request }) => {
+    const { app } = await withJson<{
+      app: "claude" | "codex" | "gemini" | "opencode" | "openclaw";
+    }>(request);
+
+    const filesByApp = {
+      claude: [
+        {
+          label: "settings.json",
+          path: "C:/mock/.claude/settings.json",
+          exists: true,
+        },
+      ],
+      codex: [
+        {
+          label: "config.toml",
+          path: "C:/mock/.codex/config.toml",
+          exists: true,
+        },
+        {
+          label: "auth.json",
+          path: "C:/mock/.codex/auth.json",
+          exists: true,
+        },
+      ],
+      gemini: [
+        {
+          label: ".env",
+          path: "C:/mock/.gemini/.env",
+          exists: true,
+        },
+        {
+          label: "settings.json",
+          path: "C:/mock/.gemini/settings.json",
+          exists: true,
+        },
+      ],
+      opencode: [
+        {
+          label: "opencode.json",
+          path: "C:/mock/.opencode/opencode.json",
+          exists: true,
+        },
+      ],
+      openclaw: [
+        {
+          label: "config.json",
+          path: "C:/mock/.openclaw/config.json",
+          exists: true,
+        },
+      ],
+    } as const;
+
+    return success(filesByApp[app] ?? []);
+  }),
+  http.post(`${TAURI_ENDPOINT}/open_live_config_file`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_provider_default_template`, async ({ request }) => {
     const { appType } = await withJson<{ appType: "claude" | "codex" | "gemini" }>(
       request,

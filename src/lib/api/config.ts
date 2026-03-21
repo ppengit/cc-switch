@@ -1,7 +1,51 @@
 // 配置相关 API
 import { invoke } from "@tauri-apps/api/core";
 
-export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "openclaw"
+  | "omo"
+  | "omo_slim";
+
+export interface LiveConfigFileEntry {
+  label: string;
+  path: string;
+  exists: boolean;
+  modifiedAt?: number | null;
+  sizeBytes?: number | null;
+}
+
+export interface AppConfigPreviewFile {
+  label: string;
+  path: string;
+  exists: boolean;
+  expectedText: string;
+  actualText: string;
+  differs: boolean;
+}
+
+export interface AppConfigPreview {
+  app: string;
+  currentProviderId?: string | null;
+  currentProviderName?: string | null;
+  files: AppConfigPreviewFile[];
+  note?: string | null;
+}
+
+export interface ConfigHealthIssue {
+  severity: string;
+  code: string;
+  message: string;
+}
+
+export interface AppConfigHealthReport {
+  app: string;
+  ok: boolean;
+  issues: ConfigHealthIssue[];
+}
 
 /**
  * 获取 Claude 通用配置片段（已废弃，使用 getCommonConfigSnippet）
@@ -46,6 +90,34 @@ export async function setCommonConfigSnippet(
   snippet: string,
 ): Promise<void> {
   return invoke("set_common_config_snippet", { appType, snippet });
+}
+
+export async function getLiveConfigFiles(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+): Promise<LiveConfigFileEntry[]> {
+  return invoke<LiveConfigFileEntry[]>("get_live_config_files", { app: appType });
+}
+
+export async function openLiveConfigFile(path: string): Promise<void> {
+  await invoke("open_live_config_file", { path });
+}
+
+export async function getAppConfigPreview(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+): Promise<AppConfigPreview> {
+  return invoke<AppConfigPreview>("get_app_config_preview", { app: appType });
+}
+
+export async function getConfigHealthReport(): Promise<AppConfigHealthReport[]> {
+  return invoke<AppConfigHealthReport[]>("get_config_health_report");
+}
+
+export async function repairConfigHealth(
+  appType?: Exclude<AppType, "omo" | "omo_slim">,
+): Promise<AppConfigHealthReport[]> {
+  return invoke<AppConfigHealthReport[]>("repair_config_health", {
+    app: appType,
+  });
 }
 
 export async function getProviderDefaultTemplate(
