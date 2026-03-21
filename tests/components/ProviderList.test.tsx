@@ -1,4 +1,11 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  within,
+  act,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
@@ -8,6 +15,34 @@ import { ProviderList } from "@/components/providers/ProviderList";
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerActionsRenderSpy = vi.fn();
+const checkProviderMock = vi.fn();
+const isCheckingMock = vi.fn();
+const toastSuccessMock = vi.fn();
+const toastErrorMock = vi.fn();
+const toastWarningMock = vi.fn();
+const toastInfoMock = vi.fn();
+const useAutoFailoverEnabledMock = vi.fn();
+const useFailoverQueueMock = vi.fn();
+const addToQueueMutateMock = vi.fn();
+const addToQueueMutateAsyncMock = vi.fn();
+const removeFromQueueMutateMock = vi.fn();
+const removeFromQueueMutateAsyncMock = vi.fn();
+const useProviderHealthMock = vi.fn();
+const useSettingsQueryMock = vi.fn();
+const useSessionsQueryMock = vi.fn();
+const useAppProxyConfigMock = vi.fn();
+const useSessionProviderBindingsMock = vi.fn();
+const useProviderSessionOccupancyMock = vi.fn();
+const updateAppProxyConfigMutateAsyncMock = vi.fn();
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    warning: (...args: unknown[]) => toastWarningMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
+  },
+}));
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -54,17 +89,45 @@ vi.mock("@dnd-kit/sortable", async () => {
 // Mock hooks that use QueryClient
 vi.mock("@/hooks/useStreamCheck", () => ({
   useStreamCheck: () => ({
-    checkProvider: vi.fn(),
-    isChecking: () => false,
+    checkProvider: (...args: unknown[]) => checkProviderMock(...args),
+    isChecking: (...args: unknown[]) => isCheckingMock(...args),
+  }),
+}));
+
+vi.mock("@/lib/query", () => ({
+  useSettingsQuery: (...args: unknown[]) => useSettingsQueryMock(...args),
+  useSessionsQuery: (...args: unknown[]) => useSessionsQueryMock(...args),
+}));
+
+vi.mock("@/lib/query/proxy", () => ({
+  useAppProxyConfig: (...args: unknown[]) => useAppProxyConfigMock(...args),
+  useProviderSessionOccupancy: (...args: unknown[]) =>
+    useProviderSessionOccupancyMock(...args),
+  useSessionProviderBindings: (...args: unknown[]) =>
+    useSessionProviderBindingsMock(...args),
+  useUpdateAppProxyConfig: () => ({
+    mutateAsync: (...args: unknown[]) =>
+      updateAppProxyConfigMutateAsyncMock(...args),
+    isPending: false,
   }),
 }));
 
 vi.mock("@/lib/query/failover", () => ({
-  useAutoFailoverEnabled: () => ({ data: false }),
-  useFailoverQueue: () => ({ data: [] }),
-  useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
-  useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
-  useProviderHealth: () => ({ data: null }),
+  useAutoFailoverEnabled: (...args: unknown[]) =>
+    useAutoFailoverEnabledMock(...args),
+  useFailoverQueue: (...args: unknown[]) => useFailoverQueueMock(...args),
+  useAddToFailoverQueue: () => ({
+    mutate: (...args: unknown[]) => addToQueueMutateMock(...args),
+    mutateAsync: (...args: unknown[]) => addToQueueMutateAsyncMock(...args),
+    isPending: false,
+  }),
+  useRemoveFromFailoverQueue: () => ({
+    mutate: (...args: unknown[]) => removeFromQueueMutateMock(...args),
+    mutateAsync: (...args: unknown[]) =>
+      removeFromQueueMutateAsyncMock(...args),
+    isPending: false,
+  }),
+  useProviderHealth: (...args: unknown[]) => useProviderHealthMock(...args),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
 }));
 
@@ -95,6 +158,25 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerActionsRenderSpy.mockClear();
+  checkProviderMock.mockReset();
+  isCheckingMock.mockReset();
+  toastSuccessMock.mockReset();
+  toastErrorMock.mockReset();
+  toastWarningMock.mockReset();
+  toastInfoMock.mockReset();
+  useAutoFailoverEnabledMock.mockReset();
+  useFailoverQueueMock.mockReset();
+  addToQueueMutateMock.mockReset();
+  addToQueueMutateAsyncMock.mockReset();
+  removeFromQueueMutateMock.mockReset();
+  removeFromQueueMutateAsyncMock.mockReset();
+  useProviderHealthMock.mockReset();
+  useSettingsQueryMock.mockReset();
+  useSessionsQueryMock.mockReset();
+  useAppProxyConfigMock.mockReset();
+  useSessionProviderBindingsMock.mockReset();
+  useProviderSessionOccupancyMock.mockReset();
+  updateAppProxyConfigMutateAsyncMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -110,7 +192,24 @@ beforeEach(() => {
     sensors: [],
     handleDragEnd: vi.fn(),
   });
+  isCheckingMock.mockReturnValue(false);
+  useAutoFailoverEnabledMock.mockReturnValue({ data: false });
+  useFailoverQueueMock.mockReturnValue({ data: [] });
+  useProviderHealthMock.mockReturnValue({ data: null });
+  useSettingsQueryMock.mockReturnValue({ data: undefined });
+  useSessionsQueryMock.mockReturnValue({ data: [] });
+  useAppProxyConfigMock.mockReturnValue({ data: undefined });
+  useSessionProviderBindingsMock.mockReturnValue({ data: [] });
+  useProviderSessionOccupancyMock.mockReturnValue({ data: [] });
 });
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 describe("ProviderList Component", () => {
   it("should render skeleton placeholders when loading", () => {
     const { container } = renderWithQueryClient(
@@ -227,7 +326,7 @@ describe("ProviderList Component", () => {
     );
   });
 
-  it("filters providers with the search input", () => {
+  it("keeps the provider list visible and shows locator matches when searching", () => {
     const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
     const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
 
@@ -252,20 +351,249 @@ describe("ProviderList Component", () => {
 
     fireEvent.keyDown(window, { key: "f", metaKey: true });
     const searchInput = screen.getByTestId("provider-filter-keyword-input");
-    expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
-    expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getAllByText("Alpha Labs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
 
     fireEvent.change(searchInput, { target: { value: "beta" } });
-    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
-    expect(screen.getByText("Beta Works")).toBeInTheDocument();
-
-    fireEvent.change(searchInput, { target: { value: "gamma" } });
-    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
-    expect(screen.queryByText("Beta Works")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Alpha Labs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
     expect(
-      screen.getByText(
-        /provider\.noSearchResults|\u6ca1\u6709\u7b26\u5408\u7b5b\u9009\u6761\u4ef6\u7684\u63d0\u4f9b\u5546/i,
-      ),
+      screen.getByText(/定位到 1 个供应商|Locate 1 providers?|provider\.searchLocatorMatches/i),
     ).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: "alpha" } });
+    fireEvent.keyDown(searchInput, { key: "Enter" });
+    expect(screen.getAllByText("Alpha Labs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
+  });
+
+  it("shows explicit no-session default badge during session routing and keeps status/actions columns non-resizable", () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+    const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    useAppProxyConfigMock.mockReturnValue({
+      data: {
+        sessionRoutingEnabled: true,
+        sessionDefaultProviderId: "beta",
+        sessionIdleTtlMinutes: 30,
+      },
+    });
+    useAutoFailoverEnabledMock.mockReturnValue({ data: true });
+    useFailoverQueueMock.mockReturnValue({
+      data: [{ providerId: "alpha" }, { providerId: "beta" }],
+    });
+
+    const { container } = renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: providerAlpha, beta: providerBeta }}
+        currentProviderId="alpha"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        isProxyTakeover
+        activeProviderId="alpha"
+      />,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll("tbody tr"),
+    ) as HTMLTableRowElement[];
+    expect(rows).toHaveLength(2);
+    expect(
+      within(rows[0].cells[5]).queryByText("当前流量"),
+    ).not.toBeInTheDocument();
+    expect(within(rows[0].cells[5]).queryByText("当前")).not.toBeInTheDocument();
+    expect(within(rows[1].cells[5]).getByText("无会话默认")).toBeInTheDocument();
+    expect(screen.queryByText(/队列 P/i)).not.toBeInTheDocument();
+
+    const modelHeader = screen.getByText("模型").closest("th");
+    const notesHeader = screen.getByText("备注").closest("th");
+    const statusHeader = screen.getByText("状态").closest("th");
+    const actionsHeader = screen.getByText("操作").closest("th");
+
+    expect(notesHeader?.style.width).toBe("190px");
+    expect(modelHeader?.style.width).toBe("180px");
+    expect(statusHeader?.style.width).toBe("");
+    expect(actionsHeader?.style.width).toBe("248px");
+    expect(modelHeader?.querySelector('[role="separator"]')).not.toBeNull();
+    expect(statusHeader?.querySelector('[role="separator"]')).toBeNull();
+    expect(actionsHeader?.querySelector('[role="separator"]')).toBeNull();
+  });
+
+  it("shows current and active traffic badges when session routing is disabled", () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    useAppProxyConfigMock.mockReturnValue({
+      data: {
+        sessionRoutingEnabled: false,
+        sessionDefaultProviderId: "",
+        sessionIdleTtlMinutes: 30,
+      },
+    });
+
+    const { container } = renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: providerAlpha }}
+        currentProviderId="alpha"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        isProxyTakeover
+        activeProviderId="alpha"
+      />,
+    );
+
+    const row = container.querySelector("tbody tr") as HTMLTableRowElement | null;
+    expect(row).not.toBeNull();
+    expect(within(row!.cells[5]).getByText("当前流量")).toBeInTheDocument();
+    expect(within(row!.cells[5]).getByText("当前")).toBeInTheDocument();
+  });
+
+  it("maps no-session default to current provider when session routing follows current", () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+    const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    useAppProxyConfigMock.mockReturnValue({
+      data: {
+        sessionRoutingEnabled: true,
+        sessionDefaultProviderId: "",
+        sessionIdleTtlMinutes: 30,
+      },
+    });
+
+    const { container } = renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: providerAlpha, beta: providerBeta }}
+        currentProviderId="alpha"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+        isProxyTakeover
+        activeProviderId="alpha"
+      />,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll("tbody tr"),
+    ) as HTMLTableRowElement[];
+    expect(rows).toHaveLength(2);
+    expect(
+      within(rows[0].cells[5]).getByText("无会话默认(跟随当前)"),
+    ).toBeInTheDocument();
+    expect(within(rows[0].cells[5]).queryByText("当前")).not.toBeInTheDocument();
+    expect(
+      within(rows[0].cells[5]).queryByText("当前流量"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(rows[1].cells[5]).queryByText("无会话默认(跟随当前)"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("persists batch test results after closing and remounting the provider list", async () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+    const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
+    const alphaDeferred = createDeferred<any>();
+    const betaDeferred = createDeferred<any>();
+
+    checkProviderMock.mockImplementation((providerId: string) => {
+      if (providerId === "alpha") {
+        return alphaDeferred.promise;
+      }
+      return betaDeferred.promise;
+    });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    const props = {
+      providers: { alpha: providerAlpha, beta: providerBeta },
+      currentProviderId: "",
+      appId: "claude" as const,
+      onSwitch: vi.fn(),
+      onEdit: vi.fn(),
+      onDelete: vi.fn(),
+      onDuplicate: vi.fn(),
+      onOpenWebsite: vi.fn(),
+    };
+
+    const firstRender = renderWithQueryClient(<ProviderList {...props} />);
+
+    fireEvent.click(screen.getByTitle(/批量测试|streamCheck\.testAll/i));
+    const startButtons = screen.getAllByRole("button", {
+      name: /开始测试|streamCheck\.testAll/i,
+    });
+    fireEvent.click(startButtons[startButtons.length - 1]);
+
+    await waitFor(() => expect(checkProviderMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /关闭|common\.close/i }));
+    firstRender.unmount();
+
+    await act(async () => {
+      alphaDeferred.resolve({
+        status: "operational",
+        success: true,
+        message: "",
+        responseTimeMs: 120,
+        modelUsed: "claude-3-5-sonnet",
+        testedAt: Date.now(),
+        retryCount: 0,
+      });
+    });
+
+    await waitFor(() => expect(checkProviderMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      betaDeferred.resolve({
+        status: "failed",
+        success: false,
+        message: "network error",
+        modelUsed: "claude-3-5-sonnet",
+        testedAt: Date.now(),
+        retryCount: 1,
+      });
+    });
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+
+    renderWithQueryClient(<ProviderList {...props} />);
+
+    fireEvent.click(screen.getByTitle(/批量测试|streamCheck\.testAll/i));
+
+    expect(screen.getAllByText("Alpha Labs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/正常|streamCheck\.operationalShort/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/失败|streamCheck\.failedShort/i).length,
+    ).toBeGreaterThan(0);
   });
 });

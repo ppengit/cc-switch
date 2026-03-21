@@ -97,6 +97,7 @@
     "current": "当前",
     "inUse": "使用中",
     "sessionDefault": "无会话默认",
+    "sessionDefaultFollowCurrentShort": "无会话默认(跟随当前)",
     "activeTraffic": "当前流量",
     "failoverPriorityShort": "队列 P{{priority}}",
     "editProvider": "编辑供应商",
@@ -131,8 +132,8 @@
     "filterByName": "供应商名称",
     "filterByWebsite": "官网链接",
     "filterByNotes": "备注",
-    "fuzzyFilter": "模糊筛选",
-    "filterKeywordPlaceholder": "输入关键字筛选名称/网址/备注/{{field}}",
+    "fuzzyFilter": "搜索定位",
+    "filterKeywordPlaceholder": "输入关键字定位名称/网址/备注/{{field}}",
     "modelFilterLabelIdle": "按{{field}}筛选",
     "modelFilterLabelSelected": "{{field}}（{{count}}）",
     "modelFilterMultiSelect": "按{{field}}多选",
@@ -145,6 +146,8 @@
     "sessionOccupancyMore": "还有 {{count}} 个会话",
     "sessionProjectLabel": "项目",
     "sessionIdLabel": "会话",
+    "sessionTitle": "会话名称",
+    "sessionProject": "项目",
     "idHint": "供应商唯一标识",
     "statusHint": {
       "current": "当前应用使用此供应商作为默认目标",
@@ -1001,6 +1004,9 @@
     "sessionRouting": "会话路由",
     "sessionRoutingActive": "已启用",
     "sessionRoutingInactive": "未启用",
+    "sessionTitle": "会话名称",
+    "sessionProject": "项目",
+    "sessionId": "会话 ID",
     "input": "输入",
     "output": "输出",
     "cacheWrite": "创建",
@@ -1896,7 +1902,9 @@
     "timeout": "超时时间（秒）",
     "maxRetries": "最大重试次数",
     "degradedThreshold": "降级阈值（毫秒）",
-    "testPrompt": "检查提示词"
+    "testPrompt": "检查提示词",
+    "batchCompleted": "已完成批量测试（{{count}} 个供应商）",
+    "batchCompletedSummary": "正常 {{operational}} 个，降级 {{degraded}} 个，失败 {{failed}} 个"
   },
   "proxyConfig": {
     "proxyEnabled": "代理总开关",

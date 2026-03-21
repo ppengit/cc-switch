@@ -1,16 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Save, Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { Button } from "@/components/ui/button";
 import JsonEditor from "@/components/JsonEditor";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  CODEX_QUICK_TOGGLE_OPTIONS,
-  getCodexQuickToggleStates,
-  toggleCodexQuickOption,
-  type CodexQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface CodexCommonConfigModalProps {
   isOpen: boolean;
@@ -53,15 +46,6 @@ export const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  const toggleStates = useMemo(() => getCodexQuickToggleStates(value), [value]);
-
-  const handleToggle = useCallback(
-    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
-      onChange(toggleCodexQuickOption(value, toggleKey, checked));
-    },
-    [value, onChange],
-  );
-
   return (
     <FullScreenPanel
       isOpen={isOpen}
@@ -101,20 +85,6 @@ export const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
         <p className="text-sm text-muted-foreground">
           {t("codexConfig.commonConfigHint")}
         </p>
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
-            <QuickConfigToggle
-              key={option.key}
-              checked={toggleStates[option.key]}
-              onChange={(checked) => handleToggle(option.key, checked)}
-              label={t(option.labelKey, { defaultValue: option.defaultLabel })}
-              description={t(option.descriptionKey, {
-                defaultValue: option.defaultDescription,
-              })}
-            />
-          ))}
-        </div>
 
         <JsonEditor
           value={value}

@@ -410,9 +410,69 @@ const COMMON_SNIPPET_REGEX = new RegExp(
 );
 
 const normalizeWhitespace = (str: string) => str.replace(/\s+/g, " ").trim();
+const normalizeLineEndings = (str: string) => str.replace(/\r\n?/g, "\n");
 
 const buildCommonSnippetBlock = (snippet: string) =>
   `${COMMON_SNIPPET_START}\n${snippet.trim()}\n${COMMON_SNIPPET_END}\n\n`;
+
+const stripManagedTomlCommonSnippetBlock = (tomlString: string) =>
+  normalizeLineEndings(tomlString).replace(COMMON_SNIPPET_REGEX, "");
+
+const stripLegacyLeadingTomlCommonSnippetBlock = (
+  tomlString: string,
+  snippetString: string,
+) => {
+  const normalizedToml = normalizeLineEndings(tomlString);
+  const normalizedSnippet = normalizeLineEndings(snippetString).trim();
+  if (!normalizedSnippet) {
+    return normalizedToml;
+  }
+
+  const legacyLeadingSnippetRegex = new RegExp(
+    `^(?:\\s*\\n)*${escapeRegExp(normalizedSnippet)}(?:\\n{1,2})?`,
+  );
+
+  return normalizedToml.replace(legacyLeadingSnippetRegex, "");
+};
+
+const finalizeTomlCommonSnippetDocument = (tomlString: string) => {
+  const normalized = normalizeLineEndings(tomlString)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return normalized ? `${normalized}\n` : "";
+};
+
+const CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS = [
+  /^\s*\[mcp_servers(?:\.[^\]]+)?\]\s*$/m,
+  /^\s*\[mcp\.servers(?:\.[^\]]+)?\]\s*$/m,
+  /^\s*mcp_servers\s*=/m,
+];
+
+export const validateCodexCommonConfigSnippet = (
+  snippetString: string,
+): string => {
+  const trimmed = snippetString.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const tomlError = validateTomlText(snippetString);
+  if (tomlError) {
+    return formatTomlValidationError(tomlError, "通用配置片段");
+  }
+
+  const normalizedSnippet = normalizeLineEndings(snippetString);
+  if (
+    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) =>
+      pattern.test(normalizedSnippet),
+    )
+  ) {
+    return "通用配置片段不能包含 mcp_servers，MCP 请通过 MCP 面板单独同步";
+  }
+
+  return "";
+};
 
 // 将通用配置片段写入/移除 TOML 配置
 export const updateTomlCommonConfigSnippet = (
@@ -420,29 +480,42 @@ export const updateTomlCommonConfigSnippet = (
   snippetString: string,
   enabled: boolean,
 ): UpdateTomlCommonConfigResult => {
-  if (!snippetString.trim()) {
-    // 如果片段为空，直接返回原始配置
-    return {
-      updatedConfig: tomlString,
-    };
-  }
-
-  const snippetError = validateTomlText(snippetString);
-  if (snippetError) {
-    return {
-      updatedConfig: tomlString,
-      error: formatTomlValidationError(snippetError, "通用配置片段"),
-    };
-  }
-
-  const stripped = tomlString.replace(COMMON_SNIPPET_REGEX, "");
   const trimmedSnippet = snippetString.trim();
-  const cleaned = trimmedSnippet
-    ? stripped.replace(
-        new RegExp(`${escapeRegExp(trimmedSnippet)}\\s*\\n?`, "g"),
-        "",
-      )
-    : stripped;
+  const strippedManaged = stripManagedTomlCommonSnippetBlock(tomlString);
+
+  if (!trimmedSnippet) {
+    if (enabled) {
+      return {
+        updatedConfig: tomlString,
+      };
+    }
+
+    const updatedConfig = finalizeTomlCommonSnippetDocument(strippedManaged);
+    const cleanedError = validateTomlText(updatedConfig);
+    if (cleanedError) {
+      return {
+        updatedConfig: tomlString,
+        error: formatTomlValidationError(cleanedError, "config.toml"),
+      };
+    }
+
+    return {
+      updatedConfig,
+    };
+  }
+
+  const validationError = validateCodexCommonConfigSnippet(snippetString);
+  if (validationError) {
+    return {
+      updatedConfig: tomlString,
+      error: validationError,
+    };
+  }
+
+  const cleaned = stripLegacyLeadingTomlCommonSnippetBlock(
+    strippedManaged,
+    trimmedSnippet,
+  );
 
   if (enabled) {
     // 添加通用配置（始终插入到文件开头，避免落在表格内造成重复 key）
@@ -461,9 +534,7 @@ export const updateTomlCommonConfigSnippet = (
     };
   }
 
-  const updatedConfig = cleaned.replace(/\n{3,}/g, "\n\n").trim()
-    ? cleaned.replace(/\n{3,}/g, "\n\n").trim() + "\n"
-    : "";
+  const updatedConfig = finalizeTomlCommonSnippetDocument(cleaned);
   const cleanedError = validateTomlText(updatedConfig);
   if (cleanedError) {
     return {
@@ -482,20 +553,23 @@ export const hasTomlCommonConfigSnippet = (
   tomlString: string,
   snippetString: string,
 ): boolean => {
-  if (!snippetString.trim()) return false;
+  const normalizedSnippet = normalizeLineEndings(snippetString).trim();
+  if (!normalizedSnippet) return false;
 
-  const match = tomlString.match(COMMON_SNIPPET_REGEX);
+  const normalizedToml = normalizeLineEndings(tomlString);
+  const match = normalizedToml.match(COMMON_SNIPPET_REGEX);
   if (match && match[0]) {
     const block = match[0]
       .replace(COMMON_SNIPPET_START, "")
       .replace(COMMON_SNIPPET_END, "")
       .trim();
-    return normalizeWhitespace(block) === normalizeWhitespace(snippetString);
+    return normalizeWhitespace(block) === normalizeWhitespace(normalizedSnippet);
   }
 
-  return normalizeWhitespace(tomlString).includes(
-    normalizeWhitespace(snippetString),
+  const legacyLeadingSnippetRegex = new RegExp(
+    `^(?:\\s*\\n)*${escapeRegExp(normalizedSnippet)}(?:\\n|$)`,
   );
+  return legacyLeadingSnippetRegex.test(normalizedToml);
 };
 
 // ========== Codex base_url utils ==========

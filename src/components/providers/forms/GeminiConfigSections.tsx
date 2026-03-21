@@ -1,11 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  GEMINI_QUICK_TOGGLE_OPTIONS,
-  type GeminiQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface GeminiEnvSectionProps {
   value: string;
@@ -156,66 +151,6 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  const toggleStates = useMemo(() => {
-    try {
-      const config = JSON.parse(value || "{}");
-      return {
-        inlineThinking: config?.ui?.inlineThinkingMode === "full",
-        showModelInfo: config?.ui?.showModelInfoInChat === true,
-        enableAgents: config?.experimental?.enableAgents === true,
-      };
-    } catch {
-      return {
-        inlineThinking: false,
-        showModelInfo: false,
-        enableAgents: false,
-      };
-    }
-  }, [value]);
-
-  const handleToggle = useCallback(
-    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
-      try {
-        const config = JSON.parse(value || "{}");
-        if (toggleKey === "inlineThinking") {
-          config.ui = config.ui || {};
-          if (checked) {
-            config.ui.inlineThinkingMode = "full";
-          } else {
-            delete config.ui.inlineThinkingMode;
-          }
-          if (Object.keys(config.ui).length === 0) delete config.ui;
-        }
-
-        if (toggleKey === "showModelInfo") {
-          config.ui = config.ui || {};
-          if (checked) {
-            config.ui.showModelInfoInChat = true;
-          } else {
-            delete config.ui.showModelInfoInChat;
-          }
-          if (Object.keys(config.ui).length === 0) delete config.ui;
-        }
-
-        if (toggleKey === "enableAgents") {
-          config.experimental = config.experimental || {};
-          if (checked) {
-            config.experimental.enableAgents = true;
-          } else {
-            delete config.experimental.enableAgents;
-          }
-          if (Object.keys(config.experimental).length === 0)
-            delete config.experimental;
-        }
-
-        onChange(JSON.stringify(config, null, 2));
-      } catch {
-        // ignore invalid JSON
-      }
-    },
-    [value, onChange],
-  );
-
   return (
     <div className="space-y-2">
       <label
@@ -226,20 +161,6 @@ export const GeminiConfigSection: React.FC<GeminiConfigSectionProps> = ({
           defaultValue: "配置文件 (config.json)",
         })}
       </label>
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
-          <QuickConfigToggle
-            key={option.key}
-            checked={toggleStates[option.key]}
-            onChange={(checked) => handleToggle(option.key, checked)}
-            label={t(option.labelKey, { defaultValue: option.defaultLabel })}
-            description={t(option.descriptionKey, {
-              defaultValue: option.defaultDescription,
-            })}
-          />
-        ))}
-      </div>
 
       <JsonEditor
         value={value}

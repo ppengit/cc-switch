@@ -1,15 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Save, Download, Loader2 } from "lucide-react";
 import JsonEditor from "@/components/JsonEditor";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  CLAUDE_QUICK_TOGGLE_OPTIONS,
-  type ClaudeQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface CommonConfigEditorProps {
   value: string;
@@ -74,174 +69,6 @@ export function CommonConfigEditor({
     [onChange],
   );
 
-  const toggleStates = useMemo(() => {
-    try {
-      const config = JSON.parse(localValue);
-      return {
-        hideAttribution:
-          config?.attribution?.commit === "" && config?.attribution?.pr === "",
-        alwaysThinking: config?.alwaysThinkingEnabled === true,
-        teammates:
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
-        skipAllPermissions:
-          config?.permissions?.defaultMode === "bypassPermissions",
-        fastMode: config?.fastMode === true,
-      };
-    } catch {
-      return {
-        hideAttribution: false,
-        alwaysThinking: false,
-        teammates: false,
-        skipAllPermissions: false,
-        fastMode: false,
-      };
-    }
-  }, [localValue]);
-
-  const handleToggle = useCallback(
-    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
-      try {
-        const config = JSON.parse(localValue || "{}");
-
-        switch (toggleKey) {
-          case "hideAttribution":
-            if (checked) {
-              config.attribution = { commit: "", pr: "" };
-            } else {
-              delete config.attribution;
-            }
-            break;
-          case "alwaysThinking":
-            if (checked) {
-              config.alwaysThinkingEnabled = true;
-            } else {
-              delete config.alwaysThinkingEnabled;
-            }
-            break;
-          case "teammates":
-            if (!config.env) config.env = {};
-            if (checked) {
-              config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
-            } else {
-              delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
-              if (Object.keys(config.env).length === 0) delete config.env;
-            }
-            break;
-          case "skipAllPermissions":
-            if (!config.permissions) config.permissions = {};
-            if (checked) {
-              config.permissions.defaultMode = "bypassPermissions";
-              delete config.permissions.disableBypassPermissionsMode;
-            } else {
-              if (config.permissions.defaultMode === "bypassPermissions") {
-                delete config.permissions.defaultMode;
-              }
-            }
-            if (Object.keys(config.permissions).length === 0)
-              delete config.permissions;
-            break;
-          case "fastMode":
-            if (checked) {
-              config.fastMode = true;
-            } else {
-              delete config.fastMode;
-            }
-            break;
-        }
-
-        handleLocalChange(JSON.stringify(config, null, 2));
-      } catch {
-        // Don't modify if JSON is invalid
-      }
-    },
-    [localValue, handleLocalChange],
-  );
-
-  const snippetToggleStates = useMemo(() => {
-    try {
-      const config = JSON.parse(commonConfigSnippet || "{}");
-      return {
-        hideAttribution:
-          config?.attribution?.commit === "" && config?.attribution?.pr === "",
-        alwaysThinking: config?.alwaysThinkingEnabled === true,
-        teammates:
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
-          config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
-        skipAllPermissions:
-          config?.permissions?.defaultMode === "bypassPermissions",
-        fastMode: config?.fastMode === true,
-      };
-    } catch {
-      return {
-        hideAttribution: false,
-        alwaysThinking: false,
-        teammates: false,
-        skipAllPermissions: false,
-        fastMode: false,
-      };
-    }
-  }, [commonConfigSnippet]);
-
-  const handleSnippetToggle = useCallback(
-    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
-      try {
-        const config = JSON.parse(commonConfigSnippet || "{}");
-
-        switch (toggleKey) {
-          case "hideAttribution":
-            if (checked) {
-              config.attribution = { commit: "", pr: "" };
-            } else {
-              delete config.attribution;
-            }
-            break;
-          case "alwaysThinking":
-            if (checked) {
-              config.alwaysThinkingEnabled = true;
-            } else {
-              delete config.alwaysThinkingEnabled;
-            }
-            break;
-          case "teammates":
-            if (!config.env) config.env = {};
-            if (checked) {
-              config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
-            } else {
-              delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
-              if (Object.keys(config.env).length === 0) delete config.env;
-            }
-            break;
-          case "skipAllPermissions":
-            if (!config.permissions) config.permissions = {};
-            if (checked) {
-              config.permissions.defaultMode = "bypassPermissions";
-              delete config.permissions.disableBypassPermissionsMode;
-            } else {
-              if (config.permissions.defaultMode === "bypassPermissions") {
-                delete config.permissions.defaultMode;
-              }
-            }
-            if (Object.keys(config.permissions).length === 0)
-              delete config.permissions;
-            break;
-          case "fastMode":
-            if (checked) {
-              config.fastMode = true;
-            } else {
-              delete config.fastMode;
-            }
-            break;
-        }
-
-        onCommonConfigSnippetChange(JSON.stringify(config, null, 2));
-      } catch {
-        // invalid JSON
-      }
-    },
-    [commonConfigSnippet, onCommonConfigSnippetChange],
-  );
-
   return (
     <>
       <div className="space-y-2">
@@ -280,19 +107,6 @@ export function CommonConfigEditor({
             {commonConfigError}
           </p>
         )}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
-            <QuickConfigToggle
-              key={option.key}
-              checked={toggleStates[option.key]}
-              onChange={(checked) => handleToggle(option.key, checked)}
-              label={t(option.labelKey, { defaultValue: option.defaultLabel })}
-              description={t(option.descriptionKey, {
-                defaultValue: option.defaultDescription,
-              })}
-            />
-          ))}
-        </div>
         <JsonEditor
           value={localValue}
           onChange={handleLocalChange}
@@ -351,21 +165,6 @@ export function CommonConfigEditor({
               defaultValue: "通用配置片段将合并到所有启用它的供应商配置中",
             })}
           </p>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
-              <QuickConfigToggle
-                key={option.key}
-                checked={snippetToggleStates[option.key]}
-                onChange={(checked) => handleSnippetToggle(option.key, checked)}
-                label={t(option.labelKey, {
-                  defaultValue: option.defaultLabel,
-                })}
-                description={t(option.descriptionKey, {
-                  defaultValue: option.defaultDescription,
-                })}
-              />
-            ))}
-          </div>
           <JsonEditor
             value={commonConfigSnippet}
             onChange={onCommonConfigSnippetChange}

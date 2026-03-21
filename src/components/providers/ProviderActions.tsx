@@ -232,20 +232,17 @@ export function ProviderActions({
       )}
 
       {isFailoverMode ? (
-        <div
-          className="flex h-8 items-center rounded-md border border-border px-2"
+        <Switch
+          checked={isInFailoverQueue}
+          onCheckedChange={(checked) => onToggleFailover?.(checked)}
+          aria-label={t("failover.queueToggleHint", {
+            defaultValue: "加入/移除故障转移队列",
+          })}
           title={t("failover.queueToggleHint", {
             defaultValue: "加入/移除故障转移队列",
           })}
-        >
-          <Switch
-            checked={isInFailoverQueue}
-            onCheckedChange={(checked) => onToggleFailover?.(checked)}
-            aria-label={t("failover.queueToggleHint", {
-              defaultValue: "加入/移除故障转移队列",
-            })}
-          />
-        </div>
+          className="scale-90 origin-center"
+        />
       ) : (
         <Button
           size="sm"

@@ -1,13 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  CODEX_QUICK_TOGGLE_OPTIONS,
-  getCodexQuickToggleStates,
-  toggleCodexQuickOption,
-  type CodexQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface CodexAuthSectionProps {
   value: string;
@@ -122,15 +115,6 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  const toggleStates = useMemo(() => getCodexQuickToggleStates(value), [value]);
-
-  const handleToggle = useCallback(
-    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
-      onChange(toggleCodexQuickOption(value, toggleKey, checked));
-    },
-    [value, onChange],
-  );
-
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -167,20 +151,6 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
           {commonConfigError}
         </p>
       )}
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
-          <QuickConfigToggle
-            key={option.key}
-            checked={toggleStates[option.key]}
-            onChange={(checked) => handleToggle(option.key, checked)}
-            label={t(option.labelKey, { defaultValue: option.defaultLabel })}
-            description={t(option.descriptionKey, {
-              defaultValue: option.defaultDescription,
-            })}
-          />
-        ))}
-      </div>
 
       <JsonEditor
         value={value}

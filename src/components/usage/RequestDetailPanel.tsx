@@ -10,8 +10,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import { useRequestDetail } from "@/lib/query/usage";
+import { useSessionsQuery } from "@/lib/query";
 import type { RequestLog } from "@/types/usage";
 import { fmtTokenCompact } from "./format";
+import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -36,8 +38,23 @@ export function RequestDetailPanel({
     isError,
     error,
   } = useRequestDetail(requestId);
+  const { data: sessions = [] } = useSessionsQuery();
 
   const request = requestData ?? initialRequest ?? null;
+  const sessionMeta =
+    request?.sessionId != null
+      ? sessions.find(
+          (session) =>
+            session.sessionId === request.sessionId &&
+            session.providerId === request.appType,
+        ) ??
+        sessions.find((session) => session.sessionId === request.sessionId) ??
+        null
+      : null;
+  const sessionTitle = sessionMeta ? formatSessionTitle(sessionMeta) : "";
+  const sessionProjectName = sessionMeta
+    ? getBaseName(sessionMeta.projectDir)
+    : "";
   const dateLocale =
     i18n.language === "zh"
       ? "zh-CN"
@@ -208,6 +225,22 @@ export function RequestDetailPanel({
                   {request.sessionId || "-"}
                 </dd>
               </div>
+              {sessionTitle ? (
+                <div className="col-span-2">
+                  <dt className="text-muted-foreground">
+                    {t("usage.sessionTitle", "会话名称")}
+                  </dt>
+                  <dd>
+                    <div className="font-medium">{sessionTitle}</div>
+                    {sessionProjectName ? (
+                      <div className="text-xs text-muted-foreground">
+                        {t("usage.sessionProject", "项目")}:{" "}
+                        {sessionProjectName}
+                      </div>
+                    ) : null}
+                  </dd>
+                </div>
+              ) : null}
               <div className="col-span-2">
                 <dt className="text-muted-foreground">
                   {t("usage.model", "模型")}

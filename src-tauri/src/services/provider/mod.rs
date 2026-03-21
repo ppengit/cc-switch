@@ -35,8 +35,18 @@ use live::{
 };
 use usage::validate_usage_script;
 
+const CODEX_COMMON_SNIPPET_START: &str = "# cc-switch common config start";
+const CODEX_COMMON_SNIPPET_END: &str = "# cc-switch common config end";
+
 /// Provider business logic service
 pub struct ProviderService;
+
+fn extract_codex_managed_common_block(config_toml: &str) -> Option<String> {
+    let start = config_toml.find(CODEX_COMMON_SNIPPET_START)?;
+    let after_start = &config_toml[start + CODEX_COMMON_SNIPPET_START.len()..];
+    let end = after_start.find(CODEX_COMMON_SNIPPET_END)?;
+    Some(after_start[..end].trim().to_string())
+}
 
 /// Result of a provider switch operation, including any non-fatal warnings
 #[derive(Debug, serde::Serialize, Default)]
@@ -86,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_codex_common_config_preserves_mcp_servers_base_url() {
+    fn extract_codex_common_config_removes_mcp_servers_and_model_sections() {
         let config_toml = r#"model_provider = "azure"
 model = "gpt-4"
 disable_response_storage = true
@@ -121,8 +131,47 @@ base_url = "http://localhost:8080"
             "should remove entire model_providers table"
         );
         assert!(
-            extracted.contains("http://localhost:8080"),
-            "should keep mcp_servers.* base_url"
+            !extracted.contains("[mcp_servers."),
+            "should remove mcp_servers table from common config"
+        );
+        assert!(
+            !extracted.contains("http://localhost:8080"),
+            "should not keep mcp_servers content in common config"
+        );
+    }
+
+    #[test]
+    fn extract_codex_common_config_prefers_managed_common_block() {
+        let config_toml = r#"# cc-switch common config start
+sandbox_mode = "workspace-write"
+
+[mcp_servers.echo]
+type = "stdio"
+command = "echo"
+# cc-switch common config end
+
+model_provider = "openai"
+model = "gpt-4.1"
+
+[profiles.default]
+approval_policy = "never"
+"#;
+
+        let settings = json!({ "config": config_toml });
+        let extracted = ProviderService::extract_codex_common_config(&settings)
+            .expect("extract_codex_common_config should succeed");
+
+        assert!(
+            extracted.contains("sandbox_mode = \"workspace-write\""),
+            "should keep managed common snippet content"
+        );
+        assert!(
+            !extracted.contains("[profiles.default]"),
+            "should not re-extract content outside the managed common block"
+        );
+        assert!(
+            !extracted.contains("[mcp_servers.echo]"),
+            "should strip MCP tables from managed common block"
         );
     }
 }
@@ -705,7 +754,11 @@ impl ProviderService {
             return Ok(String::new());
         }
 
-        let mut doc = config_toml
+        let extraction_source = extract_codex_managed_common_block(config_toml)
+            .filter(|snippet| !snippet.is_empty())
+            .unwrap_or_else(|| config_toml.to_string());
+
+        let mut doc = extraction_source
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| AppError::Message(format!("TOML parse error: {e}")))?;
 
@@ -715,9 +768,22 @@ impl ProviderService {
         root.remove("model_provider");
         // Legacy/alt formats might use a top-level base_url.
         root.remove("base_url");
+        // MCP is app-global and should not be extracted as provider common config.
+        root.remove("mcp_servers");
 
         // Remove entire model_providers table (provider-specific configuration)
         root.remove("model_providers");
+
+        let remove_mcp_root =
+            if let Some(mcp_table) = root.get_mut("mcp").and_then(|item| item.as_table_mut()) {
+                mcp_table.remove("servers");
+                mcp_table.is_empty()
+            } else {
+                false
+            };
+        if remove_mcp_root {
+            root.remove("mcp");
+        }
 
         // Clean up multiple empty lines (keep at most one blank line).
         let mut cleaned = String::new();

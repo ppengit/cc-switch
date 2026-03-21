@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import {
   updateTomlCommonConfigSnippet,
   hasTomlCommonConfigSnippet,
+  validateCodexCommonConfigSnippet,
 } from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
-import { validateToml as validateTomlText } from "@/utils/tomlUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
 const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
@@ -127,9 +127,11 @@ export function useCodexCommonConfig({
       });
 
       if (hasContent) {
-        const snippetError = validateTomlText(commonConfigSnippet);
+        const snippetError = validateCodexCommonConfigSnippet(
+          commonConfigSnippet,
+        );
         if (snippetError) {
-          setCommonConfigError(`TOML 解析错误: 通用配置片段: ${snippetError}`);
+          setCommonConfigError(snippetError);
           setUseCommonConfig(false);
         } else {
           setUseCommonConfig(true);
@@ -163,9 +165,11 @@ export function useCodexCommonConfig({
   // 处理通用配置开关
   const handleCommonConfigToggle = useCallback(
     (checked: boolean) => {
-      const snippetError = validateTomlText(commonConfigSnippet);
+      const snippetError = validateCodexCommonConfigSnippet(
+        commonConfigSnippet,
+      );
       if (checked && snippetError) {
-        setCommonConfigError(`TOML 解析错误: 通用配置片段: ${snippetError}`);
+        setCommonConfigError(snippetError);
         setUseCommonConfig(false);
         return;
       }
@@ -227,9 +231,9 @@ export function useCodexCommonConfig({
       }
 
       // TOML 格式校验较为复杂，暂时不做校验，直接清空错误
-      const validationError = validateTomlText(value);
+      const validationError = validateCodexCommonConfigSnippet(value);
       if (validationError) {
-        setCommonConfigError(`TOML 解析错误: 通用配置片段: ${validationError}`);
+        setCommonConfigError(validationError);
         return;
       }
 

@@ -108,21 +108,11 @@ import {
   setCodexModelName,
   updateCommonConfigSnippet,
   updateTomlCommonConfigSnippet,
+  validateCodexCommonConfigSnippet,
   validateJsonConfig,
 } from "@/utils/providerConfigUtils";
 import type { SessionRoutingStrategy } from "@/types/proxy";
 import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  CLAUDE_QUICK_TOGGLE_OPTIONS,
-  CODEX_QUICK_TOGGLE_OPTIONS,
-  GEMINI_QUICK_TOGGLE_OPTIONS,
-  getCodexQuickToggleStates,
-  toggleCodexQuickOption,
-  type ClaudeQuickToggleKey,
-  type CodexQuickToggleKey,
-  type GeminiQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -151,7 +141,7 @@ type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
 type ProviderSortKey = "default" | "name" | "notes" | "model" | "status";
 type SortDirection = "asc" | "desc";
 type ProviderFilterField = "all" | "name" | "websiteUrl" | "notes" | "model";
-type ProviderResizableColumnKey = "notes" | "model" | "status" | "actions";
+type ProviderResizableColumnKey = "notes" | "model";
 interface ProviderStatusMeta {
   sortValue: number;
   badges: Array<{
@@ -167,11 +157,86 @@ interface ProviderOccupancyDetail {
   projectName: string;
 }
 
+interface BatchTestProgress {
+  index: number;
+  total: number;
+  name: string;
+}
+
+interface BatchTestSessionState {
+  isTesting: boolean;
+  progress: BatchTestProgress | null;
+  selections: Record<string, boolean>;
+  results: Record<string, StreamCheckResult | null>;
+}
+
+interface SearchLocatorMatch {
+  id: string;
+  name: string;
+  detail: string;
+}
+
 const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
-  notes: 180,
-  model: 200,
-  status: 260,
-  actions: 190,
+  notes: 150,
+  model: 160,
+};
+const PROVIDER_STATUS_COLUMN_MIN_WIDTH = 180;
+const getProviderActionsColumnWidth = (appId: AppId) =>
+  appId === "openclaw" ? 320 : 248;
+const batchTestSessionStore = new Map<AppId, BatchTestSessionState>();
+
+const createEmptyBatchTestSessionState = (): BatchTestSessionState => ({
+  isTesting: false,
+  progress: null,
+  selections: {},
+  results: {},
+});
+
+const syncBatchTestSessionWithProviders = (
+  state: BatchTestSessionState,
+  providers: Provider[],
+): BatchTestSessionState => {
+  const nextSelections: Record<string, boolean> = {};
+  const nextResults: Record<string, StreamCheckResult | null> = {};
+  const providerIdSet = new Set(providers.map((provider) => provider.id));
+
+  for (const provider of providers) {
+    nextSelections[provider.id] = state.selections[provider.id] ?? true;
+  }
+
+  for (const [providerId, result] of Object.entries(state.results)) {
+    if (providerIdSet.has(providerId)) {
+      nextResults[providerId] = result;
+    }
+  }
+
+  return {
+    ...state,
+    selections: nextSelections,
+    results: nextResults,
+  };
+};
+
+const getBatchTestSessionState = (
+  appId: AppId,
+  providers: Provider[],
+): BatchTestSessionState => {
+  const current =
+    batchTestSessionStore.get(appId) ?? createEmptyBatchTestSessionState();
+  const synced = syncBatchTestSessionWithProviders(current, providers);
+  batchTestSessionStore.set(appId, synced);
+  return synced;
+};
+
+const setBatchTestSessionState = (
+  appId: AppId,
+  updater: (current: BatchTestSessionState) => BatchTestSessionState,
+): BatchTestSessionState => {
+  const current =
+    batchTestSessionStore.get(appId) ?? createEmptyBatchTestSessionState();
+  const next = updater(current);
+  batchTestSessionStore.set(appId, next);
+  return next;
 };
 const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   value: SessionRoutingStrategy;
@@ -498,18 +563,25 @@ export function ProviderList({
   );
   const [testModel, setTestModel] = useState("");
   const [isSavingTestModel, setIsSavingTestModel] = useState(false);
-  const [isBatchTesting, setIsBatchTesting] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<{
-    index: number;
-    total: number;
-    name: string;
-  } | null>(null);
+  const [isBatchTesting, setIsBatchTesting] = useState(
+    () => getBatchTestSessionState(appId, sortedProviders).isTesting,
+  );
+  const [batchProgress, setBatchProgress] = useState<BatchTestProgress | null>(
+    () => getBatchTestSessionState(appId, sortedProviders).progress,
+  );
   const [batchSelections, setBatchSelections] = useState<
     Record<string, boolean>
-  >({});
+  >(() => getBatchTestSessionState(appId, sortedProviders).selections);
   const [batchResults, setBatchResults] = useState<
     Record<string, StreamCheckResult | null>
-  >({});
+  >(() => getBatchTestSessionState(appId, sortedProviders).results);
+  const [activeSearchMatchId, setActiveSearchMatchId] = useState<
+    string | null
+  >(null);
+  const isProviderListMountedRef = useRef(true);
+  const providerRowRefs = useRef<Record<string, HTMLTableRowElement | null>>(
+    {},
+  );
 
   const modelKey = useMemo<TestModelKey | null>(() => {
     if (!enableStreamCheck) return null;
@@ -518,6 +590,59 @@ export function ProviderList({
     if (appId === "gemini") return "geminiModel";
     return null;
   }, [appId, enableStreamCheck]);
+
+  useEffect(() => {
+    return () => {
+      isProviderListMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const next = getBatchTestSessionState(appId, sortedProviders);
+    setIsBatchTesting(next.isTesting);
+    setBatchProgress(next.progress);
+    setBatchSelections(next.selections);
+    setBatchResults(next.results);
+  }, [appId, sortedProviders]);
+
+  const syncBatchTestSession = useCallback(
+    (updater: (current: BatchTestSessionState) => BatchTestSessionState) => {
+      const next = setBatchTestSessionState(appId, updater);
+      if (isProviderListMountedRef.current) {
+        setIsBatchTesting(next.isTesting);
+        setBatchProgress(next.progress);
+        setBatchSelections(next.selections);
+        setBatchResults(next.results);
+      }
+      return next;
+    },
+    [appId],
+  );
+
+  const setProviderRowRef = useCallback(
+    (providerId: string, node: HTMLTableRowElement | null) => {
+      if (node) {
+        providerRowRefs.current[providerId] = node;
+        return;
+      }
+      delete providerRowRefs.current[providerId];
+    },
+    [],
+  );
+
+  const scrollToProviderMatch = useCallback(
+    (providerId: string, behavior: ScrollBehavior = "smooth") => {
+      setActiveSearchMatchId(providerId);
+      const row = providerRowRefs.current[providerId];
+      if (!row) return;
+      if (typeof row.scrollIntoView !== "function") return;
+      row.scrollIntoView({
+        block: "center",
+        behavior,
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!enableStreamCheck || !modelKey) return;
@@ -573,22 +698,6 @@ export function ProviderList({
       active = false;
     };
   }, [appId, supportsCommonConfig]);
-
-  useEffect(() => {
-    if (!isBatchTestOpen) return;
-    const initialSelections: Record<string, boolean> = {};
-    for (const provider of sortedProviders) {
-      initialSelections[provider.id] = true;
-    }
-    setBatchSelections(initialSelections);
-    setBatchResults({});
-  }, [isBatchTestOpen, sortedProviders]);
-
-  useEffect(() => {
-    if (isBatchTestOpen) return;
-    setBatchProgress(null);
-    setIsBatchTesting(false);
-  }, [isBatchTestOpen]);
 
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const handleTestProvider = useCallback(
@@ -957,13 +1066,15 @@ export function ProviderList({
     startResize: startProviderColumnResize,
   } = useColumnResize<ProviderResizableColumnKey>({
     initialWidths: {
-      notes: 220,
-      model: 240,
-      status: 280,
-      actions: 190,
+      notes: 190,
+      model: 180,
     },
     minWidths: PROVIDER_COLUMN_MIN_WIDTHS,
   });
+  const providerActionsColumnWidth = useMemo(
+    () => getProviderActionsColumnWidth(appId),
+    [appId],
+  );
   const [selectedProviderIds, setSelectedProviderIds] = useState<
     Record<string, boolean>
   >({});
@@ -1096,176 +1207,6 @@ export function ProviderList({
     }
     return parseGeminiSnippet(commonConfigSnippet);
   }, [appId, commonConfigSnippet, parseGeminiSnippet]);
-
-  const claudeSnippetToggleStates = useMemo(() => {
-    if (appId !== "claude") {
-      return {
-        hideAttribution: false,
-        alwaysThinking: false,
-        teammates: false,
-        skipAllPermissions: false,
-        fastMode: false,
-      };
-    }
-    const config = safeParseJsonObject(commonConfigSnippet || "{}").value;
-    return {
-      hideAttribution:
-        config?.attribution?.commit === "" && config?.attribution?.pr === "",
-      alwaysThinking: config?.alwaysThinkingEnabled === true,
-      teammates:
-        config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
-        config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
-      skipAllPermissions:
-        config?.permissions?.defaultMode === "bypassPermissions",
-      fastMode: config?.fastMode === true,
-    };
-  }, [appId, commonConfigSnippet]);
-
-  const geminiSnippetToggleStates = useMemo(() => {
-    if (appId !== "gemini") {
-      return {
-        inlineThinking: false,
-        showModelInfo: false,
-        enableAgents: false,
-      };
-    }
-    const config = parsedGeminiSnippet.config as Record<string, any>;
-    return {
-      inlineThinking: config?.ui?.inlineThinkingMode === "full",
-      showModelInfo: config?.ui?.showModelInfoInChat === true,
-      enableAgents: config?.experimental?.enableAgents === true,
-    };
-  }, [appId, parsedGeminiSnippet.config]);
-
-  const codexSnippetToggleStates = useMemo(() => {
-    if (appId !== "codex") {
-      return getCodexQuickToggleStates("");
-    }
-    return getCodexQuickToggleStates(commonConfigSnippet);
-  }, [appId, commonConfigSnippet]);
-
-  const handleClaudeSnippetToggle = useCallback(
-    (toggleKey: ClaudeQuickToggleKey, checked: boolean) => {
-      if (appId !== "claude") return;
-      const parsed = safeParseJsonObject(
-        commonConfigSnippet || "{}",
-        t("claudeConfig.commonConfigSnippet", {
-          defaultValue: "通用配置片段",
-        }),
-      );
-      if (parsed.error) {
-        setCommonConfigError(parsed.error);
-        return;
-      }
-      const config = parsed.value ?? {};
-
-      switch (toggleKey) {
-        case "hideAttribution":
-          if (checked) {
-            config.attribution = { commit: "", pr: "" };
-          } else {
-            delete config.attribution;
-          }
-          break;
-        case "alwaysThinking":
-          if (checked) {
-            config.alwaysThinkingEnabled = true;
-          } else {
-            delete config.alwaysThinkingEnabled;
-          }
-          break;
-        case "teammates":
-          if (!config.env) config.env = {};
-          if (checked) {
-            config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
-          } else {
-            delete config.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
-            if (Object.keys(config.env).length === 0) delete config.env;
-          }
-          break;
-        case "skipAllPermissions":
-          if (!config.permissions) config.permissions = {};
-          if (checked) {
-            config.permissions.defaultMode = "bypassPermissions";
-            delete config.permissions.disableBypassPermissionsMode;
-          } else if (config.permissions.defaultMode === "bypassPermissions") {
-            delete config.permissions.defaultMode;
-          }
-          if (Object.keys(config.permissions).length === 0) {
-            delete config.permissions;
-          }
-          break;
-        case "fastMode":
-          if (checked) {
-            config.fastMode = true;
-          } else {
-            delete config.fastMode;
-          }
-          break;
-      }
-
-      setCommonConfigSnippet(JSON.stringify(config, null, 2));
-      setCommonConfigError("");
-    },
-    [appId, commonConfigSnippet, t],
-  );
-
-  const handleGeminiSnippetToggle = useCallback(
-    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
-      if (appId !== "gemini") return;
-      if (parsedGeminiSnippet.error) return;
-
-      const env = parsedGeminiSnippet.env ?? {};
-      const config = { ...(parsedGeminiSnippet.config as Record<string, any>) };
-
-      if (toggleKey === "inlineThinking") {
-        config.ui = config.ui || {};
-        if (checked) {
-          config.ui.inlineThinkingMode = "full";
-        } else {
-          delete config.ui.inlineThinkingMode;
-        }
-        if (Object.keys(config.ui).length === 0) delete config.ui;
-      }
-
-      if (toggleKey === "showModelInfo") {
-        config.ui = config.ui || {};
-        if (checked) {
-          config.ui.showModelInfoInChat = true;
-        } else {
-          delete config.ui.showModelInfoInChat;
-        }
-        if (Object.keys(config.ui).length === 0) delete config.ui;
-      }
-
-      if (toggleKey === "enableAgents") {
-        config.experimental = config.experimental || {};
-        if (checked) {
-          config.experimental.enableAgents = true;
-        } else {
-          delete config.experimental.enableAgents;
-        }
-        if (Object.keys(config.experimental).length === 0) {
-          delete config.experimental;
-        }
-      }
-
-      setCommonConfigSnippet(JSON.stringify({ env, config }, null, 2));
-      setCommonConfigError("");
-    },
-    [appId, parsedGeminiSnippet],
-  );
-
-  const handleCodexSnippetToggle = useCallback(
-    (toggleKey: CodexQuickToggleKey, checked: boolean) => {
-      if (appId !== "codex") return;
-      setCommonConfigSnippet(
-        toggleCodexQuickOption(commonConfigSnippet, toggleKey, checked),
-      );
-      setCommonConfigError("");
-    },
-    [appId, commonConfigSnippet],
-  );
 
   const hasGeminiConfigSnippet = useCallback(
     (
@@ -1506,48 +1447,96 @@ export function ProviderList({
     await saveTestModelIfNeeded();
 
     const total = selectedBatchProviders.length;
-    setIsBatchTesting(true);
-    setBatchResults((prev) => {
-      const next = { ...prev };
+    let operationalCount = 0;
+    let degradedCount = 0;
+    let failedCount = 0;
+
+    syncBatchTestSession((current) => {
+      const nextResults = { ...current.results };
       for (const provider of selectedBatchProviders) {
-        delete next[provider.id];
+        delete nextResults[provider.id];
       }
-      return next;
+      return {
+        ...current,
+        isTesting: true,
+        progress: null,
+        results: nextResults,
+      };
     });
     try {
       for (let index = 0; index < selectedBatchProviders.length; index += 1) {
         const provider = selectedBatchProviders[index];
-        setBatchProgress({
-          index: index + 1,
-          total,
-          name: provider.name,
+        syncBatchTestSession((current) => ({
+          ...current,
+          progress: {
+            index: index + 1,
+            total,
+            name: provider.name,
+          },
+        }));
+        const result = await checkProvider(provider.id, provider.name, {
+          silent: true,
         });
-        const result = await checkProvider(provider.id, provider.name);
-        setBatchResults((prev) => ({
-          ...prev,
-          [provider.id]: result,
+        if (!result || result.status === "failed") {
+          failedCount += 1;
+        } else if (result.status === "degraded") {
+          degradedCount += 1;
+        } else {
+          operationalCount += 1;
+        }
+        syncBatchTestSession((current) => ({
+          ...current,
+          results: {
+            ...current.results,
+            [provider.id]: result,
+          },
         }));
       }
+
+      toast.success(
+        t("streamCheck.batchCompleted", {
+          count: total,
+          defaultValue: "已完成批量测试（{{count}} 个供应商）",
+        }),
+        {
+          closeButton: true,
+          description: t("streamCheck.batchCompletedSummary", {
+            operational: operationalCount,
+            degraded: degradedCount,
+            failed: failedCount,
+            defaultValue:
+              "正常 {{operational}} 个，降级 {{degraded}} 个，失败 {{failed}} 个",
+          }),
+        },
+      );
     } finally {
-      setBatchProgress(null);
-      setIsBatchTesting(false);
+      syncBatchTestSession((current) => ({
+        ...current,
+        isTesting: false,
+        progress: null,
+      }));
     }
   }, [
+    checkProvider,
     enableStreamCheck,
     isBatchTesting,
     selectedBatchProviders,
-    checkProvider,
     saveTestModelIfNeeded,
+    syncBatchTestSession,
+    t,
   ]);
 
   const handleToggleBatchSelection = useCallback(
     (providerId: string, checked: boolean) => {
-      setBatchSelections((prev) => ({
-        ...prev,
-        [providerId]: checked,
+      syncBatchTestSession((current) => ({
+        ...current,
+        selections: {
+          ...current.selections,
+          [providerId]: checked,
+        },
       }));
     },
-    [],
+    [syncBatchTestSession],
   );
 
   const handleToggleAllBatchSelections = useCallback(
@@ -1556,9 +1545,12 @@ export function ProviderList({
       for (const provider of sortedProviders) {
         next[provider.id] = checked;
       }
-      setBatchSelections(next);
+      syncBatchTestSession((current) => ({
+        ...current,
+        selections: next,
+      }));
     },
-    [sortedProviders],
+    [sortedProviders, syncBatchTestSession],
   );
 
   const handleSaveCommonConfig = useCallback(async () => {
@@ -1573,15 +1565,7 @@ export function ProviderList({
         }),
       );
     } else if (appId === "codex") {
-      const tomlError = validateTomlText(commonConfigSnippet);
-      if (tomlError) {
-        validationError =
-          tomlError === "mustBeObject" || tomlError === "parseError"
-            ? t("mcp.error.tomlInvalid", {
-                defaultValue: "TOML 格式错误，请检查",
-              })
-            : `TOML 解析错误: 通用配置片段: ${tomlError}`;
-      }
+      validationError = validateCodexCommonConfigSnippet(commonConfigSnippet);
     } else if (appId === "gemini") {
       if (parsedGeminiSnippet.error) {
         validationError = parsedGeminiSnippet.error;
@@ -1644,6 +1628,16 @@ export function ProviderList({
         setCommonConfigError(parsedGeminiSnippet.error);
         toast.error(parsedGeminiSnippet.error);
         return;
+      }
+
+      if (appId === "codex") {
+        const codexSnippetError =
+          validateCodexCommonConfigSnippet(commonConfigSnippet);
+        if (codexSnippetError) {
+          setCommonConfigError(codexSnippetError);
+          toast.error(codexSnippetError);
+          return;
+        }
       }
 
       setIsApplyingCommonConfig(true);
@@ -2108,8 +2102,12 @@ export function ProviderList({
 
       const badges: ProviderStatusMeta["badges"] = [];
       let sortValue = 0;
+      const sessionRoutingEnabled = appProxyConfig?.sessionRoutingEnabled === true;
+      const followsCurrentSessionDefault =
+        sessionRoutingEnabled &&
+        !(appProxyConfig?.sessionDefaultProviderId?.trim().length ?? 0);
 
-      if (isProxyTakeover && activeProviderId === provider.id) {
+      if (!sessionRoutingEnabled && isProxyTakeover && activeProviderId === provider.id) {
         badges.push({
           label: t("provider.activeTraffic", { defaultValue: "当前流量" }),
           className:
@@ -2121,7 +2119,7 @@ export function ProviderList({
         sortValue += 400;
       }
 
-      if (isCurrentProvider(provider)) {
+      if (!sessionRoutingEnabled && isCurrentProvider(provider)) {
         badges.push({
           label: t("provider.current", { defaultValue: "当前" }),
           className:
@@ -2134,13 +2132,17 @@ export function ProviderList({
       }
 
       if (
-        appProxyConfig?.sessionRoutingEnabled &&
+        sessionRoutingEnabled &&
         effectiveSessionDefaultProviderId === provider.id
       ) {
         badges.push({
-          label: t("provider.sessionDefault", {
-            defaultValue: "无会话默认",
-          }),
+          label: followsCurrentSessionDefault
+            ? t("provider.sessionDefaultFollowCurrentShort", {
+                defaultValue: "无会话默认(跟随当前)",
+              })
+            : t("provider.sessionDefault", {
+                defaultValue: "无会话默认",
+              }),
           className:
             "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
           description: appProxyConfig.sessionDefaultProviderId
@@ -2156,20 +2158,8 @@ export function ProviderList({
       }
 
       if (isAutoFailoverActive) {
-        const priority = failoverPriorityMap.get(provider.id);
-        if (priority != null) {
-          badges.push({
-            label: t("provider.failoverPriorityShort", {
-              defaultValue: "队列 P{{priority}}",
-              priority,
-            }),
-            className:
-              "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
-            description: t("provider.statusHint.failoverPriority", {
-              defaultValue: "故障转移开启时，请求会按队列顺序回落到此供应商",
-            }),
-          });
-          sortValue += Math.max(1, 80 - priority);
+        if (failoverPriorityMap.has(provider.id)) {
+          sortValue += 80;
         }
       }
 
@@ -2217,27 +2207,23 @@ export function ProviderList({
     [selectedModelFilters],
   );
 
-  const filteredProviders = useMemo(() => {
-    const keyword = (filterKeyword ?? "").trim().toLowerCase();
-    return sortedProviders.filter((provider) => {
+  const buildProviderSearchFieldMap = useCallback(
+    (
+      provider: Provider,
+    ): Record<Exclude<ProviderFilterField, "all">, string> => {
       const modelSummary = resolveProviderModelSummary(provider).toLowerCase();
-      const fieldMap: Record<Exclude<ProviderFilterField, "all">, string> = {
+      return {
         name: provider.name.toLowerCase(),
         websiteUrl: (provider.websiteUrl ?? "").toLowerCase(),
         notes: (provider.notes ?? "").toLowerCase(),
         model: modelSummary === "—" ? "" : modelSummary,
       };
+    },
+    [resolveProviderModelSummary],
+  );
 
-      const matchesKeyword =
-        !keyword ||
-        (filterField === "all"
-          ? Object.values(fieldMap).some((value) => value.includes(keyword))
-          : fieldMap[filterField].includes(keyword));
-
-      if (!matchesKeyword) {
-        return false;
-      }
-
+  const visibleProviders = useMemo(() => {
+    return sortedProviders.filter((provider) => {
       if (selectedModelFilterSet.size === 0) {
         return true;
       }
@@ -2245,18 +2231,11 @@ export function ProviderList({
       const modelNames = resolveProviderModelNames(provider);
       return modelNames.some((name) => selectedModelFilterSet.has(name));
     });
-  }, [
-    filterField,
-    filterKeyword,
-    resolveProviderModelNames,
-    resolveProviderModelSummary,
-    selectedModelFilterSet,
-    sortedProviders,
-  ]);
+  }, [resolveProviderModelNames, selectedModelFilterSet, sortedProviders]);
 
   const sortedDisplayProviders = useMemo(() => {
     const directionFactor = sortState.direction === "asc" ? 1 : -1;
-    const indexedProviders = filteredProviders.map((provider, index) => ({
+    const indexedProviders = visibleProviders.map((provider, index) => ({
       provider,
       index,
     }));
@@ -2296,12 +2275,81 @@ export function ProviderList({
 
     return indexedProviders.map((item) => item.provider);
   }, [
-    filteredProviders,
+    visibleProviders,
     resolveProviderModelSummary,
     resolveProviderStatus,
     sortState.direction,
     sortState.key,
   ]);
+
+  const searchMatches = useMemo<SearchLocatorMatch[]>(() => {
+    const keyword = (filterKeyword ?? "").trim().toLowerCase();
+    if (!keyword) {
+      return [];
+    }
+
+    return sortedDisplayProviders
+      .filter((provider) => {
+        const fieldMap = buildProviderSearchFieldMap(provider);
+        return filterField === "all"
+          ? Object.values(fieldMap).some((value) => value.includes(keyword))
+          : fieldMap[filterField].includes(keyword);
+      })
+      .map((provider) => {
+        const detailMap: Record<Exclude<ProviderFilterField, "all">, string> = {
+          name: provider.name,
+          websiteUrl: provider.websiteUrl ?? "",
+          notes: provider.notes ?? "",
+          model:
+            resolveProviderModelSummary(provider) === "—"
+              ? ""
+              : resolveProviderModelSummary(provider),
+        };
+        const detail =
+          filterField === "all"
+            ? [
+                detailMap.name,
+                detailMap.websiteUrl,
+                detailMap.notes,
+                detailMap.model,
+              ]
+                .filter(Boolean)
+                .join(" / ")
+            : detailMap[filterField];
+
+        return {
+          id: provider.id,
+          name: provider.name,
+          detail,
+        };
+      });
+  }, [
+    buildProviderSearchFieldMap,
+    filterField,
+    filterKeyword,
+    resolveProviderModelSummary,
+    sortedDisplayProviders,
+  ]);
+
+  const searchMatchIdSet = useMemo(
+    () => new Set(searchMatches.map((match) => match.id)),
+    [searchMatches],
+  );
+
+  useEffect(() => {
+    const keyword = filterKeyword.trim();
+    if (!keyword || searchMatches.length === 0) {
+      setActiveSearchMatchId(null);
+      return;
+    }
+
+    setActiveSearchMatchId((current) => {
+      if (current && searchMatches.some((match) => match.id === current)) {
+        return current;
+      }
+      return searchMatches[0]?.id ?? null;
+    });
+  }, [filterKeyword, searchMatches]);
 
   const isDragEnabled =
     sortState.key === "default" && sortState.direction === "asc";
@@ -2408,11 +2456,9 @@ export function ProviderList({
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
-    if (filterField !== "all") count += 1;
-    if (filterKeyword.trim().length > 0) count += 1;
     if (selectedModelFilters.length > 0) count += 1;
     return count;
-  }, [filterField, filterKeyword, selectedModelFilters]);
+  }, [selectedModelFilters]);
 
   const modelFilterLabel =
     selectedModelFilters.length > 0
@@ -2708,7 +2754,19 @@ export function ProviderList({
       >
         <div className="rounded-xl border border-border/70 overflow-hidden">
           <div className="overflow-auto">
-            <table className="min-w-[1040px] w-full text-sm">
+            <table
+              className="w-full text-sm"
+              style={{
+                minWidth:
+                  48 +
+                  40 +
+                  300 +
+                  providerColumnWidths.notes +
+                  providerColumnWidths.model +
+                  PROVIDER_STATUS_COLUMN_MIN_WIDTH +
+                  providerActionsColumnWidth,
+              }}
+            >
               <colgroup>
                 <col style={{ width: 48, minWidth: 48 }} />
                 <col style={{ width: 40, minWidth: 40 }} />
@@ -2727,14 +2785,14 @@ export function ProviderList({
                 />
                 <col
                   style={{
-                    width: providerColumnWidths.status,
-                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                    minWidth: PROVIDER_STATUS_COLUMN_MIN_WIDTH,
                   }}
                 />
                 <col
                   style={{
-                    width: providerColumnWidths.actions,
-                    minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                    width: providerActionsColumnWidth,
+                    minWidth: providerActionsColumnWidth,
+                    maxWidth: providerActionsColumnWidth,
                   }}
                 />
               </colgroup>
@@ -2807,8 +2865,7 @@ export function ProviderList({
                   <th
                     className="relative px-3 py-2 text-left"
                     style={{
-                      width: providerColumnWidths.status,
-                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+                      minWidth: PROVIDER_STATUS_COLUMN_MIN_WIDTH,
                     }}
                   >
                     <button
@@ -2816,20 +2873,19 @@ export function ProviderList({
                       className="inline-flex items-center gap-1.5 text-sm font-medium"
                       onClick={() => handleSortChange("status")}
                     >
-                      {t("provider.status", { defaultValue: "默认状态" })}
+                      {t("provider.status", { defaultValue: "状态" })}
                       {getSortIcon("status")}
                     </button>
-                    {renderProviderColumnResizeHandle("status")}
                   </th>
                   <th
                     className="relative sticky right-0 z-30 bg-background px-3 py-2 text-left"
                     style={{
-                      width: providerColumnWidths.actions,
-                      minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+                      width: providerActionsColumnWidth,
+                      minWidth: providerActionsColumnWidth,
+                      maxWidth: providerActionsColumnWidth,
                     }}
                   >
                     {t("common.actions", { defaultValue: "操作" })}
-                    {renderProviderColumnResizeHandle("actions")}
                   </th>
                 </tr>
               </thead>
@@ -2841,6 +2897,7 @@ export function ProviderList({
                     rowIndex={index}
                     showOrderNumber={sortState.key === "default"}
                     columnWidths={providerColumnWidths}
+                    actionsColumnWidth={providerActionsColumnWidth}
                     dragEnabled={isDragEnabled}
                     isSelected={Boolean(selectedProviderIds[provider.id])}
                     onToggleSelected={toggleProviderSelection}
@@ -2878,6 +2935,9 @@ export function ProviderList({
                     isTesting={
                       enableStreamCheck ? isChecking(provider.id) : false
                     }
+                    rowRef={(node) => setProviderRowRef(provider.id, node)}
+                    isSearchMatched={searchMatchIdSet.has(provider.id)}
+                    isActiveSearchMatch={activeSearchMatchId === provider.id}
                     isProxyTakeover={isProxyTakeover}
                     isAutoFailoverEnabled={isAutoFailoverActive}
                     isInFailoverQueue={isInFailoverQueue(provider.id)}
@@ -3203,6 +3263,13 @@ export function ProviderList({
                 data-testid="provider-filter-keyword-input"
                 value={filterKeyword}
                 onChange={(event) => setFilterKeyword(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  const targetId = activeSearchMatchId ?? searchMatches[0]?.id;
+                  if (!targetId) return;
+                  event.preventDefault();
+                  scrollToProviderMatch(targetId);
+                }}
                 placeholder={t("provider.filterKeywordPlaceholder", {
                   field: modelFieldLabel,
                   defaultValue: "输入关键字筛选名称/网址/备注/{{field}}",
@@ -3220,6 +3287,68 @@ export function ProviderList({
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
+              )}
+              {filterKeyword.trim().length > 0 && (
+                <div className="mt-2 rounded-lg border border-border/70 bg-background/95 p-2 shadow-sm">
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span>
+                      {searchMatches.length > 0
+                        ? t("provider.searchLocatorMatches", {
+                            count: searchMatches.length,
+                            defaultValue:
+                              "定位到 {{count}} 个供应商，可点击快速跳转",
+                          })
+                        : t("provider.searchLocatorNoMatch", {
+                            defaultValue: "没有匹配的供应商",
+                          })}
+                    </span>
+                    {searchMatches.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() =>
+                          scrollToProviderMatch(
+                            activeSearchMatchId ?? searchMatches[0].id,
+                          )
+                        }
+                      >
+                        {t("provider.searchLocatorFocus", {
+                          defaultValue: "定位当前",
+                        })}
+                      </Button>
+                    )}
+                  </div>
+                  {searchMatches.length > 0 && (
+                    <div className="mt-2 max-h-40 space-y-1 overflow-y-auto pr-1">
+                      {searchMatches.map((match, index) => (
+                        <button
+                          key={match.id}
+                          type="button"
+                          className={cn(
+                            "flex w-full items-start justify-between gap-3 rounded-md border px-2 py-1.5 text-left transition-colors hover:border-border/80 hover:bg-muted/50 dark:hover:bg-muted/35",
+                            activeSearchMatchId === match.id
+                              ? "border-amber-300/80 bg-amber-50/80 dark:border-amber-500/30 dark:bg-amber-400/[0.08]"
+                              : "border-transparent bg-muted/30 dark:bg-muted/20",
+                          )}
+                          onClick={() => scrollToProviderMatch(match.id)}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {index + 1}. {match.name}
+                            </span>
+                            {match.detail && (
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {match.detail}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -4175,62 +4304,6 @@ export function ProviderList({
                     })}
             </p>
 
-            {appId === "codex" ? (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                {CODEX_QUICK_TOGGLE_OPTIONS.map((option) => (
-                  <QuickConfigToggle
-                    key={option.key}
-                    checked={codexSnippetToggleStates[option.key]}
-                    onChange={(checked) =>
-                      handleCodexSnippetToggle(option.key, checked)
-                    }
-                    label={t(option.labelKey, {
-                      defaultValue: option.defaultLabel,
-                    })}
-                    description={t(option.descriptionKey, {
-                      defaultValue: option.defaultDescription,
-                    })}
-                  />
-                ))}
-              </div>
-            ) : appId === "gemini" ? (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
-                  <QuickConfigToggle
-                    key={option.key}
-                    checked={geminiSnippetToggleStates[option.key]}
-                    onChange={(checked) =>
-                      handleGeminiSnippetToggle(option.key, checked)
-                    }
-                    label={t(option.labelKey, {
-                      defaultValue: option.defaultLabel,
-                    })}
-                    description={t(option.descriptionKey, {
-                      defaultValue: option.defaultDescription,
-                    })}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                {CLAUDE_QUICK_TOGGLE_OPTIONS.map((option) => (
-                  <QuickConfigToggle
-                    key={option.key}
-                    checked={claudeSnippetToggleStates[option.key]}
-                    onChange={(checked) =>
-                      handleClaudeSnippetToggle(option.key, checked)
-                    }
-                    label={t(option.labelKey, {
-                      defaultValue: option.defaultLabel,
-                    })}
-                    description={t(option.descriptionKey, {
-                      defaultValue: option.defaultDescription,
-                    })}
-                  />
-                ))}
-              </div>
-            )}
-
             <JsonEditor
               value={commonConfigSnippet}
               onChange={(value) => {
@@ -4294,6 +4367,7 @@ interface SortableProviderTableRowProps {
   rowIndex: number;
   showOrderNumber: boolean;
   columnWidths: Record<ProviderResizableColumnKey, number>;
+  actionsColumnWidth: number;
   dragEnabled: boolean;
   isSelected: boolean;
   onToggleSelected: (providerId: string, checked: boolean) => void;
@@ -4331,6 +4405,9 @@ interface SortableProviderTableRowProps {
   onToggleFailover: (enabled: boolean) => void;
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
+  rowRef?: (node: HTMLTableRowElement | null) => void;
+  isSearchMatched?: boolean;
+  isActiveSearchMatch?: boolean;
 }
 
 function SortableProviderTableRow({
@@ -4338,6 +4415,7 @@ function SortableProviderTableRow({
   rowIndex,
   showOrderNumber,
   columnWidths,
+  actionsColumnWidth,
   dragEnabled,
   isSelected,
   onToggleSelected,
@@ -4371,6 +4449,9 @@ function SortableProviderTableRow({
   onToggleFailover,
   isDefaultModel,
   onSetAsDefault,
+  rowRef,
+  isSearchMatched = false,
+  isActiveSearchMatch = false,
 }: SortableProviderTableRowProps) {
   const { t } = useTranslation();
   const {
@@ -4392,10 +4473,20 @@ function SortableProviderTableRow({
     rowIndex % 2 === 0
       ? "bg-background/90 dark:bg-background/40"
       : "bg-muted/35 dark:bg-muted/20";
-  const stickyCellBgClass =
+  const baseStickyCellBgClass =
     rowIndex % 2 === 0
       ? "bg-background dark:bg-background/60"
       : "bg-muted/45 dark:bg-muted/30";
+  const searchMatchRowClass = isActiveSearchMatch
+    ? "bg-amber-100/60 dark:bg-amber-400/[0.08]"
+    : isSearchMatched
+      ? "bg-amber-50/55 dark:bg-amber-400/[0.05]"
+      : "";
+  const stickyCellBgClass = isActiveSearchMatch
+    ? "bg-amber-100/80 dark:bg-amber-400/[0.1]"
+    : isSearchMatched
+      ? "bg-amber-50/80 dark:bg-amber-400/[0.06]"
+      : baseStickyCellBgClass;
 
   const website = provider.websiteUrl?.trim() ?? "";
   const notes = provider.notes?.trim() ?? "";
@@ -4408,16 +4499,27 @@ function SortableProviderTableRow({
     occupancyDetails.length - visibleOccupancyDetails.length,
     0,
   );
+  const handleRowRef = useCallback(
+    (node: HTMLTableRowElement | null) => {
+      setNodeRef(node);
+      rowRef?.(node);
+    },
+    [rowRef, setNodeRef],
+  );
 
   return (
     <tr
-      ref={setNodeRef}
+      ref={handleRowRef}
       style={style}
       data-state={isSelected ? "selected" : undefined}
+      data-provider-id={provider.id}
       className={cn(
         "border-b border-border/60 transition-colors hover:bg-muted/45",
         rowClass,
+        searchMatchRowClass,
         isDragging && "z-10 bg-accent/40",
+        isActiveSearchMatch &&
+          "outline outline-1 -outline-offset-1 outline-amber-300/80 dark:outline-amber-500/35",
       )}
     >
       <td
@@ -4534,8 +4636,7 @@ function SortableProviderTableRow({
       <td
         className="px-3 py-2 align-middle"
         style={{
-          width: columnWidths.status,
-          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.status,
+          minWidth: PROVIDER_STATUS_COLUMN_MIN_WIDTH,
         }}
       >
         <div className="flex items-center gap-2 flex-wrap">
@@ -4626,11 +4727,12 @@ function SortableProviderTableRow({
           stickyCellBgClass,
         )}
         style={{
-          width: columnWidths.actions,
-          minWidth: PROVIDER_COLUMN_MIN_WIDTHS.actions,
+          width: actionsColumnWidth,
+          minWidth: actionsColumnWidth,
+          maxWidth: actionsColumnWidth,
         }}
       >
-        <div className="min-w-[190px]">
+        <div className="w-full">
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}

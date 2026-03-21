@@ -1,14 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Save, Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { Button } from "@/components/ui/button";
 import JsonEditor from "@/components/JsonEditor";
-import { QuickConfigToggle } from "@/components/providers/forms/QuickConfigToggle";
-import {
-  GEMINI_QUICK_TOGGLE_OPTIONS,
-  type GeminiQuickToggleKey,
-} from "@/components/providers/forms/configQuickToggles";
 
 interface GeminiCommonConfigModalProps {
   isOpen: boolean;
@@ -44,87 +39,6 @@ export const GeminiCommonConfigModal: React.FC<
 
     return () => observer.disconnect();
   }, []);
-
-  const parsedSnippet = useMemo(() => {
-    try {
-      const parsed = JSON.parse(value || "{}");
-      const isObject =
-        parsed &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed) &&
-        Object.prototype.toString.call(parsed) === "[object Object]";
-      if (!isObject) {
-        return { env: {}, config: {} };
-      }
-      const hasStructured = "env" in parsed || "config" in parsed;
-      const env =
-        hasStructured && parsed.env && typeof parsed.env === "object"
-          ? (parsed.env as Record<string, unknown>)
-          : !hasStructured
-            ? (parsed as Record<string, unknown>)
-            : {};
-      const config =
-        hasStructured && parsed.config && typeof parsed.config === "object"
-          ? (parsed.config as Record<string, unknown>)
-          : {};
-      return { env, config };
-    } catch {
-      return { env: {}, config: {} };
-    }
-  }, [value]);
-
-  const toggleStates = useMemo(() => {
-    const config = parsedSnippet.config as Record<string, any>;
-    return {
-      inlineThinking: config?.ui?.inlineThinkingMode === "full",
-      showModelInfo: config?.ui?.showModelInfoInChat === true,
-      enableAgents: config?.experimental?.enableAgents === true,
-    };
-  }, [parsedSnippet.config]);
-
-  const handleToggle = useCallback(
-    (toggleKey: GeminiQuickToggleKey, checked: boolean) => {
-      const env = parsedSnippet.env ?? {};
-      const config = { ...(parsedSnippet.config as Record<string, any>) };
-      if (toggleKey === "inlineThinking") {
-        config.ui = config.ui || {};
-        if (checked) {
-          config.ui.inlineThinkingMode = "full";
-        } else {
-          delete config.ui.inlineThinkingMode;
-        }
-        if (Object.keys(config.ui).length === 0) delete config.ui;
-      }
-
-      if (toggleKey === "showModelInfo") {
-        config.ui = config.ui || {};
-        if (checked) {
-          config.ui.showModelInfoInChat = true;
-        } else {
-          delete config.ui.showModelInfoInChat;
-        }
-        if (Object.keys(config.ui).length === 0) delete config.ui;
-      }
-
-      if (toggleKey === "enableAgents") {
-        config.experimental = config.experimental || {};
-        if (checked) {
-          config.experimental.enableAgents = true;
-        } else {
-          delete config.experimental.enableAgents;
-        }
-        if (Object.keys(config.experimental).length === 0)
-          delete config.experimental;
-      }
-
-      const nextSnippet = {
-        env,
-        config,
-      };
-      onChange(JSON.stringify(nextSnippet, null, 2));
-    },
-    [parsedSnippet, onChange],
-  );
 
   return (
     <FullScreenPanel
@@ -170,20 +84,6 @@ export const GeminiCommonConfigModal: React.FC<
               "该片段支持 env / config 两部分（env 不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY）",
           })}
         </p>
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          {GEMINI_QUICK_TOGGLE_OPTIONS.map((option) => (
-            <QuickConfigToggle
-              key={option.key}
-              checked={toggleStates[option.key]}
-              onChange={(checked) => handleToggle(option.key, checked)}
-              label={t(option.labelKey, { defaultValue: option.defaultLabel })}
-              description={t(option.descriptionKey, {
-                defaultValue: option.defaultDescription,
-              })}
-            />
-          ))}
-        </div>
 
         <JsonEditor
           value={value}

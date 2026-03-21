@@ -32,6 +32,7 @@ import {
   useUpdateRequestLogCleanupConfig,
   usageKeys,
 } from "@/lib/query/usage";
+import { useSessionsQuery } from "@/lib/query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useColumnResize } from "@/hooks/useColumnResize";
 import type { LogFilters, RequestLog } from "@/types/usage";
@@ -53,6 +54,12 @@ import {
   getLocaleFromLanguage,
   parseFiniteNumber,
 } from "./format";
+import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface RequestLogTableProps {
   refreshIntervalMs: number;
@@ -160,6 +167,33 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const logs = result?.data ?? [];
   const total = result?.total ?? 0;
   const totalPages = Math.ceil(total / pageSize);
+  const { data: sessions = [] } = useSessionsQuery();
+
+  const sessionMetaByKey = useMemo(() => {
+    const byScopedKey = new Map<string, (typeof sessions)[number]>();
+    const bySessionId = new Map<string, (typeof sessions)[number]>();
+
+    for (const session of sessions) {
+      byScopedKey.set(`${session.providerId}:${session.sessionId}`, session);
+      if (!bySessionId.has(session.sessionId)) {
+        bySessionId.set(session.sessionId, session);
+      }
+    }
+
+    return { byScopedKey, bySessionId };
+  }, [sessions]);
+
+  const getLogSessionMeta = useCallback(
+    (log: RequestLog) => {
+      if (!log.sessionId) return null;
+      return (
+        sessionMetaByKey.byScopedKey.get(`${log.appType}:${log.sessionId}`) ??
+        sessionMetaByKey.bySessionId.get(log.sessionId) ??
+        null
+      );
+    },
+    [sessionMetaByKey],
+  );
 
   useEffect(() => {
     if (page === 0) return;
@@ -387,6 +421,78 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
       />
     ),
     [startColumnResize],
+  );
+
+  const renderSessionRoutingCell = useCallback(
+    (log: RequestLog) => {
+      const sessionMeta =
+        log.sessionRoutingActive && log.sessionId
+          ? getLogSessionMeta(log)
+          : null;
+      const sessionTitle = sessionMeta ? formatSessionTitle(sessionMeta) : null;
+      const sessionProjectName = sessionMeta
+        ? getBaseName(sessionMeta.projectDir)
+        : "";
+
+      return (
+        <div className="flex items-start gap-2 overflow-hidden">
+          <span
+            className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] ${
+              log.sessionRoutingActive
+                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
+                : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {log.sessionRoutingActive
+              ? t("usage.sessionRoutingActive", "已启用")
+              : t("usage.sessionRoutingInactive", "未启用")}
+          </span>
+          {sessionTitle ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="min-w-0 overflow-hidden">
+                  <div
+                    className="truncate text-xs font-medium"
+                    title={sessionTitle}
+                  >
+                    {sessionTitle}
+                  </div>
+                  <div
+                    className="truncate font-mono text-[10px] text-muted-foreground"
+                    title={log.sessionId ?? "-"}
+                  >
+                    {log.sessionId}
+                  </div>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-sm text-left leading-relaxed">
+                <div className="space-y-1">
+                  <div className="font-medium">{sessionTitle}</div>
+                  {sessionProjectName ? (
+                    <div>
+                      {t("usage.sessionProject", { defaultValue: "项目" })}:{" "}
+                      {sessionProjectName}
+                    </div>
+                  ) : null}
+                  <div className="font-mono text-primary-foreground/80">
+                    {t("usage.sessionId", { defaultValue: "会话 ID" })}:{" "}
+                    {log.sessionId}
+                  </div>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <div
+              className="truncate font-mono text-[10px] text-muted-foreground whitespace-nowrap"
+              title={log.sessionId ?? "-"}
+            >
+              {log.sessionId || "-"}
+            </div>
+          )}
+        </div>
+      );
+    },
+    [getLogSessionMeta, t],
   );
 
   const logColumnDefs = useMemo(
@@ -898,25 +1004,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         {log.providerName || t("usage.unknownProvider")}
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2 whitespace-nowrap overflow-hidden">
-                          <span
-                            className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] ${
-                              log.sessionRoutingActive
-                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
-                                : "bg-muted text-muted-foreground"
-                            }`}
-                          >
-                            {log.sessionRoutingActive
-                              ? t("usage.sessionRoutingActive", "已启用")
-                              : t("usage.sessionRoutingInactive", "未启用")}
-                          </span>
-                          <div
-                            className="truncate font-mono text-[10px] text-muted-foreground whitespace-nowrap"
-                            title={log.sessionId ?? "-"}
-                          >
-                            {log.sessionId || "-"}
-                          </div>
-                        </div>
+                        {renderSessionRoutingCell(log)}
                       </TableCell>
                       <TableCell className="font-mono text-xs max-w-[200px]">
                         <div
