@@ -4,15 +4,26 @@ import { useSettingsQuery } from "@/lib/query";
 import type { Settings } from "@/types";
 
 type Language = "zh" | "en" | "ja";
+type Theme = "light" | "dark" | "system";
 
 export type SettingsFormState = Omit<Settings, "language"> & {
   language: Language;
 };
 
 const normalizeLanguage = (lang?: string | null): Language => {
-  if (!lang) return "zh";
+  if (typeof lang !== "string" || !lang) return "zh";
   const normalized = lang.toLowerCase();
   return normalized === "en" || normalized === "ja" ? normalized : "zh";
+};
+
+const normalizeTheme = (value?: string | null): Theme => {
+  if (typeof value !== "string" || !value) return "system";
+  const normalized = value.toLowerCase();
+  return normalized === "light" ||
+    normalized === "dark" ||
+    normalized === "system"
+    ? (normalized as Theme)
+    : "system";
 };
 
 const sanitizeDir = (value?: string | null): string | undefined => {
@@ -59,6 +70,16 @@ export function useSettingsForm(): UseSettingsFormResult {
     return normalizeLanguage(i18n.language);
   }, [i18n]);
 
+  const readPersistedTheme = useCallback((): Theme => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("cc-switch-theme");
+      if (stored === "light" || stored === "dark" || stored === "system") {
+        return stored as Theme;
+      }
+    }
+    return "system";
+  }, []);
+
   const syncLanguage = useCallback(
     (lang: Language) => {
       const current = normalizeLanguage(i18n.language);
@@ -76,6 +97,7 @@ export function useSettingsForm(): UseSettingsFormResult {
     const normalizedLanguage = normalizeLanguage(
       data.language ?? readPersistedLanguage(),
     );
+    const normalizedTheme = normalizeTheme(data.theme ?? readPersistedTheme());
 
     const normalized: SettingsFormState = {
       ...data,
@@ -89,13 +111,15 @@ export function useSettingsForm(): UseSettingsFormResult {
       codexConfigDir: sanitizeDir(data.codexConfigDir),
       geminiConfigDir: sanitizeDir(data.geminiConfigDir),
       opencodeConfigDir: sanitizeDir(data.opencodeConfigDir),
+      openclawConfigDir: sanitizeDir(data.openclawConfigDir),
       language: normalizedLanguage,
+      theme: normalizedTheme,
     };
 
     setSettingsState(normalized);
     initialLanguageRef.current = normalizedLanguage;
     syncLanguage(normalizedLanguage);
-  }, [data, readPersistedLanguage, syncLanguage]);
+  }, [data, readPersistedLanguage, readPersistedTheme, syncLanguage]);
 
   const updateSettings = useCallback(
     (updates: Partial<SettingsFormState>) => {
@@ -108,6 +132,7 @@ export function useSettingsForm(): UseSettingsFormResult {
             enableClaudePluginIntegration: false,
             skipClaudeOnboarding: false,
             language: readPersistedLanguage(),
+            theme: readPersistedTheme(),
           } as SettingsFormState);
 
         const next: SettingsFormState = {
@@ -121,10 +146,14 @@ export function useSettingsForm(): UseSettingsFormResult {
           syncLanguage(normalized);
         }
 
+        if (updates.theme) {
+          next.theme = normalizeTheme(updates.theme);
+        }
+
         return next;
       });
     },
-    [readPersistedLanguage, syncLanguage],
+    [readPersistedLanguage, readPersistedTheme, syncLanguage],
   );
 
   const resetSettings = useCallback(
@@ -133,6 +162,9 @@ export function useSettingsForm(): UseSettingsFormResult {
 
       const normalizedLanguage = normalizeLanguage(
         serverData.language ?? readPersistedLanguage(),
+      );
+      const normalizedTheme = normalizeTheme(
+        serverData.theme ?? readPersistedTheme(),
       );
 
       const normalized: SettingsFormState = {
@@ -147,13 +179,15 @@ export function useSettingsForm(): UseSettingsFormResult {
         codexConfigDir: sanitizeDir(serverData.codexConfigDir),
         geminiConfigDir: sanitizeDir(serverData.geminiConfigDir),
         opencodeConfigDir: sanitizeDir(serverData.opencodeConfigDir),
+        openclawConfigDir: sanitizeDir(serverData.openclawConfigDir),
         language: normalizedLanguage,
+        theme: normalizedTheme,
       };
 
       setSettingsState(normalized);
       syncLanguage(initialLanguageRef.current);
     },
-    [readPersistedLanguage, syncLanguage],
+    [readPersistedLanguage, readPersistedTheme, syncLanguage],
   );
 
   return {

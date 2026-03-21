@@ -238,7 +238,7 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
           {/* Hint */}
-          <div className="rounded-lg border border-border-default bg-gray-100/50 dark:bg-gray-800/50 p-3">
+          <div className="rounded-lg border border-border-default bg-muted/60 p-3">
             <p className="text-sm text-muted-foreground">
               {t("mcp.wizard.hint")}
             </p>
@@ -407,7 +407,7 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
               <h3 className="text-sm font-medium text-foreground">
                 {t("mcp.wizard.preview")}
               </h3>
-              <pre className="overflow-x-auto rounded-lg bg-gray-100 dark:bg-gray-800 p-3 text-xs font-mono text-gray-700 dark:text-gray-300">
+              <pre className="overflow-x-auto rounded-lg bg-muted p-3 text-xs font-mono text-foreground">
                 {preview}
               </pre>
             </div>

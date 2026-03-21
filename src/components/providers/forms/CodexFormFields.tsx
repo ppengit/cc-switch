@@ -9,6 +9,7 @@ interface EndpointCandidate {
 
 interface CodexFormFieldsProps {
   providerId?: string;
+  // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
   category?: ProviderCategory;
@@ -16,6 +17,8 @@ interface CodexFormFieldsProps {
   websiteUrl: string;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+
+  // Base URL
   shouldShowSpeedTest: boolean;
   codexBaseUrl: string;
   onBaseUrlChange: (url: string) => void;
@@ -24,11 +27,15 @@ interface CodexFormFieldsProps {
   onCustomEndpointsChange?: (endpoints: string[]) => void;
   autoSelect: boolean;
   onAutoSelectChange: (checked: boolean) => void;
+
+  // Model Name
   shouldShowModelField?: boolean;
   modelName?: string;
   onModelNameChange?: (model: string) => void;
   reasoningEffort?: string;
   onReasoningEffortChange?: (reasoningEffort: string) => void;
+
+  // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
 }
 
@@ -60,6 +67,7 @@ export function CodexFormFields({
 
   return (
     <>
+      {/* Codex API Key 输入框 */}
       <ApiKeySection
         id="codexApiKey"
         label="API Key"
@@ -80,6 +88,7 @@ export function CodexFormFields({
         }}
       />
 
+      {/* Codex Base URL 输入框 */}
       {shouldShowSpeedTest && (
         <EndpointField
           id="codexBaseUrl"
@@ -92,6 +101,7 @@ export function CodexFormFields({
         />
       )}
 
+      {/* Codex Model Name 输入框 */}
       {shouldShowModelField && onModelNameChange && (
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -147,6 +157,7 @@ export function CodexFormFields({
         </div>
       )}
 
+      {/* 端点测速弹窗 - Codex */}
       {shouldShowSpeedTest && isEndpointModalOpen && (
         <EndpointSpeedTest
           appId="codex"

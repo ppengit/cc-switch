@@ -8,19 +8,33 @@ interface ProviderHealthBadgeProps {
   className?: string;
 }
 
-/**
- * 供应商健康状态徽章
- * 根据连续失败次数显示不同颜色的状态指示器
- */
+const CIRCUIT_OPEN_THRESHOLD = 5;
+const MAX_CIRCUIT_REASON_LENGTH = 140;
+
+function formatCircuitReason(lastError?: string | null): string | null {
+  if (!lastError) {
+    return null;
+  }
+
+  const normalized = lastError.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= MAX_CIRCUIT_REASON_LENGTH) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, MAX_CIRCUIT_REASON_LENGTH)}...`;
+}
+
 export function ProviderHealthBadge({
   consecutiveFailures,
   lastError,
   className,
 }: ProviderHealthBadgeProps) {
   const { t } = useTranslation();
-  const circuitOpenThreshold = 5;
 
-  // 根据失败次数计算状态
   const getStatus = () => {
     if (consecutiveFailures === 0) {
       return {
@@ -28,11 +42,12 @@ export function ProviderHealthBadge({
         labelFallback: "正常",
         status: ProviderHealthStatus.Healthy,
         color: "bg-green-500",
-        // 使用更深/柔和的背景色，去除可能的白色内容感
         bgColor: "bg-green-500/10",
         textColor: "text-green-600 dark:text-green-400",
       };
-    } else if (consecutiveFailures < circuitOpenThreshold) {
+    }
+
+    if (consecutiveFailures < CIRCUIT_OPEN_THRESHOLD) {
       return {
         labelKey: "health.degraded",
         labelFallback: "降级",
@@ -41,16 +56,16 @@ export function ProviderHealthBadge({
         bgColor: "bg-yellow-500/10",
         textColor: "text-yellow-600 dark:text-yellow-400",
       };
-    } else {
-      return {
-        labelKey: "health.circuitOpen",
-        labelFallback: "熔断",
-        status: ProviderHealthStatus.Failed,
-        color: "bg-red-500",
-        bgColor: "bg-red-500/10",
-        textColor: "text-red-600 dark:text-red-400",
-      };
     }
+
+    return {
+      labelKey: "health.circuitOpen",
+      labelFallback: "熔断",
+      status: ProviderHealthStatus.Failed,
+      color: "bg-red-500",
+      bgColor: "bg-red-500/10",
+      textColor: "text-red-600 dark:text-red-400",
+    };
   };
 
   const statusConfig = getStatus();
@@ -62,9 +77,20 @@ export function ProviderHealthBadge({
     count: consecutiveFailures,
     defaultValue: `连续失败 ${consecutiveFailures} 次`,
   });
+
+  const formattedReason = formatCircuitReason(lastError);
+  const reasonText =
+    formattedReason ??
+    t("health.circuitReasonUnavailable", {
+      defaultValue: "暂无详细原因，请查看日志",
+    });
+
   const title =
-    consecutiveFailures >= circuitOpenThreshold && lastError
-      ? `${baseTitle}\n${lastError.replace(/\s+/g, " ").trim()}`
+    consecutiveFailures >= CIRCUIT_OPEN_THRESHOLD
+      ? `${baseTitle}\n${t("health.circuitReason", {
+          reason: reasonText,
+          defaultValue: `熔断原因：${reasonText}`,
+        })}`
       : baseTitle;
 
   return (

@@ -56,7 +56,7 @@ export function useImportExport(
         setErrorMessage(null);
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to open file dialog", error);
+      console.debug("[useImportExport] Failed to open file dialog", error);
       toast.error(
         t("settings.selectFileFailed", {
           defaultValue: "选择文件失败",
@@ -95,6 +95,15 @@ export function useImportExport(
         return;
       }
 
+      if (result.settingsPath) {
+        toast.info(`设置文件已导入：\n${result.settingsPath}`, {
+          closeButton: true,
+        });
+      }
+      if (result.warning) {
+        toast.warning(result.warning, { closeButton: true });
+      }
+
       setBackupId(result.backupId ?? null);
       // 导入成功后立即触发外部刷新（与 live 同步结果解耦）
       // - 避免 sync 失败时 UI 不刷新
@@ -111,7 +120,7 @@ export function useImportExport(
           { closeButton: true },
         );
       } else {
-        console.error(
+        console.debug(
           "[useImportExport] Failed to sync live config",
           syncResult.error,
         );
@@ -124,7 +133,7 @@ export function useImportExport(
         );
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to import config", error);
+      console.debug("[useImportExport] Failed to import config", error);
       setStatus("error");
       const message =
         error instanceof Error ? error.message : String(error ?? "");
@@ -158,12 +167,21 @@ export function useImportExport(
       const result = await settingsApi.exportConfigToFile(destination);
       if (result.success) {
         const displayPath = result.filePath ?? destination;
+        const extraLines: string[] = [];
+        if (result.settingsPath) {
+          extraLines.push(`设置文件：${result.settingsPath}`);
+        }
         toast.success(
           t("settings.configExported", {
-            defaultValue: "配置已导出",
-          }) + `\n${displayPath}`,
+            defaultValue: "配置已导出到：",
+          }) +
+            `\n${displayPath}` +
+            (extraLines.length ? `\n${extraLines.join("\n")}` : ""),
           { closeButton: true },
         );
+        if (result.warning) {
+          toast.warning(result.warning, { closeButton: true });
+        }
       } else {
         toast.error(
           t("settings.exportFailed", {
@@ -172,7 +190,7 @@ export function useImportExport(
         );
       }
     } catch (error) {
-      console.error("[useImportExport] Failed to export config", error);
+      console.debug("[useImportExport] Failed to export config", error);
       toast.error(
         t("settings.exportFailedError", {
           defaultValue: "导出配置失败: {{message}}",

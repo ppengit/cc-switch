@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![allow(dead_code)]
 
 use crate::app_config::AppType;
 use crate::init_status::{InitErrorPayload, SkillsMigrationPayload};
@@ -17,6 +18,10 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn escape_shell_path(value: &str) -> String {
+    value.replace('"', "\\\"")
+}
 
 /// 打开外部链接
 #[tauri::command]
@@ -46,6 +51,112 @@ pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)
+}
+
+const UPSTREAM_RELEASE_REPO: &str = "farion1231/cc-switch";
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamReleaseInfo {
+    repo: String,
+    tag_name: Option<String>,
+    version: Option<String>,
+    name: Option<String>,
+    published_at: Option<String>,
+    html_url: Option<String>,
+    prerelease: bool,
+    draft: bool,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubLatestReleaseResponse {
+    tag_name: Option<String>,
+    name: Option<String>,
+    published_at: Option<String>,
+    html_url: Option<String>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+}
+
+#[tauri::command]
+pub async fn get_upstream_release_info() -> Result<UpstreamReleaseInfo, String> {
+    let client = crate::proxy::http_client::get();
+    let url = format!("https://api.github.com/repos/{UPSTREAM_RELEASE_REPO}/releases/latest");
+    let fallback_url = format!("https://github.com/{UPSTREAM_RELEASE_REPO}/releases/latest");
+
+    let response = match client
+        .get(&url)
+        .header("User-Agent", "cc-switch")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            return Ok(UpstreamReleaseInfo {
+                repo: UPSTREAM_RELEASE_REPO.to_string(),
+                tag_name: None,
+                version: None,
+                name: None,
+                published_at: None,
+                html_url: Some(fallback_url),
+                prerelease: false,
+                draft: false,
+                error: Some(err.to_string()),
+            });
+        }
+    };
+
+    if !response.status().is_success() {
+        return Ok(UpstreamReleaseInfo {
+            repo: UPSTREAM_RELEASE_REPO.to_string(),
+            tag_name: None,
+            version: None,
+            name: None,
+            published_at: None,
+            html_url: Some(fallback_url),
+            prerelease: false,
+            draft: false,
+            error: Some(format!("GitHub API returned status {}", response.status())),
+        });
+    }
+
+    let parsed = match response.json::<GithubLatestReleaseResponse>().await {
+        Ok(json) => json,
+        Err(err) => {
+            return Ok(UpstreamReleaseInfo {
+                repo: UPSTREAM_RELEASE_REPO.to_string(),
+                tag_name: None,
+                version: None,
+                name: None,
+                published_at: None,
+                html_url: Some(fallback_url),
+                prerelease: false,
+                draft: false,
+                error: Some(err.to_string()),
+            });
+        }
+    };
+
+    let version = parsed
+        .tag_name
+        .as_deref()
+        .map(|tag| tag.strip_prefix('v').unwrap_or(tag).to_string());
+
+    Ok(UpstreamReleaseInfo {
+        repo: UPSTREAM_RELEASE_REPO.to_string(),
+        tag_name: parsed.tag_name,
+        version,
+        name: parsed.name,
+        published_at: parsed.published_at,
+        html_url: parsed.html_url.or(Some(fallback_url)),
+        prerelease: parsed.prerelease,
+        draft: parsed.draft,
+        error: None,
+    })
 }
 
 /// 判断是否为便携版（绿色版）运行
@@ -86,6 +197,8 @@ pub struct ToolVersion {
     version: Option<String>,
     latest_version: Option<String>, // 新增字段：最新版本
     error: Option<String>,
+    /// 仅 Claude 使用: "native" | "npm"
+    install_source: Option<String>,
     /// 工具运行环境: "windows", "wsl", "macos", "linux", "unknown"
     env_type: String,
     /// 当 env_type 为 "wsl" 时，返回该工具绑定的 WSL distro（用于按 distro 探测 shells）
@@ -93,6 +206,21 @@ pub struct ToolVersion {
 }
 
 const VALID_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const CLAUDE_INSTALL_SOURCE_NATIVE: &str = "native";
+const CLAUDE_INSTALL_SOURCE_NPM: &str = "npm";
+
+fn update_command_for_tool(tool: &str, install_source: Option<&str>) -> Option<&'static str> {
+    match tool {
+        "claude" => match install_source {
+            Some(CLAUDE_INSTALL_SOURCE_NPM) => Some("npm i -g @anthropic-ai/claude-code@latest"),
+            _ => Some("claude update"),
+        },
+        "codex" => Some("npm i -g @openai/codex@latest"),
+        "gemini" => Some("npm i -g @google/gemini-cli@latest"),
+        "opencode" => Some("npm i -g opencode@latest"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,40 +261,68 @@ pub async fn get_tool_versions(
     tools: Option<Vec<String>>,
     wsl_shell_by_tool: Option<HashMap<String, WslShellPreferenceInput>>,
 ) -> Result<Vec<ToolVersion>, String> {
-    // Windows: completely disable tool version detection to prevent
-    // accidentally launching apps (e.g. Claude Code) via protocol handlers.
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (tools, wsl_shell_by_tool);
-        return Ok(Vec::new());
+    let requested: Vec<&str> = if let Some(tools) = tools.as_ref() {
+        let set: std::collections::HashSet<&str> = tools.iter().map(|s| s.as_str()).collect();
+        VALID_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| set.contains(t))
+            .collect()
+    } else {
+        VALID_TOOLS.to_vec()
+    };
+    let mut results = Vec::new();
+
+    for tool in requested {
+        let pref = wsl_shell_by_tool.as_ref().and_then(|m| m.get(tool));
+        let tool_wsl_shell = pref.and_then(|p| p.wsl_shell.as_deref());
+        let tool_wsl_shell_flag = pref.and_then(|p| p.wsl_shell_flag.as_deref());
+
+        results.push(get_single_tool_version_impl(tool, tool_wsl_shell, tool_wsl_shell_flag).await);
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let requested: Vec<&str> = if let Some(tools) = tools.as_ref() {
-            let set: std::collections::HashSet<&str> = tools.iter().map(|s| s.as_str()).collect();
-            VALID_TOOLS
-                .iter()
-                .copied()
-                .filter(|t| set.contains(t))
-                .collect()
-        } else {
-            VALID_TOOLS.to_vec()
-        };
-        let mut results = Vec::new();
+    Ok(results)
+}
 
-        for tool in requested {
-            let pref = wsl_shell_by_tool.as_ref().and_then(|m| m.get(tool));
-            let tool_wsl_shell = pref.and_then(|p| p.wsl_shell.as_deref());
-            let tool_wsl_shell_flag = pref.and_then(|p| p.wsl_shell_flag.as_deref());
+fn escape_bash_single_quotes(value: &str) -> String {
+    value.replace('\'', "'\"'\"'")
+}
 
-            results.push(
-                get_single_tool_version_impl(tool, tool_wsl_shell, tool_wsl_shell_flag).await,
-            );
+/// One-click update for supported tools.
+#[tauri::command]
+pub async fn update_tool(
+    tool: String,
+    #[allow(non_snake_case)] envType: Option<String>,
+    #[allow(non_snake_case)] wslDistro: Option<String>,
+    #[allow(non_snake_case)] installSource: Option<String>,
+) -> Result<bool, String> {
+    let tool = tool.to_lowercase();
+    if !VALID_TOOLS.contains(&tool.as_str()) {
+        return Err(format!("Unsupported tool: {tool}"));
+    }
+
+    let command = update_command_for_tool(&tool, installSource.as_deref())
+        .ok_or_else(|| format!("No update command for {tool}"))?;
+
+    let final_command = if envType.as_deref() == Some("wsl") {
+        let distro = wslDistro.ok_or_else(|| "Missing WSL distro".to_string())?;
+        let valid_distro = !distro.is_empty()
+            && distro.len() <= 64
+            && distro
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if !valid_distro {
+            return Err(format!("Invalid WSL distro name: {distro}"));
         }
+        let escaped = escape_bash_single_quotes(command);
+        format!("wsl.exe -d {distro} -- bash -lc '{escaped}'")
+    } else {
+        command.to_string()
+    };
 
-        Ok(results)
-    }
+    launch_terminal_with_command(&final_command, None).map_err(|e| format!("启动更新失败: {e}"))?;
+
+    Ok(true)
 }
 
 /// 获取单个工具的版本信息（内部实现）
@@ -187,14 +343,40 @@ async fn get_single_tool_version_impl(
     let client = crate::proxy::http_client::get();
 
     // 1. 获取本地版本
-    let (local_version, local_error) = if let Some(distro) = wsl_distro.as_deref() {
-        try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag)
-    } else {
-        let direct_result = try_get_version(tool);
-        if direct_result.0.is_some() {
-            direct_result
+    let (local_version, local_error, install_source) = if let Some(distro) = wsl_distro.as_deref() {
+        let (version, error) = try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag);
+        let install_source = if tool == "claude" {
+            detect_claude_install_source_wsl(distro, wsl_shell, wsl_shell_flag)
         } else {
-            scan_cli_version(tool)
+            None
+        };
+        (version, error, install_source)
+    } else {
+        if tool == "claude" {
+            let direct_result = try_get_version(tool);
+            if direct_result.0.is_some() {
+                (
+                    direct_result.0,
+                    direct_result.1,
+                    detect_claude_install_source_local(),
+                )
+            } else {
+                let (version, error, resolved_path) = scan_cli_version_with_path(tool);
+                let install_source = resolved_path
+                    .as_deref()
+                    .and_then(detect_claude_install_source_from_path)
+                    .map(str::to_string)
+                    .or_else(detect_claude_install_source_via_doctor_local);
+                (version, error, install_source)
+            }
+        } else {
+            let direct_result = try_get_version(tool);
+            if direct_result.0.is_some() {
+                (direct_result.0, direct_result.1, None)
+            } else {
+                let (version, error, _) = scan_cli_version_with_path(tool);
+                (version, error, None)
+            }
         }
     };
 
@@ -212,6 +394,7 @@ async fn get_single_tool_version_impl(
         version: local_version,
         latest_version,
         error: local_error,
+        install_source,
         env_type,
         wsl_distro,
     }
@@ -268,6 +451,152 @@ fn extract_version(raw: &str) -> String {
         .find(raw)
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| raw.to_string())
+}
+
+fn first_non_empty_line(value: &str) -> Option<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn normalize_match_text(value: &str) -> String {
+    value.replace('\\', "/").to_lowercase()
+}
+
+fn detect_claude_install_source_from_match_text(value: &str) -> Option<&'static str> {
+    let normalized = normalize_match_text(value);
+
+    let npm_markers = [
+        "/node_modules/",
+        "@anthropic-ai/claude-code",
+        "/.npm-global/",
+        "/appdata/roaming/npm/",
+        "/program files/nodejs/",
+        "/.volta/bin/",
+        "/.local/state/fnm_multishells/",
+        "/.nvm/versions/node/",
+        "/n/bin/",
+    ];
+
+    if npm_markers.iter().any(|marker| normalized.contains(marker)) {
+        return Some(CLAUDE_INSTALL_SOURCE_NPM);
+    }
+
+    if normalized.contains("claude") {
+        return Some(CLAUDE_INSTALL_SOURCE_NATIVE);
+    }
+
+    None
+}
+
+fn read_path_prefix(path: &Path, limit: usize) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let prefix = &bytes[..bytes.len().min(limit)];
+    Some(String::from_utf8_lossy(prefix).to_string())
+}
+
+fn detect_claude_install_source_from_path(path: &Path) -> Option<&'static str> {
+    if let Some(source) = detect_claude_install_source_from_match_text(&path.to_string_lossy()) {
+        if source == CLAUDE_INSTALL_SOURCE_NPM {
+            return Some(source);
+        }
+    }
+
+    if let Ok(canonical) = path.canonicalize() {
+        if let Some(source) =
+            detect_claude_install_source_from_match_text(&canonical.to_string_lossy())
+        {
+            if source == CLAUDE_INSTALL_SOURCE_NPM {
+                return Some(source);
+            }
+        }
+    }
+
+    if let Some(content) = read_path_prefix(path, 4096) {
+        if let Some(source) = detect_claude_install_source_from_match_text(&content) {
+            if source == CLAUDE_INSTALL_SOURCE_NPM {
+                return Some(source);
+            }
+        }
+    }
+
+    Some(CLAUDE_INSTALL_SOURCE_NATIVE)
+}
+
+fn parse_claude_doctor_install_source(output: &str) -> Option<&'static str> {
+    let normalized = normalize_match_text(output);
+    if !normalized.contains("installation") && !normalized.contains("install type") {
+        return None;
+    }
+
+    if normalized.contains("npm") {
+        return Some(CLAUDE_INSTALL_SOURCE_NPM);
+    }
+
+    if normalized.contains("native") || normalized.contains("local") {
+        return Some(CLAUDE_INSTALL_SOURCE_NATIVE);
+    }
+
+    None
+}
+
+fn resolve_tool_executable_path(tool: &str) -> Option<std::path::PathBuf> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new("where.exe")
+        .arg(tool)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {tool}"))
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let resolved = first_non_empty_line(&stdout).or_else(|| first_non_empty_line(&stderr))?;
+    Some(std::path::PathBuf::from(resolved))
+}
+
+fn detect_claude_install_source_via_doctor_local() -> Option<String> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new("cmd")
+        .args(["/C", "claude doctor"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("claude doctor")
+        .output()
+        .ok()?;
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    parse_claude_doctor_install_source(&combined).map(str::to_string)
+}
+
+fn detect_claude_install_source_local() -> Option<String> {
+    resolve_tool_executable_path("claude")
+        .as_deref()
+        .and_then(detect_claude_install_source_from_path)
+        .map(str::to_string)
+        .or_else(detect_claude_install_source_via_doctor_local)
 }
 
 /// 尝试直接执行命令获取版本
@@ -354,58 +683,42 @@ fn default_flag_for_shell(shell: &str) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
-fn try_get_version_wsl(
-    tool: &str,
+fn run_wsl_shell_capture(
     distro: &str,
     force_shell: Option<&str>,
     force_shell_flag: Option<&str>,
-) -> (Option<String>, Option<String>) {
+    script: &str,
+) -> Result<(bool, String, String), String> {
     use std::process::Command;
 
-    // 防御性断言：tool 只能是预定义的值
-    debug_assert!(
-        ["claude", "codex", "gemini", "opencode"].contains(&tool),
-        "unexpected tool name: {tool}"
-    );
-
-    // 校验 distro 名称，防止命令注入
     if !is_valid_wsl_distro_name(distro) {
-        return (None, Some(format!("[WSL:{distro}] invalid distro name")));
+        return Err(format!("[WSL:{distro}] invalid distro name"));
     }
 
-    // 构建 Shell 脚本检测逻辑
     let (shell, flag, cmd) = if let Some(shell) = force_shell {
-        // Defensive validation: never allow an arbitrary executable name here.
         if !is_valid_shell(shell) {
-            return (None, Some(format!("[WSL:{distro}] invalid shell: {shell}")));
+            return Err(format!("[WSL:{distro}] invalid shell: {shell}"));
         }
         let shell = shell.rsplit('/').next().unwrap_or(shell);
         let flag = if let Some(flag) = force_shell_flag {
             if !is_valid_shell_flag(flag) {
-                return (
-                    None,
-                    Some(format!("[WSL:{distro}] invalid shell flag: {flag}")),
-                );
+                return Err(format!("[WSL:{distro}] invalid shell flag: {flag}"));
             }
             flag
         } else {
             default_flag_for_shell(shell)
         };
 
-        (shell.to_string(), flag, format!("{tool} --version"))
+        (shell.to_string(), flag, script.to_string())
     } else {
         let cmd = if let Some(flag) = force_shell_flag {
             if !is_valid_shell_flag(flag) {
-                return (
-                    None,
-                    Some(format!("[WSL:{distro}] invalid shell flag: {flag}")),
-                );
+                return Err(format!("[WSL:{distro}] invalid shell flag: {flag}"));
             }
-            format!("\"${{SHELL:-sh}}\" {flag} '{tool} --version'")
+            format!("\"${{SHELL:-sh}}\" {flag} '{script}'")
         } else {
-            // 兜底：自动尝试 -lic, -lc, -c
             format!(
-                "\"${{SHELL:-sh}}\" -lic '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{tool} --version' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{tool} --version'"
+                "\"${{SHELL:-sh}}\" -lic '{script}' 2>/dev/null || \"${{SHELL:-sh}}\" -lc '{script}' 2>/dev/null || \"${{SHELL:-sh}}\" -c '{script}'"
             )
         };
 
@@ -415,13 +728,84 @@ fn try_get_version_wsl(
     let output = Command::new("wsl.exe")
         .args(["-d", distro, "--", &shell, flag, &cmd])
         .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        .output()
+        .map_err(|e| format!("[WSL:{distro}] exec failed: {e}"))?;
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if out.status.success() {
+    Ok((
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_tool_executable_path_wsl(
+    tool: &str,
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> Option<String> {
+    let script = format!(
+        "tool_path=\"$(command -v {tool})\"; if [ -n \"$tool_path\" ]; then readlink -f \"$tool_path\" 2>/dev/null || printf '%s\\n' \"$tool_path\"; fi"
+    );
+    let (success, stdout, stderr) =
+        run_wsl_shell_capture(distro, force_shell, force_shell_flag, &script).ok()?;
+    if !success {
+        return None;
+    }
+
+    first_non_empty_line(&stdout).or_else(|| first_non_empty_line(&stderr))
+}
+
+#[cfg(target_os = "windows")]
+fn detect_claude_install_source_wsl(
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> Option<String> {
+    resolve_tool_executable_path_wsl("claude", distro, force_shell, force_shell_flag)
+        .as_deref()
+        .and_then(detect_claude_install_source_from_match_text)
+        .map(str::to_string)
+        .or_else(|| {
+            let (_, stdout, stderr) =
+                run_wsl_shell_capture(distro, force_shell, force_shell_flag, "claude doctor")
+                    .ok()?;
+            let combined = format!("{stdout}\n{stderr}");
+            parse_claude_doctor_install_source(&combined).map(str::to_string)
+        })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_claude_install_source_wsl(
+    _distro: &str,
+    _force_shell: Option<&str>,
+    _force_shell_flag: Option<&str>,
+) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn try_get_version_wsl(
+    tool: &str,
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    // 防御性断言：tool 只能是预定义的值
+    debug_assert!(
+        ["claude", "codex", "gemini", "opencode"].contains(&tool),
+        "unexpected tool name: {tool}"
+    );
+
+    match run_wsl_shell_capture(
+        distro,
+        force_shell,
+        force_shell_flag,
+        &format!("{tool} --version"),
+    ) {
+        Ok((success, stdout, stderr)) => {
+            if success {
                 let raw = if stdout.is_empty() { &stderr } else { &stdout };
                 if raw.is_empty() {
                     (
@@ -446,7 +830,7 @@ fn try_get_version_wsl(
                 )
             }
         }
-        Err(e) => (None, Some(format!("[WSL:{distro}] exec failed: {e}"))),
+        Err(err) => (None, Some(err)),
     }
 }
 
@@ -539,14 +923,10 @@ fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf>
     }
 }
 
-/// 扫描常见路径查找 CLI
-fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
-    use std::process::Command;
-
+fn build_cli_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-
-    // 常见的安装路径（原生安装优先）
     let mut search_paths: Vec<std::path::PathBuf> = Vec::new();
+
     if !home.as_os_str().is_empty() {
         push_unique_path(&mut search_paths, home.join(".local/bin"));
         push_unique_path(&mut search_paths, home.join(".npm-global/bin"));
@@ -623,6 +1003,15 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
         }
     }
 
+    search_paths
+}
+
+fn scan_cli_version_with_path(
+    tool: &str,
+) -> (Option<String>, Option<String>, Option<std::path::PathBuf>) {
+    use std::process::Command;
+
+    let search_paths = build_cli_search_paths(tool);
     let current_path = std::env::var("PATH").unwrap_or_default();
 
     for path in &search_paths {
@@ -660,14 +1049,24 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
                 if out.status.success() {
                     let raw = if stdout.is_empty() { &stderr } else { &stdout };
                     if !raw.is_empty() {
-                        return (Some(extract_version(raw)), None);
+                        return (Some(extract_version(raw)), None, Some(tool_path));
                     }
                 }
             }
         }
     }
 
-    (None, Some("not installed or not executable".to_string()))
+    (
+        None,
+        Some("not installed or not executable".to_string()),
+        None,
+    )
+}
+
+/// 扫描常见路径查找 CLI
+fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
+    let (version, error, _) = scan_cli_version_with_path(tool);
+    (version, error)
 }
 
 #[cfg(target_os = "windows")]
@@ -718,6 +1117,7 @@ pub async fn open_provider_terminal(
     state: State<'_, crate::store::AppState>,
     app: String,
     #[allow(non_snake_case)] providerId: String,
+    #[allow(non_snake_case)] cwd: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
 
@@ -734,7 +1134,29 @@ pub async fn open_provider_terminal(
     let env_vars = extract_env_vars_from_config(config, &app_type);
 
     // 根据平台启动终端，传入提供商ID用于生成唯一的配置文件名
-    launch_terminal_with_env(env_vars, &providerId).map_err(|e| format!("启动终端失败: {e}"))?;
+    launch_terminal_with_env(env_vars, &providerId, cwd.as_deref())
+        .map_err(|e| format!("启动终端失败: {e}"))?;
+
+    Ok(true)
+}
+
+/// 打开应用终端（不绑定具体供应商配置）
+#[tauri::command]
+pub async fn open_app_terminal(
+    app: String,
+    #[allow(non_snake_case)] cwd: Option<String>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let command = match app_type {
+        AppType::Claude => "claude",
+        AppType::Codex => "codex",
+        AppType::Gemini => "gemini",
+        AppType::OpenCode => "opencode",
+        AppType::OpenClaw => "openclaw",
+    };
+
+    launch_terminal_with_command(command, cwd.as_deref())
+        .map_err(|e| format!("启动终端失败: {e}"))?;
 
     Ok(true)
 }
@@ -793,34 +1215,32 @@ fn extract_env_vars_from_config(
 /// 使用 --settings 参数传入提供商特定的 API 配置
 fn launch_terminal_with_env(
     env_vars: Vec<(String, String)>,
-    provider_id: &str,
+    _provider_id: &str,
+    cwd: Option<&str>,
 ) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
-    let config_file = temp_dir.join(format!(
-        "claude_{}_{}.json",
-        provider_id,
-        std::process::id()
-    ));
+    let unique_id = uuid::Uuid::new_v4().to_string();
+    let config_file = temp_dir.join(format!("claude_{}.json", unique_id));
 
     // 创建并写入配置文件
     write_claude_config(&config_file, &env_vars)?;
 
     #[cfg(target_os = "macos")]
     {
-        launch_macos_terminal(&config_file)?;
+        launch_macos_terminal(&config_file, cwd)?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
-        launch_linux_terminal(&config_file)?;
+        launch_linux_terminal(&config_file, cwd)?;
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
-        launch_windows_terminal(&temp_dir, &config_file)?;
-        return Ok(());
+        launch_windows_terminal(&temp_dir, &config_file, cwd)?;
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -847,9 +1267,246 @@ fn write_claude_config(
     std::fs::write(config_file, config_json).map_err(|e| format!("写入配置文件失败: {e}"))
 }
 
+/// 创建临时脚本并启动终端（不绑定供应商配置）
+fn launch_terminal_with_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        launch_macos_terminal_command(command, cwd)?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        launch_linux_terminal_command(command, cwd)?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        launch_windows_terminal_command(command, cwd)?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    Err("不支持的操作系统".to_string())
+}
+
+/// macOS: 根据用户首选终端启动（命令模式）
+#[cfg(target_os = "macos")]
+fn launch_macos_terminal_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let preferred = crate::settings::get_preferred_terminal();
+    let terminal = preferred.as_deref().unwrap_or("terminal");
+
+    let temp_dir = std::env::temp_dir();
+    let script_file = temp_dir.join(format!(
+        "cc_switch_app_launcher_{}.sh",
+        uuid::Uuid::new_v4()
+    ));
+
+    let cwd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd \"{}\"", escape_shell_path(value)))
+        .unwrap_or_default();
+
+    let script_content = format!(
+        r#"#!/bin/bash
+trap 'rm -f "{script_file}"' EXIT
+{cwd_line}
+{command}
+exec bash --norc --noprofile
+"#,
+        script_file = script_file.display(),
+        cwd_line = cwd_line,
+        command = command
+    );
+
+    std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
+
+    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("设置脚本权限失败: {e}"))?;
+
+    let result = match terminal {
+        "iterm2" => launch_macos_iterm2(&script_file),
+        "alacritty" => launch_macos_open_app("Alacritty", &script_file, true),
+        "kitty" => launch_macos_open_app("kitty", &script_file, false),
+        "ghostty" => launch_macos_open_app("Ghostty", &script_file, true),
+        "wezterm" => launch_macos_open_app("WezTerm", &script_file, true),
+        _ => launch_macos_terminal_app(&script_file), // "terminal" or default
+    };
+
+    if result.is_err() && terminal != "terminal" {
+        log::warn!(
+            "首选终端 {} 启动失败，回退到 Terminal.app: {:?}",
+            terminal,
+            result.as_ref().err()
+        );
+        return launch_macos_terminal_app(&script_file);
+    }
+
+    result
+}
+
+/// Linux: 根据用户首选终端启动（命令模式）
+#[cfg(target_os = "linux")]
+fn launch_linux_terminal_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let preferred = crate::settings::get_preferred_terminal();
+
+    let default_terminals = [
+        ("gnome-terminal", vec!["--"]),
+        ("konsole", vec!["-e"]),
+        ("xfce4-terminal", vec!["-e"]),
+        ("mate-terminal", vec!["--"]),
+        ("lxterminal", vec!["-e"]),
+        ("alacritty", vec!["-e"]),
+        ("kitty", vec!["-e"]),
+        ("ghostty", vec!["-e"]),
+    ];
+
+    let temp_dir = std::env::temp_dir();
+    let script_file = temp_dir.join(format!(
+        "cc_switch_app_launcher_{}.sh",
+        uuid::Uuid::new_v4()
+    ));
+
+    let cwd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd \"{}\"", escape_shell_path(value)))
+        .unwrap_or_default();
+
+    let script_content = format!(
+        r#"#!/bin/bash
+trap 'rm -f "{script_file}"' EXIT
+{cwd_line}
+{command}
+exec bash --norc --noprofile
+"#,
+        script_file = script_file.display(),
+        cwd_line = cwd_line,
+        command = command
+    );
+
+    std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
+
+    std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("设置脚本权限失败: {e}"))?;
+
+    let terminals_to_try: Vec<(&str, Vec<&str>)> = if let Some(ref pref) = preferred {
+        let pref_args = default_terminals
+            .iter()
+            .find(|(name, _)| *name == pref.as_str())
+            .map(|(_, args)| args.iter().map(|s| *s).collect::<Vec<&str>>())
+            .unwrap_or_else(|| vec!["-e"]);
+
+        let mut list = vec![(pref.as_str(), pref_args)];
+        for (name, args) in &default_terminals {
+            if *name != pref.as_str() {
+                list.push((*name, args.iter().map(|s| *s).collect()));
+            }
+        }
+        list
+    } else {
+        default_terminals
+            .iter()
+            .map(|(name, args)| (*name, args.iter().map(|s| *s).collect()))
+            .collect()
+    };
+
+    let mut last_error = String::from("未找到可用的终端");
+
+    for (terminal, args) in terminals_to_try {
+        let terminal_exists = std::path::Path::new(&format!("/usr/bin/{}", terminal)).exists()
+            || std::path::Path::new(&format!("/bin/{}", terminal)).exists()
+            || std::path::Path::new(&format!("/usr/local/bin/{}", terminal)).exists()
+            || which_command(terminal);
+
+        if terminal_exists {
+            let result = Command::new(terminal)
+                .args(&args)
+                .arg("bash")
+                .arg(script_file.to_string_lossy().as_ref())
+                .spawn();
+
+            match result {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_error = format!("执行 {} 失败: {}", terminal, e);
+                }
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&script_file);
+    Err(last_error)
+}
+
+/// Windows: 根据用户首选终端启动（命令模式）
+#[cfg(target_os = "windows")]
+fn launch_windows_terminal_command(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    let preferred = crate::settings::get_preferred_terminal();
+    let terminal = preferred.as_deref().unwrap_or("cmd");
+
+    let temp_dir = std::env::temp_dir();
+    let bat_file = temp_dir.join(format!(
+        "cc_switch_app_launcher_{}.bat",
+        uuid::Uuid::new_v4()
+    ));
+
+    let cd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd /d \"{}\"\r\n", value.replace('\"', "\"\"")))
+        .unwrap_or_default();
+
+    let content = format!(
+        "@echo off\r\n\
+setlocal\r\n\
+{cd_line}\
+call {command}\r\n\
+endlocal\r\n\
+start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"\r\n",
+        cd_line = cd_line,
+        command = command
+    );
+
+    std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+
+    let bat_path = bat_file.to_string_lossy().to_string();
+    let bat_path_quoted = format!("\"{}\"", bat_path.replace('\"', "\"\""));
+    let ps_cmd = format!("& {}", bat_path_quoted);
+
+    let result = match terminal {
+        "powershell" => run_windows_start_command(
+            &["powershell", "-NoExit", "-Command", &ps_cmd],
+            "PowerShell",
+        ),
+        "wt" => {
+            run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal")
+        }
+        _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"),
+    };
+
+    if result.is_err() && terminal != "cmd" {
+        log::warn!(
+            "首选终端 {} 启动失败，回退到 cmd: {:?}",
+            terminal,
+            result.as_ref().err()
+        );
+        return run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd");
+    }
+
+    result
+}
+
 /// macOS: 根据用户首选终端启动
 #[cfg(target_os = "macos")]
-fn launch_macos_terminal(config_file: &std::path::Path) -> Result<(), String> {
+fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&str>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let preferred = crate::settings::get_preferred_terminal();
@@ -857,19 +1514,26 @@ fn launch_macos_terminal(config_file: &std::path::Path) -> Result<(), String> {
 
     let temp_dir = std::env::temp_dir();
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
-    let config_path = config_file.to_string_lossy();
+    let config_path = escape_shell_path(&config_file.to_string_lossy());
+    let cwd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd \"{}\"", escape_shell_path(value)))
+        .unwrap_or_default();
 
     // Write the shell script to a temp file
     let script_content = format!(
         r#"#!/bin/bash
 trap 'rm -f "{config_path}" "{script_file}"' EXIT
+{cwd_line}
 echo "Using provider-specific claude config:"
 echo "{config_path}"
 claude --settings "{config_path}"
 exec bash --norc --noprofile
 "#,
         config_path = config_path,
-        script_file = script_file.display()
+        script_file = script_file.display(),
+        cwd_line = cwd_line
     );
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
@@ -1005,7 +1669,7 @@ fn launch_macos_open_app(
 
 /// Linux: 根据用户首选终端启动
 #[cfg(target_os = "linux")]
-fn launch_linux_terminal(config_file: &std::path::Path) -> Result<(), String> {
+fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&str>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -1026,18 +1690,25 @@ fn launch_linux_terminal(config_file: &std::path::Path) -> Result<(), String> {
     // Create temp script file
     let temp_dir = std::env::temp_dir();
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
-    let config_path = config_file.to_string_lossy();
+    let config_path = escape_shell_path(&config_file.to_string_lossy());
+    let cwd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd \"{}\"", escape_shell_path(value)))
+        .unwrap_or_default();
 
     let script_content = format!(
         r#"#!/bin/bash
 trap 'rm -f "{config_path}" "{script_file}"' EXIT
+{cwd_line}
 echo "Using provider-specific claude config:"
 echo "{config_path}"
 claude --settings "{config_path}"
 exec bash --norc --noprofile
 "#,
         config_path = config_path,
-        script_file = script_file.display()
+        script_file = script_file.display(),
+        cwd_line = cwd_line
     );
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
@@ -1116,28 +1787,37 @@ fn which_command(cmd: &str) -> bool {
 fn launch_windows_terminal(
     temp_dir: &std::path::Path,
     config_file: &std::path::Path,
+    cwd: Option<&str>,
 ) -> Result<(), String> {
     let preferred = crate::settings::get_preferred_terminal();
     let terminal = preferred.as_deref().unwrap_or("cmd");
 
-    let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", std::process::id()));
-    let config_path_for_batch = config_file.to_string_lossy().replace('&', "^&");
+    let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", uuid::Uuid::new_v4()));
+    let config_path = config_file.to_string_lossy().to_string();
+
+    let cd_line = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("cd /d \"{}\"\r\n", value.replace('"', "\"\"")))
+        .unwrap_or_default();
 
     let content = format!(
-        "@echo off
-echo Using provider-specific claude config:
-echo {}
-claude --settings \"{}\"
-del \"{}\" >nul 2>&1
-del \"%~f0\" >nul 2>&1
-",
-        config_path_for_batch, config_path_for_batch, config_path_for_batch
+        "@echo off\r\n\
+setlocal\r\n\
+{cd_line}\
+call claude --settings \"{config_path}\"\r\n\
+del \"{config_path}\" >nul 2>&1\r\n\
+endlocal\r\n\
+start \"\" /b cmd /c \"ping 127.0.0.1 -n 2 >nul & del /f /q \"%~f0\" >nul 2>&1\"\r\n",
+        config_path = config_path,
+        cd_line = cd_line
     );
 
     std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
-    let bat_path = bat_file.to_string_lossy();
-    let ps_cmd = format!("& '{}'", bat_path);
+    let bat_path = bat_file.to_string_lossy().to_string();
+    let bat_path_quoted = format!("\"{}\"", bat_path.replace('"', "\"\""));
+    let ps_cmd = format!("& {}", bat_path_quoted);
 
     // Try the preferred terminal first
     let result = match terminal {
@@ -1145,8 +1825,10 @@ del \"%~f0\" >nul 2>&1
             &["powershell", "-NoExit", "-Command", &ps_cmd],
             "PowerShell",
         ),
-        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path], "Windows Terminal"),
-        _ => run_windows_start_command(&["cmd", "/K", &bat_path], "cmd"), // "cmd" or default
+        "wt" => {
+            run_windows_start_command(&["wt", "cmd", "/K", &bat_path_quoted], "Windows Terminal")
+        }
+        _ => run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd"), // "cmd" or default
     };
 
     // If preferred terminal fails and it's not the default, try cmd as fallback
@@ -1156,7 +1838,7 @@ del \"%~f0\" >nul 2>&1
             terminal,
             result.as_ref().err()
         );
-        return run_windows_start_command(&["cmd", "/K", &bat_path], "cmd");
+        return run_windows_start_command(&["cmd", "/K", &bat_path_quoted], "cmd");
     }
 
     result
@@ -1167,7 +1849,7 @@ del \"%~f0\" >nul 2>&1
 fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
     use std::process::Command;
 
-    let mut full_args = vec!["/C", "start"];
+    let mut full_args = vec!["/C", "start", ""];
     full_args.extend(args);
 
     let output = Command::new("cmd")
@@ -1214,6 +1896,52 @@ mod tests {
         assert_eq!(extract_version("claude 1.0.20"), "1.0.20");
         assert_eq!(extract_version("v2.3.4-beta.1"), "2.3.4-beta.1");
         assert_eq!(extract_version("no version here"), "no version here");
+    }
+
+    #[test]
+    fn claude_update_command_uses_install_source() {
+        assert_eq!(
+            update_command_for_tool("claude", Some(CLAUDE_INSTALL_SOURCE_NPM)),
+            Some("npm i -g @anthropic-ai/claude-code@latest")
+        );
+        assert_eq!(
+            update_command_for_tool("claude", Some(CLAUDE_INSTALL_SOURCE_NATIVE)),
+            Some("claude update")
+        );
+        assert_eq!(
+            update_command_for_tool("claude", None),
+            Some("claude update")
+        );
+    }
+
+    #[test]
+    fn parse_claude_doctor_install_source_detects_supported_sources() {
+        assert_eq!(
+            parse_claude_doctor_install_source("Installation type: npm"),
+            Some(CLAUDE_INSTALL_SOURCE_NPM)
+        );
+        assert_eq!(
+            parse_claude_doctor_install_source("Installation type: native"),
+            Some(CLAUDE_INSTALL_SOURCE_NATIVE)
+        );
+        assert_eq!(
+            parse_claude_doctor_install_source("Installation type: local"),
+            Some(CLAUDE_INSTALL_SOURCE_NATIVE)
+        );
+    }
+
+    #[test]
+    fn detect_claude_install_source_from_match_text_prefers_npm_markers() {
+        assert_eq!(
+            detect_claude_install_source_from_match_text(
+                "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.js"
+            ),
+            Some(CLAUDE_INSTALL_SOURCE_NPM)
+        );
+        assert_eq!(
+            detect_claude_install_source_from_match_text("/home/tester/.local/bin/claude"),
+            Some(CLAUDE_INSTALL_SOURCE_NATIVE)
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -1289,13 +2017,11 @@ mod tests {
     fn opencode_extra_search_paths_deduplicates_repeated_entries() {
         let home = PathBuf::from("/home/tester");
         let same_dir = Some(std::ffi::OsString::from("/same/path"));
+        let target = PathBuf::from("/same/path");
 
         let paths = opencode_extra_search_paths(&home, same_dir.clone(), same_dir.clone(), None);
 
-        let count = paths
-            .iter()
-            .filter(|path| **path == PathBuf::from("/same/path"))
-            .count();
+        let count = paths.iter().filter(|path| path == &&target).count();
         assert_eq!(count, 1);
     }
 

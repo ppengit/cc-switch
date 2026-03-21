@@ -33,6 +33,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     --background: 240 5% 12%;
     --foreground: 0 0% 98%;
     --card: 240 5% 16%;
@@ -159,6 +160,26 @@ html.dark {
     padding-right: 0.5rem;
     margin-right: -0.5rem;
     overflow-x: hidden;
+  }
+
+  .scroll-visible {
+    scrollbar-width: auto;
+    -ms-overflow-style: auto;
+  }
+
+  .scroll-visible::-webkit-scrollbar {
+    display: block;
+    width: 8px;
+    height: 8px;
+  }
+
+  .scroll-visible::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.35);
+    border-radius: 999px;
+  }
+
+  .scroll-visible::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   .border-default {

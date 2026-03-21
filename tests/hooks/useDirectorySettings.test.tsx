@@ -48,6 +48,9 @@ const createSettings = (
   enableClaudePluginIntegration: false,
   claudeConfigDir: "/claude/custom",
   codexConfigDir: "/codex/custom",
+  geminiConfigDir: "/gemini/custom",
+  opencodeConfigDir: "/opencode/custom",
+  openclawConfigDir: "/openclaw/custom",
   language: "zh",
   ...overrides,
 });
@@ -68,6 +71,7 @@ describe("useDirectorySettings", () => {
       if (app === "claude") return "/remote/claude";
       if (app === "codex") return "/remote/codex";
       if (app === "gemini") return "/remote/gemini";
+      if (app === "openclaw") return "/remote/openclaw";
       return "/remote/opencode";
     });
     selectConfigDirectoryMock.mockReset();
@@ -89,6 +93,7 @@ describe("useDirectorySettings", () => {
       codex: "/remote/codex",
       gemini: "/remote/gemini",
       opencode: "/remote/opencode",
+      openclaw: "/remote/openclaw",
     });
   });
 
@@ -223,6 +228,7 @@ describe("useDirectorySettings", () => {
         "/server/codex",
         "/server/gemini",
         "/server/opencode",
+        "/server/openclaw",
       );
     });
 
@@ -230,5 +236,6 @@ describe("useDirectorySettings", () => {
     expect(result.current.resolvedDirs.codex).toBe("/server/codex");
     expect(result.current.resolvedDirs.gemini).toBe("/server/gemini");
     expect(result.current.resolvedDirs.opencode).toBe("/server/opencode");
+    expect(result.current.resolvedDirs.openclaw).toBe("/server/openclaw");
   });
 });

@@ -1,22 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const MAX_KEEP_VERSIONS = 3;
+const MAX_KEEP_INSTALLERS = 2;
 const root = process.cwd();
-const distDir = path.join(root, "dist");
+const releaseDir = path.join(root, "release", "windows");
 const preservedInstallerDir = path.join(
   root,
   ".release-cache",
   "preserved-installers",
 );
-
-const exePath = path.join(
-  root,
-  "src-tauri",
-  "target",
-  "release",
-  "cc-switch.exe",
-);
+const INSTALLER_RE = /^CC Switch_(.+?)_x64-setup\.exe$/i;
 
 const tauriConfPath = path.join(root, "src-tauri", "tauri.conf.json");
 let version = "";
@@ -68,52 +61,44 @@ const compareVersionsDesc = (a, b) => {
   return b.localeCompare(a);
 };
 
-const matchArtifactVersion = (name) => {
-  const runtime = name.match(/^cc-switch_(.+?)_x64\.exe$/i);
-  if (runtime) {
-    return { version: runtime[1], kind: "runtime" };
-  }
-
-  const installer = name.match(/^CC Switch_(.+?)_x64-setup\.exe$/i);
-  if (installer) {
-    return { version: installer[1], kind: "installer" };
-  }
-
-  return null;
-};
+const getInstallerVersion = (name) =>
+  name.match(INSTALLER_RE)?.[1] ?? "";
 
 const pruneDistArtifacts = async () => {
   let entries = [];
   try {
-    entries = await fs.readdir(distDir, { withFileTypes: true });
+    entries = await fs.readdir(releaseDir, { withFileTypes: true });
   } catch {
     return;
   }
 
-  const versionedArtifacts = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => {
-      const matched = matchArtifactVersion(entry.name);
-      if (!matched) return null;
-      return { name: entry.name, ...matched };
-    })
-    .filter(Boolean);
+  const installers = [];
 
-  if (versionedArtifacts.length === 0) return;
+  for (const entry of entries) {
+    const target = path.join(releaseDir, entry.name);
+    if (entry.isFile() && INSTALLER_RE.test(entry.name)) {
+      installers.push({
+        name: entry.name,
+        version: getInstallerVersion(entry.name),
+      });
+      continue;
+    }
 
-  const versions = Array.from(
-    new Set(versionedArtifacts.map((item) => item.version)),
-  ).sort(compareVersionsDesc);
+    await fs.rm(target, { recursive: true, force: true });
+    console.log(`Removed non-installer artifact: ${target}`);
+  }
 
-  const keepVersions = new Set(versions.slice(0, MAX_KEEP_VERSIONS));
-  const removeTargets = versionedArtifacts.filter(
-    (item) => item.kind === "runtime" && !keepVersions.has(item.version),
+  const keepVersions = new Set(
+    Array.from(new Set(installers.map((item) => item.version)))
+      .sort(compareVersionsDesc)
+      .slice(0, MAX_KEEP_INSTALLERS),
   );
 
-  for (const item of removeTargets) {
-    const target = path.join(distDir, item.name);
-    await fs.unlink(target);
-    console.log(`Removed old artifact: ${target}`);
+  for (const item of installers) {
+    if (keepVersions.has(item.version)) continue;
+    const target = path.join(releaseDir, item.name);
+    await fs.rm(target, { force: true });
+    console.log(`Removed old installer: ${target}`);
   }
 };
 
@@ -126,13 +111,12 @@ const restorePreservedInstallers = async () => {
   }
 
   const installers = entries.filter(
-    (entry) =>
-      entry.isFile() && /^CC Switch_.*_x64-setup\.exe$/i.test(entry.name),
+    (entry) => entry.isFile() && INSTALLER_RE.test(entry.name),
   );
 
   for (const entry of installers) {
     const src = path.join(preservedInstallerDir, entry.name);
-    const dest = path.join(distDir, entry.name);
+    const dest = path.join(releaseDir, entry.name);
 
     try {
       await fs.access(dest);
@@ -165,10 +149,10 @@ const resolveNsisInstaller = async () => {
     try {
       const entries = await fs.readdir(nsisDir);
       const candidates = entries
-        .filter((name) => /^CC Switch_.*_x64-setup\.exe$/i.test(name))
+        .filter((name) => INSTALLER_RE.test(name))
         .map((name) => ({
           name,
-          version: name.match(/^CC Switch_(.+?)_x64-setup\.exe$/i)?.[1] ?? "",
+          version: getInstallerVersion(name),
         }))
         .sort((left, right) =>
           compareVersionsDesc(left.version, right.version),
@@ -182,34 +166,15 @@ const resolveNsisInstaller = async () => {
   }
 };
 
-await fs.mkdir(distDir, { recursive: true });
-
-const copyTargets = [];
-if (version) {
-  copyTargets.push({ src: exePath, destName: `cc-switch_${version}_x64.exe` });
-  copyTargets.push({ src: exePath, destName: "cc-switch.exe" });
-} else {
-  copyTargets.push({ src: exePath, destName: path.basename(exePath) });
-}
+await fs.mkdir(releaseDir, { recursive: true });
 
 const installerPath = await resolveNsisInstaller();
-if (installerPath) {
-  copyTargets.push({
-    src: installerPath,
-    destName: path.basename(installerPath),
-  });
-}
-
-for (const { src, destName } of copyTargets) {
-  try {
-    await fs.access(src);
-  } catch {
-    console.warn(`Missing build output: ${src}`);
-    continue;
-  }
-  const dest = path.join(distDir, destName);
-  await fs.copyFile(src, dest);
-  console.log(`Copied ${src} -> ${dest}`);
+if (!installerPath) {
+  console.warn("Missing build output: Windows NSIS installer.");
+} else {
+  const dest = path.join(releaseDir, path.basename(installerPath));
+  await fs.copyFile(installerPath, dest);
+  console.log(`Copied ${installerPath} -> ${dest}`);
 }
 
 await restorePreservedInstallers();

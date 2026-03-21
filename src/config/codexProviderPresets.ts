@@ -6,7 +6,7 @@ import type { PresetTheme } from "./claudeProviderPresets";
 
 export interface CodexProviderPreset {
   name: string;
-  nameKey?: string; // i18n key for localized display name
+  nameKey?: string;
   websiteUrl: string;
   // 第三方供应商可提供单独的获取 API Key 链接
   apiKeyUrl?: string;
@@ -42,17 +42,18 @@ export function generateThirdPartyConfig(
   providerName: string,
   baseUrl: string,
   modelName = "gpt-5.4",
+  reasoningEffort = "xhigh",
 ): string {
   // 清理供应商名称，确保符合TOML键名规范
   const cleanProviderName =
-    providerName
+    (providerName || "custom")
       .toLowerCase()
       .replace(/[^a-z0-9_]/g, "_")
       .replace(/^_+|_+$/g, "") || "custom";
 
   return `model_provider = "${cleanProviderName}"
 model = "${modelName}"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "${reasoningEffort}"
 disable_response_storage = true
 
 [model_providers.${cleanProviderName}]
@@ -230,8 +231,8 @@ requires_openai_auth = true`,
   },
   {
     name: "AICoding",
-    websiteUrl: "https://aicoding.sh",
-    apiKeyUrl: "https://aicoding.sh/i/CCSWITCH",
+    websiteUrl: "https://www.aicoding.sh",
+    apiKeyUrl: "https://www.aicoding.sh/i/CCSWITCH",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "aicoding",
@@ -267,7 +268,7 @@ requires_openai_auth = true`,
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "sssaicode",
-      "https://node-hk.sssaicode.com/api/v1",
+      "https://node-hk.sssaicode.com/api",
       "gpt-5.4",
     ),
     endpointCandidates: [
@@ -279,76 +280,6 @@ requires_openai_auth = true`,
     isPartner: true, // 合作伙伴
     partnerPromotionKey: "sssaicode", // 促销信息 i18n key
     icon: "sssaicode",
-    iconColor: "#000000",
-  },
-  {
-    name: "Compshare",
-    nameKey: "providerForm.presets.ucloud",
-    websiteUrl: "https://www.compshare.cn",
-    apiKeyUrl:
-      "https://www.compshare.cn/coding-plan?ytag=GPU_YY_YX_git_cc-switch",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "compshare",
-      "https://api.modelverse.cn/v1",
-      "gpt-5.4",
-    ),
-    endpointCandidates: ["https://api.modelverse.cn/v1"],
-    category: "aggregator",
-    isPartner: true, // 合作伙伴
-    partnerPromotionKey: "ucloud", // 促销信息 i18n key
-    icon: "ucloud",
-    iconColor: "#000000",
-  },
-  {
-    name: "Micu",
-    websiteUrl: "https://www.openclaudecode.cn",
-    apiKeyUrl: "https://www.openclaudecode.cn/register?aff=aOYQ",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "micu",
-      "https://www.openclaudecode.cn/v1",
-      "gpt-5.4",
-    ),
-    endpointCandidates: ["https://www.openclaudecode.cn/v1"],
-    category: "third_party",
-    isPartner: true, // 合作伙伴
-    partnerPromotionKey: "micu", // 促销信息 i18n key
-    icon: "micu",
-    iconColor: "#000000",
-  },
-  {
-    name: "X-Code API",
-    websiteUrl: "https://x-code.cc",
-    apiKeyUrl: "https://x-code.cc",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "x-code",
-      "https://x-code.cc/v1",
-      "gpt-5.4",
-    ),
-    endpointCandidates: ["https://x-code.cc/v1"],
-    category: "third_party",
-    isPartner: true, // 合作伙伴
-    partnerPromotionKey: "x-code", // 促销信息 i18n key
-    icon: "x-code",
-    iconColor: "#000000",
-  },
-  {
-    name: "CTok.ai",
-    websiteUrl: "https://ctok.ai",
-    apiKeyUrl: "https://ctok.ai",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "ctok",
-      "https://api.ctok.ai/v1",
-      "gpt-5.4",
-    ),
-    endpointCandidates: ["https://api.ctok.ai/v1"],
-    category: "third_party",
-    isPartner: true, // 合作伙伴
-    partnerPromotionKey: "ctok", // 促销信息 i18n key
-    icon: "ctok",
     iconColor: "#000000",
   },
   {

@@ -6,6 +6,8 @@ export interface ConfigTransferResult {
   success: boolean;
   message: string;
   filePath?: string;
+  settingsPath?: string;
+  warning?: string;
   backupId?: string;
 }
 
@@ -16,6 +18,18 @@ export interface WebDavTestResult {
 
 export interface WebDavSyncResult {
   status: string;
+}
+
+export interface UpstreamReleaseInfo {
+  repo: string;
+  tagName: string | null;
+  version: string | null;
+  name: string | null;
+  publishedAt: string | null;
+  htmlUrl: string | null;
+  prerelease: boolean;
+  draft: boolean;
+  error: string | null;
 }
 
 export const settingsApi = {
@@ -33,6 +47,10 @@ export const settingsApi = {
 
   async checkUpdates(): Promise<void> {
     await invoke("check_for_updates");
+  },
+
+  async getUpstreamReleaseInfo(): Promise<UpstreamReleaseInfo> {
+    return await invoke("get_upstream_release_info");
   },
 
   async isPortable(): Promise<boolean> {
@@ -181,11 +199,28 @@ export const settingsApi = {
       version: string | null;
       latest_version: string | null;
       error: string | null;
+      install_source: "native" | "npm" | null;
       env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
       wsl_distro: string | null;
     }>
   > {
     return await invoke("get_tool_versions", { tools, wslShellByTool });
+  },
+
+  async updateTool(
+    tool: string,
+    options?: {
+      envType?: string;
+      wslDistro?: string;
+      installSource?: "native" | "npm" | null;
+    },
+  ): Promise<boolean> {
+    return await invoke("update_tool", {
+      tool,
+      envType: options?.envType,
+      wslDistro: options?.wslDistro,
+      installSource: options?.installSource,
+    });
   },
 
   async getRectifierConfig(): Promise<RectifierConfig> {

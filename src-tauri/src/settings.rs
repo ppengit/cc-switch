@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 use crate::app_config::AppType;
@@ -87,7 +88,7 @@ fn default_profile() -> String {
     "default".to_string()
 }
 
-/// WebDAV 同步设置
+/// WebDAV v2 同步设置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebDavSyncSettings {
@@ -121,19 +122,13 @@ pub struct TerminalTargetPreference {
     pub last_cwd: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderSortPreference {
-    pub by: String,    // "manual" | "name" | "createdAt"
-    pub order: String, // "asc" | "desc"
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowSize {
     pub width: u32,
     pub height: u32,
 }
+
 impl Default for WebDavSyncSettings {
     fn default() -> Self {
         Self {
@@ -220,15 +215,6 @@ pub struct AppSettings {
     /// User has confirmed the usage query first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_confirmed: Option<bool>,
-    /// User has confirmed the stream check first-run notice
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_check_confirmed: Option<bool>,
-    /// Whether to show the failover toggle independently on the main page
-    #[serde(default)]
-    pub enable_failover_toggle: bool,
-    /// User has confirmed the failover toggle first-run notice
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failover_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -297,6 +283,12 @@ pub struct AppSettings {
     /// - Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_terminal: Option<String>,
+
+    // ===== 终端快捷方式设置 =====
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_targets: Option<HashMap<String, TerminalTargetPreference>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_session_by_app: Option<HashMap<String, String>>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -319,9 +311,6 @@ impl Default for AppSettings {
             enable_local_proxy: false,
             proxy_confirmed: None,
             usage_confirmed: None,
-            stream_check_confirmed: None,
-            enable_failover_toggle: false,
-            failover_confirmed: None,
             language: None,
             theme: None,
             main_window_size: None,
@@ -342,6 +331,8 @@ impl Default for AppSettings {
             backup_interval_hours: None,
             backup_retain_count: None,
             preferred_terminal: None,
+            terminal_targets: None,
+            current_session_by_app: None,
         }
     }
 }
@@ -397,6 +388,13 @@ impl AppSettings {
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| matches!(*s, "en" | "zh" | "ja"))
+            .map(|s| s.to_string());
+
+        self.theme = self
+            .theme
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| matches!(*s, "light" | "dark" | "system"))
             .map(|s| s.to_string());
 
         if let Some(sync) = &mut self.webdav_sync {
@@ -467,6 +465,18 @@ fn save_settings_file(settings: &AppSettings) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+pub fn settings_file_path() -> Option<PathBuf> {
+    AppSettings::settings_path()
+}
+
+pub fn load_settings_from_path(path: &Path) -> Result<AppSettings, AppError> {
+    let content = fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
+    let mut settings: AppSettings =
+        serde_json::from_str(&content).map_err(|e| AppError::json(path, e))?;
+    settings.normalize_paths();
+    Ok(settings)
 }
 
 static SETTINGS_STORE: OnceLock<RwLock<AppSettings>> = OnceLock::new();

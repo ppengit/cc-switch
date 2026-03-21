@@ -10,6 +10,41 @@ use crate::store::AppState;
 pub struct McpService;
 
 impl McpService {
+    fn refresh_live_backup_if_needed(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        if app.is_additive_mode() {
+            return Ok(());
+        }
+
+        let has_backup = futures::executor::block_on(state.db.get_live_backup(app.as_str()))
+            .ok()
+            .flatten()
+            .is_some();
+        let live_taken_over = state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(app);
+
+        if !has_backup && !live_taken_over {
+            return Ok(());
+        }
+
+        let current_id =
+            crate::settings::get_effective_current_provider(&state.db, app)?.unwrap_or_default();
+        if current_id.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(provider) = state.db.get_provider_by_id(&current_id, app.as_str())? {
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .update_live_backup_from_provider(app.as_str(), &provider),
+            )
+            .map_err(AppError::Message)?;
+        }
+
+        Ok(())
+    }
+
     /// 获取所有 MCP 服务器（统一结构）
     pub fn get_all_servers(state: &AppState) -> Result<IndexMap<String, McpServer>, AppError> {
         state.db.get_all_mcp_servers()
@@ -87,9 +122,9 @@ impl McpService {
     }
 
     /// 将 MCP 服务器同步到所有启用的应用
-    fn sync_server_to_apps(_state: &AppState, server: &McpServer) -> Result<(), AppError> {
+    fn sync_server_to_apps(state: &AppState, server: &McpServer) -> Result<(), AppError> {
         for app in server.apps.enabled_apps() {
-            Self::sync_server_to_app_no_config(server, &app)?;
+            Self::sync_server_to_app(state, server, &app)?;
         }
 
         Ok(())
@@ -97,11 +132,13 @@ impl McpService {
 
     /// 将 MCP 服务器同步到指定应用
     fn sync_server_to_app(
-        _state: &AppState,
+        state: &AppState,
         server: &McpServer,
         app: &AppType,
     ) -> Result<(), AppError> {
-        Self::sync_server_to_app_no_config(server, app)
+        Self::sync_server_to_app_no_config(server, app)?;
+        Self::refresh_live_backup_if_needed(state, app)?;
+        Ok(())
     }
 
     fn sync_server_to_app_no_config(server: &McpServer, app: &AppType) -> Result<(), AppError> {
@@ -145,7 +182,7 @@ impl McpService {
         Ok(())
     }
 
-    fn remove_server_from_app(_state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
+    fn remove_server_from_app(state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
             AppType::Codex => mcp::remove_server_from_codex(id)?,
@@ -158,6 +195,7 @@ impl McpService {
                 log::debug!("OpenClaw MCP support is still in development, skipping remove");
             }
         }
+        Self::refresh_live_backup_if_needed(state, app)?;
         Ok(())
     }
 

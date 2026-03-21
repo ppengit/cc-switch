@@ -45,7 +45,12 @@ const UnifiedMcpPanel = React.forwardRef<
     onConfirm: () => void;
   } | null>(null);
 
-  const { data: serversMap, isLoading } = useAllMcpServers();
+  const {
+    data: serversMap,
+    isLoading,
+    refetch: refreshServers,
+    isFetching,
+  } = useAllMcpServers();
   const toggleAppMutation = useToggleMcpApp();
   const deleteServerMutation = useDeleteMcpServer();
   const importMutation = useImportMcpFromApps();
@@ -132,11 +137,16 @@ const UnifiedMcpPanel = React.forwardRef<
   };
 
   return (
-    <div className="px-6 flex flex-col h-[calc(100vh-8rem)] overflow-hidden">
+    <div className="px-6 pb-6 flex flex-col h-full min-h-0 overflow-hidden">
       <AppCountBar
         totalLabel={t("mcp.serverCount", { count: serverEntries.length })}
         counts={enabledCounts}
         appIds={MCP_SKILLS_APP_IDS}
+        onRefresh={() => {
+          void refreshServers();
+        }}
+        isRefreshing={isFetching}
+        refreshTitle={t("mcp.refreshStatus", { defaultValue: "刷新状态" })}
       />
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden pb-24">
@@ -277,6 +287,7 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
 
       <AppToggleGroup
         apps={server.apps}
+        configuredApps={server.configuredApps}
         onToggle={(app, enabled) => onToggleApp(id, app, enabled)}
         appIds={MCP_SKILLS_APP_IDS}
       />

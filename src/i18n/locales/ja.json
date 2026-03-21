@@ -60,11 +60,19 @@
     "extractNoCommonConfig": "編集内容から抽出できる共通設定がありません",
     "extractFailed": "抽出に失敗しました: {{error}}",
     "saveFailed": "保存に失敗しました: {{error}}",
+    "commonConfigSnippet": "共通設定スニペット",
     "hideAttribution": "AI署名を非表示",
     "alwaysThinking": "拡張思考",
     "enableTeammates": "Teammates モード",
     "skipAllPermissions": "すべての権限をスキップ",
-    "fastMode": "高速モード"
+    "fastMode": "高速モード",
+    "tooltips": {
+      "hideAttribution": "Claude Code が自動で付けるコミットや PR の署名を隠します。履歴に AI 表記を残したくないときに使います。",
+      "alwaysThinking": "Claude がより深く考えてから応答する傾向になります。安定しやすい一方で遅くなります。",
+      "enableTeammates": "実験的なマルチエージェント協調を有効にします。大きなタスク向けですが、通常モードより不安定な場合があります。",
+      "skipAllPermissions": "ローカル操作の権限確認を既定で省略します。信頼できる環境では便利ですが、リスクは上がります。",
+      "fastMode": "低遅延を優先します。Claude の説明では品質は維持されますが、コストが高く、上流によっては非対応です。"
+    }
   },
   "header": {
     "viewOnGithub": "GitHub で見る",
@@ -86,6 +94,9 @@
     "currentlyUsing": "現在使用中",
     "enable": "有効化",
     "inUse": "使用中",
+    "sessionDefault": "セッションなし既定",
+    "sessionDefaultFollowCurrentShort": "セッションなし既定(現在に追従)",
+    "activeTraffic": "現在のトラフィック",
     "editProvider": "プロバイダーを編集",
     "editProviderHint": "保存すると現在のプロバイダーにすぐ反映されます。",
     "deleteProvider": "プロバイダーを削除",
@@ -113,6 +124,35 @@
     "searchScopeHint": "名前・メモ・URL を対象に検索します。",
     "searchCloseHint": "Esc で閉じる",
     "searchCloseAriaLabel": "検索を閉じる",
+    "filterField": "フィルター項目",
+    "filterAll": "すべての項目",
+    "filterByName": "プロバイダー名",
+    "filterByWebsite": "公式サイトURL",
+    "filterByNotes": "メモ",
+    "fuzzyFilter": "検索ナビ",
+    "filterKeywordPlaceholder": "名前/URL/メモ/{{field}}から位置を探す",
+    "modelFilterLabelIdle": "{{field}}でフィルター",
+    "modelFilterLabelSelected": "{{field}}（{{count}}）",
+    "modelFilterMultiSelect": "{{field}}を複数選択",
+    "showFilters": "フィルターを表示",
+    "hideFilters": "フィルターを非表示",
+    "activeFilters": "フィルター {{count}}",
+    "sessionOccupancy": "占有 {{count}}",
+    "sessionOccupancyHint": "アクティブセッション数：{{count}}",
+    "sessionOccupancyDetailsTitle": "アクティブセッション数：{{count}}",
+    "sessionOccupancyMore": "ほか {{count}} 件のセッション",
+    "sessionProjectLabel": "プロジェクト",
+    "sessionIdLabel": "セッション",
+    "idHint": "プロバイダーの一意ID",
+    "statusHint": {
+      "inUse": "このアプリで選択中",
+      "available": "切り替え可能",
+      "activeRouting": "セッションルーティングで使用中",
+      "disabled": "プロバイダーは無効",
+      "inConfig": "アプリ設定に書き込み済み",
+      "notInConfig": "アプリ設定に未追加",
+      "defaultModel": "OpenClaw のデフォルト主モデル"
+    },
     "noSearchResults": "一致するプロバイダーがありません。",
     "duplicate": "複製",
     "sortUpdateFailed": "並び順の更新に失敗しました",
@@ -149,13 +189,7 @@
         "oauthHint": "Google 公式は OAuth 個人認証を使用するため API Key は不要です。初回利用時にブラウザが開きます。",
         "apiKeyPlaceholder": "Gemini API Key を入力"
       }
-    },
-    "sortTitle": "????",
-    "sortByManual": "フェイルオーバー優先度",
-    "sortByName": "??",
-    "sortByCreatedAt": "????",
-    "sortOrderAsc": "??",
-    "sortOrderDesc": "??"
+    }
   },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
@@ -522,6 +556,8 @@
     "updatingTool": "更新中",
     "toolUpdateStarted": "更新を開始しました。ターミナル出力を確認してください",
     "toolUpdateFailed": "更新に失敗しました。ログを確認してください",
+    "toolInstallSourceNative": "Native",
+    "toolInstallSourceNpm": "npm",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -614,7 +650,17 @@
     "daysAgo": "{{count}}日前",
     "roleUser": "ユーザー",
     "roleSystem": "システム",
-    "roleTool": "ツール"
+    "roleTool": "ツール",
+    "associatedProviderShort": "関連",
+    "bindingPinnedShort": "ピン留め",
+    "bindingAutoShort": "自動",
+    "projectName": "プロジェクト",
+    "bindingModePinned": "モード：ピン留め",
+    "bindingModeAuto": "モード：自動",
+    "bindingModeNone": "モード：未バインド",
+    "bindingPinnedHint": "ピン留め：現在のプロバイダーを優先します。劣化/熔断/不可用の場合は自動で移行・解放します。",
+    "bindingAutoHint": "自動：セッションルーティングの方針に従って割り当て、劣化/熔断/容量変化時に自動で再バインドします。",
+    "bindingModeHint": "自動：方針に従って割り当て、必要に応じて自動移行。ピン留め：現在のプロバイダーを優先しますが、劣化/熔断/不可用の場合は自動で解放・移行します。"
   },
   "console": {
     "providerSwitchReceived": "プロバイダー切り替えイベントを受信:",
@@ -777,7 +823,31 @@
     "extractFromCurrent": "編集内容から抽出",
     "extractNoCommonConfig": "編集内容から抽出できる共通設定がありません",
     "extractFailed": "抽出に失敗しました: {{error}}",
-    "saveFailed": "保存に失敗しました: {{error}}"
+    "saveFailed": "保存に失敗しました: {{error}}",
+    "workspaceWrite": "ワークスペース書き込み",
+    "fullAccess": "フルアクセス",
+    "approvalOnRequest": "必要時承認",
+    "approvalNever": "承認なし",
+    "fastTier": "Fast ティア",
+    "highReasoning": "高推論",
+    "planHighReasoning": "計画モード高推論",
+    "conciseReasoningSummary": "簡潔な推論要約",
+    "detailedReasoningSummary": "詳細な推論要約",
+    "verboseOutput": "詳細出力",
+    "rawAgentReasoning": "生のエージェント推論",
+    "tooltips": {
+      "workspaceWrite": "sandbox_mode を workspace-write に設定し、ワークスペース内のファイル編集を許可します（フルアクセスより制限的）。",
+      "fullAccess": "sandbox_mode を danger-full-access にして、Codex がワークスペースを直接読み書きし、コマンド実行できるようにします。",
+      "approvalOnRequest": "approval_policy を on-request に設定し、リスクのある操作だけ承認を求めます。",
+      "approvalNever": "approval_policy を never に設定し、承認プロンプトを無効にします。",
+      "fastTier": "service_tier = fast を設定し、対話的な編集で低遅延を優先します。",
+      "highReasoning": "reasoning effort を高めて、難しいタスクで Codex がより多く考えるようにします。通常は安定しますが遅くなります。",
+      "planHighReasoning": "plan_mode_reasoning_effort を high に設定し、計画フェーズでも推論負荷を上げます。",
+      "conciseReasoningSummary": "短い reasoning summary を付けて、なぜその応答になったかを素早く把握しやすくします。",
+      "detailedReasoningSummary": "model_reasoning_summary を detailed に設定し、より詳細な推論要約を返します。",
+      "verboseOutput": "model_verbosity を上げて、Codex の説明をより詳しくし、デバッグやレビューに向けます。",
+      "rawAgentReasoning": "show_raw_agent_reasoning を有効にして、診断向けに生の推論出力を表示します。"
+    }
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -798,7 +868,15 @@
     "commonConfigInvalidValues": "共通設定スニペットの値は文字列である必要があります",
     "noCommonConfigToApply": "共通設定スニペットが空、または適用できる項目がありません",
     "configMergeFailed": "設定のマージに失敗しました: {{error}}",
-    "configReplaceFailed": "設定の置換に失敗しました: {{error}}"
+    "configReplaceFailed": "設定の置換に失敗しました: {{error}}",
+    "inlineThinking": "拡張思考",
+    "showModelInfo": "モデル情報を表示",
+    "enableAgents": "Agents を有効化",
+    "tooltips": {
+      "inlineThinking": "Gemini CLI の思考内容を会話内により多く表示します。確認しやすくなりますが、出力は長くなります。",
+      "showModelInfo": "チャット内に実際に使われているモデルを表示し、ルーティングや設定の反映を確認しやすくします。",
+      "enableAgents": "Gemini CLI の実験的な Agents モードを有効にします。複雑なフロー向けですが、挙動が変わる可能性があります。"
+    }
   },
   "opencode": {
     "npmPackage": "API フォーマット",
@@ -907,6 +985,15 @@
     "searchProviderPlaceholder": "プロバイダーを検索...",
     "searchModelPlaceholder": "モデルを検索...",
     "timeRange": "期間",
+    "invalidTimeRange": "開始/終了時間を両方選択してください",
+    "invalidTimeRangeOrder": "開始時間は終了時間より後にできません",
+    "timeRangeTooLarge": "期間が長すぎます。範囲を縮小してください",
+    "sessionRouting": "セッションルーティング",
+    "sessionRoutingActive": "有効",
+    "sessionRoutingInactive": "無効",
+    "sessionTitle": "セッション名",
+    "sessionProject": "プロジェクト",
+    "sessionId": "セッション ID",
     "input": "Input",
     "output": "Output",
     "cacheWrite": "作成",
@@ -923,7 +1010,27 @@
     "performance": "パフォーマンス",
     "latency": "レイテンシー",
     "errorMessage": "エラーメッセージ",
-    "allFields": "全フィールド"
+    "allFields": "全フィールド",
+    "cleanupControls": "ログ清理",
+    "cleanupAutoSwitch": "リクエストログの自動清理",
+    "cleanupRetentionDays": "保持日数",
+    "cleanupRetentionValidation": "保持日数は 1〜3650 の範囲で指定してください",
+    "cleanupConfigSaved": "ログ清理設定を保存しました",
+    "cleanupConfigSaveFailed": "ログ清理設定の保存に失敗しました",
+    "cleanupNow": "今すぐ清理",
+    "cleanupNowNoop": "削除なし：全件が保持期間内です",
+    "cleanupNowSuccess": "清理完了。{{count}} 件のログを削除しました",
+    "cleanupNowFailed": "今すぐ清理に失敗しました",
+    "cleanupNowHint": "「今すぐ清理」は保持期間外のみ削除します。全消去は「すべてのログを消去」を使用してください。",
+    "clearAllLogs": "すべてのログを消去",
+    "clearAllLogsTitle": "すべてのログを消去",
+    "clearAllLogsAction": "消去",
+    "clearAllLogsConfirm": "すべてのリクエストログを完全に削除します（保持日数に関係なく）。元に戻せません。続行しますか？",
+    "clearAllLogsSuccess": "すべてのリクエストログを消去しました。削除件数 {{count}}",
+    "clearAllLogsFailed": "すべてのリクエストログの消去に失敗しました",
+    "cleanupLastRun": "前回の清理：{{time}}",
+    "cleanupNeverRun": "前回の清理：なし",
+    "cleanupHint": "自動清理を有効にすると、保持日数に従ってバックグラウンドでログを清理します（既定で1時間に最大1回）。"
   },
   "usageScript": {
     "title": "利用状況を設定",
@@ -1578,7 +1685,9 @@
     "degraded": "低下",
     "failed": "失敗",
     "circuitOpen": "サーキットオープン",
-    "consecutiveFailures": "{{count}} 回連続失敗"
+    "consecutiveFailures": "{{count}} 回連続失敗",
+    "circuitReason": "サーキットオープン理由: {{reason}}",
+    "circuitReasonUnavailable": "詳細な理由はまだありません。ログを確認してください"
   },
   "failover": {
     "enabled": "{{app}} フェイルオーバーが有効になりました",
@@ -1586,6 +1695,7 @@
     "toggleFailed": "操作に失敗しました: {{detail}}",
     "inQueue": "キュー内",
     "addQueue": "追加",
+    "queueToggleHint": "フェイルオーバーキューに追加/解除",
     "priority": {
       "tooltip": "フェイルオーバー優先度 {{priority}}"
     },
@@ -1747,6 +1857,19 @@
       "successThresholdExplain": "半開状態でこの回数成功するとサーキットブレーカーが閉じ、プロバイダーが再び利用可能になります",
       "errorRateLabel": "エラー率しきい値",
       "errorRateExplain": "失敗しきい値に達していなくても、エラー率がこの値を超えるとサーキットブレーカーが開きます"
+    },
+    "forceModel": {
+      "title": "強制モデル",
+      "description": "有効にすると、このアプリのローカルプロキシ経由リクエストはすべて指定モデルに書き換えられます。",
+      "notice": "この設定はローカルプロキシ経由で転送されるリクエストにのみ適用されます。provider live 設定は上書きせず、無効にすると通常フローへ即時に戻ります。",
+      "inputLabel": "モデル名",
+      "inputHint": "上流が実際にサポートするモデル ID を入力してください。未対応モデルの場合は、強制モデル未設定時と同じ通常フローへ自動でフォールバックします。",
+      "validationRequired": "強制モデルを有効にする場合、モデル名は必須です。",
+      "saved": "強制モデル設定を保存しました。",
+      "loadFailed": "強制モデル設定の読み込みに失敗しました。"
+    },
+    "sessionRouting": {
+      "enabledBadge": "有効"
     }
   },
   "streamCheck": {
@@ -1760,7 +1883,9 @@
     "timeout": "タイムアウト（秒）",
     "maxRetries": "最大リトライ回数",
     "degradedThreshold": "劣化しきい値（ミリ秒）",
-    "testPrompt": "テストプロンプト"
+    "testPrompt": "テストプロンプト",
+    "batchCompleted": "一括テストが完了しました（{{count}} プロバイダー）",
+    "batchCompletedSummary": "正常 {{operational}} 件、劣化 {{degraded}} 件、失敗 {{failed}} 件"
   },
   "proxyConfig": {
     "proxyEnabled": "プロキシ有効",

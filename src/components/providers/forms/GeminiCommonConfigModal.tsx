@@ -99,7 +99,7 @@ export const GeminiCommonConfigModal: React.FC<
         <p className="text-sm text-muted-foreground">
           {t("geminiConfig.commonConfigHint", {
             defaultValue:
-              "该片段会写入 Gemini 的 .env（不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY）",
+              "该片段支持 env / config 两部分（env 不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY）",
           })}
         </p>
 
@@ -107,7 +107,14 @@ export const GeminiCommonConfigModal: React.FC<
           value={draftValue}
           onChange={setDraftValue}
           placeholder={`{
-  "GEMINI_MODEL": "gemini-3-pro-preview"
+  "env": {
+    "GEMINI_MODEL": "gemini-3-pro-preview"
+  },
+  "config": {
+    "ui": {
+      "inlineThinkingMode": "full"
+    }
+  }
 }`}
           darkMode={isDarkMode}
           rows={16}

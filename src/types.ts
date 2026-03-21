@@ -246,6 +246,8 @@ export interface Settings {
   autoSyncConfirmed?: boolean;
   // 首选语言（可选，默认中文）
   language?: "en" | "zh" | "ja";
+  // Theme preference
+  theme?: "light" | "dark" | "system";
 
   // 主页面显示的应用（默认全部显示）
   visibleApps?: VisibleApps;
@@ -269,6 +271,10 @@ export interface Settings {
   currentProviderCodex?: string;
   // 当前 Gemini 供应商 ID（优先于数据库 is_current）
   currentProviderGemini?: string;
+  // 当前 OpenCode 供应商 ID（优先于数据库 is_current）
+  currentProviderOpencode?: string;
+  // 当前 OpenClaw 供应商 ID（优先于数据库 is_current）
+  currentProviderOpenclaw?: string;
 
   // ===== Skill 同步设置 =====
   // Skill 同步方式：auto（默认，优先 symlink）、symlink、copy
@@ -354,6 +360,7 @@ export interface McpServer {
   name: string;
   server: McpServerSpec;
   apps: McpApps; // v3.7.0: 标记应用到哪些客户端
+  configuredApps?: McpApps; // live config state (from actual config files)
   description?: string;
   tags?: string[];
   homepage?: string;

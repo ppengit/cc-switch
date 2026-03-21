@@ -12,6 +12,16 @@ export const getBaseName = (value?: string | null) => {
   return parts[parts.length - 1] || trimmed;
 };
 
+export const getDirName = (value?: string | null) => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return null;
+  return parts.slice(0, -1).join("/");
+};
+
 export const formatTimestamp = (value?: number) => {
   if (!value) return "";
   return new Date(value).toLocaleString();
@@ -54,7 +64,7 @@ export const getProviderIconName = (providerId: string) => {
 };
 
 export const getRoleTone = (role: string) => {
-  const normalized = role.toLowerCase();
+  const normalized = (role ?? "").toLowerCase();
   if (normalized === "assistant") return "text-blue-500";
   if (normalized === "user") return "text-emerald-500";
   if (normalized === "system") return "text-amber-500";
@@ -63,7 +73,7 @@ export const getRoleTone = (role: string) => {
 };
 
 export const getRoleLabel = (role: string, t: (key: string) => string) => {
-  const normalized = role.toLowerCase();
+  const normalized = (role ?? "").toLowerCase();
   if (normalized === "assistant") return "AI";
   if (normalized === "user") return t("sessionManager.roleUser");
   if (normalized === "system") return t("sessionManager.roleSystem");

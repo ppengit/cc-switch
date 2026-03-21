@@ -9,7 +9,7 @@ vi.mock("@/lib/query", () => ({
   useSettingsQuery: (...args: unknown[]) => useSettingsQueryMock(...args),
 }));
 
-let changeLanguageSpy: ReturnType<typeof vi.spyOn<any, any>>;
+let changeLanguageSpy: any;
 
 beforeEach(() => {
   useSettingsQueryMock.mockReset();
@@ -17,8 +17,11 @@ beforeEach(() => {
   (i18n as any).language = "zh";
   changeLanguageSpy = vi
     .spyOn(i18n, "changeLanguage")
-    .mockImplementation(async (lang?: string) => {
+    .mockImplementation(async (lang?: string, callback?: any) => {
       (i18n as any).language = lang;
+      if (typeof callback === "function") {
+        callback(null, i18n.t);
+      }
       return i18n.t;
     });
 });

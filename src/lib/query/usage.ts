@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
-import type { LogFilters } from "@/types/usage";
+import type { LogFilters, PaginatedLogs } from "@/types/usage";
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 
@@ -191,6 +191,31 @@ export function useCleanupRequestLogsNow() {
       usageApi.cleanupRequestLogsNow(retentionDays),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    },
+  });
+}
+
+export function useClearRequestLogsAll() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => usageApi.clearRequestLogsAll(),
+    onSuccess: async () => {
+      queryClient.setQueriesData<PaginatedLogs>(
+        { queryKey: [...usageKeys.all, "logs"] as const },
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                data: [],
+                total: 0,
+                page: 0,
+              }
+            : previous,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: usageKeys.all,
+      });
     },
   });
 }

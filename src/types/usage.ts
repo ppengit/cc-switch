@@ -121,6 +121,10 @@ export interface RequestLogCleanupResult {
   retentionDays: number;
 }
 
+export interface RequestLogClearResult {
+  deletedRows: number;
+}
+
 export type TimeRange = "1d" | "7d" | "30d";
 
 export interface StatsFilters {

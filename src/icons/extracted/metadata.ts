@@ -403,17 +403,27 @@ export const iconMetadata: Record<string, IconMetadata> = {
   },
 };
 
-export function getIconMetadata(name: string): IconMetadata | undefined {
-  return iconMetadata[name.toLowerCase()];
+const normalizeIconLookup = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase();
+};
+
+export function getIconMetadata(
+  name?: string | null,
+): IconMetadata | undefined {
+  const normalized = normalizeIconLookup(name);
+  if (!normalized) return undefined;
+  return iconMetadata[normalized];
 }
 
-export function searchIcons(query: string): string[] {
-  const lowerQuery = query.toLowerCase();
+export function searchIcons(query?: string | null): string[] {
+  const lowerQuery = normalizeIconLookup(query);
+  if (!lowerQuery) return Object.keys(iconMetadata);
   return Object.values(iconMetadata)
     .filter(
       (meta) =>
         meta.name.includes(lowerQuery) ||
-        meta.displayName.toLowerCase().includes(lowerQuery) ||
+        (meta.displayName ?? "").toLowerCase().includes(lowerQuery) ||
         meta.keywords.some((k) => k.includes(lowerQuery)),
     )
     .map((meta) => meta.name);

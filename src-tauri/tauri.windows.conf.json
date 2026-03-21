@@ -6,9 +6,12 @@
         "label": "main",
         "title": "CC Switch",
         "titleBarStyle": "Visible",
+        "width": 1280,
+        "height": 800,
         "visible": false,
         "minWidth": 900,
-        "minHeight": 600
+        "minHeight": 600,
+        "center": true
       }
     ]
   }

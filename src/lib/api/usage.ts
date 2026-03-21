@@ -11,6 +11,7 @@ import type {
   PaginatedLogs,
   RequestLogCleanupConfig,
   RequestLogCleanupResult,
+  RequestLogClearResult,
 } from "@/types/usage";
 import type { UsageResult } from "@/types";
 import type { AppId } from "./types";
@@ -104,6 +105,10 @@ export const usageApi = {
     return invoke("cleanup_request_logs_now", {
       retentionDays,
     });
+  },
+
+  clearRequestLogsAll: async (): Promise<RequestLogClearResult> => {
+    return invoke("clear_request_logs_all");
   },
 
   getModelPricing: async (): Promise<ModelPricing[]> => {

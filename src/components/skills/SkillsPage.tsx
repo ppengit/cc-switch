@@ -72,9 +72,10 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       return new Set(
         installedSkills.map((s) => {
           // 构建唯一 key：directory + repoOwner + repoName
+          const directory = (s.directory ?? "").toLowerCase();
           const owner = s.repoOwner?.toLowerCase() || "";
           const name = s.repoName?.toLowerCase() || "";
-          return `${s.directory.toLowerCase()}:${owner}:${name}`;
+          return `${directory}:${owner}:${name}`;
         }),
       );
     }, [installedSkills]);
@@ -98,11 +99,14 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       if (!discoverableSkills) return [];
       return discoverableSkills.map((d) => {
         // 同时处理 / 和 \ 路径分隔符（兼容 Windows 和 Unix）
+        const directory = d.directory ?? "";
+        const repoOwner = d.repoOwner?.toLowerCase() || "";
+        const repoName = d.repoName?.toLowerCase() || "";
         const installName =
-          d.directory.split(/[/\\]/).pop()?.toLowerCase() ||
-          d.directory.toLowerCase();
+          directory.split(/[/\\]/).pop()?.toLowerCase() ||
+          directory.toLowerCase();
         // 使用 directory + repoOwner + repoName 组合判断是否已安装
-        const key = `${installName}:${d.repoOwner.toLowerCase()}:${d.repoName.toLowerCase()}`;
+        const key = `${installName}:${repoOwner}:${repoName}`;
         return {
           ...d,
           installed: installedKeys.has(key),
@@ -233,9 +237,9 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
     }, [skills, searchQuery, filterRepo, filterStatus]);
 
     return (
-      <div className="px-6 flex flex-col h-[calc(100vh-8rem)] overflow-hidden bg-background/50">
+      <div className="px-6 pb-6 flex flex-col h-full min-h-0 overflow-hidden bg-background/50">
         {/* 技能网格（可滚动详情区域） */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden animate-fade-in">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden animate-fade-in pb-4">
           <div className="py-4">
             {loading ? (
               <div className="flex items-center justify-center h-64">

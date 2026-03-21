@@ -96,15 +96,15 @@ const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
               backgroundColor: "transparent",
             },
             ".cm-content": {
-              color: "#374151", // text-gray-700
+              color: "hsl(var(--foreground))",
             },
             ".cm-gutters": {
-              backgroundColor: "#f9fafb", // bg-gray-50
-              color: "#9ca3af", // text-gray-400
-              borderRight: "1px solid #e5e7eb", // border-gray-200
+              backgroundColor: "hsl(var(--muted))",
+              color: "hsl(var(--muted-foreground))",
+              borderRight: "1px solid hsl(var(--border))",
             },
             ".cm-activeLineGutter": {
-              backgroundColor: "#e5e7eb",
+              backgroundColor: "hsl(var(--muted))",
             },
           },
           { dark: false },
@@ -149,9 +149,7 @@ const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   return (
     <div
       ref={editorRef}
-      className={`border rounded-md overflow-hidden ${
-        darkMode ? "border-gray-800" : "border-gray-200"
-      } ${className}`}
+      className={`border border-border rounded-md overflow-hidden ${className}`}
     />
   );
 };

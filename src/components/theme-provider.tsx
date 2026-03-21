@@ -1,13 +1,28 @@
 import React, {
   createContext,
   useContext,
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useSaveSettingsMutation, useSettingsQuery } from "@/lib/query";
+import { settingsApi } from "@/lib/api";
+import type { Settings } from "@/types";
 
 type Theme = "light" | "dark" | "system";
+
+const normalizeTheme = (value?: string | null): Theme => {
+  if (typeof value !== "string" || !value) return "system";
+  const normalized = value.toLowerCase();
+  return normalized === "light" ||
+    normalized === "dark" ||
+    normalized === "system"
+    ? (normalized as Theme)
+    : "system";
+};
 
 interface ThemeProviderProps {
   children: React.ReactNode;
@@ -29,6 +44,10 @@ export function ThemeProvider({
   defaultTheme = "system",
   storageKey = "cc-switch-theme",
 }: ThemeProviderProps) {
+  const { data: settingsData } = useSettingsQuery();
+  const saveMutation = useSaveSettingsMutation();
+  const hasSyncedSettingsTheme = useRef(false);
+
   const getInitialTheme = () => {
     if (typeof window === "undefined") {
       return defaultTheme;
@@ -43,6 +62,44 @@ export function ThemeProvider({
   };
 
   const [theme, setThemeState] = useState<Theme>(getInitialTheme);
+
+  const persistTheme = useCallback(
+    async (nextTheme: Theme) => {
+      try {
+        const base: Settings = settingsData ?? (await settingsApi.get());
+        const shouldPersist =
+          !base.theme || normalizeTheme(base.theme) !== nextTheme;
+        if (!shouldPersist) return;
+        const { webdavSync: _ignoredWebdavSync, ...rest } = base;
+        await saveMutation.mutateAsync({
+          ...rest,
+          theme: nextTheme,
+        });
+      } catch (error) {
+        console.warn("[ThemeProvider] Failed to persist theme", error);
+      }
+    },
+    [saveMutation, settingsData],
+  );
+
+  useEffect(() => {
+    if (!settingsData) return;
+
+    const incomingTheme = settingsData.theme;
+    if (incomingTheme) {
+      const normalized = normalizeTheme(incomingTheme);
+      if (normalized !== theme) {
+        setThemeState(normalized);
+      }
+      hasSyncedSettingsTheme.current = true;
+      return;
+    }
+
+    if (!hasSyncedSettingsTheme.current) {
+      hasSyncedSettingsTheme.current = true;
+      void persistTheme(theme);
+    }
+  }, [persistTheme, settingsData, theme]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -154,9 +211,11 @@ export function ThemeProvider({
         } else {
           setThemeState(nextTheme);
         }
+
+        void persistTheme(nextTheme);
       },
     }),
-    [theme],
+    [persistTheme, theme],
   );
 
   return (

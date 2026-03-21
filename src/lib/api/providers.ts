@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { type UnlistenFn } from "@tauri-apps/api/event";
+import { listenWhenBridgeReady } from "@/lib/tauriBridge";
 import type {
   Provider,
   UniversalProvider,
@@ -72,10 +73,16 @@ export const providersApi = {
   async onSwitched(
     handler: (event: ProviderSwitchEvent) => void,
   ): Promise<UnlistenFn> {
-    return await listen("provider-switched", (event) => {
-      const payload = event.payload as ProviderSwitchEvent;
-      handler(payload);
-    });
+    const unlisten = await listenWhenBridgeReady<ProviderSwitchEvent>(
+      "provider-switched",
+      (event) => {
+        const payload = event.payload as ProviderSwitchEvent;
+        handler(payload);
+      },
+      { label: "provider-switched listener" },
+    );
+
+    return unlisten ?? (() => undefined);
   },
 
   /**
