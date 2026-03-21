@@ -418,6 +418,8 @@ const TOML_SECTION_HEADER_PATTERN = /^\s*\[([^\]\r\n]+)\]\s*$/;
 const TOML_BASE_URL_PATTERN =
   /^\s*base_url\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+const TOML_MODEL_REASONING_PATTERN =
+  /^\s*model_reasoning_effort\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_PATTERN =
@@ -794,6 +796,27 @@ export const extractCodexModelName = (
   }
 };
 
+// 从 Codex 的 TOML 配置文本中提取 model_reasoning_effort 字段（支持单/双引号）
+export const extractCodexReasoningEffort = (
+  configText: string | undefined | null,
+): string | undefined => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return undefined;
+    const lines = text.split("\n");
+    const topLevelMatch = findTomlAssignmentInRange(
+      lines,
+      TOML_MODEL_REASONING_PATTERN,
+      0,
+      getTopLevelEndIndex(lines),
+    );
+    return topLevelMatch?.value;
+  } catch {
+    return undefined;
+  }
+};
+
 // 在 Codex 的 TOML 配置文本中写入或更新 model 字段
 export const setCodexModelName = (
   configText: string,
@@ -821,6 +844,61 @@ export const setCodexModelName = (
   const replacementLine = `model = "${trimmed}"`;
   if (topLevelMatch) {
     lines[topLevelMatch.index] = replacementLine;
+    return finalizeTomlText(lines);
+  }
+
+  const modelProviderIndex = getTopLevelModelProviderLineIndex(lines);
+  if (modelProviderIndex !== -1) {
+    lines.splice(modelProviderIndex + 1, 0, replacementLine);
+    return finalizeTomlText(lines);
+  }
+
+  if (lines.length === 0) {
+    return `${replacementLine}\n`;
+  }
+
+  lines.splice(topLevelEndIndex, 0, replacementLine);
+  return finalizeTomlText(lines);
+};
+
+// 在 Codex 的 TOML 配置文本中写入或更新 model_reasoning_effort 字段
+export const setCodexReasoningEffort = (
+  configText: string,
+  reasoningEffort: string,
+): string => {
+  const trimmed = reasoningEffort.trim();
+  const normalizedText = normalizeTomlText(configText);
+  const lines = normalizedText ? normalizedText.split("\n") : [];
+  const topLevelEndIndex = getTopLevelEndIndex(lines);
+  const topLevelMatch = findTomlAssignmentInRange(
+    lines,
+    TOML_MODEL_REASONING_PATTERN,
+    0,
+    topLevelEndIndex,
+  );
+
+  if (!trimmed) {
+    if (!normalizedText) return normalizedText;
+    if (topLevelMatch) {
+      lines.splice(topLevelMatch.index, 1);
+    }
+    return finalizeTomlText(lines);
+  }
+
+  const replacementLine = `model_reasoning_effort = "${trimmed}"`;
+  if (topLevelMatch) {
+    lines[topLevelMatch.index] = replacementLine;
+    return finalizeTomlText(lines);
+  }
+
+  const modelMatch = findTomlAssignmentInRange(
+    lines,
+    TOML_MODEL_PATTERN,
+    0,
+    topLevelEndIndex,
+  );
+  if (modelMatch) {
+    lines.splice(modelMatch.index + 1, 0, replacementLine);
     return finalizeTomlText(lines);
   }
 

@@ -40,6 +40,44 @@ fn invalid_toml_format_error(error: toml_edit::TomlError) -> String {
     }
 }
 
+fn provider_default_template_key(app_type: &str) -> String {
+    format!("provider_default_template_{app_type}")
+}
+
+fn validate_provider_default_template_placeholders(
+    app_type: &str,
+    template: &str,
+) -> Result<(), String> {
+    let allowed: &[&str] = match app_type {
+        "claude" => &[
+            "api_key",
+            "base_url",
+            "model",
+            "reasoning_model",
+            "haiku_model",
+            "sonnet_model",
+            "opus_model",
+        ],
+        "codex" => &["api_key", "base_url", "model", "reasoning_effort"],
+        "gemini" => &["api_key", "base_url", "model"],
+        _ => return Ok(()),
+    };
+
+    let placeholder_re =
+        regex::Regex::new(r"\{\{([^{}]+)\}\}").map_err(|e| format!("占位符校验初始化失败: {e}"))?;
+
+    for caps in placeholder_re.captures_iter(template) {
+        let placeholder = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+        if !allowed.contains(&placeholder) {
+            return Err(format!(
+                "默认 Provider 模板包含不支持的占位符: {{{{{placeholder}}}}}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), String> {
     if snippet.trim().is_empty() {
         return Ok(());
@@ -320,9 +358,52 @@ pub async fn set_common_config_snippet(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn get_provider_default_template(
+    app_type: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Option<String>, String> {
+    if !matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+        return Err(format!("不支持的应用类型: {app_type}"));
+    }
+
+    state
+        .db
+        .get_setting(&provider_default_template_key(&app_type))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_provider_default_template(
+    app_type: String,
+    template: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<(), String> {
+    if !matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
+        return Err(format!("不支持的应用类型: {app_type}"));
+    }
+
+    if !template.trim().is_empty() {
+        serde_json::from_str::<serde_json::Value>(&template).map_err(invalid_json_format_error)?;
+        validate_provider_default_template_placeholders(&app_type, &template)?;
+    }
+
+    let key = provider_default_template_key(&app_type);
+    if template.trim().is_empty() {
+        state.db.set_setting(&key, "").map_err(|e| e.to_string())?;
+    } else {
+        state
+            .db
+            .set_setting(&key, &template)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_common_config_snippet;
+    use super::{validate_common_config_snippet, validate_provider_default_template_placeholders};
 
     #[test]
     fn validate_common_config_snippet_accepts_comment_only_codex_snippet() {
@@ -338,6 +419,14 @@ mod tests {
             err.contains("TOML") || err.contains("toml") || err.contains("格式"),
             "expected TOML validation error, got {err}"
         );
+    }
+
+    #[test]
+    fn validate_provider_default_template_placeholders_rejects_unknown_placeholder() {
+        let err =
+            validate_provider_default_template_placeholders("codex", r#"{"config":"{{unknown}}"}"#)
+                .expect_err("unknown placeholder should be rejected");
+        assert!(err.contains("unknown"));
     }
 }
 

@@ -146,18 +146,18 @@ export function UniversalProviderFormModal({
   const codexConfigJson = useMemo(() => {
     if (!codexEnabled) return null;
     const model = models.codex?.model || "gpt-5.4";
-    const reasoningEffort = models.codex?.reasoningEffort || "high";
+    const reasoningEffort = models.codex?.reasoningEffort || "xhigh";
     // 确保 base_url 以 /v1 结尾（Codex 使用 OpenAI 兼容 API）
     const codexBaseUrl = baseUrl.endsWith("/v1")
       ? baseUrl
       : `${baseUrl.replace(/\/+$/, "")}/v1`;
-    const configToml = `model_provider = "newapi"
+    const configToml = `model_provider = "custom"
 model = "${model}"
 model_reasoning_effort = "${reasoningEffort}"
 disable_response_storage = true
 
-[model_providers.newapi]
-name = "NewAPI"
+[model_providers.custom]
+name = "custom"
 base_url = "${codexBaseUrl}"
 wire_api = "responses"
 requires_openai_auth = true`;
@@ -601,7 +601,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("codex", "reasoningEffort", e.target.value)
                     }
-                    placeholder="high"
+                    placeholder="xhigh"
                   />
                 </div>
               </div>

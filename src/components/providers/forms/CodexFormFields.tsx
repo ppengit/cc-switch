@@ -9,7 +9,6 @@ interface EndpointCandidate {
 
 interface CodexFormFieldsProps {
   providerId?: string;
-  // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
   category?: ProviderCategory;
@@ -17,8 +16,6 @@ interface CodexFormFieldsProps {
   websiteUrl: string;
   isPartner?: boolean;
   partnerPromotionKey?: string;
-
-  // Base URL
   shouldShowSpeedTest: boolean;
   codexBaseUrl: string;
   onBaseUrlChange: (url: string) => void;
@@ -27,13 +24,11 @@ interface CodexFormFieldsProps {
   onCustomEndpointsChange?: (endpoints: string[]) => void;
   autoSelect: boolean;
   onAutoSelectChange: (checked: boolean) => void;
-
-  // Model Name
   shouldShowModelField?: boolean;
   modelName?: string;
   onModelNameChange?: (model: string) => void;
-
-  // Speed Test Endpoints
+  reasoningEffort?: string;
+  onReasoningEffortChange?: (reasoningEffort: string) => void;
   speedTestEndpoints: EndpointCandidate[];
 }
 
@@ -57,13 +52,14 @@ export function CodexFormFields({
   shouldShowModelField = true,
   modelName = "",
   onModelNameChange,
+  reasoningEffort = "xhigh",
+  onReasoningEffortChange,
   speedTestEndpoints,
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
 
   return (
     <>
-      {/* Codex API Key 输入框 */}
       <ApiKeySection
         id="codexApiKey"
         label="API Key"
@@ -84,7 +80,6 @@ export function CodexFormFields({
         }}
       />
 
-      {/* Codex Base URL 输入框 */}
       {shouldShowSpeedTest && (
         <EndpointField
           id="codexBaseUrl"
@@ -97,38 +92,61 @@ export function CodexFormFields({
         />
       )}
 
-      {/* Codex Model Name 输入框 */}
       {shouldShowModelField && onModelNameChange && (
-        <div className="space-y-2">
-          <label
-            htmlFor="codexModelName"
-            className="block text-sm font-medium text-foreground"
-          >
-            {t("codexConfig.modelName", { defaultValue: "模型名称" })}
-          </label>
-          <input
-            id="codexModelName"
-            type="text"
-            value={modelName}
-            onChange={(e) => onModelNameChange(e.target.value)}
-            placeholder={t("codexConfig.modelNamePlaceholder", {
-              defaultValue: "例如: gpt-5.4",
-            })}
-            className="w-full px-3 py-2 border border-border-default bg-background text-foreground rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20 transition-colors"
-          />
-          <p className="text-xs text-muted-foreground">
-            {modelName.trim()
-              ? t("codexConfig.modelNameHint", {
-                  defaultValue: "指定使用的模型，将自动更新到 config.toml 中",
-                })
-              : t("providerForm.modelHint", {
-                  defaultValue: "💡 留空将使用供应商的默认模型",
-                })}
-          </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <label
+              htmlFor="codexModelName"
+              className="block text-sm font-medium text-foreground"
+            >
+              {t("codexConfig.modelName", { defaultValue: "模型名称" })}
+            </label>
+            <input
+              id="codexModelName"
+              type="text"
+              value={modelName}
+              onChange={(e) => onModelNameChange(e.target.value)}
+              placeholder={t("codexConfig.modelNamePlaceholder", {
+                defaultValue: "例如: gpt-5.4",
+              })}
+              className="w-full px-3 py-2 border border-border-default bg-background text-foreground rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20 transition-colors"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("codexConfig.modelNameHint", {
+                defaultValue: "指定使用的模型，将自动更新到 config.toml 中",
+              })}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label
+              htmlFor="codexReasoningEffort"
+              className="block text-sm font-medium text-foreground"
+            >
+              {t("codexConfig.reasoningEffort", {
+                defaultValue: "推理深度",
+              })}
+            </label>
+            <input
+              id="codexReasoningEffort"
+              type="text"
+              value={reasoningEffort}
+              onChange={(e) => onReasoningEffortChange?.(e.target.value)}
+              placeholder={t("codexConfig.reasoningEffortPlaceholder", {
+                defaultValue: "例如: xhigh",
+              })}
+              className="w-full px-3 py-2 border border-border-default bg-background text-foreground rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20 transition-colors"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("codexConfig.reasoningEffortHint", {
+                defaultValue:
+                  "对应 config.toml 中的 model_reasoning_effort 字段",
+              })}
+            </p>
+          </div>
         </div>
       )}
 
-      {/* 端点测速弹窗 - Codex */}
       {shouldShowSpeedTest && isEndpointModalOpen && (
         <EndpointSpeedTest
           appId="codex"

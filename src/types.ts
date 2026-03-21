@@ -289,7 +289,21 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
+
+  // ===== 终端快捷方式设置 =====
+  terminalTargets?: TerminalTargetMap;
+  currentSessionByApp?: Record<string, string>;
 }
+
+export type TerminalTargetMode = "manual" | "recent";
+
+export interface TerminalTargetPreference {
+  mode?: TerminalTargetMode;
+  lastCwd?: string;
+  recentCwds?: string[];
+}
+
+export type TerminalTargetMap = Record<string, TerminalTargetPreference>;
 
 export interface SessionMeta {
   providerId: string;

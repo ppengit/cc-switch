@@ -8,6 +8,7 @@ import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import type { AppId } from "@/lib/api";
+import { configApi } from "@/lib/api";
 import type {
   ProviderCategory,
   ProviderMeta,
@@ -45,7 +46,6 @@ import {
   hasApiKeyField,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
-import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import CodexConfigEditor from "./CodexConfigEditor";
 import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
@@ -83,12 +83,15 @@ import {
 } from "./hooks";
 import {
   CLAUDE_DEFAULT_CONFIG,
-  CODEX_DEFAULT_CONFIG,
-  GEMINI_DEFAULT_CONFIG,
   OPENCODE_DEFAULT_CONFIG,
   OPENCLAW_DEFAULT_CONFIG,
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
+import {
+  getFallbackProviderDefaultTemplate,
+  isSupportedProviderTemplateApp,
+  renderProviderDefaultTemplate,
+} from "@/utils/providerDefaultTemplateUtils";
 
 type PresetEntry = {
   id: string;
@@ -188,6 +191,11 @@ export function ProviderForm({
   const isOmoCategory = appId === "opencode" && category === "omo";
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";
   const isAnyOmoCategory = isOmoCategory || isOmoSlimCategory;
+  const [providerDefaultTemplate, setProviderDefaultTemplate] = useState(() =>
+    isSupportedProviderTemplateApp(appId)
+      ? getFallbackProviderDefaultTemplate(appId)
+      : "",
+  );
 
   useEffect(() => {
     setSelectedPresetId(initialData ? null : "custom");
@@ -210,6 +218,47 @@ export function ProviderForm({
     });
   }, [appId, initialData]);
 
+  useEffect(() => {
+    if (!isSupportedProviderTemplateApp(appId)) {
+      setProviderDefaultTemplate("");
+      return;
+    }
+
+    let mounted = true;
+    const fallback = getFallbackProviderDefaultTemplate(appId);
+    setProviderDefaultTemplate(fallback);
+
+    void configApi
+      .getProviderDefaultTemplate(appId)
+      .then((template) => {
+        if (!mounted) return;
+        if (template && template.trim()) {
+          setProviderDefaultTemplate(template);
+        }
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setProviderDefaultTemplate(fallback);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [appId]);
+
+  const renderedDefaultProviderSettingsConfig = useMemo(() => {
+    if (isSupportedProviderTemplateApp(appId)) {
+      return renderProviderDefaultTemplate(appId, providerDefaultTemplate);
+    }
+    if (appId === "opencode") {
+      return OPENCODE_DEFAULT_CONFIG;
+    }
+    if (appId === "openclaw") {
+      return OPENCLAW_DEFAULT_CONFIG;
+    }
+    return CLAUDE_DEFAULT_CONFIG;
+  }, [appId, providerDefaultTemplate]);
+
   const defaultValues: ProviderFormData = useMemo(
     () => ({
       name: initialData?.name ?? "",
@@ -217,19 +266,11 @@ export function ProviderForm({
       notes: initialData?.notes ?? "",
       settingsConfig: initialData?.settingsConfig
         ? JSON.stringify(initialData.settingsConfig, null, 2)
-        : appId === "codex"
-          ? CODEX_DEFAULT_CONFIG
-          : appId === "gemini"
-            ? GEMINI_DEFAULT_CONFIG
-            : appId === "opencode"
-              ? OPENCODE_DEFAULT_CONFIG
-              : appId === "openclaw"
-                ? OPENCLAW_DEFAULT_CONFIG
-                : CLAUDE_DEFAULT_CONFIG,
+        : renderedDefaultProviderSettingsConfig,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
-    [initialData, appId],
+    [initialData, renderedDefaultProviderSettingsConfig],
   );
 
   const form = useForm<ProviderFormData>({
@@ -330,11 +371,13 @@ export function ProviderForm({
     codexApiKey,
     codexBaseUrl,
     codexModelName,
+    codexReasoningEffort,
     codexAuthError,
     setCodexAuth,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
+    handleCodexReasoningEffortChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
@@ -351,11 +394,37 @@ export function ProviderForm({
   );
 
   useEffect(() => {
-    if (appId === "codex" && !initialData && selectedPresetId === "custom") {
-      const template = getCodexCustomTemplate();
-      resetCodexConfig(template.auth, template.config);
+    if (
+      appId !== "codex" ||
+      initialData ||
+      (selectedPresetId !== "custom" && selectedPresetId !== null)
+    ) {
+      return;
     }
-  }, [appId, initialData, selectedPresetId, resetCodexConfig]);
+
+    let template: {
+      auth?: Record<string, unknown>;
+      config?: string;
+    } = {};
+    try {
+      template = JSON.parse(renderedDefaultProviderSettingsConfig) as {
+        auth?: Record<string, unknown>;
+        config?: string;
+      };
+    } catch {
+      template = {};
+    }
+    resetCodexConfig(
+      template.auth ?? { OPENAI_API_KEY: "" },
+      typeof template.config === "string" ? template.config : "",
+    );
+  }, [
+    appId,
+    initialData,
+    selectedPresetId,
+    renderedDefaultProviderSettingsConfig,
+    resetCodexConfig,
+  ]);
 
   useEffect(() => {
     form.reset(defaultValues);
@@ -998,8 +1067,19 @@ export function ProviderForm({
       form.reset(defaultValues);
 
       if (appId === "codex") {
-        const template = getCodexCustomTemplate();
-        resetCodexConfig(template.auth, template.config);
+        let template: { auth?: Record<string, unknown>; config?: string } = {};
+        try {
+          template = JSON.parse(renderedDefaultProviderSettingsConfig) as {
+            auth?: Record<string, unknown>;
+            config?: string;
+          };
+        } catch {
+          template = {};
+        }
+        resetCodexConfig(
+          template.auth ?? { OPENAI_API_KEY: "" },
+          typeof template.config === "string" ? template.config : "",
+        );
       }
       if (appId === "gemini") {
         resetGeminiConfig({}, {});
@@ -1363,6 +1443,8 @@ export function ProviderForm({
             shouldShowModelField={category !== "official"}
             modelName={codexModelName}
             onModelNameChange={handleCodexModelNameChange}
+            reasoningEffort={codexReasoningEffort}
+            onReasoningEffortChange={handleCodexReasoningEffortChange}
             speedTestEndpoints={speedTestEndpoints}
           />
         )}

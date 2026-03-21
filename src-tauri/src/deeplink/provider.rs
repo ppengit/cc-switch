@@ -279,45 +279,8 @@ fn build_claude_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
 
 /// Build Codex settings configuration
 fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
-    // Generate a safe provider name identifier
-    let clean_provider_name = {
-        let raw: String = request
-            .name
-            .clone()
-            .unwrap_or_else(|| "custom".to_string())
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        let lower = raw.to_lowercase();
-        let mut key: String = lower
-            .chars()
-            .map(|c| match c {
-                'a'..='z' | '0'..='9' | '_' => c,
-                _ => '_',
-            })
-            .collect();
-
-        // Remove leading/trailing underscores
-        while key.starts_with('_') {
-            key.remove(0);
-        }
-        while key.ends_with('_') {
-            key.pop();
-        }
-
-        if key.is_empty() {
-            "custom".to_string()
-        } else {
-            key
-        }
-    };
-
     // Model name: use deeplink model or default
-    let model_name = request
-        .model
-        .as_deref()
-        .unwrap_or("gpt-5-codex")
-        .to_string();
+    let model_name = request.model.as_deref().unwrap_or("gpt-5.4").to_string();
 
     // Endpoint: normalize trailing slashes (use primary endpoint only)
     let endpoint = get_primary_endpoint(request)
@@ -327,13 +290,13 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
 
     // Build config.toml content
     let config_toml = format!(
-        r#"model_provider = "{clean_provider_name}"
+        r#"model_provider = "custom"
 model = "{model_name}"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
-[model_providers.{clean_provider_name}]
-name = "{clean_provider_name}"
+[model_providers.custom]
+name = "custom"
 base_url = "{endpoint}"
 wire_api = "responses"
 requires_openai_auth = true

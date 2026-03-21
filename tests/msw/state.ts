@@ -79,6 +79,8 @@ const createDefaultCurrent = (): CurrentProviderState => ({
 const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   appType,
   enabled: false,
+  forceModelEnabled: false,
+  forceModel: "",
   autoFailoverEnabled: false,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
@@ -96,6 +98,13 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   sessionAllowSharedWhenExhausted: false,
   sessionIdleTtlMinutes: 30,
 });
+
+export const setSessionFixtures = (
+  _sessions: unknown[],
+  _messages: Record<string, unknown>,
+) => {
+  // Session fixture state is not modeled in this lightweight MSW store yet.
+};
 
 const createDefaultAppProxyConfigs = (): AppProxyConfigState => ({
   claude: createDefaultAppProxyConfig("claude"),

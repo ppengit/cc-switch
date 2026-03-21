@@ -52,7 +52,7 @@ export function generateThirdPartyConfig(
 
   return `model_provider = "${cleanProviderName}"
 model = "${modelName}"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.${cleanProviderName}]
@@ -87,7 +87,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     auth: generateThirdPartyAuth(""),
     config: `model_provider = "azure"
 model = "gpt-5.4"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.azure]

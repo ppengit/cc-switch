@@ -47,7 +47,7 @@ const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
   },
   codex: {
     model: "gpt-5.4",
-    reasoningEffort: "high",
+    reasoningEffort: "xhigh",
   },
   gemini: {
     model: "gemini-2.5-pro",

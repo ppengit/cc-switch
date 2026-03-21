@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import type { AppId } from "@/lib/api/types";
 
 interface ProviderEmptyStateProps {
-  appId: AppId;
+  appId?: AppId;
   onCreate?: () => void;
   onImport?: () => void;
 }

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 interface ProviderHealthBadgeProps {
   consecutiveFailures: number;
+  lastError?: string | null;
   className?: string;
 }
 
@@ -13,9 +14,11 @@ interface ProviderHealthBadgeProps {
  */
 export function ProviderHealthBadge({
   consecutiveFailures,
+  lastError,
   className,
 }: ProviderHealthBadgeProps) {
   const { t } = useTranslation();
+  const circuitOpenThreshold = 5;
 
   // 根据失败次数计算状态
   const getStatus = () => {
@@ -29,7 +32,7 @@ export function ProviderHealthBadge({
         bgColor: "bg-green-500/10",
         textColor: "text-green-600 dark:text-green-400",
       };
-    } else if (consecutiveFailures < 5) {
+    } else if (consecutiveFailures < circuitOpenThreshold) {
       return {
         labelKey: "health.degraded",
         labelFallback: "降级",
@@ -55,6 +58,15 @@ export function ProviderHealthBadge({
     defaultValue: statusConfig.labelFallback,
   });
 
+  const baseTitle = t("health.consecutiveFailures", {
+    count: consecutiveFailures,
+    defaultValue: `连续失败 ${consecutiveFailures} 次`,
+  });
+  const title =
+    consecutiveFailures >= circuitOpenThreshold && lastError
+      ? `${baseTitle}\n${lastError.replace(/\s+/g, " ").trim()}`
+      : baseTitle;
+
   return (
     <div
       className={cn(
@@ -63,10 +75,7 @@ export function ProviderHealthBadge({
         statusConfig.textColor,
         className,
       )}
-      title={t("health.consecutiveFailures", {
-        count: consecutiveFailures,
-        defaultValue: `连续失败 ${consecutiveFailures} 次`,
-      })}
+      title={title}
     >
       <div className={cn("w-2 h-2 rounded-full", statusConfig.color)} />
       <span>{label}</span>
