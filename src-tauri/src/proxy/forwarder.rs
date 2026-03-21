@@ -98,6 +98,8 @@ pub struct RequestForwarder {
     current_provider_id_at_start: String,
     /// 是否抑制全局故障转移切换（仅保留内部路由切换，不改主界面当前 Provider）
     suppress_global_failover_switch: bool,
+    /// 按应用强制使用的模型
+    force_model: Option<String>,
     /// 整流器配置
     rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -119,6 +121,7 @@ impl RequestForwarder {
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
         suppress_global_failover_switch: bool,
+        force_model: Option<String>,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
     ) -> Self {
@@ -130,10 +133,45 @@ impl RequestForwarder {
             app_handle,
             current_provider_id_at_start,
             suppress_global_failover_switch,
+            force_model,
             rectifier_config,
             optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
         }
+    }
+
+    async fn forward_with_optional_force_model(
+        &self,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &axum::http::HeaderMap,
+        adapter: &dyn ProviderAdapter,
+        app_type_str: &str,
+        force_model: Option<&str>,
+    ) -> Result<Response, ProxyError> {
+        let mut request_result = self
+            .forward(provider, endpoint, body, headers, adapter, force_model)
+            .await;
+
+        if let Some(force_model) = force_model {
+            if let Err(error) = &request_result {
+                if Self::is_forced_model_rejection(error) {
+                    log::warn!(
+                        "[{}] [{}] Provider {} rejected forced model {}; retrying without override",
+                        app_type_str,
+                        log_fwd::FORCED_MODEL_RETRY_WITHOUT_OVERRIDE,
+                        provider.name,
+                        force_model
+                    );
+                    request_result = self
+                        .forward(provider, endpoint, body, headers, adapter, None)
+                        .await;
+                }
+            }
+        }
+
+        request_result
     }
 
     /// 转发请求（带故障转移）
@@ -209,6 +247,11 @@ impl RequestForwarder {
                 };
 
             attempted_providers += 1;
+            let provider_force_model = self
+                .force_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
 
             // 更新状态中的当前Provider信息
             {
@@ -221,12 +264,14 @@ impl RequestForwarder {
 
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
             match self
-                .forward(
+                .forward_with_optional_force_model(
                     provider,
                     endpoint,
                     &provider_body,
                     &headers,
                     adapter.as_ref(),
+                    app_type_str,
+                    provider_force_model,
                 )
                 .await
             {
@@ -350,12 +395,14 @@ impl RequestForwarder {
 
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
-                                    .forward(
+                                    .forward_with_optional_force_model(
                                         provider,
                                         endpoint,
                                         &provider_body,
                                         &headers,
                                         adapter.as_ref(),
+                                        app_type_str,
+                                        provider_force_model,
                                     )
                                     .await
                                 {
@@ -553,12 +600,14 @@ impl RequestForwarder {
 
                             // 使用同一供应商重试（不计入熔断器）
                             match self
-                                .forward(
+                                .forward_with_optional_force_model(
                                     provider,
                                     endpoint,
                                     &provider_body,
                                     &headers,
                                     adapter.as_ref(),
+                                    app_type_str,
+                                    provider_force_model,
                                 )
                                 .await
                             {
@@ -798,6 +847,7 @@ impl RequestForwarder {
         body: &Value,
         headers: &axum::http::HeaderMap,
         adapter: &dyn ProviderAdapter,
+        force_model: Option<&str>,
     ) -> Result<Response, ProxyError> {
         // 使用适配器提取 base_url
         let base_url = adapter.extract_base_url(provider)?;
@@ -810,20 +860,23 @@ impl RequestForwarder {
                 // 根据 api_format 选择目标端点
                 let api_format = super::providers::get_claude_api_format(provider);
                 if api_format == "openai_responses" {
-                    "/v1/responses"
+                    "/v1/responses".to_string()
                 } else {
-                    "/v1/chat/completions"
+                    "/v1/chat/completions".to_string()
                 }
             } else {
-                endpoint
+                endpoint.to_string()
             };
+        let effective_endpoint =
+            Self::apply_forced_model_to_endpoint(&effective_endpoint, force_model, adapter.name());
 
         // 使用适配器构建 URL
-        let url = adapter.build_url(&base_url, effective_endpoint);
+        let url = adapter.build_url(&base_url, &effective_endpoint);
 
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
             super::model_mapper::apply_model_mapping(body.clone(), provider);
+        let mapped_body = Self::apply_forced_model_to_body(mapped_body, force_model);
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mapped_body = normalize_thinking_type(mapped_body);
@@ -979,6 +1032,73 @@ impl RequestForwarder {
             // 其他错误（数据库/内部错误等）：不是换供应商能解决的问题
             _ => ErrorCategory::NonRetryable,
         }
+    }
+
+    fn is_forced_model_rejection(error: &ProxyError) -> bool {
+        let ProxyError::UpstreamError { status, body } = error else {
+            return false;
+        };
+
+        if !matches!(status, 400 | 404 | 422) {
+            return false;
+        }
+
+        let body = body.as_deref().unwrap_or("").to_lowercase();
+        if body.is_empty() {
+            return false;
+        }
+
+        [
+            "model_not_found",
+            "model not found",
+            "unknown model",
+            "unsupported model",
+            "model is not supported",
+            "invalid model",
+            "unrecognized model",
+            "does not support model",
+            "not support model",
+        ]
+        .iter()
+        .any(|pattern| body.contains(pattern))
+    }
+
+    fn apply_forced_model_to_body(mut body: Value, force_model: Option<&str>) -> Value {
+        let Some(force_model) = force_model.map(str::trim).filter(|value| !value.is_empty()) else {
+            return body;
+        };
+
+        body["model"] = serde_json::json!(force_model);
+        body
+    }
+
+    fn apply_forced_model_to_endpoint(
+        endpoint: &str,
+        force_model: Option<&str>,
+        adapter_name: &str,
+    ) -> String {
+        let Some(force_model) = force_model.map(str::trim).filter(|value| !value.is_empty()) else {
+            return endpoint.to_string();
+        };
+
+        if adapter_name != "Gemini" {
+            return endpoint.to_string();
+        }
+
+        let Some(model_start) = endpoint.find("/models/").map(|index| index + 8) else {
+            return endpoint.to_string();
+        };
+        let Some(model_end_offset) = endpoint[model_start..].find(':') else {
+            return endpoint.to_string();
+        };
+        let model_end = model_start + model_end_offset;
+
+        format!(
+            "{}{}{}",
+            &endpoint[..model_start],
+            force_model,
+            &endpoint[model_end..]
+        )
     }
 }
 

@@ -1,21 +1,11 @@
 {
   "name": "cc-switch",
-<<<<<<< HEAD
   "version": "3.12.2",
-=======
-  "version": "3.11.1+53",
->>>>>>> 85caac05 (feat: 梳理会话路由模式并保留旧版安装包)
   "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
   "type": "module",
   "scripts": {
     "dev": "pnpm tauri dev",
-<<<<<<< HEAD
     "build": "pnpm tauri build",
-=======
-    "build": "pnpm run prebuild:preserve-installers && pnpm run bump:version && pnpm tauri build && pnpm run postbuild",
-    "prebuild:preserve-installers": "node scripts/preserve-installers.mjs",
-    "bump:version": "node scripts/bump-version.mjs",
->>>>>>> 85caac05 (feat: 梳理会话路由模式并保留旧版安装包)
     "tauri": "tauri",
     "dev:renderer": "vite",
     "build:renderer": "vite build",

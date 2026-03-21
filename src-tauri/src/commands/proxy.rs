@@ -38,6 +38,18 @@ fn validate_proxy_bind(address: &str, port: u16) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_app_proxy_config(mut config: AppProxyConfig) -> Result<AppProxyConfig, String> {
+    config.force_model = config.force_model.trim().to_string();
+
+    if config.force_model_enabled && config.force_model.is_empty() {
+        return Err(
+            "强制模型已开启时，模型名称不能为空 / forceModel is required when enabled".to_string(),
+        );
+    }
+
+    Ok(config)
+}
+
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
 pub async fn start_proxy_server(
@@ -147,6 +159,7 @@ pub async fn update_proxy_config_for_app(
     state: tauri::State<'_, AppState>,
     config: AppProxyConfig,
 ) -> Result<(), String> {
+    let config = normalize_app_proxy_config(config)?;
     let db = &state.db;
     let previous = db
         .get_proxy_config_for_app(&config.app_type)

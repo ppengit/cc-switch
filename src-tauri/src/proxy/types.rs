@@ -172,6 +172,10 @@ pub struct AppProxyConfig {
     pub app_type: String,
     /// 该 app 代理启用开关
     pub enabled: bool,
+    #[serde(default)]
+    pub force_model_enabled: bool,
+    #[serde(default)]
+    pub force_model: String,
     /// 该 app 自动故障转移开关
     pub auto_failover_enabled: bool,
     /// 最大重试次数
@@ -205,6 +209,21 @@ pub struct AppProxyConfig {
     pub session_allow_shared_when_exhausted: bool,
     /// 会话空闲释放时间（分钟）
     pub session_idle_ttl_minutes: u32,
+}
+
+impl AppProxyConfig {
+    pub fn effective_force_model(&self) -> Option<&str> {
+        if !self.force_model_enabled {
+            return None;
+        }
+
+        let force_model = self.force_model.trim();
+        if force_model.is_empty() {
+            return None;
+        }
+
+        Some(force_model)
+    }
 }
 
 /// 整流器配置

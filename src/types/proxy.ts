@@ -141,6 +141,8 @@ export interface GlobalProxyConfig {
 export interface AppProxyConfig {
   appType: string;
   enabled: boolean;
+  forceModelEnabled: boolean;
+  forceModel: string;
   autoFailoverEnabled: boolean;
   maxRetries: number;
   streamingFirstByteTimeout: number;

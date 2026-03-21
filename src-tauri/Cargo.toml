@@ -1,10 +1,6 @@
 [package]
 name = "cc-switch"
-<<<<<<< HEAD
 version = "3.12.2"
-=======
-version = "3.11.1+53"
->>>>>>> 85caac05 (feat: 梳理会话路由模式并保留旧版安装包)
 description = "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
 authors = ["Jason Young"]
 license = "MIT"
