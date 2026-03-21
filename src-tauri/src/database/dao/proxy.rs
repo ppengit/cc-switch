@@ -302,7 +302,11 @@ impl Database {
                 if config.session_routing_enabled { 1 } else { 0 },
                 config.session_routing_strategy,
                 config.session_max_sessions_per_provider as i32,
-                if config.session_allow_shared_when_exhausted { 1 } else { 0 },
+                if config.session_allow_shared_when_exhausted {
+                    1
+                } else {
+                    0
+                },
                 config.session_idle_ttl_minutes as i32,
             ],
         )

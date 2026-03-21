@@ -566,4 +566,3 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
         "~/.claude.json should still not exist after skipped sync"
     );
 }
-

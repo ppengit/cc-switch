@@ -132,7 +132,10 @@ mod tests {
         let merged = merge_settings_for_save(incoming, &existing);
 
         assert_eq!(
-            merged.main_window_size.as_ref().map(|v| (v.width, v.height)),
+            merged
+                .main_window_size
+                .as_ref()
+                .map(|v| (v.width, v.height)),
             Some((1460, 920))
         );
     }

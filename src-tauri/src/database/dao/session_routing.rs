@@ -1,4 +1,4 @@
-﻿use crate::database::{lock_conn, Database};
+use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,8 @@ impl Database {
             let last_seen_at: i64 = row.get(7).map_err(|e| AppError::Database(e.to_string()))?;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
-            let stored_session_id: String = row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
+            let stored_session_id: String =
+                row.get(1).map_err(|e| AppError::Database(e.to_string()))?;
             let display_session_id = normalize_session_id_for_app(app_type, &stored_session_id);
             Ok(Some(SessionProviderBinding {
                 app_type: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
@@ -249,7 +250,12 @@ impl Database {
                 "UPDATE session_provider_bindings
                  SET pinned = ?3, updated_at = ?4
                  WHERE app_type = ?1 AND session_id = ?2",
-                params![app_type, canonical_session_id, if pinned { 1 } else { 0 }, timestamp_ms],
+                params![
+                    app_type,
+                    canonical_session_id,
+                    if pinned { 1 } else { 0 },
+                    timestamp_ms
+                ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
@@ -678,7 +684,8 @@ fn query_binding_on_conn(
     app_type: &str,
     session_id: &str,
 ) -> Result<Option<BindingRow>, AppError> {
-    let (canonical_session_id, legacy_session_id) = build_session_id_candidates(app_type, session_id);
+    let (canonical_session_id, legacy_session_id) =
+        build_session_id_candidates(app_type, session_id);
     let result = if let Some(legacy_id) = legacy_session_id.as_ref() {
         conn.query_row(
             "SELECT session_id, provider_id, pinned, created_at

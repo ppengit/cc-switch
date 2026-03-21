@@ -247,12 +247,10 @@ impl RequestContext {
 
             let active_counts = state
                 .db
-                .get_active_session_counts_map(
-                    app_type_str,
-                    app_config.session_idle_ttl_minutes,
-                )
+                .get_active_session_counts_map(app_type_str, app_config.session_idle_ttl_minutes)
                 .unwrap_or_default();
-            let available_provider_set: HashSet<String> = available_provider_ids.into_iter().collect();
+            let available_provider_set: HashSet<String> =
+                available_provider_ids.into_iter().collect();
 
             return Ok(Self::reorder_providers_by_preferred(
                 providers,
@@ -292,20 +290,34 @@ impl RequestContext {
         }
 
         if let Some(counts) = active_counts {
-            rest.sort_by(|(left_index, left_provider), (right_index, right_provider)| {
-                let left_available_rank = available_provider_ids
-                    .map(|ids| if ids.contains(&left_provider.id) { 0 } else { 1 })
-                    .unwrap_or(0);
-                let right_available_rank = available_provider_ids
-                    .map(|ids| if ids.contains(&right_provider.id) { 0 } else { 1 })
-                    .unwrap_or(0);
-                let left_count = counts.get(&left_provider.id).copied().unwrap_or(0);
-                let right_count = counts.get(&right_provider.id).copied().unwrap_or(0);
-                left_available_rank
-                    .cmp(&right_available_rank)
-                    .then_with(|| left_count.cmp(&right_count))
-                    .then_with(|| left_index.cmp(right_index))
-            });
+            rest.sort_by(
+                |(left_index, left_provider), (right_index, right_provider)| {
+                    let left_available_rank = available_provider_ids
+                        .map(|ids| {
+                            if ids.contains(&left_provider.id) {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                        .unwrap_or(0);
+                    let right_available_rank = available_provider_ids
+                        .map(|ids| {
+                            if ids.contains(&right_provider.id) {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                        .unwrap_or(0);
+                    let left_count = counts.get(&left_provider.id).copied().unwrap_or(0);
+                    let right_count = counts.get(&right_provider.id).copied().unwrap_or(0);
+                    left_available_rank
+                        .cmp(&right_available_rank)
+                        .then_with(|| left_count.cmp(&right_count))
+                        .then_with(|| left_index.cmp(right_index))
+                },
+            );
         }
 
         let rest: Vec<Provider> = rest.into_iter().map(|(_, provider)| provider).collect();
@@ -437,12 +449,8 @@ mod tests {
         counts.insert("c".to_string(), 0);
         counts.insert("d".to_string(), 1);
 
-        let ordered = RequestContext::reorder_providers_by_preferred(
-            providers,
-            "b",
-            Some(&counts),
-            None,
-        );
+        let ordered =
+            RequestContext::reorder_providers_by_preferred(providers, "b", Some(&counts), None);
         let ids: Vec<String> = ordered.into_iter().map(|p| p.id).collect();
         assert_eq!(ids, vec!["b", "c", "d", "a"]);
     }

@@ -175,7 +175,8 @@ impl Database {
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
 
         // 9.1 Session Provider Bindings 表（会话级调度绑定）
-        conn.execute("CREATE TABLE IF NOT EXISTS session_provider_bindings (
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_provider_bindings (
             app_type TEXT NOT NULL,
             session_id TEXT NOT NULL,
             provider_id TEXT NOT NULL,
@@ -185,7 +186,10 @@ impl Database {
             last_seen_at INTEGER NOT NULL,
             PRIMARY KEY (app_type, session_id),
             FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
-        )", []).map_err(|e| AppError::Database(e.to_string()))?;
+        )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_spb_provider ON session_provider_bindings(app_type, provider_id)",
             [],
