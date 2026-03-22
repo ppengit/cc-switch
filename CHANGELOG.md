@@ -5,6 +5,16 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3-4] - 2026-03-22
+
+本版本是对 `3.12.3-3` 的重新发布。
+
+- 代码内容与 `3.12.3-3` 保持一致
+- 继续包含以下稳定性修复：
+  - Codex `config.toml` 重复键自恢复与空占位替换修复
+  - 全局异常处理兜底，避免普通运行时异常直接白屏
+- 本次仅递增版本号并重新触发 GitHub 全平台安装包构建，以获得完整可下载的正式 release 资产
+
 ## [3.12.3-3] - 2026-03-22
 
 本版本是在 `3.12.3-2` 基础上继续做的一次“稳定性优先”修复发布，目标只有两个：
