@@ -34,15 +34,15 @@ const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<SupportedTemplateApp, string> 
   }
 }`,
     codex: `model_provider = "custom"
-model = "{{model}}"
-model_reasoning_effort = "{{reasoning_effort}}"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "{{base_url}}"
+base_url = "https://sub.jlypx.de"
 `,
     gemini: `{
   "env": {
@@ -67,10 +67,10 @@ const FALLBACK_PROVIDER_DEFAULT_VALUES: Record<
     sonnet_model: "claude-sonnet-4-20250514",
     opus_model: "claude-sonnet-4-20250514",
   },
-  codex: {
-    base_url: "",
-    model: "gpt-5.4",
-    reasoning_effort: "xhigh",
+    codex: {
+      base_url: "",
+      model: "gpt-5.4",
+      reasoning_effort: "xhigh",
   },
   gemini: {
     api_key: "",

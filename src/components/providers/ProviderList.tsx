@@ -13,14 +13,11 @@ import {
   ArrowUp,
   ArrowUpDown,
   Eye,
-  ExternalLink,
   FlaskConical,
-  FileText,
   Loader2,
   RefreshCw,
   Save,
   Search,
-  ShieldCheck,
   SlidersHorizontal,
   Terminal,
   Waypoints,
@@ -37,7 +34,6 @@ import type {
 import type { AppId } from "@/lib/api";
 import { configApi, settingsApi } from "@/lib/api";
 import type {
-  AppConfigHealthReport,
   AppConfigPreview,
   AppConfigPreviewFile,
   LiveConfigFileEntry,
@@ -163,24 +159,29 @@ function buildLiveConfigSignature(files: LiveConfigFileEntry[]): string {
     .join("|");
 }
 
-function buildPreviewDiffLines(file: AppConfigPreviewFile): string[] {
+type PreviewDiffLine = {
+  kind: "context" | "add" | "remove";
+  text: string;
+};
+
+function buildPreviewDiffLines(file: AppConfigPreviewFile): PreviewDiffLine[] {
   const expectedLines = file.expectedText.replace(/\r\n/g, "\n").split("\n");
   const actualLines = file.actualText.replace(/\r\n/g, "\n").split("\n");
   const maxLen = Math.max(expectedLines.length, actualLines.length);
-  const lines: string[] = [];
+  const lines: PreviewDiffLine[] = [];
 
   for (let index = 0; index < maxLen; index += 1) {
     const expected = expectedLines[index] ?? "";
     const actual = actualLines[index] ?? "";
     if (expected === actual) {
-      lines.push(`  ${expected}`);
+      lines.push({ kind: "context", text: expected });
       continue;
     }
     if (expected) {
-      lines.push(`- ${expected}`);
+      lines.push({ kind: "remove", text: expected });
     }
     if (actual) {
-      lines.push(`+ ${actual}`);
+      lines.push({ kind: "add", text: actual });
     }
   }
 
@@ -232,7 +233,7 @@ const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
 };
 const PROVIDER_STATUS_COLUMN_MIN_WIDTH = 180;
 const getProviderActionsColumnWidth = (appId: AppId) =>
-  appId === "openclaw" ? 320 : 248;
+  appId === "openclaw" ? 340 : 288;
 const batchTestSessionStore = new Map<AppId, BatchTestSessionState>();
 
 const createEmptyBatchTestSessionState = (): BatchTestSessionState => ({
@@ -403,23 +404,19 @@ export function ProviderList({
     null,
   );
   const [isConfigPreviewOpen, setIsConfigPreviewOpen] = useState(false);
-  const [liveConfigFiles, setLiveConfigFiles] = useState<LiveConfigFileEntry[]>(
-    [],
+  const [, setLiveConfigFiles] = useState<LiveConfigFileEntry[]>([]);
+  const [previewDrafts, setPreviewDrafts] = useState<Record<string, string>>(
+    {},
   );
-  const [isLiveConfigFilesOpen, setIsLiveConfigFilesOpen] = useState(false);
-  const [configHealthReports, setConfigHealthReports] = useState<
-    AppConfigHealthReport[]
-  >([]);
-  const [isConfigHealthOpen, setIsConfigHealthOpen] = useState(false);
   const [isBatchTestOpen, setIsBatchTestOpen] = useState(false);
   const [isCommonConfigSaving, setIsCommonConfigSaving] = useState(false);
   const [isCommonConfigLoading, setIsCommonConfigLoading] = useState(false);
   const [isConfigPreviewLoading, setIsConfigPreviewLoading] = useState(false);
-  const [isLiveConfigFilesLoading, setIsLiveConfigFilesLoading] =
-    useState(false);
-  const [isConfigHealthLoading, setIsConfigHealthLoading] = useState(false);
-  const [isRepairingConfigHealth, setIsRepairingConfigHealth] = useState(false);
+  const [, setIsLiveConfigFilesLoading] = useState(false);
   const [openingLiveConfigPath, setOpeningLiveConfigPath] = useState<
+    string | null
+  >(null);
+  const [savingPreviewFilePath, setSavingPreviewFilePath] = useState<
     string | null
   >(null);
   const [hasLiveConfigChanged, setHasLiveConfigChanged] = useState(false);
@@ -814,6 +811,11 @@ export function ProviderList({
       setIsConfigPreviewLoading(true);
       const preview = await configApi.getAppConfigPreview(appId);
       setConfigPreview(preview);
+      setPreviewDrafts(
+        Object.fromEntries(
+          preview.files.map((file) => [file.path, file.actualText]),
+        ),
+      );
     } catch (error) {
       console.error("[ProviderList] Failed to load config preview", error);
       toast.error(
@@ -827,33 +829,10 @@ export function ProviderList({
     }
   }, [appId, t]);
 
-  const loadConfigHealthReports = useCallback(async () => {
-    try {
-      setIsConfigHealthLoading(true);
-      const reports = await configApi.getConfigHealthReport();
-      setConfigHealthReports(reports);
-    } catch (error) {
-      console.error("[ProviderList] Failed to load config health report", error);
-      toast.error(
-        t("provider.configHealthLoadFailed", {
-          defaultValue: "加载配置体检结果失败: {{error}}",
-          error: String(error),
-        }),
-      );
-    } finally {
-      setIsConfigHealthLoading(false);
-    }
-  }, [t]);
-
   useEffect(() => {
     if (!isConfigPreviewOpen) return;
     void loadConfigPreview();
   }, [isConfigPreviewOpen, loadConfigPreview]);
-
-  useEffect(() => {
-    if (!isConfigHealthOpen) return;
-    void loadConfigHealthReports();
-  }, [isConfigHealthOpen, loadConfigHealthReports]);
 
   useEffect(() => {
     void loadLiveConfigFiles({ resetSignature: true });
@@ -1966,7 +1945,7 @@ export function ProviderList({
               })
             : t("provider.statusHint.sessionDefaultFollowCurrent", {
                 defaultValue:
-                  "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+                  "未携带会话 ID 的请求跟随当前供应商；当前指向此供应商",
               }),
         });
         sortValue += 120;
@@ -2497,33 +2476,50 @@ export function ProviderList({
     [t],
   );
 
-  const handleRepairConfigHealth = useCallback(async () => {
-    try {
-      setIsRepairingConfigHealth(true);
-      const reports = await configApi.repairConfigHealth();
-      setConfigHealthReports(reports);
-      await loadLiveConfigFiles({ resetSignature: true });
-      if (isConfigPreviewOpen) {
+  const handlePreviewDraftChange = useCallback(
+    (path: string, value: string) => {
+      setPreviewDrafts((current) => ({
+        ...current,
+        [path]: value,
+      }));
+    },
+    [],
+  );
+
+  const handleSavePreviewFile = useCallback(
+    async (file: AppConfigPreviewFile) => {
+      try {
+        setSavingPreviewFilePath(file.path);
+        const nextContent = previewDrafts[file.path] ?? file.actualText;
+        await configApi.saveLiveConfigFile(
+          appId,
+          file.label,
+          nextContent,
+        );
+        await loadLiveConfigFiles({ resetSignature: true });
         await loadConfigPreview();
+        await queryClient.invalidateQueries({ queryKey: ["providers"] });
+        toast.success(
+          t("provider.saveLiveConfigSuccess", {
+            defaultValue: "live 配置文件已保存",
+          }),
+        );
+      } catch (error) {
+        console.error("[ProviderList] Failed to save live config file", error);
+        toast.error(
+          t("provider.saveLiveConfigFailed", {
+            defaultValue: "保存 live 配置文件失败: {{error}}",
+            error: String(error),
+          }),
+        );
+      } finally {
+        setSavingPreviewFilePath((current) =>
+          current === file.path ? null : current,
+        );
       }
-      await queryClient.invalidateQueries({ queryKey: ["providers"] });
-      toast.success(
-        t("provider.configHealthRepairSuccess", {
-          defaultValue: "配置修复已完成",
-        }),
-      );
-    } catch (error) {
-      console.error("[ProviderList] Failed to repair config health", error);
-      toast.error(
-        t("provider.configHealthRepairFailed", {
-          defaultValue: "配置修复失败: {{error}}",
-          error: String(error),
-        }),
-      );
-    } finally {
-      setIsRepairingConfigHealth(false);
-    }
-  }, [isConfigPreviewOpen, loadConfigPreview, loadLiveConfigFiles, queryClient, t]);
+    },
+    [appId, loadConfigPreview, loadLiveConfigFiles, previewDrafts, queryClient, t],
+  );
 
   const handleBatchDelete = useCallback(async () => {
     if (deletableSelectedProviders.length === 0) {
@@ -2853,48 +2849,24 @@ export function ProviderList({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {supportsCommonConfig && (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setIsCommonConfigOpen(true)}
-                  disabled={isCommonConfigLoading}
-                  title={t("provider.commonConfigEdit", {
-                    defaultValue: "编辑应用配置模板",
-                  })}
-                >
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setIsCommonConfigOpen(true)}
+                disabled={isCommonConfigLoading}
+                className="gap-2"
+              >
+                {isCommonConfigLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
                   <SlidersHorizontal className="h-4 w-4" />
-                </Button>
-                <div className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-                  {t("provider.commonConfigApplyAll", {
-                    defaultValue: "应用配置模板",
-                  })}
-                </div>
-              </div>
+                )}
+                {t("provider.commonConfigApplyAll", {
+                  defaultValue: "应用配置模板",
+                })}
+              </Button>
             )}
-
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setIsLiveConfigFilesOpen(true)}
-              disabled={isLiveConfigFilesLoading}
-              className={cn(
-                "gap-2",
-                hasLiveConfigChanged &&
-                  "border-amber-500/50 text-amber-600 dark:text-amber-400",
-              )}
-            >
-              {isLiveConfigFilesLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <FileText className="h-4 w-4" />
-              )}
-              {t("provider.liveConfigFiles", {
-                defaultValue: "实际配置文件",
-              })}
-            </Button>
 
             <Button
               type="button"
@@ -2902,7 +2874,11 @@ export function ProviderList({
               variant="outline"
               onClick={() => setIsConfigPreviewOpen(true)}
               disabled={isConfigPreviewLoading}
-              className="gap-2"
+              className={cn(
+                "gap-2",
+                hasLiveConfigChanged &&
+                  "border-amber-500/50 text-amber-600 dark:text-amber-400",
+              )}
             >
               {isConfigPreviewLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -2911,24 +2887,6 @@ export function ProviderList({
               )}
               {t("provider.configPreview", {
                 defaultValue: "最终配置预览",
-              })}
-            </Button>
-
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setIsConfigHealthOpen(true)}
-              disabled={isConfigHealthLoading}
-              className="gap-2"
-            >
-              {isConfigHealthLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-4 w-4" />
-              )}
-              {t("provider.configHealth", {
-                defaultValue: "配置体检",
               })}
             </Button>
 
@@ -3656,8 +3614,8 @@ export function ProviderList({
                   <option value="">
                     {t("proxy.sessionRouting.defaultProviderFollowCurrent", {
                       defaultValue: currentProviderName
-                        ? `跟随当前 Provider（${currentProviderName}）`
-                        : "跟随当前 Provider（应用默认）",
+                        ? `跟随当前供应商（${currentProviderName}）`
+                        : "跟随当前供应商（应用默认）",
                     })}
                   </option>
                   {sessionRoutingProviderOptions.map((provider) => (
@@ -3685,14 +3643,14 @@ export function ProviderList({
                           "proxy.sessionRouting.defaultProviderFollowCurrentHintWithFailover",
                           {
                             defaultValue:
-                              "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。",
+                              "留空时跟随当前供应商；若当前失败，再按故障转移队列回落。",
                           },
                         )
                       : t(
                           "proxy.sessionRouting.defaultProviderFollowCurrentHint",
                           {
                             defaultValue:
-                              "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
+                              "留空时跟随当前供应商；这就是会话路由模式下的“应用默认”回退行为。",
                           },
                         )}
                 </p>
@@ -4231,23 +4189,29 @@ export function ProviderList({
                 <div>
                   <p className="text-sm font-medium text-foreground">
                     {t("provider.defaultTemplate", {
-                      defaultValue: "默认 Provider 模板",
+                      defaultValue: "默认供应商模板",
                     })}
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
                     {t("provider.defaultTemplateHint", {
                       defaultValue:
-                        "用于新建自定义供应商的初始配置，可使用占位符如 {{api_key}}、{{base_url}}、{{model}}",
+                        appId === "codex"
+                          ? "用于新建 Codex 自定义供应商的默认 config.toml 片段，不包含 auth.json。"
+                          : "用于新建自定义供应商的初始配置，可使用占位符如 {{api_key}}、{{base_url}}、{{model}}",
                     })}
                   </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {t("provider.defaultTemplatePlaceholders", {
-                      defaultValue: "可用占位符: {{placeholders}}",
-                      placeholders: getAllowedProviderTemplatePlaceholders(appId)
-                        .map((item) => `{{${item}}}`)
-                        .join(", "),
-                    })}
-                  </p>
+                  {appId !== "codex" && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t("provider.defaultTemplatePlaceholders", {
+                        defaultValue: "可用占位符: {{placeholders}}",
+                        placeholders: getAllowedProviderTemplatePlaceholders(
+                          appId,
+                        )
+                          .map((item) => `{{${item}}}`)
+                          .join(", "),
+                      })}
+                    </p>
+                  )}
                 </div>
 
                 <JsonEditor
@@ -4264,8 +4228,8 @@ export function ProviderList({
                     document.documentElement.classList.contains("dark")
                   }
                   rows={16}
-                  showValidation={true}
-                  language="json"
+                  showValidation={appId !== "codex"}
+                  language={appId === "codex" ? "javascript" : "json"}
                 />
 
                 {providerDefaultTemplateError && (
@@ -4278,133 +4242,6 @@ export function ProviderList({
           </div>
         </FullScreenPanel>
       )}
-
-      <FullScreenPanel
-        isOpen={isLiveConfigFilesOpen}
-        title={t("provider.liveConfigFilesTitle", {
-          defaultValue: "实际应用配置文件",
-        })}
-        onClose={() => setIsLiveConfigFilesOpen(false)}
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void loadLiveConfigFiles({ resetSignature: true })}
-              disabled={isLiveConfigFilesLoading}
-              className="gap-2"
-            >
-              {isLiveConfigFilesLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              {t("common.refresh", {
-                defaultValue: "刷新",
-              })}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsLiveConfigFilesOpen(false)}
-            >
-              {t("common.close", {
-                defaultValue: "关闭",
-              })}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            {t("provider.liveConfigFilesHint", {
-              defaultValue:
-                "这里列出当前应用实际使用的 live 配置文件。你可以直接打开它们进行检查。",
-            })}
-          </p>
-
-          {hasLiveConfigChanged && (
-            <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>
-                {t("provider.liveConfigChanged", {
-                  defaultValue:
-                    "检测到实际配置文件发生变化。你可以刷新列表，或打开文件检查变更。",
-                })}
-              </span>
-            </div>
-          )}
-
-          {liveConfigFiles.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
-              {t("provider.liveConfigFilesEmpty", {
-                defaultValue: "当前应用没有可用的实际配置文件。",
-              })}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {liveConfigFiles.map((file) => {
-                const isOpening = openingLiveConfigPath === file.path;
-                return (
-                  <div
-                    key={file.path}
-                    className="flex flex-col gap-3 rounded-lg border border-border/60 px-4 py-3"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-foreground">
-                          {file.label}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {file.exists
-                            ? t("provider.liveConfigExists", {
-                                defaultValue: "文件存在",
-                              })
-                            : t("provider.liveConfigMissing", {
-                                defaultValue: "文件当前不存在",
-                              })}
-                        </div>
-                        {(file.modifiedAt || file.sizeBytes) && (
-                          <div className="text-[11px] text-muted-foreground">
-                            {file.modifiedAt
-                              ? new Date(file.modifiedAt).toLocaleString()
-                              : t("common.unknown", {
-                                  defaultValue: "未知时间",
-                                })}
-                            {typeof file.sizeBytes === "number"
-                              ? ` · ${file.sizeBytes} B`
-                              : ""}
-                          </div>
-                        )}
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={!file.exists || isOpening}
-                        onClick={() => void handleOpenLiveConfigFile(file)}
-                        className="gap-2"
-                      >
-                        {isOpening ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <ExternalLink className="h-4 w-4" />
-                        )}
-                        {t("provider.openLiveConfigFile", {
-                          defaultValue: "打开文件",
-                        })}
-                      </Button>
-                    </div>
-                    <code className="break-all rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
-                      {file.path}
-                    </code>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </FullScreenPanel>
 
       <FullScreenPanel
         isOpen={isConfigPreviewOpen}
@@ -4443,6 +4280,18 @@ export function ProviderList({
         }
       >
         <div className="space-y-4">
+          {hasLiveConfigChanged && (
+            <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>
+                {t("provider.liveConfigChanged", {
+                  defaultValue:
+                    "检测到实际配置文件发生变化。请刷新预览后再决定是否保存。",
+                })}
+              </span>
+            </div>
+          )}
+
           {configPreview?.note && (
             <div className="rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
               {configPreview.note}
@@ -4467,6 +4316,13 @@ export function ProviderList({
           {configPreview?.files?.length ? (
             configPreview.files.map((file) => {
               const diffLines = file.differs ? buildPreviewDiffLines(file) : [];
+              const draftValue = previewDrafts[file.path] ?? file.actualText;
+              const isOpening = openingLiveConfigPath === file.path;
+              const isSaving = savingPreviewFilePath === file.path;
+              const editorLanguage =
+                file.label === "config.toml" || file.label === ".env"
+                  ? "javascript"
+                  : "json";
               return (
                 <div
                   key={`${file.path}:${file.label}`}
@@ -4481,21 +4337,46 @@ export function ProviderList({
                         {file.path}
                       </code>
                     </div>
-                    <div
-                      className={cn(
-                        "rounded-full px-2 py-1 text-xs",
-                        file.differs
-                          ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                          : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-                      )}
-                    >
-                      {file.differs
-                        ? t("provider.configPreviewDiffers", {
-                            defaultValue: "与 live 不一致",
-                          })
-                        : t("provider.configPreviewMatched", {
-                            defaultValue: "与 live 一致",
-                          })}
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={cn(
+                          "rounded-full px-2 py-1 text-xs",
+                          file.differs
+                            ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                            : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                        )}
+                      >
+                        {file.differs
+                          ? t("provider.configPreviewDiffers", {
+                              defaultValue: "与预期不一致",
+                            })
+                          : t("provider.configPreviewMatched", {
+                              defaultValue: "与预期一致",
+                            })}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!file.exists || isOpening}
+                        onClick={() =>
+                          void handleOpenLiveConfigFile({
+                            label: file.label,
+                            path: file.path,
+                            exists: file.exists,
+                          } as LiveConfigFileEntry)
+                        }
+                        className="gap-2"
+                      >
+                        {isOpening ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                        {t("provider.openLiveConfigFile", {
+                          defaultValue: "打开文件",
+                        })}
+                      </Button>
                     </div>
                   </div>
 
@@ -4511,14 +4392,38 @@ export function ProviderList({
                       </pre>
                     </div>
                     <div className="space-y-2">
-                      <div className="text-xs font-medium text-muted-foreground">
-                        {t("provider.actualConfig", {
-                          defaultValue: "当前 live 文件",
-                        })}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-medium text-muted-foreground">
+                          {t("provider.actualConfig", {
+                            defaultValue: "当前 live 文件",
+                          })}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => void handleSavePreviewFile(file)}
+                          disabled={isSaving}
+                          className="h-7 gap-2 px-2 text-xs"
+                        >
+                          {isSaving ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Save className="h-3.5 w-3.5" />
+                          )}
+                          {t("common.save", {
+                            defaultValue: "保存",
+                          })}
+                        </Button>
                       </div>
-                      <pre className="max-h-[320px] overflow-auto rounded bg-muted px-3 py-3 text-xs leading-5 text-foreground">
-                        {file.actualText || " "}
-                      </pre>
+                      <JsonEditor
+                        value={draftValue}
+                        onChange={(value) =>
+                          handlePreviewDraftChange(file.path, value)
+                        }
+                        rows={18}
+                        showValidation={editorLanguage !== "javascript"}
+                        language={editorLanguage}
+                      />
                     </div>
                   </div>
 
@@ -4529,9 +4434,28 @@ export function ProviderList({
                           defaultValue: "差异",
                         })}
                       </div>
-                      <pre className="max-h-[260px] overflow-auto rounded bg-muted px-3 py-3 text-xs leading-5 text-foreground">
-                        {diffLines.join("\n")}
-                      </pre>
+                      <div className="max-h-[260px] overflow-auto rounded border border-border/60 bg-background">
+                        {diffLines.map((line, index) => (
+                          <div
+                            key={`${file.path}:diff:${index}`}
+                            className={cn(
+                              "px-3 py-1 font-mono text-xs leading-5 whitespace-pre-wrap",
+                              line.kind === "add" &&
+                                "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                              line.kind === "remove" &&
+                                "bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                              line.kind === "context" &&
+                                "text-muted-foreground",
+                            )}
+                          >
+                            {line.kind === "add"
+                              ? `+ ${line.text}`
+                              : line.kind === "remove"
+                                ? `- ${line.text}`
+                                : `  ${line.text}`}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -4544,117 +4468,6 @@ export function ProviderList({
               })}
             </div>
           )}
-        </div>
-      </FullScreenPanel>
-
-      <FullScreenPanel
-        isOpen={isConfigHealthOpen}
-        title={t("provider.configHealthTitle", {
-          defaultValue: "配置体检",
-        })}
-        onClose={() => setIsConfigHealthOpen(false)}
-        footer={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void loadConfigHealthReports()}
-              disabled={isConfigHealthLoading}
-              className="gap-2"
-            >
-              {isConfigHealthLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              {t("common.refresh", {
-                defaultValue: "刷新",
-              })}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void handleRepairConfigHealth()}
-              disabled={isRepairingConfigHealth}
-              className="gap-2"
-            >
-              {isRepairingConfigHealth ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-4 w-4" />
-              )}
-              {t("provider.configHealthRepair", {
-                defaultValue: "一键修复",
-              })}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            {t("provider.configHealthHint", {
-              defaultValue:
-                "检查模板、当前供应商、live 文件语法以及 live 与预期渲染结果是否一致。",
-            })}
-          </p>
-
-          {configHealthReports.map((report) => (
-            <div
-              key={report.app}
-              className="space-y-3 rounded-lg border border-border/60 px-4 py-4"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-foreground">
-                    {t(`apps.${report.app}`)}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {report.issues.length === 0
-                      ? t("provider.configHealthNoIssues", {
-                          defaultValue: "未发现问题",
-                        })
-                      : t("provider.configHealthIssueCount", {
-                          defaultValue: "发现 {{count}} 项问题",
-                          count: report.issues.length,
-                        })}
-                  </div>
-                </div>
-                <div
-                  className={cn(
-                    "rounded-full px-2 py-1 text-xs",
-                    report.ok
-                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                      : "bg-rose-500/10 text-rose-700 dark:text-rose-300",
-                  )}
-                >
-                  {report.ok
-                    ? t("provider.configHealthOk", {
-                        defaultValue: "正常",
-                      })
-                    : t("provider.configHealthNeedsAttention", {
-                        defaultValue: "需要处理",
-                      })}
-                </div>
-              </div>
-
-              {report.issues.length > 0 && (
-                <div className="space-y-2">
-                  {report.issues.map((issue) => (
-                    <div
-                      key={`${report.app}:${issue.code}:${issue.message}`}
-                      className={cn(
-                        "rounded-lg px-3 py-2 text-sm",
-                        issue.severity === "error"
-                          ? "bg-rose-500/10 text-rose-700 dark:text-rose-300"
-                          : "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-                      )}
-                    >
-                      {issue.message}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
         </div>
       </FullScreenPanel>
 

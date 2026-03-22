@@ -19,6 +19,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
+const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 6] = [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_REASONING_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+];
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveConfigFileEntry {
@@ -144,6 +154,37 @@ fn merge_gemini_settings_with_live(
     merged
 }
 
+fn normalize_proxy_connect_host(address: &str) -> String {
+    match address {
+        "0.0.0.0" => "127.0.0.1".to_string(),
+        "::" => "::1".to_string(),
+        _ => address.to_string(),
+    }
+}
+
+fn build_proxy_preview_urls(
+    state: &crate::store::AppState,
+) -> Result<(String, String, crate::proxy::types::ProxyTakeoverStatus), String> {
+    let status = futures::executor::block_on(state.proxy_service.get_status())?;
+    let takeover = futures::executor::block_on(state.proxy_service.get_takeover_status())?;
+
+    if !status.running {
+        return Err("代理服务未运行".to_string());
+    }
+
+    let connect_host = normalize_proxy_connect_host(&status.address);
+    let connect_host_for_url = if connect_host.contains(':') && !connect_host.starts_with('[') {
+        format!("[{connect_host}]")
+    } else {
+        connect_host
+    };
+
+    let proxy_origin = format!("http://{}:{}", connect_host_for_url, status.port);
+    let proxy_codex_base_url = format!("{}/v1", proxy_origin.trim_end_matches('/'));
+
+    Ok((proxy_origin, proxy_codex_base_url, takeover))
+}
+
 fn get_live_config_files_for_app(app_type: &AppType) -> Vec<LiveConfigFileEntry> {
     match app_type {
         AppType::Claude => vec![build_live_config_file_entry(
@@ -198,6 +239,43 @@ fn invalid_toml_format_error(error: toml_edit::TomlError) -> String {
 
 fn provider_default_template_key(app_type: &str) -> String {
     format!("provider_default_template_{app_type}")
+}
+
+fn default_codex_provider_template() -> &'static str {
+    r#"model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://sub.jlypx.de"
+"#
+}
+
+fn sanitize_provider_default_template(app_type: &str, template: &str) -> Option<String> {
+    if app_type != "codex" {
+        return None;
+    }
+
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let looks_legacy = trimmed.starts_with('{')
+        || trimmed.contains("\"auth\"")
+        || trimmed.contains("OPENAI_API_KEY")
+        || trimmed.contains("{{provider.config}}")
+        || trimmed.contains("{{mcp.config}}");
+
+    if looks_legacy {
+        return Some(default_codex_provider_template().to_string());
+    }
+
+    None
 }
 
 fn validate_provider_default_template_placeholders(
@@ -360,6 +438,77 @@ pub async fn open_live_config_file(handle: AppHandle, path: String) -> Result<bo
     Ok(true)
 }
 
+#[tauri::command]
+pub async fn save_live_config_file(
+    app: String,
+    label: String,
+    content: String,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let label = label.trim();
+
+    match app_type {
+        AppType::Claude => {
+            if label != "settings.json" {
+                return Err(format!("不支持的 Claude live 文件: {label}"));
+            }
+            let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(invalid_json_format_error)?;
+            config::write_json_file(&get_claude_settings_path(), &parsed)
+                .map_err(|e| e.to_string())?;
+        }
+        AppType::Codex => match label {
+            "auth.json" => {
+                let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                    .map_err(invalid_json_format_error)?;
+                config::write_json_file(&codex_config::get_codex_auth_path(), &parsed)
+                    .map_err(|e| e.to_string())?;
+            }
+            "config.toml" => {
+                codex_config::validate_config_toml(&content).map_err(|e| e.to_string())?;
+                config::write_text_file(&codex_config::get_codex_config_path(), &content)
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => return Err(format!("不支持的 Codex live 文件: {label}")),
+        },
+        AppType::Gemini => match label {
+            ".env" => {
+                let parsed = crate::gemini_config::parse_env_file_strict(&content)
+                    .map_err(|e| e.to_string())?;
+                crate::gemini_config::write_gemini_env_atomic(&parsed)
+                    .map_err(|e| e.to_string())?;
+            }
+            "settings.json" => {
+                let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                    .map_err(invalid_json_format_error)?;
+                config::write_json_file(&crate::gemini_config::get_gemini_settings_path(), &parsed)
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => return Err(format!("不支持的 Gemini live 文件: {label}")),
+        },
+        AppType::OpenCode => {
+            if label != "opencode.json" {
+                return Err(format!("不支持的 OpenCode live 文件: {label}"));
+            }
+            let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(invalid_json_format_error)?;
+            config::write_json_file(&crate::opencode_config::get_opencode_config_path(), &parsed)
+                .map_err(|e| e.to_string())?;
+        }
+        AppType::OpenClaw => {
+            if label != "config.json" {
+                return Err(format!("不支持的 OpenClaw live 文件: {label}"));
+            }
+            let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(invalid_json_format_error)?;
+            config::write_json_file(&crate::openclaw_config::get_openclaw_config_path(), &parsed)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(true)
+}
+
 fn build_app_config_preview_internal(
     state: &crate::store::AppState,
     app_type: AppType,
@@ -372,6 +521,13 @@ fn build_app_config_preview_internal(
         .and_then(|id| state.db.get_provider_by_id(id, app_type.as_str()).ok().flatten());
     let current_provider_name = current_provider.as_ref().map(|provider| provider.name.clone());
     let live_settings = crate::services::provider::read_live_settings(app_type.clone()).ok();
+    let proxy_preview = build_proxy_preview_urls(state).ok();
+    let takeover_active = match (&app_type, proxy_preview.as_ref()) {
+        (AppType::Claude, Some((_, _, takeover))) => takeover.claude,
+        (AppType::Codex, Some((_, _, takeover))) => takeover.codex,
+        (AppType::Gemini, Some((_, _, takeover))) => takeover.gemini,
+        _ => false,
+    };
 
     if matches!(app_type, AppType::OpenCode | AppType::OpenClaw) {
         let files = get_live_config_files_for_app(&app_type)
@@ -413,6 +569,44 @@ fn build_app_config_preview_internal(
             let mut expected =
                 crate::services::provider::sanitize_claude_settings_for_live(&rendered_settings);
             merge_claude_mcp_servers(&mut expected, live_settings.as_ref());
+            if takeover_active {
+                if let Some((proxy_url, _, _)) = proxy_preview.as_ref() {
+                    if let Some(env) = expected.get_mut("env").and_then(|value| value.as_object_mut()) {
+                        env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::json!(proxy_url));
+                        for key in CLAUDE_MODEL_OVERRIDE_ENV_KEYS {
+                            env.remove(key);
+                        }
+
+                        let token_keys = [
+                            "ANTHROPIC_AUTH_TOKEN",
+                            "ANTHROPIC_API_KEY",
+                            "OPENROUTER_API_KEY",
+                            "OPENAI_API_KEY",
+                        ];
+                        let mut replaced_any = false;
+                        for key in token_keys {
+                            if env.contains_key(key) {
+                                env.insert(
+                                    key.to_string(),
+                                    serde_json::json!(PROXY_TOKEN_PLACEHOLDER),
+                                );
+                                replaced_any = true;
+                            }
+                        }
+                        if !replaced_any {
+                            env.insert(
+                                "ANTHROPIC_AUTH_TOKEN".to_string(),
+                                serde_json::json!(PROXY_TOKEN_PLACEHOLDER),
+                            );
+                        }
+                    } else {
+                        expected["env"] = serde_json::json!({
+                            "ANTHROPIC_BASE_URL": proxy_url,
+                            "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER
+                        });
+                    }
+                }
+            }
             let actual = live_settings.unwrap_or_else(|| serde_json::json!({}));
 
             vec![build_config_preview_file(
@@ -432,6 +626,18 @@ fn build_app_config_preview_internal(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let expected_auth = if takeover_active {
+                let mut auth = expected_auth;
+                if let Some(auth_obj) = auth.as_object_mut() {
+                    auth_obj.insert(
+                        "OPENAI_API_KEY".to_string(),
+                        serde_json::json!(PROXY_TOKEN_PLACEHOLDER),
+                    );
+                }
+                auth
+            } else {
+                expected_auth
+            };
 
             let actual_auth = live_settings
                 .as_ref()
@@ -444,6 +650,21 @@ fn build_app_config_preview_internal(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
+
+            let expected_config_base = if takeover_active {
+                if let Some((_, proxy_codex_base_url, _)) = proxy_preview.as_ref() {
+                    codex_config::update_codex_toml_field(
+                        &expected_config_base,
+                        "base_url",
+                        proxy_codex_base_url,
+                    )
+                    .unwrap_or(expected_config_base)
+                } else {
+                    expected_config_base
+                }
+            } else {
+                expected_config_base
+            };
 
             let expected_config = codex_config::merge_mcp_servers_from_existing(
                 &expected_config_base,
@@ -467,7 +688,19 @@ fn build_app_config_preview_internal(
             ]
         }
         AppType::Gemini => {
-            let expected_env_map = crate::gemini_config::json_to_env(&rendered_settings)?;
+            let mut expected_env_map = crate::gemini_config::json_to_env(&rendered_settings)?;
+            if takeover_active {
+                if let Some((proxy_url, _, _)) = proxy_preview.as_ref() {
+                    expected_env_map.insert(
+                        "GOOGLE_GEMINI_BASE_URL".to_string(),
+                        proxy_url.to_string(),
+                    );
+                    expected_env_map.insert(
+                        "GEMINI_API_KEY".to_string(),
+                        PROXY_TOKEN_PLACEHOLDER.to_string(),
+                    );
+                }
+            }
             let expected_env_text = crate::gemini_config::serialize_env_file(&expected_env_map);
             let actual_env_text = live_settings
                 .as_ref()
@@ -515,7 +748,14 @@ fn build_app_config_preview_internal(
         current_provider_id,
         current_provider_name,
         files,
-        note: None,
+        note: if takeover_active {
+            Some(
+                "当前应用已启用代理接管，预期结果会显示为本地代理地址，而不是供应商原始请求地址。"
+                    .to_string(),
+            )
+        } else {
+            None
+        },
     })
 }
 
@@ -875,10 +1115,22 @@ pub async fn get_provider_default_template(
         return Err(format!("不支持的应用类型: {app_type}"));
     }
 
-    state
+    let value = state
         .db
         .get_setting(&provider_default_template_key(&app_type))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Some(template) = value.as_deref() {
+        if let Some(sanitized) = sanitize_provider_default_template(&app_type, template) {
+            state
+                .db
+                .set_setting(&provider_default_template_key(&app_type), &sanitized)
+                .map_err(|e| e.to_string())?;
+            return Ok(Some(sanitized));
+        }
+    }
+
+    Ok(value)
 }
 
 #[tauri::command]

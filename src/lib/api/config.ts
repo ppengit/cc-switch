@@ -102,6 +102,18 @@ export async function openLiveConfigFile(path: string): Promise<void> {
   await invoke("open_live_config_file", { path });
 }
 
+export async function saveLiveConfigFile(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+  label: string,
+  content: string,
+): Promise<void> {
+  await invoke("save_live_config_file", {
+    app: appType,
+    label,
+    content,
+  });
+}
+
 export async function getAppConfigPreview(
   appType: Exclude<AppType, "omo" | "omo_slim">,
 ): Promise<AppConfigPreview> {

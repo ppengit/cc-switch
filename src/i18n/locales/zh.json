@@ -160,7 +160,7 @@
       "notInConfig": "未写入应用配置，当前不会被使用",
       "defaultModel": "OpenClaw 默认主模型",
       "sessionDefault": "未携带会话 ID 的请求默认先使用此供应商",
-      "sessionDefaultFollowCurrent": "未携带会话 ID 的请求跟随当前 provider；当前指向此供应商",
+      "sessionDefaultFollowCurrent": "未携带会话 ID 的请求跟随当前供应商；当前指向此供应商",
       "failoverPriority": "故障转移开启时，请求会按队列顺序回落到此供应商"
     },
     "noSearchResults": "没有符合搜索条件的供应商。",
@@ -1721,8 +1721,8 @@
     "panel": {
       "serviceAddress": "服务地址",
       "addressCopied": "地址已复制",
-      "currentProvider": "当前 Provider：",
-      "waitingFirstRequest": "当前 Provider：等待首次请求…",
+      "currentProvider": "当前供应商：",
+      "waitingFirstRequest": "当前供应商：等待首次请求…",
       "stoppedTitle": "代理服务已停止",
       "stoppedDescription": "使用上方开关即可启动服务",
       "openSettings": "配置代理服务",
@@ -1884,11 +1884,11 @@
     "sessionRouting": {
       "enabledBadge": "已启用",
       "defaultProvider": "无会话默认提供商",
-      "defaultProviderFollowCurrent": "跟随当前 Provider",
+      "defaultProviderFollowCurrent": "跟随当前供应商",
       "defaultProviderHint": "未携带会话 ID 的请求会固定先使用该提供商，不参与会话绑定。",
       "defaultProviderHintWithFailover": "未携带会话 ID 的请求会先使用该提供商；失败后再按故障转移队列继续回落。",
-      "defaultProviderFollowCurrentHint": "留空时跟随当前 Provider；这就是会话路由模式下的“应用默认”回退行为。",
-      "defaultProviderFollowCurrentHintWithFailover": "留空时跟随当前 Provider；若当前失败，再按故障转移队列回落。"
+      "defaultProviderFollowCurrentHint": "留空时跟随当前供应商；这就是会话路由模式下的“应用默认”回退行为。",
+      "defaultProviderFollowCurrentHintWithFailover": "留空时跟随当前供应商；若当前失败，再按故障转移队列回落。"
     }
   },
   "streamCheck": {

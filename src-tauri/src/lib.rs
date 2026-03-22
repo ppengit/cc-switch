@@ -899,6 +899,7 @@ pub fn run() {
             commands::open_config_folder,
             commands::get_live_config_files,
             commands::open_live_config_file,
+            commands::save_live_config_file,
             commands::get_app_config_preview,
             commands::get_config_health_report,
             commands::repair_config_health,
