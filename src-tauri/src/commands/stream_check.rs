@@ -15,6 +15,7 @@ pub async fn stream_check_provider(
     state: State<'_, AppState>,
     app_type: AppType,
     provider_id: String,
+    prompt_override: Option<String>,
 ) -> Result<StreamCheckResult, AppError> {
     let config = state.db.get_stream_check_config()?;
 
@@ -23,7 +24,13 @@ pub async fn stream_check_provider(
         .get(&provider_id)
         .ok_or_else(|| AppError::Message(format!("供应商 {provider_id} 不存在")))?;
 
-    let result = StreamCheckService::check_with_retry(&app_type, provider, &config).await?;
+    let result = StreamCheckService::check_with_retry(
+        &app_type,
+        provider,
+        &config,
+        prompt_override.as_deref(),
+    )
+    .await?;
 
     // 记录日志
     let _ =
@@ -67,7 +74,7 @@ pub async fn stream_check_all_providers(
             }
         }
 
-        let result = StreamCheckService::check_with_retry(&app_type, &provider, &config)
+        let result = StreamCheckService::check_with_retry(&app_type, &provider, &config, None)
             .await
             .unwrap_or_else(|e| StreamCheckResult {
                 status: HealthStatus::Failed,

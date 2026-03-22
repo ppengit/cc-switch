@@ -1903,6 +1903,9 @@
     "maxRetries": "Max Retries",
     "degradedThreshold": "Degraded Threshold (ms)",
     "testPrompt": "Test Prompt",
+    "testPromptList": "Test Questions (one per line)",
+    "testPromptListHint": "Put one question per line. Each test run randomly picks one line and uses it as the global test prompt.",
+    "testPromptListPlaceholder": "Who are you?\nWhat can you help me with?\nExplain what an API is in one sentence.\nSummarize the purpose of unit tests in one sentence.\nReply with OK only.",
     "batchCompleted": "Batch test completed ({{count}} providers)",
     "batchCompletedSummary": "Operational {{operational}}, degraded {{degraded}}, failed {{failed}}"
   },

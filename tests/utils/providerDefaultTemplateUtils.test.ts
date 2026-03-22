@@ -14,6 +14,24 @@ describe("providerDefaultTemplateUtils", () => {
     expect(rendered).toContain('base_url = "https://sub.jlypx.de"');
   });
 
+  it("keeps codex template placeholders in fallback template source", () => {
+    const rendered = validateProviderDefaultTemplate(
+      "codex",
+      `model_provider = "custom"
+model = "{{model}}"
+model_reasoning_effort = "{{reasoning_effort}}"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "{{base_url}}"`,
+    );
+
+    expect(rendered).toBe("");
+  });
+
   it("rejects unsupported placeholders", () => {
     const template = `{
   "env": {

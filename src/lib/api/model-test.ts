@@ -34,8 +34,13 @@ export interface StreamCheckResult {
 export async function streamCheckProvider(
   appType: AppId,
   providerId: string,
+  promptOverride?: string,
 ): Promise<StreamCheckResult> {
-  return invoke("stream_check_provider", { appType, providerId });
+  return invoke("stream_check_provider", {
+    appType,
+    providerId,
+    promptOverride,
+  });
 }
 
 /**

@@ -42,7 +42,14 @@ pub struct StreamCheckConfig {
 }
 
 fn default_test_prompt() -> String {
-    "Who are you?".to_string()
+    [
+        "Who are you?",
+        "What can you help me with?",
+        "Explain what an API is in one sentence.",
+        "Summarize the purpose of unit tests in one sentence.",
+        "Reply with OK only.",
+    ]
+    .join("\n")
 }
 
 impl Default for StreamCheckConfig {
@@ -53,7 +60,7 @@ impl Default for StreamCheckConfig {
             degraded_threshold_ms: 6000,
             claude_model: "claude-haiku-4-5-20251001".to_string(),
             codex_model: "gpt-5.1-codex@low".to_string(),
-            gemini_model: "gemini-3-pro-preview".to_string(),
+            gemini_model: "gemini-3.1-pro-preview".to_string(),
             test_prompt: default_test_prompt(),
         }
     }
@@ -84,9 +91,13 @@ impl StreamCheckService {
         app_type: &AppType,
         provider: &Provider,
         config: &StreamCheckConfig,
+        prompt_override: Option<&str>,
     ) -> Result<StreamCheckResult, AppError> {
         // 合并供应商单独配置和全局配置
-        let effective_config = Self::merge_provider_config(provider, config);
+        let effective_config = Self::apply_prompt_override(
+            Self::merge_provider_config(provider, config),
+            prompt_override,
+        );
         let mut last_result = None;
 
         for attempt in 0..=effective_config.max_retries {
@@ -171,6 +182,20 @@ impl StreamCheckService {
             },
             None => global_config.clone(),
         }
+    }
+
+    fn apply_prompt_override(
+        mut config: StreamCheckConfig,
+        prompt_override: Option<&str>,
+    ) -> StreamCheckConfig {
+        if let Some(prompt) = prompt_override
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+        {
+            config.test_prompt = prompt.to_string();
+        }
+
+        config
     }
 
     /// 单次流式检查
@@ -728,6 +753,25 @@ mod tests {
         assert_eq!(config.timeout_secs, 45);
         assert_eq!(config.max_retries, 2);
         assert_eq!(config.degraded_threshold_ms, 6000);
+        assert!(config.test_prompt.contains('\n'));
+    }
+
+    #[test]
+    fn test_apply_prompt_override() {
+        let config = StreamCheckConfig {
+            test_prompt: "default prompt".to_string(),
+            ..StreamCheckConfig::default()
+        };
+
+        let overridden =
+            StreamCheckService::apply_prompt_override(config.clone(), Some("custom prompt"));
+        assert_eq!(overridden.test_prompt, "custom prompt");
+
+        let untouched = StreamCheckService::apply_prompt_override(config.clone(), Some("   "));
+        assert_eq!(untouched.test_prompt, "default prompt");
+
+        let none_override = StreamCheckService::apply_prompt_override(config, None);
+        assert_eq!(none_override.test_prompt, "default prompt");
     }
 
     #[test]

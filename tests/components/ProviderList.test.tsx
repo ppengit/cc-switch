@@ -421,7 +421,7 @@ describe("ProviderList Component", () => {
     expect(notesHeader?.style.width).toBe("190px");
     expect(modelHeader?.style.width).toBe("180px");
     expect(statusHeader?.style.width).toBe("");
-    expect(actionsHeader?.style.width).toBe("288px");
+    expect(actionsHeader?.style.width).toBe("328px");
     expect(modelHeader?.querySelector('[role="separator"]')).not.toBeNull();
     expect(statusHeader?.querySelector('[role="separator"]')).toBeNull();
     expect(actionsHeader?.querySelector('[role="separator"]')).toBeNull();

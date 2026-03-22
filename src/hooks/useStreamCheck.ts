@@ -10,6 +10,7 @@ import { useResetCircuitBreaker } from "@/lib/query/failover";
 
 interface StreamCheckOptions {
   silent?: boolean;
+  promptOverride?: string;
 }
 
 export function useStreamCheck(appId: AppId) {
@@ -24,10 +25,17 @@ export function useStreamCheck(appId: AppId) {
       options?: StreamCheckOptions,
     ): Promise<StreamCheckResult | null> => {
       const silent = options?.silent === true;
+      const promptOverride = options?.promptOverride?.trim();
       setCheckingIds((prev) => new Set(prev).add(providerId));
 
       try {
-        const result = await streamCheckProvider(appId, providerId);
+        const result = await streamCheckProvider(
+          appId,
+          providerId,
+          promptOverride && promptOverride.length > 0
+            ? promptOverride
+            : undefined,
+        );
 
         if (result.status === "operational") {
           if (!silent) {

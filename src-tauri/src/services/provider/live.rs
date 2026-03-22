@@ -21,6 +21,9 @@ use super::gemini_auth::{
 };
 use super::normalize_claude_models_in_value;
 
+const CODEX_PROVIDER_CONFIG_PLACEHOLDER: &str = "{{provider.config}}";
+const CODEX_MCP_CONFIG_PLACEHOLDER: &str = "{{mcp.config}}";
+
 pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     let mut v = settings.clone();
     if let Some(obj) = v.as_object_mut() {
@@ -49,6 +52,65 @@ fn merge_claude_mcp_servers_from_existing(settings: &mut Value) {
 
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("mcpServers".to_string(), mcp_servers);
+    }
+}
+
+fn extract_codex_mcp_fragment(config_text: &str) -> Option<String> {
+    if config_text.trim().is_empty() {
+        return None;
+    }
+
+    let existing_doc = config_text.parse::<DocumentMut>().ok()?;
+    let mut out = DocumentMut::new();
+
+    if let Some(item) = existing_doc.get("mcp_servers") {
+        out["mcp_servers"] = item.clone();
+        return Some(out.to_string().trim().to_string());
+    }
+
+    if let Some(mcp_item) = existing_doc.get("mcp") {
+        if let Some(mcp_tbl) = mcp_item.as_table_like() {
+            if let Some(servers_item) = mcp_tbl.get("servers") {
+                if let Item::Table(_) = servers_item {
+                    out["mcp_servers"] = servers_item.clone();
+                    return Some(out.to_string().trim().to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn render_codex_config_template(
+    template: &str,
+    provider_fragment: &str,
+    mcp_fragment: &str,
+) -> String {
+    let rendered = template
+        .replace(CODEX_PROVIDER_CONFIG_PLACEHOLDER, provider_fragment.trim())
+        .replace(CODEX_MCP_CONFIG_PLACEHOLDER, mcp_fragment.trim());
+
+    let mut final_text = String::new();
+    let mut blank_run = 0usize;
+    for line in rendered.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 {
+                final_text.push('\n');
+            }
+            continue;
+        }
+        blank_run = 0;
+        final_text.push_str(line);
+        final_text.push('\n');
+    }
+
+    let trimmed = final_text.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}\n")
     }
 }
 
@@ -311,8 +373,11 @@ fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
     }
 }
 
-#[allow(dead_code)]
-fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
+pub(crate) fn settings_contain_common_config(
+    app_type: &AppType,
+    settings: &Value,
+    snippet: &str,
+) -> bool {
     let trimmed = snippet.trim();
     if trimmed.is_empty() {
         return false;
@@ -359,14 +424,27 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
 
 pub(crate) fn provider_uses_common_config(
     app_type: &AppType,
-    _provider: &Provider,
+    provider: &Provider,
     snippet: Option<&str>,
 ) -> bool {
     if matches!(app_type, AppType::OpenCode | AppType::OpenClaw) {
         return false;
     }
 
-    snippet.is_some_and(|value| !value.trim().is_empty())
+    let has_snippet = snippet.is_some_and(|value| !value.trim().is_empty());
+    if !has_snippet {
+        return false;
+    }
+
+    if let Some(enabled) = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.common_config_enabled)
+    {
+        return enabled;
+    }
+
+    true
 }
 
 pub(crate) fn remove_common_config_from_settings(
@@ -442,23 +520,39 @@ fn apply_common_config_to_settings(
         }
         AppType::Codex => {
             let mut result = settings.clone();
-            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
-            let mut target_doc = if config_toml.trim().is_empty() {
-                DocumentMut::new()
-            } else {
-                config_toml.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!(
-                        "Invalid Codex config.toml while applying common config: {e}"
-                    ))
-                })?
-            };
-            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
-                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
-            })?;
+            let provider_fragment = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
 
-            merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            let config_text = if trimmed.contains(CODEX_PROVIDER_CONFIG_PLACEHOLDER)
+                || trimmed.contains(CODEX_MCP_CONFIG_PLACEHOLDER)
+            {
+                let current_live_config =
+                    crate::codex_config::read_codex_config_text().unwrap_or_default();
+                let current_mcp =
+                    extract_codex_mcp_fragment(&current_live_config).unwrap_or_default();
+                render_codex_config_template(trimmed, provider_fragment, &current_mcp)
+            } else {
+                let mut target_doc = if provider_fragment.trim().is_empty() {
+                    DocumentMut::new()
+                } else {
+                    provider_fragment.parse::<DocumentMut>().map_err(|e| {
+                        AppError::Message(format!(
+                            "Invalid Codex config.toml while applying common config: {e}"
+                        ))
+                    })?
+                };
+                let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!("Invalid Codex common config snippet: {e}"))
+                })?;
+
+                merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+                target_doc.to_string()
+            };
+
             if let Some(obj) = result.as_object_mut() {
-                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+                obj.insert("config".to_string(), Value::String(config_text));
             }
             Ok(result)
         }

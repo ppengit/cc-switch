@@ -108,7 +108,7 @@ export const GeminiCommonConfigModal: React.FC<
           onChange={setDraftValue}
           placeholder={`{
   "env": {
-    "GEMINI_MODEL": "gemini-3-pro-preview"
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
   },
   "config": {
     "ui": {

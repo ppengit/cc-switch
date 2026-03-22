@@ -15,9 +15,9 @@ export interface ForceModelPanelProps {
 }
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
-  claude: "claude-sonnet-4-5-20250929",
+  claude: "claude-sonnet-4-6",
   codex: "gpt-5.4",
-  gemini: "gemini-2.5-pro",
+  gemini: "gemini-3.1-pro-preview",
 };
 
 export function ForceModelPanel({

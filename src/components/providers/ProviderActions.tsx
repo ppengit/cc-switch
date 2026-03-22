@@ -1,4 +1,5 @@
 import {
+  ArrowUp,
   BarChart3,
   Check,
   Copy,
@@ -41,6 +42,7 @@ interface ProviderActionsProps {
   onDuplicate: () => void;
   onTest?: () => void;
   onConfigureUsage: () => void;
+  onMoveToTop?: () => void;
   onDelete: () => void;
   onRemoveFromConfig?: () => void;
   onDisableOmo?: () => void;
@@ -67,6 +69,7 @@ export function ProviderActions({
   onDuplicate,
   onTest,
   onConfigureUsage,
+  onMoveToTop,
   onDelete,
   onRemoveFromConfig,
   onDisableOmo,
@@ -276,6 +279,18 @@ export function ProviderActions({
         >
           <Copy className="h-4 w-4" />
         </Button>
+
+        {onMoveToTop && (
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onMoveToTop}
+            title={t("provider.moveToTop", { defaultValue: "置顶" })}
+            className={iconButtonClass}
+          >
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+        )}
 
         {onTest && (
           <Button

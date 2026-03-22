@@ -34,15 +34,15 @@ const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<SupportedTemplateApp, string> 
   }
 }`,
     codex: `model_provider = "custom"
-model = "gpt-5.4"
-model_reasoning_effort = "xhigh"
+model = "{{model}}"
+model_reasoning_effort = "{{reasoning_effort}}"
 disable_response_storage = true
 
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://sub.jlypx.de"
+base_url = "{{base_url}}"
 `,
     gemini: `{
   "env": {
@@ -61,21 +61,21 @@ const FALLBACK_PROVIDER_DEFAULT_VALUES: Record<
   claude: {
     api_key: "",
     base_url: "",
-    model: "claude-sonnet-4-20250514",
-    reasoning_model: "claude-sonnet-4-20250514",
-    haiku_model: "claude-haiku-4-20250514",
-    sonnet_model: "claude-sonnet-4-20250514",
-    opus_model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
+    reasoning_model: "claude-sonnet-4-6",
+    haiku_model: "claude-haiku-4-5-20251001",
+    sonnet_model: "claude-sonnet-4-6",
+    opus_model: "claude-opus-4-6",
   },
-    codex: {
-      base_url: "",
-      model: "gpt-5.4",
-      reasoning_effort: "xhigh",
+  codex: {
+    base_url: "https://sub.jlypx.de",
+    model: "gpt-5.4",
+    reasoning_effort: "xhigh",
   },
   gemini: {
     api_key: "",
     base_url: "",
-    model: "gemini-3-pro-preview",
+    model: "gemini-3.1-pro-preview",
   },
 };
 

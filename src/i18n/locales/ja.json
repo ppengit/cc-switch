@@ -1884,6 +1884,9 @@
     "maxRetries": "最大リトライ回数",
     "degradedThreshold": "劣化しきい値（ミリ秒）",
     "testPrompt": "テストプロンプト",
+    "testPromptList": "テスト用の質問（1 行 1 件）",
+    "testPromptListHint": "1 行ごとに 1 つの質問を入力します。各テスト実行時に 1 行がランダムに選ばれ、グローバルなテストプロンプトとして使われます。",
+    "testPromptListPlaceholder": "Who are you?\nWhat can you help me with?\nExplain what an API is in one sentence.\nSummarize the purpose of unit tests in one sentence.\nReply with OK only.",
     "batchCompleted": "一括テストが完了しました（{{count}} プロバイダー）",
     "batchCompletedSummary": "正常 {{operational}} 件、劣化 {{degraded}} 件、失敗 {{failed}} 件"
   },

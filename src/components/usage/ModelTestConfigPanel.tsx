@@ -13,6 +13,24 @@ import {
   type StreamCheckConfig,
 } from "@/lib/api/model-test";
 
+const DEFAULT_TEST_PROMPT = [
+  "Who are you?",
+  "What can you help me with?",
+  "Explain what an API is in one sentence.",
+  "Summarize the purpose of unit tests in one sentence.",
+  "Reply with OK only.",
+].join("\n");
+
+const normalizeTestPrompt = (value: string): string => {
+  const normalized = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+
+  return normalized.length > 0 ? normalized : DEFAULT_TEST_PROMPT;
+};
+
 export function ModelTestConfigPanel() {
   const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(true);
@@ -25,8 +43,8 @@ export function ModelTestConfigPanel() {
     degradedThresholdMs: "6000",
     claudeModel: "claude-haiku-4-5-20251001",
     codexModel: "gpt-5.4@low",
-    geminiModel: "gemini-3-pro-preview",
-    testPrompt: "Who are you?",
+    geminiModel: "gemini-3.1-pro-preview",
+    testPrompt: DEFAULT_TEST_PROMPT,
   });
 
   useEffect(() => {
@@ -45,7 +63,7 @@ export function ModelTestConfigPanel() {
         claudeModel: data.claudeModel,
         codexModel: data.codexModel,
         geminiModel: data.geminiModel,
-        testPrompt: data.testPrompt || "Who are you?",
+        testPrompt: data.testPrompt || DEFAULT_TEST_PROMPT,
       });
     } catch (e) {
       setError(String(e));
@@ -69,9 +87,13 @@ export function ModelTestConfigPanel() {
         claudeModel: config.claudeModel,
         codexModel: config.codexModel,
         geminiModel: config.geminiModel,
-        testPrompt: config.testPrompt || "Who are you?",
+        testPrompt: normalizeTestPrompt(config.testPrompt),
       };
       await saveStreamCheckConfig(parsed);
+      setConfig((current) => ({
+        ...current,
+        testPrompt: parsed.testPrompt,
+      }));
       toast.success(t("streamCheck.configSaved"), {
         closeButton: true,
       });
@@ -196,17 +218,29 @@ export function ModelTestConfigPanel() {
 
         {/* 检查提示词配置 */}
         <div className="space-y-2">
-          <Label htmlFor="testPrompt">{t("streamCheck.testPrompt")}</Label>
+          <Label htmlFor="testPrompt">
+            {t("streamCheck.testPromptList", {
+              defaultValue: "测试问题（每行一个）",
+            })}
+          </Label>
           <Textarea
             id="testPrompt"
             value={config.testPrompt}
             onChange={(e) =>
               setConfig({ ...config, testPrompt: e.target.value })
             }
-            placeholder="Who are you?"
-            rows={2}
-            className="min-h-[60px]"
+            placeholder={t("streamCheck.testPromptListPlaceholder", {
+              defaultValue: DEFAULT_TEST_PROMPT,
+            })}
+            rows={4}
+            className="min-h-[96px]"
           />
+          <p className="text-xs text-muted-foreground">
+            {t("streamCheck.testPromptListHint", {
+              defaultValue:
+                "每行一个问题。每次测试都会随机选择其中一行，并作为全局检查提示词使用。",
+            })}
+          </p>
         </div>
       </div>
 

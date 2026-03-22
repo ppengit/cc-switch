@@ -1903,6 +1903,9 @@
     "maxRetries": "最大重试次数",
     "degradedThreshold": "降级阈值（毫秒）",
     "testPrompt": "检查提示词",
+    "testPromptList": "测试问题（每行一个）",
+    "testPromptListHint": "每行一个问题。每次测试都会随机选择其中一行，并作为全局检查提示词使用。",
+    "testPromptListPlaceholder": "Who are you?\nWhat can you help me with?\nExplain what an API is in one sentence.\nSummarize the purpose of unit tests in one sentence.\nReply with OK only.",
     "batchCompleted": "已完成批量测试（{{count}} 个供应商）",
     "batchCompletedSummary": "正常 {{operational}} 个，降级 {{degraded}} 个，失败 {{failed}} 个"
   },

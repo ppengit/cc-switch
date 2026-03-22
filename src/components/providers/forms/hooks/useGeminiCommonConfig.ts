@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { configApi } from "@/lib/api";
 
@@ -33,10 +33,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 管理 Gemini 通用配置片段 (JSON 格式)
- * 写入 Gemini 的 .env，但会排除以下敏感字段：
- * - GOOGLE_GEMINI_BASE_URL
- * - GEMINI_API_KEY
+ * 管理 Gemini 应用配置模板（JSON 格式）
+ * 仅负责加载、校验、保存模板本身，不再把模板内容写回供应商 env 片段。
  */
 export function useGeminiCommonConfig({
   envValue,
@@ -47,27 +45,19 @@ export function useGeminiCommonConfig({
   initialEnabled,
   selectedPresetId,
 }: UseGeminiCommonConfigProps) {
+  void onEnvChange;
+  void envObjToString;
+  void initialData;
+  void initialEnabled;
+  void selectedPresetId;
+
   const { t } = useTranslation();
-  const [useCommonConfig, setUseCommonConfig] = useState(false);
   const [commonConfigSnippet, setCommonConfigSnippetState] = useState<string>(
     DEFAULT_GEMINI_COMMON_CONFIG_SNIPPET,
   );
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
-
-  // 用于跟踪是否正在通过通用配置更新
-  const isUpdatingFromCommonConfig = useRef(false);
-  // 用于跟踪新建模式是否已初始化默认勾选
-  const hasInitializedNewMode = useRef(false);
-  // 用于跟踪编辑模式是否已初始化显式开关/预览
-  const hasInitializedEditMode = useRef(false);
-
-  // 当预设变化时，重置初始化标记，使新预设能够重新触发初始化逻辑
-  useEffect(() => {
-    hasInitializedNewMode.current = false;
-    hasInitializedEditMode.current = false;
-  }, [selectedPresetId, initialEnabled]);
 
   const parseSnippetEnv = useCallback(
     (
@@ -120,82 +110,43 @@ export function useGeminiCommonConfig({
     [t],
   );
 
-  const hasEnvCommonConfigSnippet = useCallback(
-    (envObj: Record<string, string>, snippetEnv: Record<string, string>) => {
-      const entries = Object.entries(snippetEnv);
-      if (entries.length === 0) return false;
-      return entries.every(([key, value]) => envObj[key] === value);
-    },
-    [],
-  );
-
-  const applySnippetToEnv = useCallback(
-    (envObj: Record<string, string>, snippetEnv: Record<string, string>) => {
-      const updated = { ...envObj };
-      for (const [key, value] of Object.entries(snippetEnv)) {
-        if (typeof value === "string") {
-          updated[key] = value;
-        }
-      }
-      return updated;
-    },
-    [],
-  );
-
-  const removeSnippetFromEnv = useCallback(
-    (envObj: Record<string, string>, snippetEnv: Record<string, string>) => {
-      const updated = { ...envObj };
-      for (const [key, value] of Object.entries(snippetEnv)) {
-        if (typeof value === "string" && updated[key] === value) {
-          delete updated[key];
-        }
-      }
-      return updated;
-    },
-    [],
-  );
-
-  // 初始化：从 config.json 加载，支持从 localStorage 迁移
   useEffect(() => {
     let mounted = true;
 
     const loadSnippet = async () => {
       try {
-        // 使用统一 API 加载
         const snippet = await configApi.getCommonConfigSnippet("gemini");
 
         if (snippet && snippet.trim()) {
           if (mounted) {
             setCommonConfigSnippetState(snippet);
           }
-        } else {
-          // 如果 config.json 中没有，尝试从 localStorage 迁移
-          if (typeof window !== "undefined") {
-            try {
-              const legacySnippet =
-                window.localStorage.getItem(LEGACY_STORAGE_KEY);
-              if (legacySnippet && legacySnippet.trim()) {
-                const parsed = parseSnippetEnv(legacySnippet);
-                if (parsed.error) {
-                  console.warn(
-                    "[迁移] legacy Gemini 通用配置片段格式不符合当前规则，跳过迁移",
-                  );
-                  return;
-                }
-                // 迁移到 config.json
-                await configApi.setCommonConfigSnippet("gemini", legacySnippet);
-                if (mounted) {
-                  setCommonConfigSnippetState(legacySnippet);
-                }
-                // 清理 localStorage
-                window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-                console.log(
-                  "[迁移] Gemini 通用配置已从 localStorage 迁移到 config.json",
+          return;
+        }
+
+        if (typeof window !== "undefined") {
+          try {
+            const legacySnippet =
+              window.localStorage.getItem(LEGACY_STORAGE_KEY);
+            if (legacySnippet && legacySnippet.trim()) {
+              const parsed = parseSnippetEnv(legacySnippet);
+              if (parsed.error) {
+                console.warn(
+                  "[迁移] legacy Gemini 通用配置片段格式不符合当前规则，跳过迁移",
                 );
+                return;
               }
-            } catch (e) {
-              console.warn("[迁移] 从 localStorage 迁移失败:", e);
+              await configApi.setCommonConfigSnippet("gemini", legacySnippet);
+              if (mounted) {
+                setCommonConfigSnippetState(legacySnippet);
+              }
+              window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+              console.log(
+                "[迁移] Gemini 通用配置已从 localStorage 迁移到 config.json",
+              );
             }
+          } catch (error) {
+            console.warn("[迁移] 从 localStorage 迁移失败:", error);
           }
         }
       } catch (error) {
@@ -207,187 +158,26 @@ export function useGeminiCommonConfig({
       }
     };
 
-    loadSnippet();
+    void loadSnippet();
 
     return () => {
       mounted = false;
     };
   }, [parseSnippetEnv]);
 
-  // 初始化时检查通用配置片段（编辑模式）
-  useEffect(() => {
-    if (
-      !initialData?.settingsConfig ||
-      isLoading ||
-      hasInitializedEditMode.current
-    ) {
-      return;
-    }
-
-    hasInitializedEditMode.current = true;
-
-    try {
-      const env =
-        isPlainObject(initialData.settingsConfig.env) &&
-        Object.keys(initialData.settingsConfig.env).length > 0
-          ? (initialData.settingsConfig.env as Record<string, string>)
-          : {};
-      const parsed = parseSnippetEnv(commonConfigSnippet);
-      if (parsed.error) {
-        if (commonConfigSnippet.trim()) {
-          setCommonConfigError(parsed.error);
-        }
-        setUseCommonConfig(false);
-        return;
-      }
-      const inferredHasCommon = hasEnvCommonConfigSnippet(
-        env,
-        parsed.env as Record<string, string>,
-      );
-      const hasCommon = initialEnabled ?? inferredHasCommon;
-
-      if (hasCommon && !inferredHasCommon) {
-        const currentEnv = envStringToObj(envValue);
-        const merged = applySnippetToEnv(currentEnv, parsed.env);
-        const nextEnvString = envObjToString(merged);
-
-        setCommonConfigError("");
-        setUseCommonConfig(true);
-        isUpdatingFromCommonConfig.current = true;
-        onEnvChange(nextEnvString);
-        setTimeout(() => {
-          isUpdatingFromCommonConfig.current = false;
-        }, 0);
-        return;
-      }
-
-      setCommonConfigError("");
-      setUseCommonConfig(hasCommon);
-    } catch {
-      // ignore parse error
-    }
-  }, [
-    applySnippetToEnv,
-    commonConfigSnippet,
-    envObjToString,
-    envStringToObj,
-    envValue,
-    hasEnvCommonConfigSnippet,
-    initialData,
-    initialEnabled,
-    isLoading,
-    onEnvChange,
-    parseSnippetEnv,
-  ]);
-
-  // 新建模式：如果通用配置片段存在且有效，默认启用
-  useEffect(() => {
-    if (initialData || isLoading || hasInitializedNewMode.current) {
-      return;
-    }
-
-    hasInitializedNewMode.current = true;
-
+  const useCommonConfig = useMemo(() => {
     const parsed = parseSnippetEnv(commonConfigSnippet);
-    if (parsed.error) {
-      if (commonConfigSnippet.trim()) {
-        setCommonConfigError(parsed.error);
-      }
-      setUseCommonConfig(false);
-      return;
-    }
-    const hasContent = Object.keys(parsed.env).length > 0;
-    if (!hasContent) return;
+    return !parsed.error && Object.keys(parsed.env).length > 0;
+  }, [commonConfigSnippet, parseSnippetEnv]);
 
-    setCommonConfigError("");
-    setUseCommonConfig(true);
-    const currentEnv = envStringToObj(envValue);
-    const merged = applySnippetToEnv(currentEnv, parsed.env);
-    const nextEnvString = envObjToString(merged);
+  const handleCommonConfigToggle = useCallback((checked: boolean) => {
+    void checked;
+  }, []);
 
-    isUpdatingFromCommonConfig.current = true;
-    onEnvChange(nextEnvString);
-    setTimeout(() => {
-      isUpdatingFromCommonConfig.current = false;
-    }, 0);
-  }, [
-    initialData,
-    isLoading,
-    commonConfigSnippet,
-    envValue,
-    envStringToObj,
-    envObjToString,
-    applySnippetToEnv,
-    onEnvChange,
-    parseSnippetEnv,
-  ]);
-
-  // 处理通用配置开关
-  const handleCommonConfigToggle = useCallback(
-    (checked: boolean) => {
-      const parsed = parseSnippetEnv(commonConfigSnippet);
-      if (parsed.error) {
-        setCommonConfigError(parsed.error);
-        setUseCommonConfig(false);
-        return;
-      }
-      if (Object.keys(parsed.env).length === 0) {
-        setCommonConfigError(t("geminiConfig.noCommonConfigToApply"));
-        setUseCommonConfig(false);
-        return;
-      }
-
-      const currentEnv = envStringToObj(envValue);
-      const updatedEnvObj = checked
-        ? applySnippetToEnv(currentEnv, parsed.env)
-        : removeSnippetFromEnv(currentEnv, parsed.env);
-
-      setCommonConfigError("");
-      setUseCommonConfig(checked);
-
-      isUpdatingFromCommonConfig.current = true;
-      onEnvChange(envObjToString(updatedEnvObj));
-      setTimeout(() => {
-        isUpdatingFromCommonConfig.current = false;
-      }, 0);
-    },
-    [
-      applySnippetToEnv,
-      commonConfigSnippet,
-      envObjToString,
-      envStringToObj,
-      envValue,
-      onEnvChange,
-      parseSnippetEnv,
-      removeSnippetFromEnv,
-      t,
-    ],
-  );
-
-  // 处理通用配置片段变化
   const handleCommonConfigSnippetChange = useCallback(
     (value: string): boolean => {
-      const previousSnippet = commonConfigSnippet;
-
       if (!value.trim()) {
         setCommonConfigError("");
-
-        if (useCommonConfig) {
-          const parsedPrevious = parseSnippetEnv(previousSnippet);
-          if (
-            !parsedPrevious.error &&
-            Object.keys(parsedPrevious.env).length > 0
-          ) {
-            const currentEnv = envStringToObj(envValue);
-            const updatedEnv = removeSnippetFromEnv(
-              currentEnv,
-              parsedPrevious.env,
-            );
-            onEnvChange(envObjToString(updatedEnv));
-          }
-          setUseCommonConfig(false);
-        }
-
         setCommonConfigSnippetState("");
         configApi
           .setCommonConfigSnippet("gemini", "")
@@ -400,34 +190,10 @@ export function useGeminiCommonConfig({
         return true;
       }
 
-      // 校验 JSON 格式
       const parsed = parseSnippetEnv(value);
       if (parsed.error) {
         setCommonConfigError(parsed.error);
         return false;
-      }
-
-      // 若当前启用通用配置，需要替换为最新片段
-      if (useCommonConfig) {
-        const prevParsed = parseSnippetEnv(previousSnippet);
-        const prevEnv = prevParsed.error ? {} : prevParsed.env;
-        const nextEnv = parsed.env;
-        const currentEnv = envStringToObj(envValue);
-
-        const withoutOld =
-          Object.keys(prevEnv).length > 0
-            ? removeSnippetFromEnv(currentEnv, prevEnv)
-            : currentEnv;
-        const withNew =
-          Object.keys(nextEnv).length > 0
-            ? applySnippetToEnv(withoutOld, nextEnv)
-            : withoutOld;
-
-        isUpdatingFromCommonConfig.current = true;
-        onEnvChange(envObjToString(withNew));
-        setTimeout(() => {
-          isUpdatingFromCommonConfig.current = false;
-        }, 0);
       }
 
       setCommonConfigError("");
@@ -443,41 +209,9 @@ export function useGeminiCommonConfig({
 
       return true;
     },
-    [
-      applySnippetToEnv,
-      commonConfigSnippet,
-      envObjToString,
-      envStringToObj,
-      envValue,
-      onEnvChange,
-      parseSnippetEnv,
-      removeSnippetFromEnv,
-      t,
-      useCommonConfig,
-    ],
+    [parseSnippetEnv, t],
   );
 
-  // 当 env 变化时检查是否包含通用配置（但避免在通过通用配置更新时检查）
-  useEffect(() => {
-    if (isUpdatingFromCommonConfig.current || isLoading) {
-      return;
-    }
-    const parsed = parseSnippetEnv(commonConfigSnippet);
-    if (parsed.error) return;
-    const envObj = envStringToObj(envValue);
-    setUseCommonConfig(
-      hasEnvCommonConfigSnippet(envObj, parsed.env as Record<string, string>),
-    );
-  }, [
-    envValue,
-    commonConfigSnippet,
-    envStringToObj,
-    hasEnvCommonConfigSnippet,
-    isLoading,
-    parseSnippetEnv,
-  ]);
-
-  // 从编辑器当前内容提取通用配置片段
   const handleExtract = useCallback(async () => {
     setIsExtracting(true);
     setCommonConfigError("");
@@ -494,17 +228,13 @@ export function useGeminiCommonConfig({
         return;
       }
 
-      // 验证 JSON 格式
       const parsed = parseSnippetEnv(extracted);
       if (parsed.error) {
         setCommonConfigError(t("geminiConfig.extractedConfigInvalid"));
         return;
       }
 
-      // 更新片段状态
       setCommonConfigSnippetState(extracted);
-
-      // 保存到后端
       await configApi.setCommonConfigSnippet("gemini", extracted);
     } catch (error) {
       console.error("提取 Gemini 通用配置失败:", error);

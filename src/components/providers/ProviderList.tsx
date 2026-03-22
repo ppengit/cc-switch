@@ -85,6 +85,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -233,8 +234,53 @@ const PROVIDER_COLUMN_MIN_WIDTHS: Record<ProviderResizableColumnKey, number> = {
 };
 const PROVIDER_STATUS_COLUMN_MIN_WIDTH = 180;
 const getProviderActionsColumnWidth = (appId: AppId) =>
-  appId === "openclaw" ? 340 : 288;
+  appId === "openclaw" ? 360 : 328;
 const batchTestSessionStore = new Map<AppId, BatchTestSessionState>();
+const DEFAULT_STREAM_CHECK_PROMPTS = [
+  "Who are you?",
+  "What can you help me with?",
+  "Explain what an API is in one sentence.",
+  "Summarize the purpose of unit tests in one sentence.",
+  "Reply with OK only.",
+];
+const DEFAULT_STREAM_CHECK_PROMPT = DEFAULT_STREAM_CHECK_PROMPTS.join("\n");
+
+const normalizeTestPromptText = (value: string): string =>
+  value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+
+const getTestPromptOptions = (value: string): string[] => {
+  const normalized = normalizeTestPromptText(value);
+  if (normalized.length > 0) {
+    return normalized.split("\n");
+  }
+  return DEFAULT_STREAM_CHECK_PROMPTS;
+};
+
+const getRandomTestPrompt = (value: string): string => {
+  const prompts = getTestPromptOptions(value);
+  const index = Math.floor(Math.random() * prompts.length);
+  return prompts[index] ?? DEFAULT_STREAM_CHECK_PROMPT;
+};
+
+const getRandomPromptForProvider = (
+  provider: Provider,
+  globalPromptText: string,
+): string => {
+  const providerPrompt =
+    provider.meta?.testConfig?.enabled === true
+      ? provider.meta.testConfig.testPrompt?.trim()
+      : "";
+
+  return getRandomTestPrompt(
+    providerPrompt && providerPrompt.length > 0
+      ? (provider.meta?.testConfig?.testPrompt ?? globalPromptText)
+      : globalPromptText,
+  );
+};
 
 const createEmptyBatchTestSessionState = (): BatchTestSessionState => ({
   isTesting: false,
@@ -634,7 +680,10 @@ export function ProviderList({
     null,
   );
   const [testModel, setTestModel] = useState("");
-  const [isSavingTestModel, setIsSavingTestModel] = useState(false);
+  const [testPromptText, setTestPromptText] = useState(
+    DEFAULT_STREAM_CHECK_PROMPT,
+  );
+  const [isSavingStreamConfig, setIsSavingStreamConfig] = useState(false);
   const [isBatchTesting, setIsBatchTesting] = useState(
     () => getBatchTestSessionState(appId, sortedProviders).isTesting,
   );
@@ -647,9 +696,9 @@ export function ProviderList({
   const [batchResults, setBatchResults] = useState<
     Record<string, StreamCheckResult | null>
   >(() => getBatchTestSessionState(appId, sortedProviders).results);
-  const [activeSearchMatchId, setActiveSearchMatchId] = useState<
-    string | null
-  >(null);
+  const [activeSearchMatchId, setActiveSearchMatchId] = useState<string | null>(
+    null,
+  );
   const isProviderListMountedRef = useRef(true);
   const providerRowRefs = useRef<Record<string, HTMLTableRowElement | null>>(
     {},
@@ -726,6 +775,7 @@ export function ProviderList({
         if (!active) return;
         setStreamConfig(config);
         setTestModel(config[modelKey] || "");
+        setTestPromptText(config.testPrompt || DEFAULT_STREAM_CHECK_PROMPT);
       } catch (error) {
         console.error(
           "[ProviderList] Failed to load stream check config",
@@ -789,7 +839,11 @@ export function ProviderList({
 
         const nextSignature = buildLiveConfigSignature(files);
         const appChanged = lastLiveConfigAppRef.current !== appId;
-        if (options?.resetSignature || appChanged || !liveConfigSignatureRef.current) {
+        if (
+          options?.resetSignature ||
+          appChanged ||
+          !liveConfigSignatureRef.current
+        ) {
           liveConfigSignatureRef.current = nextSignature;
           lastLiveConfigAppRef.current = appId;
           setHasLiveConfigChanged(false);
@@ -849,9 +903,11 @@ export function ProviderList({
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const handleTestProvider = useCallback(
     (provider: Provider) => {
-      void checkProvider(provider.id, provider.name);
+      void checkProvider(provider.id, provider.name, {
+        promptOverride: getRandomPromptForProvider(provider, testPromptText),
+      });
     },
-    [checkProvider],
+    [checkProvider, testPromptText],
   );
 
   const isProviderDefaultModel = useCallback(
@@ -1396,37 +1452,84 @@ export function ProviderList({
     );
   }, [enableStreamCheck, orderedBatchProviders, batchSelections]);
 
-  const saveTestModelIfNeeded = useCallback(async () => {
-    if (!streamConfig || !modelKey) return;
-    const nextModel = testModel.trim();
-    if (streamConfig[modelKey] === nextModel) return;
+  const saveStreamCheckSettingsIfNeeded = useCallback(
+    async (options?: { includeModel?: boolean; includePrompt?: boolean }) => {
+      if (!streamConfig) return;
 
-    const nextConfig: StreamCheckConfig = {
-      ...streamConfig,
-      [modelKey]: nextModel,
-    };
+      const includeModel = options?.includeModel === true;
+      const includePrompt = options?.includePrompt === true;
+      const nextPrompt = normalizeTestPromptText(testPromptText);
+      const promptToSave =
+        nextPrompt.length > 0 ? nextPrompt : DEFAULT_STREAM_CHECK_PROMPT;
+      let nextConfig = streamConfig;
+      let shouldSave = false;
 
-    try {
-      setIsSavingTestModel(true);
-      await saveStreamCheckConfig(nextConfig);
-      setStreamConfig(nextConfig);
-    } catch (error) {
-      console.error("[ProviderList] Failed to save test model", error);
-      toast.error(
-        t("streamCheck.configSaveFailed", {
-          defaultValue: "测试模型保存失败",
-        }),
-      );
-    } finally {
-      setIsSavingTestModel(false);
-    }
-  }, [streamConfig, modelKey, testModel, t]);
+      if (includeModel && modelKey) {
+        const nextModel = testModel.trim();
+        if (streamConfig[modelKey] !== nextModel) {
+          nextConfig = {
+            ...nextConfig,
+            [modelKey]: nextModel,
+          };
+          shouldSave = true;
+        }
+      }
+
+      if (includePrompt && streamConfig.testPrompt !== promptToSave) {
+        nextConfig = {
+          ...nextConfig,
+          testPrompt: promptToSave,
+        };
+        shouldSave = true;
+      }
+
+      if (!shouldSave) {
+        if (includePrompt && testPromptText !== promptToSave) {
+          setTestPromptText(promptToSave);
+        }
+        return;
+      }
+
+      try {
+        setIsSavingStreamConfig(true);
+        await saveStreamCheckConfig(nextConfig);
+        setStreamConfig(nextConfig);
+        if (includePrompt) {
+          setTestPromptText(promptToSave);
+        }
+      } catch (error) {
+        console.error(
+          "[ProviderList] Failed to save stream check settings",
+          error,
+        );
+        toast.error(
+          t("streamCheck.configSaveFailed", {
+            defaultValue: "测试配置保存失败",
+          }),
+        );
+      } finally {
+        setIsSavingStreamConfig(false);
+      }
+    },
+    [streamConfig, modelKey, testModel, testPromptText, t],
+  );
+
+  const handleCloseBatchTest = useCallback(() => {
+    void saveStreamCheckSettingsIfNeeded({
+      includeModel: true,
+      includePrompt: true,
+    });
+    setIsBatchTestOpen(false);
+  }, [saveStreamCheckSettingsIfNeeded]);
 
   const handleBatchTest = useCallback(async () => {
     if (!enableStreamCheck || isBatchTesting) return;
     if (selectedBatchProviders.length === 0) return;
 
-    await saveTestModelIfNeeded();
+    await saveStreamCheckSettingsIfNeeded({
+      includeModel: true,
+      includePrompt: true,
+    });
 
     const total = selectedBatchProviders.length;
     let operationalCount = 0;
@@ -1456,8 +1559,13 @@ export function ProviderList({
             name: provider.name,
           },
         }));
+        const promptOverride = getRandomPromptForProvider(
+          provider,
+          testPromptText,
+        );
         const result = await checkProvider(provider.id, provider.name, {
           silent: true,
+          promptOverride,
         });
         if (!result || result.status === "failed") {
           failedCount += 1;
@@ -1503,8 +1611,9 @@ export function ProviderList({
     enableStreamCheck,
     isBatchTesting,
     selectedBatchProviders,
-    saveTestModelIfNeeded,
+    saveStreamCheckSettingsIfNeeded,
     syncBatchTestSession,
+    testPromptText,
     t,
   ]);
 
@@ -1896,12 +2005,17 @@ export function ProviderList({
 
       const badges: ProviderStatusMeta["badges"] = [];
       let sortValue = 0;
-      const sessionRoutingEnabled = appProxyConfig?.sessionRoutingEnabled === true;
+      const sessionRoutingEnabled =
+        appProxyConfig?.sessionRoutingEnabled === true;
       const followsCurrentSessionDefault =
         sessionRoutingEnabled &&
         !(appProxyConfig?.sessionDefaultProviderId?.trim().length ?? 0);
 
-      if (!sessionRoutingEnabled && isProxyTakeover && activeProviderId === provider.id) {
+      if (
+        !sessionRoutingEnabled &&
+        isProxyTakeover &&
+        activeProviderId === provider.id
+      ) {
         badges.push({
           label: t("provider.activeTraffic", { defaultValue: "当前流量" }),
           className:
@@ -2220,6 +2334,50 @@ export function ProviderList({
     setSelectedProviderIds({});
   }, []);
 
+  const handleMoveProviderToTop = useCallback(
+    async (providerId: string) => {
+      const currentIndex = sortedProviders.findIndex(
+        (provider) => provider.id === providerId,
+      );
+      if (currentIndex <= 0) return;
+
+      const reordered = [
+        sortedProviders[currentIndex],
+        ...sortedProviders.filter((provider) => provider.id !== providerId),
+      ];
+      const updates = reordered.map((provider, index) => ({
+        id: provider.id,
+        sortIndex: index,
+      }));
+
+      try {
+        await providersApi.updateSortOrder(updates, appId);
+        await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+        await queryClient.invalidateQueries({
+          queryKey: ["failoverQueue", appId],
+        });
+        try {
+          await providersApi.updateTrayMenu();
+        } catch (error) {
+          console.error("[ProviderList] Failed to update tray menu", error);
+        }
+        toast.success(
+          t("provider.moveToTopSuccess", {
+            defaultValue: "供应商已置顶",
+          }),
+        );
+      } catch (error) {
+        console.error("[ProviderList] Failed to move provider to top", error);
+        toast.error(
+          t("provider.moveToTopFailed", {
+            defaultValue: "置顶失败",
+          }),
+        );
+      }
+    },
+    [appId, queryClient, sortedProviders, t],
+  );
+
   const canDeleteProvider = useCallback(
     (provider: Provider): boolean => {
       const isOmoCategory =
@@ -2491,11 +2649,7 @@ export function ProviderList({
       try {
         setSavingPreviewFilePath(file.path);
         const nextContent = previewDrafts[file.path] ?? file.actualText;
-        await configApi.saveLiveConfigFile(
-          appId,
-          file.label,
-          nextContent,
-        );
+        await configApi.saveLiveConfigFile(appId, file.label, nextContent);
         await loadLiveConfigFiles({ resetSignature: true });
         await loadConfigPreview();
         await queryClient.invalidateQueries({ queryKey: ["providers"] });
@@ -2518,7 +2672,14 @@ export function ProviderList({
         );
       }
     },
-    [appId, loadConfigPreview, loadLiveConfigFiles, previewDrafts, queryClient, t],
+    [
+      appId,
+      loadConfigPreview,
+      loadLiveConfigFiles,
+      previewDrafts,
+      queryClient,
+      t,
+    ],
   );
 
   const handleBatchDelete = useCallback(async () => {
@@ -2783,6 +2944,7 @@ export function ProviderList({
                     onDisableOmo={onDisableOmo}
                     onDisableOmoSlim={onDisableOmoSlim}
                     onDuplicate={onDuplicate}
+                    onMoveToTop={() => handleMoveProviderToTop(provider.id)}
                     onConfigureUsage={onConfigureUsage}
                     onOpenWebsite={onOpenWebsite}
                     onOpenTerminalWithMode={providerTerminalHandler}
@@ -2943,13 +3105,15 @@ export function ProviderList({
             {enableStreamCheck && (
               <Button
                 type="button"
-                size="icon"
-                variant="ghost"
+                size="sm"
+                variant="outline"
                 onClick={() => setIsBatchTestOpen(true)}
                 disabled={sortedProviders.length === 0}
+                className="gap-2"
                 title={t("streamCheck.testAll", { defaultValue: "批量测试" })}
               >
                 <FlaskConical className="h-4 w-4" />
+                {t("streamCheck.testAll", { defaultValue: "批量测试" })}
               </Button>
             )}
 
@@ -2958,14 +3122,14 @@ export function ProviderList({
                 <DropdownMenuTrigger asChild>
                   <Button
                     type="button"
-                    size="icon"
-                    variant="ghost"
-                    title={t("provider.openTerminalGlobal", {
-                      defaultValue: "打开终端",
-                    })}
-                    className="hover:text-emerald-600 dark:hover:text-emerald-400"
+                    size="sm"
+                    variant="outline"
+                    className="gap-2"
                   >
                     <Terminal className="h-4 w-4" />
+                    {t("provider.openTerminalGlobal", {
+                      defaultValue: "打开终端",
+                    })}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-[220px]">
@@ -3363,7 +3527,7 @@ export function ProviderList({
                   value={batchGeminiModel}
                   onChange={(event) => setBatchGeminiModel(event.target.value)}
                   placeholder={t("provider.modelPlaceholder", {
-                    defaultValue: "例如 gemini-3-pro-preview",
+                    defaultValue: "例如 gemini-3.1-pro-preview",
                   })}
                 />
               </div>
@@ -3772,7 +3936,7 @@ export function ProviderList({
         <FullScreenPanel
           isOpen={isBatchTestOpen}
           title={t("streamCheck.testAll", { defaultValue: "批量测试" })}
-          onClose={() => setIsBatchTestOpen(false)}
+          onClose={handleCloseBatchTest}
           footer={
             <div className="flex w-full items-center justify-between">
               <span className="text-xs text-muted-foreground">
@@ -3782,7 +3946,7 @@ export function ProviderList({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setIsBatchTestOpen(false)}
+                onClick={handleCloseBatchTest}
               >
                 {t("common.close", { defaultValue: "关闭" })}
               </Button>
@@ -3799,7 +3963,12 @@ export function ProviderList({
                   id="batch-test-model"
                   value={testModel}
                   onChange={(event) => setTestModel(event.target.value)}
-                  onBlur={() => void saveTestModelIfNeeded()}
+                  onBlur={() =>
+                    void saveStreamCheckSettingsIfNeeded({
+                      includeModel: true,
+                      includePrompt: true,
+                    })
+                  }
                   placeholder={t("streamCheck.testModelPlaceholder", {
                     defaultValue: "输入用于测试的模型名称",
                   })}
@@ -3883,7 +4052,7 @@ export function ProviderList({
                   onClick={() => void handleBatchTest()}
                   disabled={
                     isBatchTesting ||
-                    isSavingTestModel ||
+                    isSavingStreamConfig ||
                     selectedBatchProviders.length === 0
                   }
                 >
@@ -3907,6 +4076,36 @@ export function ProviderList({
                   </span>
                 )}
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="batch-test-prompts">
+                {t("streamCheck.testPromptList", {
+                  defaultValue: "测试问题（每行一个）",
+                })}
+              </Label>
+              <Textarea
+                id="batch-test-prompts"
+                value={testPromptText}
+                onChange={(event) => setTestPromptText(event.target.value)}
+                onBlur={() =>
+                  void saveStreamCheckSettingsIfNeeded({
+                    includeModel: true,
+                    includePrompt: true,
+                  })
+                }
+                placeholder={t("streamCheck.testPromptListPlaceholder", {
+                  defaultValue: DEFAULT_STREAM_CHECK_PROMPT,
+                })}
+                rows={5}
+                className="min-h-[120px]"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("streamCheck.testPromptListHint", {
+                  defaultValue:
+                    "每行一个问题。每次测试都会随机选择其中一行，并作为全局检查提示词使用。",
+                })}
+              </p>
             </div>
 
             <div className="rounded-xl border border-border overflow-hidden">
@@ -4166,7 +4365,7 @@ export function ProviderList({
 
 {{mcp.config}}`
                   : appId === "gemini"
-                    ? `{\n  \"env\": {\n    \"GEMINI_MODEL\": \"gemini-3-pro-preview\"\n  },\n  \"config\": {\n    \"ui\": {\n      \"inlineThinkingMode\": \"full\"\n    }\n  }\n}`
+                    ? `{\n  \"env\": {\n    \"GEMINI_MODEL\": \"gemini-3.1-pro-preview\"\n  },\n  \"config\": {\n    \"ui\": {\n      \"inlineThinkingMode\": \"full\"\n    }\n  }\n}`
                     : `{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://your-api-endpoint.com\"\n  }\n}`
               }
               darkMode={
@@ -4196,22 +4395,20 @@ export function ProviderList({
                     {t("provider.defaultTemplateHint", {
                       defaultValue:
                         appId === "codex"
-                          ? "用于新建 Codex 自定义供应商的默认 config.toml 片段，不包含 auth.json。"
+                          ? "用于新建 Codex 自定义供应商的默认 config.toml 模板片段，不包含 auth.json，可使用变量占位符。"
                           : "用于新建自定义供应商的初始配置，可使用占位符如 {{api_key}}、{{base_url}}、{{model}}",
                     })}
                   </p>
-                  {appId !== "codex" && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {t("provider.defaultTemplatePlaceholders", {
-                        defaultValue: "可用占位符: {{placeholders}}",
-                        placeholders: getAllowedProviderTemplatePlaceholders(
-                          appId,
-                        )
-                          .map((item) => `{{${item}}}`)
-                          .join(", "),
-                      })}
-                    </p>
-                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("provider.defaultTemplatePlaceholders", {
+                      defaultValue: "可用占位符: {{placeholders}}",
+                      placeholders: getAllowedProviderTemplatePlaceholders(
+                        appId,
+                      )
+                        .map((item) => `{{${item}}}`)
+                        .join(", "),
+                    })}
+                  </p>
                 </div>
 
                 <JsonEditor
@@ -4220,9 +4417,7 @@ export function ProviderList({
                     setProviderDefaultTemplate(value);
                     setProviderDefaultTemplateError("");
                   }}
-                  placeholder={
-                    getFallbackProviderDefaultTemplate(appId)
-                  }
+                  placeholder={getFallbackProviderDefaultTemplate(appId)}
                   darkMode={
                     typeof document !== "undefined" &&
                     document.documentElement.classList.contains("dark")
@@ -4524,6 +4719,7 @@ interface SortableProviderTableRowProps {
   onDisableOmo?: () => void;
   onDisableOmoSlim?: () => void;
   onDuplicate: (provider: Provider) => void;
+  onMoveToTop: (provider: Provider) => void;
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onOpenTerminalWithMode?: (
@@ -4572,6 +4768,7 @@ function SortableProviderTableRow({
   onDisableOmo,
   onDisableOmoSlim,
   onDuplicate,
+  onMoveToTop,
   onConfigureUsage,
   onOpenWebsite,
   onOpenTerminalWithMode,
@@ -4650,7 +4847,12 @@ function SortableProviderTableRow({
       data-state={isSelected ? "selected" : undefined}
       data-provider-id={provider.id}
       className={cn(
-        "border-b border-border/60 transition-colors hover:bg-muted/45",
+        "border-b border-border/60 transition-colors",
+        isActiveSearchMatch
+          ? "hover:bg-amber-100/80 dark:hover:bg-amber-400/[0.12]"
+          : isSearchMatched
+            ? "hover:bg-amber-50/80 dark:hover:bg-amber-400/[0.08]"
+            : "hover:bg-muted/45 dark:hover:bg-muted/35",
         rowClass,
         searchMatchRowClass,
         isDragging && "z-10 bg-accent/40",
@@ -4879,6 +5081,7 @@ function SortableProviderTableRow({
             onSwitch={() => onSwitch(provider)}
             onEdit={() => onEdit(provider)}
             onDuplicate={() => onDuplicate(provider)}
+            onMoveToTop={() => onMoveToTop(provider)}
             onTest={onTest ? () => onTest(provider) : undefined}
             onConfigureUsage={
               onConfigureUsage

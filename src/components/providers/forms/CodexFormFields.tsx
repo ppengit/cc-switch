@@ -1,4 +1,7 @@
 import { useTranslation } from "react-i18next";
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ModelSuggest } from "@/components/ui/model-suggest";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ApiKeySection, EndpointField } from "./shared";
 import type { ProviderCategory } from "@/types";
@@ -34,6 +37,9 @@ interface CodexFormFieldsProps {
   onModelNameChange?: (model: string) => void;
   reasoningEffort?: string;
   onReasoningEffortChange?: (reasoningEffort: string) => void;
+  onFetchModels?: () => void;
+  isFetchingModels?: boolean;
+  modelSuggestions?: string[];
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -61,6 +67,9 @@ export function CodexFormFields({
   onModelNameChange,
   reasoningEffort = "xhigh",
   onReasoningEffortChange,
+  onFetchModels,
+  isFetchingModels = false,
+  modelSuggestions = [],
   speedTestEndpoints,
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
@@ -105,21 +114,38 @@ export function CodexFormFields({
       {shouldShowModelField && onModelNameChange && (
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label
-              htmlFor="codexModelName"
-              className="block text-sm font-medium text-foreground"
-            >
-              {t("codexConfig.modelName", { defaultValue: "模型名称" })}
-            </label>
-            <input
+            <div className="flex items-center justify-between gap-2">
+              <label
+                htmlFor="codexModelName"
+                className="block text-sm font-medium text-foreground"
+              >
+                {t("codexConfig.modelName", { defaultValue: "模型名称" })}
+              </label>
+              {onFetchModels && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onFetchModels}
+                  disabled={isFetchingModels}
+                >
+                  {isFetchingModels && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  {t("providerForm.autoFetchModels", {
+                    defaultValue: "自动获取模型",
+                  })}
+                </Button>
+              )}
+            </div>
+            <ModelSuggest
               id="codexModelName"
-              type="text"
               value={modelName}
-              onChange={(e) => onModelNameChange(e.target.value)}
+              onChange={onModelNameChange}
+              suggestions={modelSuggestions}
               placeholder={t("codexConfig.modelNamePlaceholder", {
                 defaultValue: "例如: gpt-5.4",
               })}
-              className="w-full px-3 py-2 border border-border-default bg-background text-foreground rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20 transition-colors"
             />
             <p className="text-xs text-muted-foreground">
               {t("codexConfig.modelNameHint", {

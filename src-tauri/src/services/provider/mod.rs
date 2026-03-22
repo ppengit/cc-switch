@@ -5,6 +5,7 @@
 mod endpoints;
 mod gemini_auth;
 mod live;
+mod models;
 mod usage;
 
 use indexmap::IndexMap;
@@ -18,6 +19,7 @@ use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
 use crate::settings::CustomEndpoint;
 use crate::store::AppState;
+pub use models::FetchOpenAiModelsResponse;
 
 // Re-export sub-module functions for external access
 pub use live::{
@@ -37,6 +39,7 @@ pub(crate) use live::{
 use live::{
     remove_openclaw_provider_from_live, remove_opencode_provider_from_live, write_gemini_live,
 };
+use models::fetch_openai_models;
 use usage::validate_usage_script;
 
 /// Provider business logic service
@@ -429,6 +432,25 @@ impl ProviderService {
         Ok(())
     }
 
+    pub async fn fetch_openai_models(
+        state: &AppState,
+        app_type: AppType,
+        provider_id: Option<&str>,
+        base_url: &str,
+        api_key: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<FetchOpenAiModelsResponse, AppError> {
+        fetch_openai_models(
+            state,
+            app_type,
+            provider_id,
+            base_url,
+            api_key,
+            timeout_secs,
+        )
+        .await
+    }
+
     /// Switch to a provider
     ///
     /// Switch flow:
@@ -682,7 +704,11 @@ impl ProviderService {
                 continue;
             }
 
-            if !live::provider_uses_common_config(&app_type, provider, Some(legacy_snippet)) {
+            if !live::settings_contain_common_config(
+                &app_type,
+                &provider.settings_config,
+                legacy_snippet,
+            ) {
                 continue;
             }
 

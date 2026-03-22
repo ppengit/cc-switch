@@ -68,7 +68,9 @@ describe("Common config modals", () => {
     expect(screen.queryByTestId("common-config-panel")).not.toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /codexConfig.editCommonConfig|编辑通用配置/ }),
+      screen.getByRole("button", {
+        name: /codexConfig.editCommonConfig|编辑通用配置/,
+      }),
     );
 
     expect(screen.getByTestId("common-config-panel")).toBeInTheDocument();
@@ -91,7 +93,7 @@ describe("Common config modals", () => {
         onConfigChange={() => {}}
         useCommonConfig={false}
         onCommonConfigToggle={() => {}}
-        commonConfigSnippet={`{"GEMINI_MODEL":"gemini-2.5-pro"}`}
+        commonConfigSnippet={`{"GEMINI_MODEL":"gemini-3.1-pro-preview"}`}
         onCommonConfigSnippetChange={() => false}
         onCommonConfigErrorClear={() => {}}
         commonConfigError="Invalid JSON"

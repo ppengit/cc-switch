@@ -95,7 +95,11 @@ pub struct AppConfigHealthReport {
 }
 
 fn normalize_text_for_compare(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n").trim().to_string()
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
 }
 
 fn build_config_preview_file(
@@ -108,7 +112,8 @@ fn build_config_preview_file(
         label: label.to_string(),
         path: path.to_string_lossy().to_string(),
         exists: path.exists(),
-        differs: normalize_text_for_compare(&expected_text) != normalize_text_for_compare(&actual_text),
+        differs: normalize_text_for_compare(&expected_text)
+            != normalize_text_for_compare(&actual_text),
         expected_text,
         actual_text,
     }
@@ -123,7 +128,10 @@ fn merge_claude_mcp_servers(
     rendered: &mut serde_json::Value,
     live_settings: Option<&serde_json::Value>,
 ) {
-    let Some(mcp_servers) = live_settings.and_then(|value| value.get("mcpServers")).cloned() else {
+    let Some(mcp_servers) = live_settings
+        .and_then(|value| value.get("mcpServers"))
+        .cloned()
+    else {
         return;
     };
 
@@ -243,15 +251,15 @@ fn provider_default_template_key(app_type: &str) -> String {
 
 fn default_codex_provider_template() -> &'static str {
     r#"model_provider = "custom"
-model = "gpt-5.4"
-model_reasoning_effort = "xhigh"
+model = "{{model}}"
+model_reasoning_effort = "{{reasoning_effort}}"
 disable_response_storage = true
 
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://sub.jlypx.de"
+base_url = "{{base_url}}"
 "#
 }
 
@@ -269,7 +277,10 @@ fn sanitize_provider_default_template(app_type: &str, template: &str) -> Option<
         || trimmed.contains("\"auth\"")
         || trimmed.contains("OPENAI_API_KEY")
         || trimmed.contains("{{provider.config}}")
-        || trimmed.contains("{{mcp.config}}");
+        || trimmed.contains("{{mcp.config}}")
+        || (trimmed.contains("model_provider = \"custom\"")
+            && !trimmed.contains("{{base_url}}")
+            && !trimmed.contains("{{model}}"));
 
     if looks_legacy {
         return Some(default_codex_provider_template().to_string());
@@ -516,10 +527,16 @@ fn build_app_config_preview_internal(
     let app = app_type.as_str().to_string();
     let current_provider_id =
         crate::settings::get_effective_current_provider(&state.db, &app_type)?;
-    let current_provider = current_provider_id
-        .as_deref()
-        .and_then(|id| state.db.get_provider_by_id(id, app_type.as_str()).ok().flatten());
-    let current_provider_name = current_provider.as_ref().map(|provider| provider.name.clone());
+    let current_provider = current_provider_id.as_deref().and_then(|id| {
+        state
+            .db
+            .get_provider_by_id(id, app_type.as_str())
+            .ok()
+            .flatten()
+    });
+    let current_provider_name = current_provider
+        .as_ref()
+        .map(|provider| provider.name.clone());
     let live_settings = crate::services::provider::read_live_settings(app_type.clone()).ok();
     let proxy_preview = build_proxy_preview_urls(state).ok();
     let takeover_active = match (&app_type, proxy_preview.as_ref()) {
@@ -571,8 +588,14 @@ fn build_app_config_preview_internal(
             merge_claude_mcp_servers(&mut expected, live_settings.as_ref());
             if takeover_active {
                 if let Some((proxy_url, _, _)) = proxy_preview.as_ref() {
-                    if let Some(env) = expected.get_mut("env").and_then(|value| value.as_object_mut()) {
-                        env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::json!(proxy_url));
+                    if let Some(env) = expected
+                        .get_mut("env")
+                        .and_then(|value| value.as_object_mut())
+                    {
+                        env.insert(
+                            "ANTHROPIC_BASE_URL".to_string(),
+                            serde_json::json!(proxy_url),
+                        );
                         for key in CLAUDE_MODEL_OVERRIDE_ENV_KEYS {
                             env.remove(key);
                         }
@@ -691,10 +714,8 @@ fn build_app_config_preview_internal(
             let mut expected_env_map = crate::gemini_config::json_to_env(&rendered_settings)?;
             if takeover_active {
                 if let Some((proxy_url, _, _)) = proxy_preview.as_ref() {
-                    expected_env_map.insert(
-                        "GOOGLE_GEMINI_BASE_URL".to_string(),
-                        proxy_url.to_string(),
-                    );
+                    expected_env_map
+                        .insert("GOOGLE_GEMINI_BASE_URL".to_string(), proxy_url.to_string());
                     expected_env_map.insert(
                         "GEMINI_API_KEY".to_string(),
                         PROXY_TOKEN_PLACEHOLDER.to_string(),
@@ -717,8 +738,10 @@ fn build_app_config_preview_internal(
                 })
                 .unwrap_or_default();
 
-            let merged_config =
-                merge_gemini_settings_with_live(rendered_settings.get("config"), live_settings.as_ref());
+            let merged_config = merge_gemini_settings_with_live(
+                rendered_settings.get("config"),
+                live_settings.as_ref(),
+            );
             let actual_settings_json = live_settings
                 .as_ref()
                 .and_then(|value| value.get("config"))
