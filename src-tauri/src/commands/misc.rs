@@ -192,6 +192,15 @@ pub async fn get_skills_migration_result() -> Result<Option<SkillsMigrationPaylo
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInstallation {
+    source: String,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolVersion {
     name: String,
     version: Option<String>,
@@ -203,6 +212,7 @@ pub struct ToolVersion {
     env_type: String,
     /// 当 env_type 为 "wsl" 时，返回该工具绑定的 WSL distro（用于按 distro 探测 shells）
     wsl_distro: Option<String>,
+    installations: Option<Vec<ToolInstallation>>,
 }
 
 const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "openclaw"];
@@ -343,41 +353,37 @@ async fn get_single_tool_version_impl(
     // 使用全局 HTTP 客户端（已包含代理配置）
     let client = crate::proxy::http_client::get();
 
-    // 1. 获取本地版本
-    let (local_version, local_error, install_source) = if let Some(distro) = wsl_distro.as_deref() {
-        let (version, error) = try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag);
-        let install_source = if tool == "claude" {
-            detect_claude_install_source_wsl(distro, wsl_shell, wsl_shell_flag)
+    if tool == "claude" {
+        let installations = if let Some(distro) = wsl_distro.as_deref() {
+            collect_claude_installations_wsl(distro, wsl_shell, wsl_shell_flag)
         } else {
-            None
+            collect_claude_installations_local()
         };
-        (version, error, install_source)
+
+        let primary = installations.first();
+
+        return ToolVersion {
+            name: tool.to_string(),
+            version: primary.and_then(|item| item.version.clone()),
+            latest_version: fetch_npm_latest_version(&client, "@anthropic-ai/claude-code").await,
+            error: primary.and_then(|item| item.error.clone()),
+            install_source: primary.map(|item| item.source.clone()),
+            env_type,
+            wsl_distro,
+            installations: Some(installations),
+        };
+    }
+
+    // 1. 获取本地版本
+    let (local_version, local_error) = if let Some(distro) = wsl_distro.as_deref() {
+        try_get_version_wsl(tool, distro, wsl_shell, wsl_shell_flag)
     } else {
-        if tool == "claude" {
-            let direct_result = try_get_version(tool);
-            if direct_result.0.is_some() {
-                (
-                    direct_result.0,
-                    direct_result.1,
-                    detect_claude_install_source_local(),
-                )
-            } else {
-                let (version, error, resolved_path) = scan_cli_version_with_path(tool);
-                let install_source = resolved_path
-                    .as_deref()
-                    .and_then(detect_claude_install_source_from_path)
-                    .map(str::to_string)
-                    .or_else(detect_claude_install_source_via_doctor_local);
-                (version, error, install_source)
-            }
+        let direct_result = try_get_version(tool);
+        if direct_result.0.is_some() {
+            direct_result
         } else {
-            let direct_result = try_get_version(tool);
-            if direct_result.0.is_some() {
-                (direct_result.0, direct_result.1, None)
-            } else {
-                let (version, error, _) = scan_cli_version_with_path(tool);
-                (version, error, None)
-            }
+            let (version, error, _) = scan_cli_version_with_path(tool);
+            (version, error)
         }
     };
 
@@ -396,10 +402,284 @@ async fn get_single_tool_version_impl(
         version: local_version,
         latest_version,
         error: local_error,
-        install_source,
+        install_source: None,
         env_type,
         wsl_distro,
+        installations: None,
     }
+}
+
+fn normalize_claude_install_source(source: Option<&str>) -> String {
+    match source.unwrap_or(CLAUDE_INSTALL_SOURCE_NATIVE) {
+        CLAUDE_INSTALL_SOURCE_NPM => CLAUDE_INSTALL_SOURCE_NPM.to_string(),
+        _ => CLAUDE_INSTALL_SOURCE_NATIVE.to_string(),
+    }
+}
+
+fn upsert_tool_installation(
+    installations: &mut Vec<ToolInstallation>,
+    source: String,
+    version: Option<String>,
+    error: Option<String>,
+) {
+    if version.is_none() && error.is_none() {
+        return;
+    }
+
+    if let Some(existing) = installations.iter_mut().find(|item| item.source == source) {
+        if existing.version.is_none() && version.is_some() {
+            existing.version = version;
+        }
+        if existing.error.is_none() && error.is_some() {
+            existing.error = error;
+        }
+        return;
+    }
+
+    installations.push(ToolInstallation {
+        source,
+        version,
+        error,
+    });
+}
+
+fn try_get_version_at_path(path: &Path) -> (Option<String>, Option<String>) {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new(path)
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new(path).arg("--version").output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if out.status.success() {
+                let raw = if stdout.is_empty() { &stderr } else { &stdout };
+                if raw.is_empty() {
+                    (None, Some("not installed or not executable".to_string()))
+                } else {
+                    (Some(extract_version(raw)), None)
+                }
+            } else {
+                let err = if stderr.is_empty() { stdout } else { stderr };
+                (
+                    None,
+                    Some(if err.is_empty() {
+                        "not installed or not executable".to_string()
+                    } else {
+                        err
+                    }),
+                )
+            }
+        }
+        Err(err) => (None, Some(err.to_string())),
+    }
+}
+
+fn try_get_npm_package_version_local(package: &str) -> (Option<String>, Option<String>) {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new("cmd")
+        .args(["/C", &format!("npm ls -g {package} --depth=0 --json")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("npm ls -g {package} --depth=0 --json"))
+        .output();
+
+    match output {
+        Ok(out) => parse_npm_package_version_stdout(
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+            package,
+        ),
+        Err(err) => (None, Some(err.to_string())),
+    }
+}
+
+fn parse_npm_package_version_stdout(
+    stdout: &str,
+    stderr: &str,
+    package: &str,
+) -> (Option<String>, Option<String>) {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(stdout) {
+        let version = json
+            .get("dependencies")
+            .and_then(|deps| deps.get(package))
+            .and_then(|pkg| pkg.get("version"))
+            .and_then(|value| value.as_str())
+            .map(|value| extract_version(value));
+
+        if version.is_some() {
+            return (version, None);
+        }
+    }
+
+    let err = if stderr.trim().is_empty() {
+        "not installed or not executable".to_string()
+    } else {
+        stderr.trim().to_string()
+    };
+    (None, Some(err))
+}
+
+fn default_claude_native_candidate_paths() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    let Some(home) = dirs::home_dir() else {
+        return candidates;
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(home.join(".local").join("bin").join("claude.exe"));
+        candidates.push(home.join(".local").join("bin").join("claude.cmd"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(home.join(".local").join("bin").join("claude"));
+    }
+
+    candidates
+}
+
+fn collect_claude_installations_local() -> Vec<ToolInstallation> {
+    let mut installations = Vec::new();
+
+    let path_source = detect_claude_install_source_local();
+    let (path_version, path_error) = try_get_version("claude");
+    upsert_tool_installation(
+        &mut installations,
+        normalize_claude_install_source(path_source.as_deref()),
+        path_version,
+        path_error,
+    );
+
+    let (npm_version, npm_error) = try_get_npm_package_version_local("@anthropic-ai/claude-code");
+    upsert_tool_installation(
+        &mut installations,
+        CLAUDE_INSTALL_SOURCE_NPM.to_string(),
+        npm_version,
+        npm_error,
+    );
+
+    for candidate in default_claude_native_candidate_paths() {
+        if !candidate.exists() {
+            continue;
+        }
+
+        let (version, error) = try_get_version_at_path(&candidate);
+        upsert_tool_installation(
+            &mut installations,
+            CLAUDE_INSTALL_SOURCE_NATIVE.to_string(),
+            version,
+            error,
+        );
+    }
+
+    installations
+}
+
+#[cfg(target_os = "windows")]
+fn try_get_npm_package_version_wsl(
+    package: &str,
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let command = format!("npm ls -g {package} --depth=0 --json");
+    match run_wsl_shell_capture(distro, force_shell, force_shell_flag, &command) {
+        Ok((_success, stdout, stderr)) => parse_npm_package_version_stdout(&stdout, &stderr, package),
+        Err(err) => (None, Some(err)),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn try_get_claude_native_version_wsl(
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    match run_wsl_shell_capture(
+        distro,
+        force_shell,
+        force_shell_flag,
+        "if [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" --version; fi",
+    ) {
+        Ok((success, stdout, stderr)) => {
+            if success {
+                let raw = if stdout.is_empty() { &stderr } else { &stdout };
+                if raw.trim().is_empty() {
+                    (None, None)
+                } else {
+                    (Some(extract_version(raw)), None)
+                }
+            } else if stderr.trim().is_empty() {
+                (None, None)
+            } else {
+                (None, Some(stderr))
+            }
+        }
+        Err(err) => (None, Some(err)),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn collect_claude_installations_wsl(
+    distro: &str,
+    force_shell: Option<&str>,
+    force_shell_flag: Option<&str>,
+) -> Vec<ToolInstallation> {
+    let mut installations = Vec::new();
+
+    let path_source = detect_claude_install_source_wsl(distro, force_shell, force_shell_flag);
+    let (path_version, path_error) =
+        try_get_version_wsl("claude", distro, force_shell, force_shell_flag);
+    upsert_tool_installation(
+        &mut installations,
+        normalize_claude_install_source(path_source.as_deref()),
+        path_version,
+        path_error,
+    );
+
+    let (npm_version, npm_error) =
+        try_get_npm_package_version_wsl("@anthropic-ai/claude-code", distro, force_shell, force_shell_flag);
+    upsert_tool_installation(
+        &mut installations,
+        CLAUDE_INSTALL_SOURCE_NPM.to_string(),
+        npm_version,
+        npm_error,
+    );
+
+    let (native_version, native_error) =
+        try_get_claude_native_version_wsl(distro, force_shell, force_shell_flag);
+    upsert_tool_installation(
+        &mut installations,
+        CLAUDE_INSTALL_SOURCE_NATIVE.to_string(),
+        native_version,
+        native_error,
+    );
+
+    installations
+}
+
+#[cfg(not(target_os = "windows"))]
+fn collect_claude_installations_wsl(
+    _distro: &str,
+    _force_shell: Option<&str>,
+    _force_shell_flag: Option<&str>,
+) -> Vec<ToolInstallation> {
+    Vec::new()
 }
 
 /// Helper function to fetch latest version from npm registry
@@ -796,7 +1076,7 @@ fn try_get_version_wsl(
 ) -> (Option<String>, Option<String>) {
     // 防御性断言：tool 只能是预定义的值
     debug_assert!(
-        ["claude", "codex", "gemini", "opencode"].contains(&tool),
+        ["claude", "codex", "gemini", "opencode", "openclaw"].contains(&tool),
         "unexpected tool name: {tool}"
     );
 

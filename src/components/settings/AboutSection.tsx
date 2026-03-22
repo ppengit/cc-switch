@@ -37,6 +37,11 @@ interface ToolVersion {
   install_source: "native" | "npm" | null;
   env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
   wsl_distro: string | null;
+  installations?: Array<{
+    source: string;
+    version: string | null;
+    error: string | null;
+  }>;
 }
 
 interface UpstreamReleaseInfo {
@@ -102,6 +107,26 @@ const INSTALL_SOURCE_BADGE_CONFIG: Record<
     labelKey: "settings.toolInstallSourceNpm",
     className: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
   },
+};
+
+const getToolInstallations = (
+  tool?: ToolVersion,
+): Array<{ source: string; version: string | null; error: string | null }> => {
+  if (!tool) {
+    return [];
+  }
+
+  if (tool.installations?.length) {
+    return tool.installations;
+  }
+
+  return [
+    {
+      source: tool.install_source ?? "default",
+      version: tool.version,
+      error: tool.error,
+    },
+  ];
 };
 
 const ONE_CLICK_INSTALL_COMMANDS = `# Claude Code (Native install - recommended)
@@ -277,14 +302,18 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   );
 
   const handleUpdateTool = useCallback(
-    async (tool: ToolVersion) => {
+    async (tool: ToolVersion, installSource?: string) => {
       const toolName = tool.name;
-      setUpdatingTools((prev) => ({ ...prev, [toolName]: true }));
+      const updateKey = `${toolName}:${installSource ?? tool.install_source ?? "default"}`;
+      setUpdatingTools((prev) => ({ ...prev, [updateKey]: true }));
       try {
         await settingsApi.updateTool(toolName, {
           envType: tool.env_type,
           wslDistro: tool.wsl_distro ?? undefined,
-          installSource: tool.install_source,
+          installSource:
+            installSource && installSource !== "default"
+              ? (installSource as "native" | "npm")
+              : tool.install_source,
         });
         toast.success(
           t("settings.toolUpdateStarted", {
@@ -301,7 +330,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           }),
         );
       } finally {
-        setUpdatingTools((prev) => ({ ...prev, [toolName]: false }));
+        setUpdatingTools((prev) => ({ ...prev, [updateKey]: false }));
       }
     },
     [refreshToolVersions, t, wslShellByTool],
@@ -549,6 +578,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5 px-1">
           {TOOL_NAMES.map((toolName, index) => {
             const tool = toolVersions.find((item) => item.name === toolName);
+            const installations = getToolInstallations(tool);
+            const primaryInstallation = installations[0];
             // Special casing keeps product names aligned with branding.
             const displayName =
               toolName === "opencode"
@@ -557,23 +588,20 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   ? "OpenClaw"
                 : toolName.charAt(0).toUpperCase() + toolName.slice(1);
             const title =
-              tool?.version ||
+              primaryInstallation?.version ||
               tool?.latest_version ||
-              tool?.error ||
+              primaryInstallation?.error ||
               t("common.unknown");
-            const localVersion = tool?.version || t("common.unknown");
             const latestVersion = tool?.latest_version || t("common.unknown");
-            const isUpdating = updatingTools[toolName] ?? false;
-            const hasNewerVersion = Boolean(
-              tool?.version &&
-                tool?.latest_version &&
-                compareLooseVersion(tool.version, tool.latest_version) < 0,
+            const hasKnownInstallation = installations.some(
+              (installation) => !!installation.version,
             );
-            const canUpdate =
-              hasNewerVersion &&
-              !isUpdating &&
-              !isLoadingTools &&
-              !loadingTools[toolName];
+            const hasAnyNewerVersion = installations.some(
+              (installation) =>
+                !!installation.version &&
+                !!tool?.latest_version &&
+                compareLooseVersion(installation.version, tool.latest_version) < 0,
+            );
 
             return (
               <motion.div
@@ -596,7 +624,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                         {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
                       </span>
                     )}
-                    {tool?.install_source &&
+                    {installations.length <= 1 &&
+                      tool?.install_source &&
                       INSTALL_SOURCE_BADGE_CONFIG[tool.install_source] && (
                         <span
                           className={`text-[9px] px-1.5 py-0.5 rounded-full border ${INSTALL_SOURCE_BADGE_CONFIG[tool.install_source].className}`}
@@ -659,11 +688,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                   <div className="flex items-center gap-2">
                     {isLoadingTools || loadingTools[toolName] ? (
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    ) : tool?.version ? (
-                      tool.latest_version &&
-                      tool.version !== tool.latest_version ? (
+                    ) : hasKnownInstallation ? (
+                      hasAnyNewerVersion ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border border-yellow-500/20">
-                          {tool.latest_version}
+                          {latestVersion}
                         </span>
                       ) : (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -671,47 +699,111 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     ) : (
                       <AlertCircle className="h-4 w-4 text-yellow-500" />
                     )}
-                    {(hasNewerVersion || isUpdating) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => tool && handleUpdateTool(tool)}
-                        disabled={!tool || !canUpdate}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {installations.map((installation) => {
+                    const installationKey = `${toolName}:${installation.source}`;
+                    const isUpdating = updatingTools[installationKey] ?? false;
+                    const hasNewerVersion = Boolean(
+                      installation.version &&
+                        tool?.latest_version &&
+                        compareLooseVersion(
+                          installation.version,
+                          tool.latest_version,
+                        ) < 0,
+                    );
+                    const canUpdate =
+                      hasNewerVersion &&
+                      !isUpdating &&
+                      !isLoadingTools &&
+                      !loadingTools[toolName];
+                    const sourceBadge =
+                      installation.source !== "default"
+                        ? INSTALL_SOURCE_BADGE_CONFIG[installation.source]
+                        : null;
+
+                    return (
+                      <div
+                        key={installationKey}
+                        className="rounded-lg border border-border/60 bg-background/40 px-3 py-2"
                       >
-                        {isUpdating
-                          ? t("settings.updatingTool", {
-                              defaultValue: "更新中",
-                            })
-                          : t("settings.updateTool", {
-                              defaultValue: "更新",
-                            })}
-                      </Button>
-                    )}
-                  </div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            {(sourceBadge || installations.length > 1) && (
+                              <div className="mb-1 flex items-center gap-2">
+                                {sourceBadge ? (
+                                  <span
+                                    className={`text-[9px] px-1.5 py-0.5 rounded-full border ${sourceBadge.className}`}
+                                  >
+                                    {t(sourceBadge.labelKey)}
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-border text-muted-foreground">
+                                    {installation.source}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                              <div className="truncate" title={title}>
+                                {t("settings.toolLocalVersion", {
+                                  defaultValue: "本地",
+                                })}
+                                :{" "}
+                                <span className="font-mono">
+                                  {installation.version || t("common.unknown")}
+                                </span>
+                              </div>
+                              <div className="truncate" title={title}>
+                                {t("settings.toolLatestVersion", {
+                                  defaultValue: "官方",
+                                })}
+                                : <span className="font-mono">{latestVersion}</span>
+                              </div>
+                            </div>
+
+                            {installation.error && !installation.version && (
+                              <div
+                                className="mt-1 text-xs text-amber-600 truncate"
+                                title={installation.error}
+                              >
+                                {installation.error}
+                              </div>
+                            )}
+                          </div>
+
+                          {(hasNewerVersion || isUpdating) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs shrink-0"
+                              onClick={() =>
+                                tool &&
+                                handleUpdateTool(
+                                  tool,
+                                  installation.source !== "default"
+                                    ? installation.source
+                                    : undefined,
+                                )
+                              }
+                              disabled={!tool || !canUpdate}
+                            >
+                              {isUpdating
+                                ? t("settings.updatingTool", {
+                                    defaultValue: "更新中",
+                                  })
+                                : t("settings.updateTool", {
+                                    defaultValue: "更新",
+                                  })}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                  <div className="truncate" title={title}>
-                    {t("settings.toolLocalVersion", {
-                      defaultValue: "本地",
-                    })}
-                    : <span className="font-mono">{localVersion}</span>
-                  </div>
-                  <div className="truncate" title={title}>
-                    {t("settings.toolLatestVersion", {
-                      defaultValue: "官方",
-                    })}
-                    : <span className="font-mono">{latestVersion}</span>
-                  </div>
-                </div>
-                {tool?.error && !tool?.version && (
-                  <div
-                    className="text-xs text-amber-600 truncate"
-                    title={tool.error}
-                  >
-                    {tool.error}
-                  </div>
-                )}
               </motion.div>
             );
           })}

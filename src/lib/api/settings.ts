@@ -202,6 +202,11 @@ export const settingsApi = {
       install_source: "native" | "npm" | null;
       env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
       wsl_distro: string | null;
+      installations?: Array<{
+        source: string;
+        version: string | null;
+        error: string | null;
+      }>;
     }>
   > {
     return await invoke("get_tool_versions", { tools, wslShellByTool });

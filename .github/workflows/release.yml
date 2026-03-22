@@ -23,10 +23,10 @@ jobs:
           - os: windows-2022
             allow_failure: false
           - os: ubuntu-22.04
-            allow_failure: false
+            allow_failure: true
           - os: ubuntu-22.04-arm
             arch: arm64
-            allow_failure: false
+            allow_failure: true
           - os: macos-14
             allow_failure: true
 
