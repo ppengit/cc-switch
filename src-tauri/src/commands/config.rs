@@ -697,16 +697,16 @@ fn build_app_config_preview_internal(
 
             vec![
                 build_config_preview_file(
-                    "auth.json",
-                    codex_config::get_codex_auth_path(),
-                    stringify_json_pretty(&expected_auth)?,
-                    stringify_json_pretty(&actual_auth)?,
-                ),
-                build_config_preview_file(
                     "config.toml",
                     codex_config::get_codex_config_path(),
                     expected_config,
                     actual_config,
+                ),
+                build_config_preview_file(
+                    "auth.json",
+                    codex_config::get_codex_auth_path(),
+                    stringify_json_pretty(&expected_auth)?,
+                    stringify_json_pretty(&actual_auth)?,
                 ),
             ]
         }

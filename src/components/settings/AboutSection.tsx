@@ -51,7 +51,7 @@ interface UpstreamReleaseInfo {
   error: string | null;
 }
 
-const TOOL_NAMES = ["claude", "codex", "gemini", "opencode"] as const;
+const TOOL_NAMES = ["claude", "codex", "gemini", "opencode", "openclaw"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 
 type WslShellPreference = {
@@ -111,7 +111,9 @@ npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
 # OpenCode
-curl -fsSL https://opencode.ai/install | bash`;
+npm i -g opencode@latest
+# OpenClaw
+npm i -g openclaw@latest`;
 
 const formatAppVersionForDisplay = (version?: string | null): string => {
   if (!version) return "";
@@ -544,13 +546,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           </Button>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 px-1">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5 px-1">
           {TOOL_NAMES.map((toolName, index) => {
             const tool = toolVersions.find((item) => item.name === toolName);
-            // Special case for OpenCode (capital C), others use capitalize
+            // Special casing keeps product names aligned with branding.
             const displayName =
               toolName === "opencode"
                 ? "OpenCode"
+                : toolName === "openclaw"
+                  ? "OpenClaw"
                 : toolName.charAt(0).toUpperCase() + toolName.slice(1);
             const title =
               tool?.version ||

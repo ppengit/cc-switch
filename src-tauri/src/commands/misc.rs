@@ -205,7 +205,7 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "openclaw"];
 const CLAUDE_INSTALL_SOURCE_NATIVE: &str = "native";
 const CLAUDE_INSTALL_SOURCE_NPM: &str = "npm";
 
@@ -218,6 +218,7 @@ fn update_command_for_tool(tool: &str, install_source: Option<&str>) -> Option<&
         "codex" => Some("npm i -g @openai/codex@latest"),
         "gemini" => Some("npm i -g @google/gemini-cli@latest"),
         "opencode" => Some("npm i -g opencode@latest"),
+        "openclaw" => Some("npm i -g openclaw@latest"),
         _ => None,
     }
 }
@@ -386,6 +387,7 @@ async fn get_single_tool_version_impl(
         "codex" => fetch_npm_latest_version(&client, "@openai/codex").await,
         "gemini" => fetch_npm_latest_version(&client, "@google/gemini-cli").await,
         "opencode" => fetch_github_latest_version(&client, "anomalyco/opencode").await,
+        "openclaw" => fetch_npm_latest_version(&client, "openclaw").await,
         _ => None,
     };
 
@@ -1076,6 +1078,7 @@ fn wsl_distro_for_tool(tool: &str) -> Option<String> {
         "codex" => crate::settings::get_codex_override_dir(),
         "gemini" => crate::settings::get_gemini_override_dir(),
         "opencode" => crate::settings::get_opencode_override_dir(),
+        "openclaw" => crate::settings::get_openclaw_override_dir(),
         _ => None,
     }?;
 
@@ -1196,7 +1199,12 @@ fn extract_env_vars_from_config(
 
     // Codex 使用 auth 字段转换为 OPENAI_API_KEY
     if *app_type == AppType::Codex {
-        if let Some(auth) = obj.get("auth").and_then(|v| v.as_str()) {
+        if let Some(auth) = obj.get("auth").and_then(|v| v.as_object()) {
+            if let Some(api_key) = auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
+                env_vars.push(("OPENAI_API_KEY".to_string(), api_key.to_string()));
+            }
+        } else if let Some(auth) = obj.get("auth").and_then(|v| v.as_str()) {
+            // 兼容极早期的字符串写法
             env_vars.push(("OPENAI_API_KEY".to_string(), auth.to_string()));
         }
     }
@@ -1912,6 +1920,10 @@ mod tests {
             update_command_for_tool("claude", None),
             Some("claude update")
         );
+        assert_eq!(
+            update_command_for_tool("openclaw", None),
+            Some("npm i -g openclaw@latest")
+        );
     }
 
     #[test]
@@ -1941,6 +1953,23 @@ mod tests {
         assert_eq!(
             detect_claude_install_source_from_match_text("/home/tester/.local/bin/claude"),
             Some(CLAUDE_INSTALL_SOURCE_NATIVE)
+        );
+    }
+
+    #[test]
+    fn extract_env_vars_from_codex_object_auth() {
+        let config = serde_json::json!({
+            "auth": {
+                "OPENAI_API_KEY": "sk-test"
+            },
+            "config": "model = \"gpt-5.4\""
+        });
+
+        let env_vars = extract_env_vars_from_config(&config, &AppType::Codex);
+
+        assert!(
+            env_vars.contains(&("OPENAI_API_KEY".to_string(), "sk-test".to_string())),
+            "expected OPENAI_API_KEY to be extracted from codex auth object"
         );
     }
 

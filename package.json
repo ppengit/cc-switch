@@ -1,6 +1,6 @@
 {
   "name": "cc-switch",
-  "version": "3.12.3-6",
+  "version": "3.12.3-7",
   "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "prebuild:preserve-installers": "node scripts/preserve-installers.mjs",
     "bump:version": "node scripts/bump-version.mjs",
     "repair:db-version": "powershell -ExecutionPolicy Bypass -File ./scripts/repair-db-version.ps1",
-    "tauri": "tauri",
+    "tauri": "node scripts/run-tauri-msvc.mjs",
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "postbuild": "node scripts/postbuild.mjs",

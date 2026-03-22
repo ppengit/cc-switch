@@ -476,6 +476,7 @@ export function ProviderList({
       providerId ? `${appId}:provider:${providerId}` : `${appId}:global`,
     [appId],
   );
+  const { data: sessions = [] } = useSessionsQuery();
 
   const normalizeRecentPaths = useCallback(
     (paths?: Array<string | null | undefined>) => {
@@ -493,6 +494,21 @@ export function ProviderList({
       return normalized;
     },
     [],
+  );
+
+  const recentSessionProjectDirs = useMemo(
+    () =>
+      normalizeRecentPaths(
+        [...sessions]
+          .filter((session) => session.providerId === appId)
+          .sort(
+            (left, right) =>
+              (right.lastActiveAt ?? right.createdAt ?? 0) -
+              (left.lastActiveAt ?? left.createdAt ?? 0),
+          )
+          .map((session) => session.projectDir),
+      ),
+    [appId, normalizeRecentPaths, sessions],
   );
 
   const normalizeTerminalTarget = useCallback(
@@ -538,6 +554,16 @@ export function ProviderList({
     ],
   );
 
+  const buildRecentTerminalTargets = useCallback(
+    (target?: TerminalTargetPreference) =>
+      normalizeRecentPaths([
+        target?.lastCwd ?? null,
+        ...(target?.recentCwds ?? []),
+        ...recentSessionProjectDirs,
+      ]),
+    [normalizeRecentPaths, recentSessionProjectDirs],
+  );
+
   const saveTerminalTarget = useCallback(
     async (key: string, patch: TerminalTargetPreference) => {
       const base = settingsData ?? (await settingsApi.get());
@@ -561,8 +587,21 @@ export function ProviderList({
     () => getTerminalTarget(),
     [getTerminalTarget],
   );
-  const appRecentTerminalTargets = appTerminalTarget.recentCwds ?? [];
+  const hasStoredRecentTerminalTargets = useCallback(
+    (providerId?: string) => {
+      const target = getTerminalTarget(providerId);
+      return Boolean(
+        target.lastCwd?.trim() || (target.recentCwds?.length ?? 0) > 0,
+      );
+    },
+    [getTerminalTarget],
+  );
+  const appRecentTerminalTargets = useMemo(
+    () => buildRecentTerminalTargets(appTerminalTarget),
+    [appTerminalTarget, buildRecentTerminalTargets],
+  );
   const hasAppRecentTargets = appRecentTerminalTargets.length > 0;
+  const hasAppStoredRecentTargets = hasStoredRecentTerminalTargets();
 
   const addRecentCwd = useCallback(
     (target: TerminalTargetPreference, cwd: string) => {
@@ -581,8 +620,9 @@ export function ProviderList({
   );
 
   const getRecentTerminalTargets = useCallback(
-    (providerId?: string) => getTerminalTarget(providerId).recentCwds ?? [],
-    [getTerminalTarget],
+    (providerId?: string) =>
+      buildRecentTerminalTargets(getTerminalTarget(providerId)),
+    [buildRecentTerminalTargets, getTerminalTarget],
   );
 
   const handleOpenTerminalWithMode = useCallback(
@@ -604,7 +644,10 @@ export function ProviderList({
         cwd = picked;
       } else {
         cwd =
-          selectedPath ?? target.recentCwds?.[0] ?? target.lastCwd ?? undefined;
+          selectedPath ??
+          getRecentTerminalTargets(provider.id)[0] ??
+          target.lastCwd ??
+          undefined;
         if (!cwd) return;
       }
 
@@ -626,7 +669,7 @@ export function ProviderList({
     ],
   );
 
-  const canOpenProviderTerminal = Boolean(onOpenTerminal);
+  const canOpenProviderTerminal = Boolean(onOpenTerminal) && appId === "claude";
   const providerTerminalHandler = canOpenProviderTerminal
     ? handleOpenTerminalWithMode
     : undefined;
@@ -646,7 +689,10 @@ export function ProviderList({
         cwd = picked;
       } else {
         cwd =
-          selectedPath ?? target.recentCwds?.[0] ?? target.lastCwd ?? undefined;
+          selectedPath ??
+          buildRecentTerminalTargets(target)[0] ??
+          target.lastCwd ??
+          undefined;
         if (!cwd) return;
       }
 
@@ -671,7 +717,7 @@ export function ProviderList({
   const handleClearRecentTerminals = useCallback(
     async (providerId?: string) => {
       const key = getTerminalTargetKey(providerId);
-      await saveTerminalTarget(key, { recentCwds: [] });
+      await saveTerminalTarget(key, { recentCwds: [], lastCwd: undefined });
     },
     [getTerminalTargetKey, saveTerminalTarget],
   );
@@ -1062,7 +1108,6 @@ export function ProviderList({
 
   const { data: appProxyConfig } = useAppProxyConfig(appId);
   const updateAppProxyConfig = useUpdateAppProxyConfig();
-  const { data: sessions = [] } = useSessionsQuery();
   const { data: sessionProviderBindings = [] } = useSessionProviderBindings(
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
@@ -2951,8 +2996,10 @@ export function ProviderList({
                     recentTerminalTargets={getRecentTerminalTargets(
                       provider.id,
                     )}
-                    onClearRecentTerminals={() =>
-                      void handleClearRecentTerminals(provider.id)
+                    onClearRecentTerminals={
+                      hasStoredRecentTerminalTargets(provider.id)
+                        ? () => void handleClearRecentTerminals(provider.id)
+                        : undefined
                     }
                     onTest={enableStreamCheck ? handleTestProvider : undefined}
                     isTesting={
@@ -3166,7 +3213,7 @@ export function ProviderList({
                           })}
                         </DropdownMenuItem>
                       )}
-                      {hasAppRecentTargets && (
+                      {hasAppStoredRecentTargets && (
                         <>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -4028,7 +4075,7 @@ export function ProviderList({
                               })}
                             </DropdownMenuItem>
                           )}
-                          {hasAppRecentTargets && (
+                          {hasAppStoredRecentTargets && (
                             <>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem

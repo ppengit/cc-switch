@@ -60,14 +60,6 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Auth JSON Section */}
-      <CodexAuthSection
-        value={authValue}
-        onChange={onAuthChange}
-        onBlur={onAuthBlur}
-        error={authError}
-      />
-
       {/* Config TOML Section */}
       <CodexConfigSection
         value={configValue}
@@ -77,6 +69,14 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
         onEditCommonConfig={() => setIsCommonConfigModalOpen(true)}
         commonConfigError={commonConfigError}
         configError={configError}
+      />
+
+      {/* Auth JSON Section */}
+      <CodexAuthSection
+        value={authValue}
+        onChange={onAuthChange}
+        onBlur={onAuthBlur}
+        error={authError}
       />
 
       {/* Common Config Modal */}

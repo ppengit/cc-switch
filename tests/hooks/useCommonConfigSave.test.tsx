@@ -46,7 +46,42 @@ describe("common config snippet saving", () => {
     expect(saved).toBe(false);
     expect(setCommonConfigSnippetMock).not.toHaveBeenCalled();
     expect(onConfigChange).not.toHaveBeenCalled();
-    expect(result.current.commonConfigError).toContain("invalid value");
+    expect(result.current.commonConfigError).toContain("{{provider.config}}");
+  });
+
+  it("persists a Codex common config snippet with provider placeholders", async () => {
+    const onConfigChange = vi.fn();
+    const { result } = renderHook(() =>
+      useCodexCommonConfig({
+        codexConfig: 'model = "gpt-5"',
+        onConfigChange,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    let saved = false;
+    act(() => {
+      saved = result.current.handleCommonConfigSnippetChange(
+        `approval_policy = "never"
+
+{{provider.config}}
+
+{{mcp.config}}`,
+      );
+    });
+
+    expect(saved).toBe(true);
+    expect(result.current.commonConfigError).toBe("");
+    expect(setCommonConfigSnippetMock).toHaveBeenCalledWith(
+      "codex",
+      `approval_policy = "never"
+
+{{provider.config}}
+
+{{mcp.config}}`,
+    );
+    expect(onConfigChange).not.toHaveBeenCalled();
   });
 
   it("does not persist an invalid Gemini common config snippet", async () => {

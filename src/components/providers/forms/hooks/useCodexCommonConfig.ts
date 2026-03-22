@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { parse as parseToml } from "smol-toml";
 import { configApi } from "@/lib/api";
-import { normalizeTomlText } from "@/utils/textNormalization";
+import { validateCodexCommonConfigSnippet } from "@/utils/providerConfigUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
 const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
@@ -50,20 +49,17 @@ export function useCodexCommonConfig({
       };
     }
 
-    try {
-      const parsed = parseToml(normalizeTomlText(snippetString)) as Record<
-        string,
-        unknown
-      >;
-      return {
-        hasContent: Object.keys(parsed).length > 0,
-      };
-    } catch (error) {
+    const validationError = validateCodexCommonConfigSnippet(snippetString);
+    if (validationError) {
       return {
         hasContent: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: validationError,
       };
     }
+
+    return {
+      hasContent: true,
+    };
   }, []);
 
   useEffect(() => {
