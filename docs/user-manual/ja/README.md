@@ -107,5 +107,5 @@ CC Switch ユーザーマニュアル
 
 Issue や PR でドキュメントの改善にご協力ください：
 
-- [GitHub Issues](https://github.com/farion1231/cc-switch/issues)
-- [GitHub Repository](https://github.com/farion1231/cc-switch)
+- [GitHub Issues](https://github.com/ppengit/cc-switch/issues)
+- [GitHub Repository](https://github.com/ppengit/cc-switch)
