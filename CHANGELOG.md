@@ -5,6 +5,64 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3-2] - 2026-03-22
+
+本版本是在 `3.12.3-1` 基础上，继续围绕“**供应商配置编辑是否稳定**、**模型获取是否一致**、**Codex / Gemini 模板是否真正按各自配置格式处理**”做的一次收口发布。
+
+这一版的重点不是再新增一套独立机制，而是把最近一轮使用中暴露出来的边角问题逐一压平，确保新增供应商、编辑供应商、提取模板、预览最终配置、自动获取模型这些动作在实际链路里可以稳定串起来。
+
+### 供应商配置编辑与保存链路
+
+- 修复了 Codex 供应商在新增 / 编辑时仍被上层链路误当作纯 JSON 配置校验的问题
+- 对 Codex、Gemini 的保存入口补上了更稳妥的异常拦截：
+  - 当 `auth.json`、`config.json`、`config.toml` 无法正确组装最终配置时，不再出现误导性的保存行为
+  - 错误提示进一步统一为中文
+- 继续收口了 Live 配置写回前的清洗逻辑，减少模板片段和 provider 片段互相污染的概率
+
+### Codex 模板与配置渲染
+
+- 修复默认供应商模板在包含占位符时被直接当作原始 TOML 校验，导致 `{{base_url}}` / `{{model}}` / `{{reasoning_effort}}` 被误判为非法键的问题
+- 现在默认供应商模板会先进行占位符替换再做语法校验，因此 Codex 模板可以继续保持原生 `config.toml` 风格
+- 默认 Codex provider 模板中的 `base_url` 继续保持为空字符串，避免新建供应商时自动写入固定地址
+- 进一步补强了 Codex 应用配置模板渲染前的 provider 片段清洗，避免模板根字段与 provider 片段重复叠加，减少 `duplicate key` 类问题
+
+### Gemini 应用配置模板机制
+
+- Gemini 的应用配置模板现在正式支持 `env` 与 `config` 两部分
+- 旧版仅写顶层环境变量对象的模板仍可兼容读取，但会在保存或迁移时规范化为结构化格式
+- 提取 Gemini 应用配置模板时，除了环境变量公共项，也会一并保留 `config` 里的公共配置
+- 后端公共配置应用、剥离、包含判断三条链路同步升级，避免前端支持 `env/config`、后端却只处理 `env` 的语义错位
+
+### 模型自动获取体验
+
+- 不再把“自动获取模型”局限在单一 app 的单一路径上
+- 新增统一的模型发现逻辑：
+  - 优先请求供应商自身兼容接口的模型列表
+  - 当供应商接口不支持或当前未填写可用于查询的端点 / 密钥时，自动回退到 `models.dev` 官方模型目录
+- Claude、Codex、Gemini 现在都能复用这一套逻辑：
+  - Claude 即使在非 OpenAI 兼容格式下，也可以通过官方模型目录加载可选模型
+  - Gemini 官方场景下也可以直接拉取模型建议，不再因为没有第三方端点而完全缺失此能力
+- 这样做的好处是：
+  - 自动获取模型不再只在少数供应商形态下可用
+  - 即使供应商不提供 `/models`，用户仍能快速得到一份可直接选择或粘贴的模型列表
+
+### 表单与交互细节
+
+- 修复了 Codex 新增 / 编辑供应商界面中，“自动获取模型”按钮挤占模型名称区域，导致“模型名称 / 推理深度”不再处于同一布局行的问题
+- Claude 的模型配置显示也做了拆分：
+  - 模型配置区域可以独立显示
+  - 不会为了让模型列表可用而把 API 格式、认证字段等高级控制项一并强行暴露出来
+
+### 测试与验证
+
+- 已通过：
+  - `pnpm typecheck`
+  - `pnpm test:unit`
+- 本地 `cargo test` / `pnpm tauri build` 仍被当前机器的 Rust / Visual Studio 工具链环境阻塞，具体表现为：
+  - `vswhom-sys` 链接阶段 `LNK1143`
+  - 历史残留的 `CC / CFLAGS` 环境污染会影响 `rquickjs-sys`
+- 已尝试清理环境变量并执行 `cargo clean` 后重新编译，但本机 Windows release 仍未能成功产出，因此本次正式安装包仍以 GitHub Actions 的干净构建环境为准
+
 ## [3.12.3-1] - 2026-03-22
 
 本版本是**基于上游 v3.12.2** 持续整合本地定制功能后的首个 GitHub 主仓正式自定义版本。  
