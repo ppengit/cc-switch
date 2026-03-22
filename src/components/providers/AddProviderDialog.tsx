@@ -83,10 +83,25 @@ export function AddProviderDialog({
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
-      const parsedConfig = JSON.parse(values.settingsConfig) as Record<
-        string,
-        unknown
-      >;
+      let parsedConfig: Record<string, unknown>;
+      try {
+        parsedConfig = JSON.parse(values.settingsConfig) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        toast.error(
+          t("providerForm.settingsConfigInvalid", {
+            defaultValue:
+              appId === "codex"
+                ? "Codex 配置格式异常，未能生成最终 provider 配置，请检查 auth.json 与 config.toml"
+                : appId === "gemini"
+                  ? "Gemini 配置格式异常，未能生成最终 provider 配置，请检查 .env 与 config.json"
+                  : "配置格式异常，未能生成最终 provider 配置",
+          }),
+        );
+        return;
+      }
 
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {

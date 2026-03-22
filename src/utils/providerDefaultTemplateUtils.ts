@@ -20,9 +20,11 @@ const ALLOWED_PROVIDER_TEMPLATE_PLACEHOLDERS: Record<
   gemini: ["api_key", "base_url", "model"],
 };
 
-const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<SupportedTemplateApp, string> =
-  {
-    claude: `{
+const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<
+  SupportedTemplateApp,
+  string
+> = {
+  claude: `{
   "env": {
     "ANTHROPIC_BASE_URL": "{{base_url}}",
     "ANTHROPIC_AUTH_TOKEN": "{{api_key}}",
@@ -33,7 +35,7 @@ const FALLBACK_PROVIDER_DEFAULT_TEMPLATES: Record<SupportedTemplateApp, string> 
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "{{opus_model}}"
   }
 }`,
-    codex: `model_provider = "custom"
+  codex: `model_provider = "custom"
 model = "{{model}}"
 model_reasoning_effort = "{{reasoning_effort}}"
 disable_response_storage = true
@@ -44,7 +46,7 @@ wire_api = "responses"
 requires_openai_auth = true
 base_url = "{{base_url}}"
 `,
-    gemini: `{
+  gemini: `{
   "env": {
     "GOOGLE_GEMINI_BASE_URL": "{{base_url}}",
     "GEMINI_API_KEY": "{{api_key}}",
@@ -52,7 +54,7 @@ base_url = "{{base_url}}"
   },
   "config": {}
 }`,
-  };
+};
 
 const FALLBACK_PROVIDER_DEFAULT_VALUES: Record<
   SupportedTemplateApp,
@@ -68,7 +70,7 @@ const FALLBACK_PROVIDER_DEFAULT_VALUES: Record<
     opus_model: "claude-opus-4-6",
   },
   codex: {
-    base_url: "https://sub.jlypx.de",
+    base_url: "",
     model: "gpt-5.4",
     reasoning_effort: "xhigh",
   },
@@ -106,25 +108,31 @@ export function validateProviderDefaultTemplate(
     return "";
   }
 
-  if (appId === "codex") {
-    const tomlError = validateToml(trimmed);
-    if (tomlError) {
-      return `默认供应商模板必须是合法的 TOML: ${tomlError}`;
-    }
-  } else {
-    try {
-      JSON.parse(trimmed);
-    } catch {
-      return "默认供应商模板必须是合法 JSON";
-    }
-  }
-
   const allowed = new Set(ALLOWED_PROVIDER_TEMPLATE_PLACEHOLDERS[appId]);
   const matches = trimmed.matchAll(/\{\{([^{}]+)\}\}/g);
   for (const match of matches) {
     const placeholder = (match[1] || "").trim();
     if (!allowed.has(placeholder)) {
       return `默认供应商模板包含不支持的占位符: {{${placeholder}}}`;
+    }
+  }
+
+  const renderedForValidation = Object.entries(
+    FALLBACK_PROVIDER_DEFAULT_VALUES[appId],
+  ).reduce((acc, [key, value]) => {
+    return acc.split(`{{${key}}}`).join(value ?? "");
+  }, trimmed);
+
+  if (appId === "codex") {
+    const tomlError = validateToml(renderedForValidation);
+    if (tomlError) {
+      return `默认供应商模板必须是合法的 TOML: ${tomlError}`;
+    }
+  } else {
+    try {
+      JSON.parse(renderedForValidation);
+    } catch {
+      return "默认供应商模板必须是合法 JSON";
     }
   }
 

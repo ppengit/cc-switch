@@ -115,11 +115,11 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     try {
       const parsed = JSON.parse(value);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return "Auth JSON must be an object";
+        return "auth.json 必须是 JSON 对象";
       }
       return "";
     } catch {
-      return "Invalid JSON format";
+      return "auth.json 不是合法的 JSON 格式";
     }
   }, []);
 

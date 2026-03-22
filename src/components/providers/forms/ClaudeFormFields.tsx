@@ -54,6 +54,7 @@ interface ClaudeFormFieldsProps {
 
   // Model Selector
   shouldShowModelSelector: boolean;
+  shouldShowModelConfig?: boolean;
   claudeModel: string;
   reasoningModel: string;
   defaultHaikuModel: string;
@@ -107,6 +108,7 @@ export function ClaudeFormFields({
   autoSelect,
   onAutoSelectChange,
   shouldShowModelSelector,
+  shouldShowModelConfig = shouldShowModelSelector,
   claudeModel,
   reasoningModel,
   defaultHaikuModel,
@@ -280,7 +282,7 @@ export function ClaudeFormFields({
       )}
 
       {/* 模型选择器 */}
-      {shouldShowModelSelector && (
+      {shouldShowModelConfig && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <FormLabel className="mb-0">

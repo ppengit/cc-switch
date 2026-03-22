@@ -57,4 +57,8 @@ export const providerSchema = z.object({
   iconColor: z.string().optional(),
 });
 
+export const codexProviderSchema = providerSchema.extend({
+  settingsConfig: z.string().min(1, "请填写配置内容"),
+});
+
 export type ProviderFormData = z.infer<typeof providerSchema>;

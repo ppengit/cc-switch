@@ -126,9 +126,9 @@ export function useGeminiConfigState({
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return "";
       }
-      return "Config must be a JSON object";
+      return "config.json 必须是 JSON 对象";
     } catch {
-      return "Invalid JSON format";
+      return "config.json 不是合法的 JSON 格式";
     }
   }, []);
 

@@ -796,7 +796,7 @@ impl ProviderService {
                 let parsed = serde_json::from_str::<Value>(snippet).map_err(|e| {
                     AppError::Message(format!("Invalid Gemini common config snippet: {e}"))
                 })?;
-                let wrapped = if parsed.get("env").is_some() {
+                let wrapped = if parsed.get("env").is_some() || parsed.get("config").is_some() {
                     parsed
                 } else {
                     serde_json::json!({ "env": parsed })
@@ -969,8 +969,9 @@ impl ProviderService {
     /// - GEMINI_API_KEY
     fn extract_gemini_common_config(settings: &Value) -> Result<String, AppError> {
         let env = settings.get("env").and_then(|v| v.as_object());
+        let config = settings.get("config").and_then(|v| v.as_object());
 
-        let mut snippet = serde_json::Map::new();
+        let mut env_snippet = serde_json::Map::new();
         if let Some(env) = env {
             for (key, value) in env {
                 if key == "GOOGLE_GEMINI_BASE_URL" || key == "GEMINI_API_KEY" {
@@ -981,8 +982,18 @@ impl ProviderService {
                 };
                 let trimmed = v.trim();
                 if !trimmed.is_empty() {
-                    snippet.insert(key.to_string(), Value::String(trimmed.to_string()));
+                    env_snippet.insert(key.to_string(), Value::String(trimmed.to_string()));
                 }
+            }
+        }
+
+        let mut snippet = serde_json::Map::new();
+        if !env_snippet.is_empty() {
+            snippet.insert("env".to_string(), Value::Object(env_snippet));
+        }
+        if let Some(config) = config {
+            if !config.is_empty() {
+                snippet.insert("config".to_string(), Value::Object(config.clone()));
             }
         }
 

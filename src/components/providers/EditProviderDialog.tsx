@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider } from "@/types";
@@ -160,10 +161,25 @@ export function EditProviderDialog({
 
       // 注意：values.settingsConfig 已经是最终的配置字符串
       // ProviderForm 已经为不同的 app 类型（Claude/Codex/Gemini）正确组装了配置
-      const parsedConfig = JSON.parse(values.settingsConfig) as Record<
-        string,
-        unknown
-      >;
+      let parsedConfig: Record<string, unknown>;
+      try {
+        parsedConfig = JSON.parse(values.settingsConfig) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        toast.error(
+          t("providerForm.settingsConfigInvalid", {
+            defaultValue:
+              appId === "codex"
+                ? "Codex 配置格式异常，未能生成最终 provider 配置，请检查 auth.json 与 config.toml"
+                : appId === "gemini"
+                  ? "Gemini 配置格式异常，未能生成最终 provider 配置，请检查 .env 与 config.json"
+                  : "配置格式异常，未能生成最终 provider 配置",
+          }),
+        );
+        return;
+      }
 
       const updatedProvider: Provider = {
         ...provider,

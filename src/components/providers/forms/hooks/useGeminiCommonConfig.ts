@@ -13,6 +13,7 @@ type GeminiForbiddenEnvKey = (typeof GEMINI_COMMON_ENV_FORBIDDEN_KEYS)[number];
 
 interface UseGeminiCommonConfigProps {
   envValue: string;
+  configValue: string;
   onEnvChange: (env: string) => void;
   envStringToObj: (envString: string) => Record<string, string>;
   envObjToString: (envObj: Record<string, unknown>) => string;
@@ -38,6 +39,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export function useGeminiCommonConfig({
   envValue,
+  configValue,
   onEnvChange,
   envStringToObj,
   envObjToString,
@@ -59,33 +61,95 @@ export function useGeminiCommonConfig({
   const [isLoading, setIsLoading] = useState(true);
   const [isExtracting, setIsExtracting] = useState(false);
 
-  const parseSnippetEnv = useCallback(
+  const parseSnippet = useCallback(
     (
       snippetString: string,
-    ): { env: Record<string, string>; error?: string } => {
+    ): {
+      env: Record<string, string>;
+      config: Record<string, unknown>;
+      hasContent: boolean;
+      normalizedValue: string;
+      error?: string;
+    } => {
       const trimmed = snippetString.trim();
       if (!trimmed) {
-        return { env: {} };
+        return {
+          env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
+        };
       }
 
       let parsed: unknown;
       try {
         parsed = JSON.parse(trimmed);
       } catch {
-        return { env: {}, error: t("geminiConfig.invalidJsonFormat") };
+        return {
+          env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
       }
 
       if (!isPlainObject(parsed)) {
-        return { env: {}, error: t("geminiConfig.invalidJsonFormat") };
+        return {
+          env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
       }
 
-      const keys = Object.keys(parsed);
+      const hasStructuredSections =
+        Object.prototype.hasOwnProperty.call(parsed, "env") ||
+        Object.prototype.hasOwnProperty.call(parsed, "config");
+
+      const envSection = hasStructuredSections ? parsed.env : parsed;
+      const configSection = hasStructuredSections ? parsed.config : {};
+
+      if (
+        envSection !== undefined &&
+        (!isPlainObject(envSection) || Array.isArray(envSection))
+      ) {
+        return {
+          env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
+      }
+
+      if (
+        configSection !== undefined &&
+        (!isPlainObject(configSection) || Array.isArray(configSection))
+      ) {
+        return {
+          env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
+          error: t("geminiConfig.invalidJsonFormat"),
+        };
+      }
+
+      const envObject = isPlainObject(envSection)
+        ? (envSection as Record<string, unknown>)
+        : {};
+      const keys = Object.keys(envObject);
       const forbiddenKeys = keys.filter((key) =>
         GEMINI_COMMON_ENV_FORBIDDEN_KEYS.includes(key as GeminiForbiddenEnvKey),
       );
       if (forbiddenKeys.length > 0) {
         return {
           env: {},
+          config: {},
+          hasContent: false,
+          normalizedValue: "{}",
           error: t("geminiConfig.commonConfigInvalidKeys", {
             keys: forbiddenKeys.join(", "),
           }),
@@ -93,10 +157,13 @@ export function useGeminiCommonConfig({
       }
 
       const env: Record<string, string> = {};
-      for (const [key, value] of Object.entries(parsed)) {
+      for (const [key, value] of Object.entries(envObject)) {
         if (typeof value !== "string") {
           return {
             env: {},
+            config: {},
+            hasContent: false,
+            normalizedValue: "{}",
             error: t("geminiConfig.commonConfigInvalidValues"),
           };
         }
@@ -105,7 +172,24 @@ export function useGeminiCommonConfig({
         env[key] = normalized;
       }
 
-      return { env };
+      const config = isPlainObject(configSection)
+        ? (configSection as Record<string, unknown>)
+        : {};
+      const normalizedPayload: Record<string, unknown> = {};
+      if (Object.keys(env).length > 0) {
+        normalizedPayload.env = env;
+      }
+      if (Object.keys(config).length > 0) {
+        normalizedPayload.config = config;
+      }
+
+      return {
+        env,
+        config,
+        hasContent:
+          Object.keys(env).length > 0 || Object.keys(config).length > 0,
+        normalizedValue: JSON.stringify(normalizedPayload, null, 2),
+      };
     },
     [t],
   );
@@ -118,8 +202,11 @@ export function useGeminiCommonConfig({
         const snippet = await configApi.getCommonConfigSnippet("gemini");
 
         if (snippet && snippet.trim()) {
+          const parsed = parseSnippet(snippet);
           if (mounted) {
-            setCommonConfigSnippetState(snippet);
+            setCommonConfigSnippetState(
+              parsed.error ? snippet : parsed.normalizedValue,
+            );
           }
           return;
         }
@@ -129,16 +216,19 @@ export function useGeminiCommonConfig({
             const legacySnippet =
               window.localStorage.getItem(LEGACY_STORAGE_KEY);
             if (legacySnippet && legacySnippet.trim()) {
-              const parsed = parseSnippetEnv(legacySnippet);
+              const parsed = parseSnippet(legacySnippet);
               if (parsed.error) {
                 console.warn(
                   "[迁移] legacy Gemini 通用配置片段格式不符合当前规则，跳过迁移",
                 );
                 return;
               }
-              await configApi.setCommonConfigSnippet("gemini", legacySnippet);
+              await configApi.setCommonConfigSnippet(
+                "gemini",
+                parsed.normalizedValue,
+              );
               if (mounted) {
-                setCommonConfigSnippetState(legacySnippet);
+                setCommonConfigSnippetState(parsed.normalizedValue);
               }
               window.localStorage.removeItem(LEGACY_STORAGE_KEY);
               console.log(
@@ -163,12 +253,12 @@ export function useGeminiCommonConfig({
     return () => {
       mounted = false;
     };
-  }, [parseSnippetEnv]);
+  }, [parseSnippet]);
 
   const useCommonConfig = useMemo(() => {
-    const parsed = parseSnippetEnv(commonConfigSnippet);
-    return !parsed.error && Object.keys(parsed.env).length > 0;
-  }, [commonConfigSnippet, parseSnippetEnv]);
+    const parsed = parseSnippet(commonConfigSnippet);
+    return !parsed.error && parsed.hasContent;
+  }, [commonConfigSnippet, parseSnippet]);
 
   const handleCommonConfigToggle = useCallback((checked: boolean) => {
     void checked;
@@ -190,16 +280,16 @@ export function useGeminiCommonConfig({
         return true;
       }
 
-      const parsed = parseSnippetEnv(value);
+      const parsed = parseSnippet(value);
       if (parsed.error) {
         setCommonConfigError(parsed.error);
         return false;
       }
 
       setCommonConfigError("");
-      setCommonConfigSnippetState(value);
+      setCommonConfigSnippetState(parsed.normalizedValue);
       configApi
-        .setCommonConfigSnippet("gemini", value)
+        .setCommonConfigSnippet("gemini", parsed.normalizedValue)
         .catch((error: unknown) => {
           console.error("保存 Gemini 通用配置失败:", error);
           setCommonConfigError(
@@ -209,7 +299,7 @@ export function useGeminiCommonConfig({
 
       return true;
     },
-    [parseSnippetEnv, t],
+    [parseSnippet, t],
   );
 
   const handleExtract = useCallback(async () => {
@@ -217,9 +307,11 @@ export function useGeminiCommonConfig({
     setCommonConfigError("");
 
     try {
+      const currentConfig = configValue.trim() ? JSON.parse(configValue) : {};
       const extracted = await configApi.extractCommonConfigSnippet("gemini", {
         settingsConfig: JSON.stringify({
           env: envStringToObj(envValue),
+          config: currentConfig,
         }),
       });
 
@@ -228,14 +320,14 @@ export function useGeminiCommonConfig({
         return;
       }
 
-      const parsed = parseSnippetEnv(extracted);
+      const parsed = parseSnippet(extracted);
       if (parsed.error) {
         setCommonConfigError(t("geminiConfig.extractedConfigInvalid"));
         return;
       }
 
-      setCommonConfigSnippetState(extracted);
-      await configApi.setCommonConfigSnippet("gemini", extracted);
+      setCommonConfigSnippetState(parsed.normalizedValue);
+      await configApi.setCommonConfigSnippet("gemini", parsed.normalizedValue);
     } catch (error) {
       console.error("提取 Gemini 通用配置失败:", error);
       setCommonConfigError(
@@ -244,7 +336,7 @@ export function useGeminiCommonConfig({
     } finally {
       setIsExtracting(false);
     }
-  }, [envStringToObj, envValue, parseSnippetEnv, t]);
+  }, [configValue, envStringToObj, envValue, parseSnippet, t]);
 
   const clearCommonConfigError = useCallback(() => {
     setCommonConfigError("");

@@ -4518,6 +4518,8 @@ export function ProviderList({
                 file.label === "config.toml" || file.label === ".env"
                   ? "javascript"
                   : "json";
+              const previewPaneHeight = 320;
+              const showsFormatButton = editorLanguage !== "javascript";
               return (
                 <div
                   key={`${file.path}:${file.label}`}
@@ -4582,9 +4584,16 @@ export function ProviderList({
                           defaultValue: "预期渲染结果",
                         })}
                       </div>
-                      <pre className="max-h-[320px] overflow-auto rounded bg-muted px-3 py-3 text-xs leading-5 text-foreground">
-                        {file.expectedText || " "}
-                      </pre>
+                      <JsonEditor
+                        value={file.expectedText || " "}
+                        onChange={() => {}}
+                        height={previewPaneHeight}
+                        showValidation={false}
+                        language={editorLanguage}
+                        readOnly={true}
+                        showFormatButton={false}
+                      />
+                      {showsFormatButton && <div className="h-7" aria-hidden="true" />}
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
@@ -4615,7 +4624,7 @@ export function ProviderList({
                         onChange={(value) =>
                           handlePreviewDraftChange(file.path, value)
                         }
-                        rows={18}
+                        height={previewPaneHeight}
                         showValidation={editorLanguage !== "javascript"}
                         language={editorLanguage}
                       />

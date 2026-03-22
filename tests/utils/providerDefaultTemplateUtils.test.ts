@@ -11,7 +11,7 @@ describe("providerDefaultTemplateUtils", () => {
     expect(rendered).toContain('model_provider = "custom"');
     expect(rendered).toContain('model = "gpt-5.4"');
     expect(rendered).toContain('model_reasoning_effort = "xhigh"');
-    expect(rendered).toContain('base_url = "https://sub.jlypx.de"');
+    expect(rendered).toContain('base_url = ""');
   });
 
   it("keeps codex template placeholders in fallback template source", () => {

@@ -114,6 +114,63 @@ fn render_codex_config_template(
     }
 }
 
+fn strip_codex_mcp_sections(config_text: &str) -> Result<String, AppError> {
+    if config_text.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut doc = config_text.parse::<DocumentMut>().map_err(|e| {
+        AppError::Message(format!(
+            "Invalid Codex config.toml while normalizing provider fragment: {e}"
+        ))
+    })?;
+
+    let root = doc.as_table_mut();
+    root.remove("mcp_servers");
+
+    let remove_mcp_root =
+        if let Some(mcp_table) = root.get_mut("mcp").and_then(|item| item.as_table_mut()) {
+            mcp_table.remove("servers");
+            mcp_table.is_empty()
+        } else {
+            false
+        };
+
+    if remove_mcp_root {
+        root.remove("mcp");
+    }
+
+    Ok(doc.to_string())
+}
+
+fn normalize_codex_provider_fragment_for_template(
+    provider_fragment: &str,
+    template: &str,
+) -> Result<String, AppError> {
+    if provider_fragment.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let common_only = render_codex_config_template(template, "", "");
+    let stripped_common = if common_only.trim().is_empty() {
+        provider_fragment.to_string()
+    } else {
+        let stripped_settings = remove_common_config_from_settings(
+            &AppType::Codex,
+            &json!({ "config": provider_fragment }),
+            &common_only,
+        )?;
+
+        stripped_settings
+            .get("config")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    strip_codex_mcp_sections(&stripped_common)
+}
+
 fn json_is_subset(target: &Value, source: &Value) -> bool {
     match source {
         Value::Object(source_map) => {
@@ -204,6 +261,99 @@ fn json_deep_remove(target: &mut Value, source: &Value) {
 
         if remove_key {
             target_map.remove(key);
+        }
+    }
+}
+
+fn normalize_gemini_common_config_value(source: &Value) -> Value {
+    let Some(source_obj) = source.as_object() else {
+        return Value::Object(serde_json::Map::new());
+    };
+
+    let has_structured_sections =
+        source_obj.contains_key("env") || source_obj.contains_key("config");
+    if !has_structured_sections {
+        return json!({ "env": Value::Object(source_obj.clone()) });
+    }
+
+    let mut normalized = serde_json::Map::new();
+    if let Some(env_obj) = source.get("env").and_then(Value::as_object) {
+        normalized.insert("env".to_string(), Value::Object(env_obj.clone()));
+    }
+    if let Some(config_obj) = source.get("config").and_then(Value::as_object) {
+        normalized.insert("config".to_string(), Value::Object(config_obj.clone()));
+    }
+
+    Value::Object(normalized)
+}
+
+fn gemini_settings_contain_common_config(settings: &Value, snippet: &Value) -> bool {
+    let normalized = normalize_gemini_common_config_value(snippet);
+
+    let env_matches = normalized.get("env").map_or(true, |env_source| {
+        settings
+            .get("env")
+            .is_some_and(|env_target| json_is_subset(env_target, env_source))
+    });
+    let config_matches = normalized.get("config").map_or(true, |config_source| {
+        settings
+            .get("config")
+            .is_some_and(|config_target| json_is_subset(config_target, config_source))
+    });
+
+    env_matches && config_matches
+}
+
+fn remove_gemini_common_config_from_settings(result: &mut Value, snippet: &Value) {
+    let normalized = normalize_gemini_common_config_value(snippet);
+
+    if let Some(env_source) = normalized.get("env") {
+        if let Some(env_target) = result.get_mut("env") {
+            json_deep_remove(env_target, env_source);
+        }
+    }
+
+    if let Some(config_source) = normalized.get("config") {
+        if let Some(config_target) = result.get_mut("config") {
+            json_deep_remove(config_target, config_source);
+        }
+    }
+
+    if let Some(obj) = result.as_object_mut() {
+        let remove_env = obj
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| env.is_empty());
+        if remove_env {
+            obj.remove("env");
+        }
+
+        let remove_config = obj
+            .get("config")
+            .and_then(Value::as_object)
+            .is_some_and(|config| config.is_empty());
+        if remove_config {
+            obj.remove("config");
+        }
+    }
+}
+
+fn apply_gemini_common_config_to_settings(result: &mut Value, snippet: &Value) {
+    let normalized = normalize_gemini_common_config_value(snippet);
+
+    if let Some(env_source) = normalized.get("env") {
+        if let Some(env_target) = result.get_mut("env") {
+            json_deep_merge(env_target, env_source);
+        } else if let Some(obj) = result.as_object_mut() {
+            obj.insert("env".to_string(), env_source.clone());
+        }
+    }
+
+    if let Some(config_source) = normalized.get("config") {
+        if let Some(config_target) = result.get_mut("config") {
+            json_deep_merge(config_target, config_source);
+        } else if let Some(obj) = result.as_object_mut() {
+            obj.insert("config".to_string(), config_source.clone());
         }
     }
 }
@@ -406,16 +556,7 @@ pub(crate) fn settings_contain_common_config(
             toml_item_is_subset(target_doc.as_item(), source_doc.as_item())
         }
         AppType::Gemini => match serde_json::from_str::<Value>(trimmed) {
-            Ok(Value::Object(source_map)) => {
-                let Some(target_map) = settings.get("env").and_then(Value::as_object) else {
-                    return false;
-                };
-                source_map.iter().all(|(key, source_value)| {
-                    target_map
-                        .get(key)
-                        .is_some_and(|target_value| json_is_subset(target_value, source_value))
-                })
-            }
+            Ok(source) => gemini_settings_contain_common_config(settings, &source),
             _ => false,
         },
         AppType::OpenCode | AppType::OpenClaw => false,
@@ -491,9 +632,7 @@ pub(crate) fn remove_common_config_from_settings(
             let source = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
             let mut result = settings.clone();
-            if let Some(env) = result.get_mut("env") {
-                json_deep_remove(env, &source);
-            }
+            remove_gemini_common_config_from_settings(&mut result, &source);
             Ok(result)
         }
         AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
@@ -528,11 +667,14 @@ fn apply_common_config_to_settings(
             let config_text = if trimmed.contains(CODEX_PROVIDER_CONFIG_PLACEHOLDER)
                 || trimmed.contains(CODEX_MCP_CONFIG_PLACEHOLDER)
             {
+                let normalized_provider_fragment =
+                    normalize_codex_provider_fragment_for_template(provider_fragment, trimmed)
+                        .unwrap_or_else(|_| provider_fragment.to_string());
                 let current_live_config =
                     crate::codex_config::read_codex_config_text().unwrap_or_default();
                 let current_mcp =
                     extract_codex_mcp_fragment(&current_live_config).unwrap_or_default();
-                render_codex_config_template(trimmed, provider_fragment, &current_mcp)
+                render_codex_config_template(trimmed, &normalized_provider_fragment, &current_mcp)
             } else {
                 let mut target_doc = if provider_fragment.trim().is_empty() {
                     DocumentMut::new()
@@ -560,11 +702,7 @@ fn apply_common_config_to_settings(
             let source = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
             let mut result = settings.clone();
-            if let Some(env) = result.get_mut("env") {
-                json_deep_merge(env, &source);
-            } else if let Some(obj) = result.as_object_mut() {
-                obj.insert("env".to_string(), source);
-            }
+            apply_gemini_common_config_to_settings(&mut result, &source);
             Ok(result)
         }
         AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
@@ -1473,6 +1611,59 @@ mod tests {
     }
 
     #[test]
+    fn codex_template_render_strips_polluted_common_keys_from_provider_fragment() {
+        let settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": "sk-test"
+            },
+            "config": r#"developer_instructions = "请使用中文回答,务必使用清晰详细准确的风格。"
+approval_policy = "never"
+
+model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.example.com/v1"
+
+[mcp_servers.echo]
+command = "npx"
+"#
+        });
+        let snippet = r#"developer_instructions = "请使用中文回答,务必使用清晰详细准确的风格。"
+approval_policy = "never"
+
+{{provider.config}}
+
+{{mcp.config}}"#;
+
+        let applied = apply_common_config_to_settings(&AppType::Codex, &settings, snippet).unwrap();
+        let applied_config = applied["config"].as_str().unwrap_or_default();
+
+        assert_eq!(
+            applied_config.matches("developer_instructions").count(),
+            1,
+            "common template keys should not be duplicated in rendered Codex config"
+        );
+        assert_eq!(
+            applied_config.matches("[mcp_servers.echo]").count(),
+            1,
+            "mcp servers should only appear once after rendering"
+        );
+        assert_eq!(
+            applied_config
+                .matches("model_provider = \"custom\"")
+                .count(),
+            1,
+            "provider fragment should remain intact after cleanup"
+        );
+    }
+
+    #[test]
     fn explicit_common_config_flag_overrides_legacy_subset_detection() {
         let mut provider = Provider::with_id(
             "claude-test".to_string(),
@@ -1549,5 +1740,68 @@ mod tests {
             .map(|value| value.as_str().expect("tool id should be string"))
             .collect();
         assert_eq!(values, vec!["tool2"]);
+    }
+
+    #[test]
+    fn gemini_common_config_apply_and_remove_roundtrip_for_env_and_config() {
+        let settings = json!({
+            "env": {
+                "GEMINI_API_KEY": "sk-test"
+            },
+            "config": {
+                "theme": "dark"
+            }
+        });
+        let snippet = r#"{
+  "env": {
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  },
+  "config": {
+    "ui": {
+      "inlineThinkingMode": "full"
+    }
+  }
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::Gemini, &settings, snippet).unwrap();
+        assert_eq!(
+            applied["env"]["GEMINI_MODEL"],
+            json!("gemini-3.1-pro-preview")
+        );
+        assert_eq!(applied["config"]["ui"]["inlineThinkingMode"], json!("full"));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Gemini, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn gemini_legacy_common_config_subset_detection_still_works() {
+        let settings = json!({
+            "env": {
+                "GEMINI_MODEL": "gemini-3.1-pro-preview",
+                "EXTRA_FLAG": "1"
+            }
+        });
+        let snippet = r#"{
+  "GEMINI_MODEL": "gemini-3.1-pro-preview"
+}"#;
+
+        assert!(
+            settings_contain_common_config(&AppType::Gemini, &settings, snippet),
+            "legacy Gemini env-only snippets should still be detected"
+        );
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Gemini, &settings, snippet).unwrap();
+        assert_eq!(
+            stripped,
+            json!({
+                "env": {
+                    "EXTRA_FLAG": "1"
+                }
+            })
+        );
     }
 }

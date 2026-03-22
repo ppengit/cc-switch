@@ -27,11 +27,15 @@ interface BasicFormFieldsProps {
   form: UseFormReturn<ProviderFormData>;
   /** Slot to render content between icon and name fields */
   beforeNameSlot?: ReactNode;
+  onNameChange?: (value: string, applyDefaultChange: () => void) => void;
+  onWebsiteUrlChange?: (value: string, applyDefaultChange: () => void) => void;
 }
 
 export function BasicFormFields({
   form,
   beforeNameSlot,
+  onNameChange,
+  onWebsiteUrlChange,
 }: BasicFormFieldsProps) {
   const { t } = useTranslation();
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
@@ -130,7 +134,21 @@ export function BasicFormFields({
             <FormItem>
               <FormLabel>{t("provider.name")}</FormLabel>
               <FormControl>
-                <Input {...field} placeholder={t("provider.namePlaceholder")} />
+                <Input
+                  {...field}
+                  placeholder={t("provider.namePlaceholder")}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    const applyDefaultChange = () => field.onChange(nextValue);
+
+                    if (onNameChange) {
+                      onNameChange(nextValue, applyDefaultChange);
+                      return;
+                    }
+
+                    applyDefaultChange();
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -165,6 +183,17 @@ export function BasicFormFields({
               <Input
                 {...field}
                 placeholder={t("providerForm.websiteUrlPlaceholder")}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  const applyDefaultChange = () => field.onChange(nextValue);
+
+                  if (onWebsiteUrlChange) {
+                    onWebsiteUrlChange(nextValue, applyDefaultChange);
+                    return;
+                  }
+
+                  applyDefaultChange();
+                }}
               />
             </FormControl>
             <FormMessage />

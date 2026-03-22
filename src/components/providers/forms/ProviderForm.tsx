@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
@@ -6,7 +6,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
+import {
+  codexProviderSchema,
+  providerSchema,
+  type ProviderFormData,
+} from "@/lib/schemas/provider";
 import type { AppId } from "@/lib/api";
 import { configApi } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
@@ -89,10 +93,20 @@ import {
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
 import {
+  buildSeedFieldSyncPlan,
+  createEmptySeedFieldFollowers,
+  type SeedFieldValues,
+  type SeedSyncField,
+} from "./helpers/seedFieldSync";
+import {
   getFallbackProviderDefaultTemplate,
   isSupportedProviderTemplateApp,
   renderProviderDefaultTemplate,
 } from "@/utils/providerDefaultTemplateUtils";
+import {
+  fetchCatalogModelIds,
+  supportsEndpointModelDiscovery,
+} from "@/utils/modelDiscoveryUtils";
 
 type PresetEntry = {
   id: string;
@@ -275,7 +289,9 @@ export function ProviderForm({
   );
 
   const form = useForm<ProviderFormData>({
-    resolver: zodResolver(providerSchema),
+    resolver: zodResolver(
+      appId === "codex" ? codexProviderSchema : providerSchema,
+    ),
     defaultValues,
     mode: "onSubmit",
   });
@@ -590,6 +606,7 @@ export function ProviderForm({
     clearCommonConfigError: clearGeminiCommonConfigError,
   } = useGeminiCommonConfig({
     envValue: geminiEnv,
+    configValue: geminiConfig,
     onEnvChange: handleGeminiEnvChange,
     envStringToObj,
     envObjToString,
@@ -693,51 +710,136 @@ export function ProviderForm({
       };
     };
 
+    const supportsCatalogFallback =
+      appId === "claude" || appId === "codex" || appId === "gemini";
+    const supportsEndpointDiscovery = supportsEndpointModelDiscovery(appId, {
+      apiFormat: localApiFormat,
+    });
     const { baseUrl: rawBaseUrl, apiKey: rawApiKey } = resolveCredentials();
-
-    if (!rawBaseUrl) {
-      toast.error(
-        t("providerForm.endpointRequired", {
-          defaultValue: "请先填写 API 端点",
-        }),
-      );
-      return;
-    }
-
-    if (!rawApiKey) {
-      toast.error(
-        t("providerForm.apiKeyRequired", {
-          defaultValue: "请先填写 API Key",
-        }),
-      );
-      return;
-    }
 
     setIsFetchingModels(true);
     try {
-      const response = await providersApi.fetchOpenAiModels({
-        appId,
-        providerId: providerId ?? null,
-        baseUrl: rawBaseUrl,
-        apiKey: rawApiKey,
-        timeoutSecs: 15,
-      });
+      const applyModelOptions = (
+        modelIds: string[],
+        successMessage: string,
+        description?: string,
+      ) => {
+        setFetchedModelOptions(modelIds);
+        toast.success(
+          successMessage,
+          description ? { description } : undefined,
+        );
+      };
 
-      const modelIds = Array.from(
-        new Set(
-          (response.models || [])
-            .map((item) => item.id?.trim())
-            .filter((id): id is string => Boolean(id)),
-        ),
-      ).sort((a, b) => a.localeCompare(b, "en-US"));
+      const loadCatalogModels = async (description?: string) => {
+        const modelIds = await fetchCatalogModelIds(appId, {
+          apiFormat: localApiFormat,
+        });
 
-      setFetchedModelOptions(modelIds);
-      toast.success(
-        t("providerForm.modelsFetched", {
-          count: modelIds.length,
-          defaultValue: "已获取 {{count}} 个模型",
-        }),
-      );
+        applyModelOptions(
+          modelIds,
+          t("providerForm.modelsFetchedFromCatalog", {
+            count: modelIds.length,
+            defaultValue: "已从官方模型目录加载 {{count}} 个模型",
+          }),
+          description,
+        );
+      };
+
+      if (supportsEndpointDiscovery && rawBaseUrl && rawApiKey) {
+        try {
+          const response = await providersApi.fetchOpenAiModels({
+            appId,
+            providerId: providerId ?? null,
+            baseUrl: rawBaseUrl,
+            apiKey: rawApiKey,
+            timeoutSecs: 15,
+          });
+
+          const modelIds = Array.from(
+            new Set(
+              (response.models || [])
+                .map((item) => item.id?.trim())
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ).sort((a, b) => a.localeCompare(b, "en-US"));
+
+          applyModelOptions(
+            modelIds,
+            t("providerForm.modelsFetched", {
+              count: modelIds.length,
+              defaultValue: "已获取 {{count}} 个模型",
+            }),
+          );
+          return;
+        } catch (endpointError) {
+          if (supportsCatalogFallback) {
+            try {
+              await loadCatalogModels(
+                t("providerForm.fetchModelsFallbackToCatalog", {
+                  defaultValue:
+                    "当前供应商未返回可解析的模型列表，已回退到官方模型目录。",
+                }),
+              );
+              return;
+            } catch {
+              const message =
+                endpointError instanceof Error
+                  ? endpointError.message
+                  : String(endpointError ?? "");
+              toast.error(message || "获取模型失败", {
+                description: t("providerForm.fetchModelsFailedHint", {
+                  defaultValue:
+                    "此功能仅供参考，部分供应商可能不支持模型列表接口，您仍然可以手动输入模型名称。",
+                }),
+              });
+              return;
+            }
+          }
+
+          const message =
+            endpointError instanceof Error
+              ? endpointError.message
+              : String(endpointError ?? "");
+          toast.error(message || "获取模型失败", {
+            description: t("providerForm.fetchModelsFailedHint", {
+              defaultValue:
+                "此功能仅供参考，部分供应商可能不支持模型列表接口，您仍然可以手动输入模型名称。",
+            }),
+          });
+          return;
+        }
+      }
+
+      if (supportsCatalogFallback) {
+        const description =
+          supportsEndpointDiscovery && (!rawBaseUrl || !rawApiKey)
+            ? t("providerForm.fetchModelsCatalogNoEndpoint", {
+                defaultValue:
+                  "当前未填写可用于模型列表接口的端点或密钥，已直接使用官方模型目录。",
+              })
+            : undefined;
+        await loadCatalogModels(description);
+        return;
+      }
+
+      if (!rawBaseUrl) {
+        toast.error(
+          t("providerForm.endpointRequired", {
+            defaultValue: "请先填写 API 端点",
+          }),
+        );
+        return;
+      }
+
+      if (!rawApiKey) {
+        toast.error(
+          t("providerForm.apiKeyRequired", {
+            defaultValue: "请先填写 API Key",
+          }),
+        );
+        return;
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error ?? "");
@@ -760,6 +862,7 @@ export function ProviderForm({
     codexApiKey,
     geminiBaseUrl,
     geminiApiKey,
+    localApiFormat,
     opencodeForm.opencodeBaseUrl,
     opencodeForm.opencodeApiKey,
     t,
@@ -958,8 +1061,13 @@ export function ProviderForm({
           config: codexConfig ?? "",
         };
         settingsConfig = JSON.stringify(configObj);
-      } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
+      } catch {
+        toast.error(
+          t("codexConfig.authJsonError", {
+            defaultValue: "请检查 Codex 的 auth.json，必须是合法的 JSON 对象",
+          }),
+        );
+        return;
       }
     } else if (appId === "gemini") {
       try {
@@ -970,8 +1078,14 @@ export function ProviderForm({
           config: configObj,
         };
         settingsConfig = JSON.stringify(combined);
-      } catch (err) {
-        settingsConfig = values.settingsConfig.trim();
+      } catch {
+        toast.error(
+          t("geminiConfig.composeInvalid", {
+            defaultValue:
+              "请检查 Gemini 的环境变量与 config 配置内容，当前无法正确组装为最终配置",
+          }),
+        );
+        return;
       }
     } else if (
       appId === "opencode" &&
@@ -1144,8 +1258,159 @@ export function ProviderForm({
     );
   }, [groupedPresets]);
 
+  const enableSeedFieldSync = !isEditMode;
   const shouldShowSpeedTest =
     category !== "official" && category !== "cloud_provider";
+  const watchedName = form.watch("name") || "";
+  const watchedWebsiteUrl = form.watch("websiteUrl") || "";
+  const hasSeedApiUrlField =
+    enableSeedFieldSync &&
+    ((appId === "claude" || appId === "codex" || appId === "gemini") &&
+    shouldShowSpeedTest
+      ? true
+      : appId === "opencode"
+        ? !isAnyOmoCategory
+        : appId === "openclaw");
+  const watchedApiUrl =
+    appId === "claude"
+      ? baseUrl
+      : appId === "codex"
+        ? codexBaseUrl
+        : appId === "gemini"
+          ? geminiBaseUrl
+          : appId === "opencode" && !isAnyOmoCategory
+            ? opencodeForm.opencodeBaseUrl
+            : appId === "openclaw"
+              ? openclawForm.openclawBaseUrl
+              : "";
+  const enabledSeedFields = useMemo<SeedSyncField[]>(
+    () =>
+      !enableSeedFieldSync
+        ? []
+        : hasSeedApiUrlField
+          ? ["name", "websiteUrl", "apiUrl"]
+          : ["name", "websiteUrl"],
+    [enableSeedFieldSync, hasSeedApiUrlField],
+  );
+  const seedFieldFollowersRef = useRef(createEmptySeedFieldFollowers());
+
+  useEffect(() => {
+    seedFieldFollowersRef.current = createEmptySeedFieldFollowers();
+  }, [appId, category, defaultValues, hasSeedApiUrlField, selectedPresetId]);
+
+  const setSeedFieldValue = useCallback(
+    (field: SeedSyncField, value: string) => {
+      if (field === "name") {
+        form.setValue("name", value, {
+          shouldDirty: true,
+          shouldTouch: true,
+        });
+        return;
+      }
+
+      if (field === "websiteUrl") {
+        form.setValue("websiteUrl", value, {
+          shouldDirty: true,
+          shouldTouch: true,
+        });
+        return;
+      }
+
+      if (!hasSeedApiUrlField) {
+        return;
+      }
+
+      if (appId === "claude") {
+        handleClaudeBaseUrlChange(value);
+        return;
+      }
+
+      if (appId === "codex") {
+        handleCodexBaseUrlChange(value);
+        return;
+      }
+
+      if (appId === "gemini") {
+        handleGeminiBaseUrlChange(value);
+        return;
+      }
+
+      if (appId === "opencode" && !isAnyOmoCategory) {
+        opencodeForm.handleOpencodeBaseUrlChange(value);
+        return;
+      }
+
+      if (appId === "openclaw") {
+        openclawForm.handleOpenclawBaseUrlChange(value);
+      }
+    },
+    [
+      appId,
+      form,
+      handleClaudeBaseUrlChange,
+      handleCodexBaseUrlChange,
+      handleGeminiBaseUrlChange,
+      hasSeedApiUrlField,
+      isAnyOmoCategory,
+      opencodeForm,
+      openclawForm,
+    ],
+  );
+
+  const applySeedFieldSync = useCallback(
+    (source: SeedSyncField, value: string, applySourceChange: () => void) => {
+      applySourceChange();
+
+      const currentValues: SeedFieldValues = {
+        name: watchedName,
+        websiteUrl: watchedWebsiteUrl,
+        apiUrl: watchedApiUrl,
+      };
+      const { nextFollowers, updates } = buildSeedFieldSyncPlan({
+        source,
+        value,
+        currentValues,
+        currentFollowers: seedFieldFollowersRef.current,
+        enabledFields: enabledSeedFields,
+      });
+
+      seedFieldFollowersRef.current = nextFollowers;
+
+      for (const [field, nextValue] of Object.entries(updates)) {
+        setSeedFieldValue(field as SeedSyncField, nextValue ?? "");
+      }
+    },
+    [
+      enabledSeedFields,
+      setSeedFieldValue,
+      watchedApiUrl,
+      watchedName,
+      watchedWebsiteUrl,
+    ],
+  );
+
+  const handleSeedNameChange = useCallback(
+    (value: string, applyDefaultChange: () => void) => {
+      applySeedFieldSync("name", value, applyDefaultChange);
+    },
+    [applySeedFieldSync],
+  );
+
+  const handleSeedWebsiteUrlChange = useCallback(
+    (value: string, applyDefaultChange: () => void) => {
+      applySeedFieldSync("websiteUrl", value, applyDefaultChange);
+    },
+    [applySeedFieldSync],
+  );
+
+  const handleSeedApiUrlChange = useCallback(
+    (value: string) => {
+      applySeedFieldSync("apiUrl", value, () => {
+        setSeedFieldValue("apiUrl", value);
+      });
+    },
+    [applySeedFieldSync, setSeedFieldValue],
+  );
 
   const {
     shouldShowApiKeyLink: shouldShowClaudeApiKeyLink,
@@ -1157,7 +1422,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: watchedWebsiteUrl,
   });
 
   const {
@@ -1170,7 +1435,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: watchedWebsiteUrl,
   });
 
   const {
@@ -1183,7 +1448,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: watchedWebsiteUrl,
   });
 
   const {
@@ -1196,7 +1461,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: watchedWebsiteUrl,
   });
 
   // 使用 API Key 链接 hook (OpenClaw)
@@ -1210,7 +1475,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: watchedWebsiteUrl,
   });
 
   // 使用端点测速候选 hook
@@ -1407,6 +1672,10 @@ export function ProviderForm({
 
         <BasicFormFields
           form={form}
+          onNameChange={enableSeedFieldSync ? handleSeedNameChange : undefined}
+          onWebsiteUrlChange={
+            enableSeedFieldSync ? handleSeedWebsiteUrlChange : undefined
+          }
           beforeNameSlot={
             appId === "opencode" && !isAnyOmoCategory ? (
               <div className="space-y-2">
@@ -1551,7 +1820,11 @@ export function ProviderForm({
             onTemplateValueChange={handleTemplateValueChange}
             shouldShowSpeedTest={shouldShowSpeedTest}
             baseUrl={baseUrl}
-            onBaseUrlChange={handleClaudeBaseUrlChange}
+            onBaseUrlChange={
+              enableSeedFieldSync
+                ? handleSeedApiUrlChange
+                : handleClaudeBaseUrlChange
+            }
             isEndpointModalOpen={isEndpointModalOpen}
             onEndpointModalToggle={setIsEndpointModalOpen}
             onCustomEndpointsChange={
@@ -1560,6 +1833,7 @@ export function ProviderForm({
             autoSelect={endpointAutoSelect}
             onAutoSelectChange={setEndpointAutoSelect}
             shouldShowModelSelector={category !== "official"}
+            shouldShowModelConfig={true}
             claudeModel={claudeModel}
             reasoningModel={reasoningModel}
             defaultHaikuModel={defaultHaikuModel}
@@ -1569,12 +1843,7 @@ export function ProviderForm({
             speedTestEndpoints={speedTestEndpoints}
             apiFormat={localApiFormat}
             onApiFormatChange={handleApiFormatChange}
-            onFetchModels={
-              localApiFormat === "openai_chat" ||
-              localApiFormat === "openai_responses"
-                ? handleFetchModels
-                : undefined
-            }
+            onFetchModels={handleFetchModels}
             isFetchingModels={isFetchingModels}
             modelSuggestions={fetchedModelOptions}
             apiKeyField={localApiKeyField}
@@ -1594,7 +1863,11 @@ export function ProviderForm({
             partnerPromotionKey={codexPartnerPromotionKey}
             shouldShowSpeedTest={shouldShowSpeedTest}
             codexBaseUrl={codexBaseUrl}
-            onBaseUrlChange={handleCodexBaseUrlChange}
+            onBaseUrlChange={
+              enableSeedFieldSync
+                ? handleSeedApiUrlChange
+                : handleCodexBaseUrlChange
+            }
             isEndpointModalOpen={isCodexEndpointModalOpen}
             onEndpointModalToggle={setIsCodexEndpointModalOpen}
             onCustomEndpointsChange={
@@ -1630,7 +1903,11 @@ export function ProviderForm({
             partnerPromotionKey={geminiPartnerPromotionKey}
             shouldShowSpeedTest={shouldShowSpeedTest}
             baseUrl={geminiBaseUrl}
-            onBaseUrlChange={handleGeminiBaseUrlChange}
+            onBaseUrlChange={
+              enableSeedFieldSync
+                ? handleSeedApiUrlChange
+                : handleGeminiBaseUrlChange
+            }
             isEndpointModalOpen={isEndpointModalOpen}
             onEndpointModalToggle={setIsEndpointModalOpen}
             onCustomEndpointsChange={setDraftCustomEndpoints}
@@ -1640,7 +1917,7 @@ export function ProviderForm({
             model={geminiModel}
             onModelChange={handleGeminiModelChange}
             speedTestEndpoints={speedTestEndpoints}
-            onFetchModels={category !== "official" ? handleFetchModels : undefined}
+            onFetchModels={handleFetchModels}
             isFetchingModels={isFetchingModels}
             modelSuggestions={fetchedModelOptions}
           />
@@ -1658,7 +1935,11 @@ export function ProviderForm({
             isPartner={isOpencodePartner}
             partnerPromotionKey={opencodePartnerPromotionKey}
             baseUrl={opencodeForm.opencodeBaseUrl}
-            onBaseUrlChange={opencodeForm.handleOpencodeBaseUrlChange}
+            onBaseUrlChange={
+              enableSeedFieldSync
+                ? handleSeedApiUrlChange
+                : opencodeForm.handleOpencodeBaseUrlChange
+            }
             models={opencodeForm.opencodeModels}
             onModelsChange={opencodeForm.handleOpencodeModelsChange}
             extraOptions={opencodeForm.opencodeExtraOptions}
@@ -1694,7 +1975,11 @@ export function ProviderForm({
         {appId === "openclaw" && (
           <OpenClawFormFields
             baseUrl={openclawForm.openclawBaseUrl}
-            onBaseUrlChange={openclawForm.handleOpenclawBaseUrlChange}
+            onBaseUrlChange={
+              enableSeedFieldSync
+                ? handleSeedApiUrlChange
+                : openclawForm.handleOpenclawBaseUrlChange
+            }
             apiKey={openclawForm.openclawApiKey}
             onApiKeyChange={openclawForm.handleOpenclawApiKeyChange}
             category={category}

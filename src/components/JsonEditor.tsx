@@ -22,6 +22,8 @@ interface JsonEditorProps {
   language?: "json" | "javascript";
   height?: string | number;
   showMinimap?: boolean; // 添加此属性以防未来使用
+  readOnly?: boolean;
+  showFormatButton?: boolean;
 }
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
@@ -33,6 +35,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   showValidation = true,
   language = "json",
   height,
+  readOnly = false,
+  showFormatButton,
 }) => {
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
@@ -139,16 +143,23 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       basicSetup,
       language === "javascript" ? javascript() : json(),
       placeholder(placeholderText || ""),
+      EditorState.readOnly.of(readOnly),
+      EditorView.editable.of(!readOnly),
       baseTheme,
       sizingTheme,
       jsonLinter,
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          const newValue = update.state.doc.toString();
-          onChange(newValue);
-        }
-      }),
     ];
+
+    if (!readOnly) {
+      extensions.push(
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            const newValue = update.state.doc.toString();
+            onChange(newValue);
+          }
+        }),
+      );
+    }
 
     // 如果启用深色模式，添加深色主题
     if (darkMode) {
@@ -208,7 +219,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter]); // 依赖项中不包含 onChange 和 placeholder，避免不必要的重建
+  }, [darkMode, rows, height, language, jsonLinter, onChange, placeholderText, readOnly]); // 依赖项中包含只会影响实例行为的配置项
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {
@@ -250,6 +261,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   };
 
   const isFullHeight = height === "100%";
+  const shouldShowFormatButton =
+    showFormatButton ?? (language === "json" && !readOnly);
 
   return (
     <div
@@ -261,7 +274,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         style={{ width: "100%", height: isFullHeight ? undefined : "auto" }}
         className={isFullHeight ? "flex-1 min-h-0" : ""}
       />
-      {language === "json" && (
+      {shouldShowFormatButton && (
         <button
           type="button"
           onClick={handleFormat}
