@@ -1552,6 +1552,8 @@ impl ProxyService {
             .get("config")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let target_config =
+            crate::codex_config::sanitize_known_codex_toml_duplicates(target_config);
         let mut target_doc = if target_config.trim().is_empty() {
             toml_edit::DocumentMut::new()
         } else {
@@ -1564,6 +1566,8 @@ impl ProxyService {
             .get("config")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let existing_config =
+            crate::codex_config::sanitize_known_codex_toml_duplicates(existing_config);
         if existing_config.trim().is_empty() {
             target_obj.insert("config".to_string(), json!(target_doc.to_string()));
             return Ok(());

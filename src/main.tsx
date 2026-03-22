@@ -6,7 +6,11 @@ import App from "./App";
 import { AppProviders } from "./AppProviders";
 import i18n from "./i18n";
 import "./index.css";
-import { invokeWhenBridgeReady, listenWhenBridgeReady } from "@/lib/tauriBridge";
+import {
+  invokeWhenBridgeReady,
+  listenWhenBridgeReady,
+} from "@/lib/tauriBridge";
+import { emitGlobalRuntimeError } from "@/components/GlobalRuntimeErrorBridge";
 
 interface ConfigLoadErrorPayload {
   path?: string;
@@ -55,6 +59,8 @@ const renderFatalError = (error: unknown) => {
   `;
 };
 
+let appMounted = false;
+
 const handleConfigLoadError = async (
   payload: ConfigLoadErrorPayload | null,
 ): Promise<void> => {
@@ -95,11 +101,12 @@ const monitorConfigLoadErrors = async (): Promise<void> => {
   }
 
   try {
-    const initError = await invokeWhenBridgeReady<ConfigLoadErrorPayload | null>(
-      "get_init_error",
-      undefined,
-      { label: "initialization error query" },
-    );
+    const initError =
+      await invokeWhenBridgeReady<ConfigLoadErrorPayload | null>(
+        "get_init_error",
+        undefined,
+        { label: "initialization error query" },
+      );
 
     if (initError && (initError.path || initError.error)) {
       await handleConfigLoadError(initError);
@@ -137,8 +144,69 @@ const FatalErrorScreen = ({ error }: { error: unknown }) => (
     >
       {getErrorMessage(error)}
     </div>
+    <div style={{ display: "flex", gap: 12, marginTop: 20, flexWrap: "wrap" }}>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        style={{
+          border: "none",
+          borderRadius: 999,
+          padding: "10px 18px",
+          background: "#f97316",
+          color: "#fff",
+          cursor: "pointer",
+          fontWeight: 600,
+        }}
+      >
+        重新加载
+      </button>
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(getErrorMessage(error));
+          } catch {
+            // ignore clipboard failures
+          }
+        }}
+        style={{
+          border: "1px solid #cbd5e1",
+          borderRadius: 999,
+          padding: "10px 18px",
+          background: "#fff",
+          color: "#0f172a",
+          cursor: "pointer",
+          fontWeight: 600,
+        }}
+      >
+        复制错误详情
+      </button>
+    </div>
   </div>
 );
+
+const reportRuntimeError = (
+  error: unknown,
+  options?: {
+    fatal?: boolean;
+    source?: string;
+  },
+) => {
+  const message = getErrorMessage(error);
+  const source = options?.source ?? "runtime";
+
+  console.error(`[${source}]`, error);
+
+  if (options?.fatal || !appMounted) {
+    renderFatalError(error);
+    return;
+  }
+
+  emitGlobalRuntimeError({
+    message,
+    source,
+  });
+};
 
 class AppCrashBoundary extends React.Component<
   { children: React.ReactNode },
@@ -154,6 +222,11 @@ class AppCrashBoundary extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[bootstrap] React render crashed", error, errorInfo);
+    emitGlobalRuntimeError({
+      message:
+        `${getErrorMessage(error)}\n\n${errorInfo.componentStack || ""}`.trim(),
+      source: "react-boundary",
+    });
   }
 
   render() {
@@ -177,15 +250,17 @@ try {
 }
 
 window.addEventListener("error", (event) => {
-  if (event.error) {
-    renderFatalError(event.error);
-  } else if (event.message) {
-    renderFatalError(event.message);
-  }
+  reportRuntimeError(event.error ?? event.message, {
+    fatal: !appMounted,
+    source: "window-error",
+  });
 });
 
 window.addEventListener("unhandledrejection", (event) => {
-  renderFatalError(event.reason ?? "Unhandled promise rejection");
+  reportRuntimeError(event.reason ?? "Unhandled promise rejection", {
+    fatal: !appMounted,
+    source: "unhandled-rejection",
+  });
 });
 
 async function bootstrap() {
@@ -203,10 +278,11 @@ async function bootstrap() {
       </AppCrashBoundary>
     </React.StrictMode>,
   );
+  appMounted = true;
 
   void monitorConfigLoadErrors();
 }
 
 void bootstrap().catch((error) => {
-  renderFatalError(error);
+  reportRuntimeError(error, { fatal: true, source: "bootstrap" });
 });

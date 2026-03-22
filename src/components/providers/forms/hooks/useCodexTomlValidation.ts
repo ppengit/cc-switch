@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import TOML from "smol-toml";
+import { normalizeCodexKnownDuplicateFields } from "@/utils/providerConfigUtils";
 
 /**
  * Codex config.toml 格式校验 Hook
@@ -22,7 +23,7 @@ export function useCodexTomlValidation() {
     }
 
     try {
-      TOML.parse(tomlText);
+      TOML.parse(normalizeCodexKnownDuplicateFields(tomlText));
       setConfigError("");
       return true;
     } catch (error) {

@@ -56,6 +56,7 @@ fn merge_claude_mcp_servers_from_existing(settings: &mut Value) {
 }
 
 fn extract_codex_mcp_fragment(config_text: &str) -> Option<String> {
+    let config_text = crate::codex_config::sanitize_known_codex_toml_duplicates(config_text);
     if config_text.trim().is_empty() {
         return None;
     }
@@ -115,6 +116,7 @@ fn render_codex_config_template(
 }
 
 fn strip_codex_mcp_sections(config_text: &str) -> Result<String, AppError> {
+    let config_text = crate::codex_config::sanitize_known_codex_toml_duplicates(config_text);
     if config_text.trim().is_empty() {
         return Ok(String::new());
     }
@@ -147,6 +149,8 @@ fn normalize_codex_provider_fragment_for_template(
     provider_fragment: &str,
     template: &str,
 ) -> Result<String, AppError> {
+    let provider_fragment =
+        crate::codex_config::sanitize_known_codex_toml_duplicates(provider_fragment);
     if provider_fragment.trim().is_empty() {
         return Ok(String::new());
     }
@@ -540,6 +544,8 @@ pub(crate) fn settings_contain_common_config(
         },
         AppType::Codex => {
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let config_toml =
+                crate::codex_config::sanitize_known_codex_toml_duplicates(config_toml);
             if config_toml.trim().is_empty() {
                 return false;
             }
@@ -609,6 +615,8 @@ pub(crate) fn remove_common_config_from_settings(
         AppType::Codex => {
             let mut result = settings.clone();
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let config_toml =
+                crate::codex_config::sanitize_known_codex_toml_duplicates(config_toml);
             let mut target_doc = if config_toml.trim().is_empty() {
                 DocumentMut::new()
             } else {
@@ -663,6 +671,8 @@ fn apply_common_config_to_settings(
                 .get("config")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let provider_fragment =
+                crate::codex_config::sanitize_known_codex_toml_duplicates(provider_fragment);
 
             let config_text = if trimmed.contains(CODEX_PROVIDER_CONFIG_PLACEHOLDER)
                 || trimmed.contains(CODEX_MCP_CONFIG_PLACEHOLDER)

@@ -5,6 +5,45 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3-3] - 2026-03-22
+
+本版本是在 `3.12.3-2` 基础上继续做的一次“稳定性优先”修复发布，目标只有两个：
+
+- 彻底压住 Codex 供应商配置里最容易反复出现的 `config.toml` 重复键问题
+- 提升整个桌面端的异常处理机制，避免发生局部异常时直接白屏
+
+### Codex 配置稳定性
+
+- 修复了 Codex 默认模板中 `base_url = ""` 这类空占位值在后续编辑时无法被识别为“已有字段”的问题
+- 现在当用户填写新的 API 地址时，会替换原有空占位，而不是在同一个 `[model_providers.custom]` 表里再追加一个新的 `base_url`
+- 前端 `config.toml` 编辑态加入了“已知重复键自动收敛”逻辑，针对以下字段会优先保留最后一次赋值并清理重复项：
+  - `model_provider`
+  - `model`
+  - `model_reasoning_effort`
+  - `base_url`
+- Rust 后端同步加入同样的容错去重逻辑，因此即便历史数据库记录或旧的 live 文件里已经残留重复键，也不会再轻易拖垮：
+  - 最终配置预览
+  - live 配置读取
+  - 代理备份与恢复
+  - deep link / MCP / provider 相关读取链路
+
+### 异常处理与防白屏
+
+- 调整了前端全局错误处理策略，不再把所有运行时异常都直接渲染成“界面加载失败”页
+- 现在区分两类错误：
+  - 启动期 / 根级渲染致命错误：仍然进入致命错误页
+  - 运行中的普通异常、未处理 Promise 拒绝、局部异步错误：改为统一错误提示，不再整页白屏
+- 新增全局运行时错误桥接组件，把运行时异常统一汇总到 toast 提示层，界面主体尽量继续保持可用
+- 致命错误页补充了“重新加载”和“复制错误详情”入口，方便恢复与反馈
+
+### 测试与验证
+
+- 已补充针对 Codex 重复 `base_url` 与空占位替换的测试
+- 已补充针对全局运行时错误提示而非白屏的测试
+- 已通过：
+  - `pnpm typecheck`
+  - `pnpm test:unit`
+
 ## [3.12.3-2] - 2026-03-22
 
 本版本是在 `3.12.3-1` 基础上，继续围绕“**供应商配置编辑是否稳定**、**模型获取是否一致**、**Codex / Gemini 模板是否真正按各自配置格式处理**”做的一次收口发布。

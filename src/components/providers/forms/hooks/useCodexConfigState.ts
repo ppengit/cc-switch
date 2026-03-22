@@ -6,6 +6,7 @@ import {
   setCodexModelName as setCodexModelNameInConfig,
   extractCodexReasoningEffort,
   setCodexReasoningEffort as setCodexReasoningEffortInConfig,
+  normalizeCodexKnownDuplicateFields,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
 
@@ -36,8 +37,11 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       const auth = (config as any).auth || {};
       setCodexAuthState(JSON.stringify(auth, null, 2));
 
-      const configStr =
-        typeof (config as any).config === "string" ? (config as any).config : "";
+      const configStr = normalizeCodexKnownDuplicateFields(
+        typeof (config as any).config === "string"
+          ? (config as any).config
+          : "",
+      );
       setCodexConfigState(configStr);
 
       const initialBaseUrl = extractCodexBaseUrl(configStr);
@@ -203,9 +207,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       }
 
       isUpdatingCodexReasoningEffortRef.current = true;
-      setCodexConfig((prev) =>
-        setCodexReasoningEffortInConfig(prev, trimmed),
-      );
+      setCodexConfig((prev) => setCodexReasoningEffortInConfig(prev, trimmed));
       setTimeout(() => {
         isUpdatingCodexReasoningEffortRef.current = false;
       }, 0);
@@ -215,7 +217,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
 
   const handleCodexConfigChange = useCallback(
     (value: string) => {
-      const normalized = normalizeTomlText(value);
+      const normalized = normalizeCodexKnownDuplicateFields(
+        normalizeTomlText(value),
+      );
       setCodexConfig(normalized);
 
       if (!isUpdatingCodexBaseUrlRef.current) {
@@ -240,33 +244,31 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         }
       }
     },
-    [
-      setCodexConfig,
-      codexBaseUrl,
-      codexModelName,
-      codexReasoningEffort,
-    ],
+    [setCodexConfig, codexBaseUrl, codexModelName, codexReasoningEffort],
   );
 
   const resetCodexConfig = useCallback(
     (auth: Record<string, unknown>, config: string) => {
       const authString = JSON.stringify(auth, null, 2);
       setCodexAuth(authString);
-      setCodexConfig(config);
+      const normalizedConfig = normalizeCodexKnownDuplicateFields(config);
+      setCodexConfig(normalizedConfig);
 
-      const baseUrl = extractCodexBaseUrl(config);
+      const baseUrl = extractCodexBaseUrl(normalizedConfig);
       if (baseUrl) {
         setCodexBaseUrl(baseUrl);
       }
 
-      const modelName = extractCodexModelName(config);
+      const modelName = extractCodexModelName(normalizedConfig);
       if (modelName) {
         setCodexModelName(modelName);
       } else {
         setCodexModelName("");
       }
 
-      setCodexReasoningEffort(extractCodexReasoningEffort(config) || "xhigh");
+      setCodexReasoningEffort(
+        extractCodexReasoningEffort(normalizedConfig) || "xhigh",
+      );
 
       try {
         if (auth && typeof auth.OPENAI_API_KEY === "string") {

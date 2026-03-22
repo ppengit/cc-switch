@@ -78,6 +78,47 @@ describe("Codex TOML utils", () => {
     expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
   });
 
+  it("replaces an empty base_url placeholder instead of appending a duplicate", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      'model_reasoning_effort = "xhigh"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      'base_url = ""',
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://api.example.com/v1");
+
+    expect(output.match(/base_url\s*=/g)).toHaveLength(1);
+    expect(output).toContain('base_url = "https://api.example.com/v1"');
+    expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
+  });
+
+  it("collapses duplicated base_url lines in the active provider section", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'wire_api = "responses"',
+      'base_url = ""',
+      'base_url = "https://old.example/v1"',
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://fixed.example/v1");
+
+    expect(output.match(/base_url\s*=/g)).toHaveLength(1);
+    expect(output).toContain('base_url = "https://fixed.example/v1"');
+    expect(output).not.toContain('base_url = ""');
+  });
+
   it("recovers a single misplaced base_url from another section", () => {
     const input = [
       'model_provider = "custom"',

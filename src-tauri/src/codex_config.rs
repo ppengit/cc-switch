@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::error::AppError;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use toml_edit::DocumentMut;
@@ -93,6 +94,7 @@ fn write_codex_live_atomic_with_options(
         Some(s) => s.to_string(),
         None => String::new(),
     };
+    let cfg_text = sanitize_known_codex_toml_duplicates(&cfg_text);
     if validate_toml && !cfg_text.trim().is_empty() {
         toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
     }
@@ -156,6 +158,9 @@ pub(crate) fn merge_mcp_servers_from_existing(
 ) -> Option<String> {
     use toml_edit::{DocumentMut, Item};
 
+    let new_text = sanitize_known_codex_toml_duplicates(new_text);
+    let existing_text = sanitize_known_codex_toml_duplicates(existing_text);
+
     let mut new_doc = if new_text.trim().is_empty() {
         DocumentMut::default()
     } else {
@@ -204,12 +209,93 @@ pub fn read_codex_config_text() -> Result<String, AppError> {
     }
 }
 
+fn parse_toml_section_header(trimmed_line: &str) -> Option<String> {
+    if trimmed_line.starts_with("[[")
+        || !trimmed_line.starts_with('[')
+        || !trimmed_line.ends_with(']')
+    {
+        return None;
+    }
+
+    Some(trimmed_line[1..trimmed_line.len() - 1].trim().to_string())
+}
+
+fn detect_known_duplicate_prone_key(trimmed_line: &str) -> Option<&'static str> {
+    for key in [
+        "model_provider",
+        "model",
+        "model_reasoning_effort",
+        "base_url",
+    ] {
+        if let Some(rest) = trimmed_line.strip_prefix(key) {
+            if rest.trim_start().starts_with('=') {
+                return Some(key);
+            }
+        }
+    }
+
+    None
+}
+
+pub fn sanitize_known_codex_toml_duplicates(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.trim().is_empty() {
+        return normalized;
+    }
+
+    let had_trailing_newline = normalized.ends_with('\n');
+    let lines: Vec<&str> = normalized.lines().collect();
+    let mut current_section = "__root__".to_string();
+    let mut last_seen: HashMap<(String, &'static str), usize> = HashMap::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(section_name) = parse_toml_section_header(trimmed) {
+            current_section = section_name;
+            continue;
+        }
+
+        if let Some(key) = detect_known_duplicate_prone_key(trimmed) {
+            last_seen.insert((current_section.clone(), key), index);
+        }
+    }
+
+    let mut filtered: Vec<&str> = Vec::with_capacity(lines.len());
+    current_section = "__root__".to_string();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(section_name) = parse_toml_section_header(trimmed) {
+            current_section = section_name;
+            filtered.push(*line);
+            continue;
+        }
+
+        if let Some(key) = detect_known_duplicate_prone_key(trimmed) {
+            let should_keep = last_seen
+                .get(&(current_section.clone(), key))
+                .is_some_and(|last_index| *last_index == index);
+            if !should_keep {
+                continue;
+            }
+        }
+
+        filtered.push(*line);
+    }
+
+    let mut result = filtered.join("\n");
+    if had_trailing_newline && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 /// 对非空的 TOML 文本进行语法校验
 pub fn validate_config_toml(text: &str) -> Result<(), AppError> {
-    if text.trim().is_empty() {
+    let sanitized = sanitize_known_codex_toml_duplicates(text);
+    if sanitized.trim().is_empty() {
         return Ok(());
     }
-    toml::from_str::<toml::Table>(text)
+    toml::from_str::<toml::Table>(&sanitized)
         .map(|_| ())
         .map_err(|e| AppError::toml(Path::new("config.toml"), e))
 }
@@ -275,7 +361,7 @@ command = "echo""#;
 pub fn read_and_validate_codex_config_text() -> Result<String, AppError> {
     let s = read_codex_config_text()?;
     validate_config_toml(&s)?;
-    Ok(s)
+    Ok(sanitize_known_codex_toml_duplicates(&s))
 }
 
 /// Update a field in Codex config.toml using toml_edit (syntax-preserving).
@@ -287,8 +373,10 @@ pub fn read_and_validate_codex_config_text() -> Result<String, AppError> {
 ///
 /// Empty value removes the field.
 pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Result<String, String> {
+    let sanitized = sanitize_known_codex_toml_duplicates(toml_str);
     let mut doc = toml_str
         .parse::<DocumentMut>()
+        .or_else(|_| sanitized.parse::<DocumentMut>())
         .map_err(|e| format!("TOML parse error: {e}"))?;
 
     let trimmed = value.trim();
@@ -347,7 +435,8 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
 /// Also removes top-level `base_url` if it matches.
 /// Used by proxy cleanup to strip local proxy URLs without touching user-configured URLs.
 pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) -> bool) -> String {
-    let mut doc = match toml_str.parse::<DocumentMut>() {
+    let sanitized = sanitize_known_codex_toml_duplicates(toml_str);
+    let mut doc = match sanitized.parse::<DocumentMut>() {
         Ok(doc) => doc,
         Err(_) => return toml_str.to_string(),
     };
@@ -444,6 +533,49 @@ model = "gpt-4"
             .and_then(|v| v.as_str())
             .expect("should create section and set base_url");
         assert_eq!(base_url, "https://custom.api/v1");
+    }
+
+    #[test]
+    fn sanitize_known_duplicates_keeps_only_last_assignment_per_scope() {
+        let input = r#"model_provider = "custom"
+model = "gpt-5.4"
+model = "gpt-5.4-latest"
+
+[model_providers.custom]
+base_url = ""
+base_url = "https://api.example.com/v1"
+"#;
+
+        let sanitized = sanitize_known_codex_toml_duplicates(input);
+        let parsed: toml::Value = toml::from_str(&sanitized).unwrap();
+
+        assert_eq!(sanitized.matches("model = ").count(), 1);
+        assert_eq!(sanitized.matches("base_url = ").count(), 1);
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.4-latest")
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .and_then(|v| v.get("base_url"))
+                .and_then(|v| v.as_str()),
+            Some("https://api.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn validate_config_toml_recovers_from_duplicate_base_url() {
+        let input = r#"model_provider = "custom"
+model = "gpt-5.4"
+
+[model_providers.custom]
+base_url = ""
+base_url = "https://api.example.com/v1"
+"#;
+
+        assert!(validate_config_toml(input).is_ok());
     }
 
     #[test]

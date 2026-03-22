@@ -547,6 +547,7 @@ fn merge_codex_config(
 
     // Auto-fill endpoint and model from config string
     if let Some(config_str) = config.get("config").and_then(|v| v.as_str()) {
+        let config_str = crate::codex_config::sanitize_known_codex_toml_duplicates(config_str);
         // Parse TOML config string to extract base_url and model
         if let Ok(toml_value) = toml::from_str::<toml::Value>(config_str) {
             // Extract base_url from model_providers section

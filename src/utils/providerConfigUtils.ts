@@ -493,7 +493,9 @@ export const validateCodexCommonConfigSnippet = (
   }
 
   if (
-    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) => pattern.test(trimmed))
+    CODEX_COMMON_CONFIG_FORBIDDEN_PATTERNS.some((pattern) =>
+      pattern.test(trimmed),
+    )
   ) {
     return "通用配置片段不能直接包含 mcp_servers，MCP 请使用 {{mcp.config}} 占位符";
   }
@@ -611,10 +613,10 @@ export const hasTomlCommonConfigSnippet = (
 
 const TOML_SECTION_HEADER_PATTERN = /^\s*\[([^\]\r\n]+)\]\s*$/;
 const TOML_BASE_URL_PATTERN =
-  /^\s*base_url\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
-const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+  /^\s*base_url\s*=\s*(["'])([^"'\r\n]*)\1\s*(?:#.*)?$/;
+const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]*)\1\s*(?:#.*)?$/;
 const TOML_MODEL_REASONING_PATTERN =
-  /^\s*model_reasoning_effort\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+  /^\s*model_reasoning_effort\s*=\s*(["'])([^"'\r\n]*)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_PATTERN =
@@ -715,11 +717,11 @@ const findTomlAssignmentInRange = (
 ): TomlAssignmentMatch | undefined => {
   for (let index = startIndex; index < endIndex; index += 1) {
     const match = lines[index].match(pattern);
-    if (match?.[2]) {
+    if (match && match.length >= 3) {
       return {
         index,
         sectionName,
-        value: match[2],
+        value: match[2] ?? "",
       };
     }
   }
@@ -742,18 +744,42 @@ const findTomlAssignments = (
     }
 
     const match = line.match(pattern);
-    if (!match?.[2]) {
+    if (!match || match.length < 3) {
       return;
     }
 
     assignments.push({
       index,
       sectionName: currentSectionName,
-      value: match[2],
+      value: match[2] ?? "",
     });
   });
 
   return assignments;
+};
+
+const findTomlAssignmentIndexesInRange = (
+  lines: string[],
+  pattern: RegExp,
+  startIndex: number,
+  endIndex: number,
+): number[] => {
+  const indexes: number[] = [];
+  for (let index = startIndex; index < endIndex; index += 1) {
+    if (pattern.test(lines[index])) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+};
+
+const removeTomlLineIndexes = (lines: string[], indexes: number[]): void => {
+  const uniqueIndexes = Array.from(new Set(indexes)).sort((a, b) => b - a);
+  uniqueIndexes.forEach((index) => {
+    if (index >= 0 && index < lines.length) {
+      lines.splice(index, 1);
+    }
+  });
 };
 
 const isMcpServerSection = (sectionName?: string): boolean =>
@@ -809,27 +835,35 @@ export const extractCodexBaseUrl = (
     if (targetSectionName) {
       const sectionRange = getTomlSectionRange(lines, targetSectionName);
       if (sectionRange) {
-        const match = findTomlAssignmentInRange(
+        const matches = findTomlAssignmentIndexesInRange(
           lines,
           TOML_BASE_URL_PATTERN,
           sectionRange.bodyStartIndex,
           sectionRange.bodyEndIndex,
-          targetSectionName,
         );
-        if (match?.value) {
-          return match.value;
+        if (matches.length > 0) {
+          const lastMatchIndex = matches[matches.length - 1];
+          const lastMatch = lines[lastMatchIndex].match(TOML_BASE_URL_PATTERN);
+          if (lastMatch && lastMatch.length >= 3 && lastMatch[2]) {
+            return lastMatch[2];
+          }
         }
       }
     }
 
-    const topLevelMatch = findTomlAssignmentInRange(
+    const topLevelMatches = findTomlAssignmentIndexesInRange(
       lines,
       TOML_BASE_URL_PATTERN,
       0,
       getTopLevelEndIndex(lines),
     );
-    if (topLevelMatch?.value) {
-      return topLevelMatch.value;
+    if (topLevelMatches.length > 0) {
+      const lastMatch = lines[
+        topLevelMatches[topLevelMatches.length - 1]
+      ].match(TOML_BASE_URL_PATTERN);
+      if (lastMatch && lastMatch.length >= 3 && lastMatch[2]) {
+        return lastMatch[2];
+      }
     }
 
     const fallbackAssignments = getRecoverableBaseUrlAssignments(
@@ -877,29 +911,27 @@ export const setCodexBaseUrl = (
   if (!trimmed) {
     if (!normalizedText) return normalizedText;
 
+    const indexesToRemove: number[] = recoverableAssignments.map(
+      ({ index }) => index,
+    );
+
     if (targetSectionName) {
       const sectionRange = getTomlSectionRange(lines, targetSectionName);
-      const targetMatch = sectionRange
-        ? findTomlAssignmentInRange(
+      const targetMatches = sectionRange
+        ? findTomlAssignmentIndexesInRange(
             lines,
             TOML_BASE_URL_PATTERN,
             sectionRange.bodyStartIndex,
             sectionRange.bodyEndIndex,
-            targetSectionName,
           )
         : undefined;
 
-      if (targetMatch) {
-        lines.splice(targetMatch.index, 1);
-        return finalizeTomlText(lines);
+      if (targetMatches?.length) {
+        indexesToRemove.push(...targetMatches);
       }
     }
 
-    if (recoverableAssignments.length === 1) {
-      lines.splice(recoverableAssignments[0].index, 1);
-      return finalizeTomlText(lines);
-    }
-
+    removeTomlLineIndexes(lines, indexesToRemove);
     return finalizeTomlText(lines);
   }
 
@@ -907,25 +939,26 @@ export const setCodexBaseUrl = (
   const replacementLine = `base_url = "${normalizedUrl}"`;
 
   if (targetSectionName) {
+    removeTomlLineIndexes(
+      lines,
+      recoverableAssignments.map(({ index }) => index),
+    );
+
     let targetSectionRange = getTomlSectionRange(lines, targetSectionName);
-    const targetMatch = targetSectionRange
-      ? findTomlAssignmentInRange(
+    const targetMatches = targetSectionRange
+      ? findTomlAssignmentIndexesInRange(
           lines,
           TOML_BASE_URL_PATTERN,
           targetSectionRange.bodyStartIndex,
           targetSectionRange.bodyEndIndex,
-          targetSectionName,
         )
       : undefined;
 
-    if (targetMatch) {
-      lines[targetMatch.index] = replacementLine;
+    if (targetMatches?.length) {
+      const keepIndex = targetMatches[targetMatches.length - 1];
+      lines[keepIndex] = replacementLine;
+      removeTomlLineIndexes(lines, targetMatches.slice(0, -1));
       return finalizeTomlText(lines);
-    }
-
-    if (recoverableAssignments.length === 1) {
-      lines.splice(recoverableAssignments[0].index, 1);
-      targetSectionRange = getTomlSectionRange(lines, targetSectionName);
     }
 
     if (targetSectionRange) {
@@ -942,14 +975,20 @@ export const setCodexBaseUrl = (
   }
 
   const topLevelEndIndex = getTopLevelEndIndex(lines);
-  const topLevelMatch = findTomlAssignmentInRange(
+  removeTomlLineIndexes(
+    lines,
+    recoverableAssignments.map(({ index }) => index),
+  );
+  const topLevelMatches = findTomlAssignmentIndexesInRange(
     lines,
     TOML_BASE_URL_PATTERN,
     0,
     topLevelEndIndex,
   );
-  if (topLevelMatch) {
-    lines[topLevelMatch.index] = replacementLine;
+  if (topLevelMatches.length > 0) {
+    const keepIndex = topLevelMatches[topLevelMatches.length - 1];
+    lines[keepIndex] = replacementLine;
+    removeTomlLineIndexes(lines, topLevelMatches.slice(0, -1));
     return finalizeTomlText(lines);
   }
 
@@ -979,13 +1018,20 @@ export const extractCodexModelName = (
     const text = normalizeTomlText(raw);
     if (!text) return undefined;
     const lines = text.split("\n");
-    const topLevelMatch = findTomlAssignmentInRange(
+    const topLevelMatches = findTomlAssignmentIndexesInRange(
       lines,
       TOML_MODEL_PATTERN,
       0,
       getTopLevelEndIndex(lines),
     );
-    return topLevelMatch?.value;
+    if (topLevelMatches.length === 0) {
+      return undefined;
+    }
+    const lastMatch =
+      lines[topLevelMatches[topLevelMatches.length - 1]].match(
+        TOML_MODEL_PATTERN,
+      );
+    return lastMatch?.[2] || undefined;
   } catch {
     return undefined;
   }
@@ -1000,13 +1046,19 @@ export const extractCodexReasoningEffort = (
     const text = normalizeTomlText(raw);
     if (!text) return undefined;
     const lines = text.split("\n");
-    const topLevelMatch = findTomlAssignmentInRange(
+    const topLevelMatches = findTomlAssignmentIndexesInRange(
       lines,
       TOML_MODEL_REASONING_PATTERN,
       0,
       getTopLevelEndIndex(lines),
     );
-    return topLevelMatch?.value;
+    if (topLevelMatches.length === 0) {
+      return undefined;
+    }
+    const lastMatch = lines[topLevelMatches[topLevelMatches.length - 1]].match(
+      TOML_MODEL_REASONING_PATTERN,
+    );
+    return lastMatch?.[2] || undefined;
   } catch {
     return undefined;
   }
@@ -1021,7 +1073,7 @@ export const setCodexModelName = (
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
   const topLevelEndIndex = getTopLevelEndIndex(lines);
-  const topLevelMatch = findTomlAssignmentInRange(
+  const topLevelMatches = findTomlAssignmentIndexesInRange(
     lines,
     TOML_MODEL_PATTERN,
     0,
@@ -1030,15 +1082,15 @@ export const setCodexModelName = (
 
   if (!trimmed) {
     if (!normalizedText) return normalizedText;
-    if (topLevelMatch) {
-      lines.splice(topLevelMatch.index, 1);
-    }
+    removeTomlLineIndexes(lines, topLevelMatches);
     return finalizeTomlText(lines);
   }
 
   const replacementLine = `model = "${trimmed}"`;
-  if (topLevelMatch) {
-    lines[topLevelMatch.index] = replacementLine;
+  if (topLevelMatches.length > 0) {
+    const keepIndex = topLevelMatches[topLevelMatches.length - 1];
+    lines[keepIndex] = replacementLine;
+    removeTomlLineIndexes(lines, topLevelMatches.slice(0, -1));
     return finalizeTomlText(lines);
   }
 
@@ -1065,7 +1117,7 @@ export const setCodexReasoningEffort = (
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
   const topLevelEndIndex = getTopLevelEndIndex(lines);
-  const topLevelMatch = findTomlAssignmentInRange(
+  const topLevelMatches = findTomlAssignmentIndexesInRange(
     lines,
     TOML_MODEL_REASONING_PATTERN,
     0,
@@ -1074,15 +1126,15 @@ export const setCodexReasoningEffort = (
 
   if (!trimmed) {
     if (!normalizedText) return normalizedText;
-    if (topLevelMatch) {
-      lines.splice(topLevelMatch.index, 1);
-    }
+    removeTomlLineIndexes(lines, topLevelMatches);
     return finalizeTomlText(lines);
   }
 
   const replacementLine = `model_reasoning_effort = "${trimmed}"`;
-  if (topLevelMatch) {
-    lines[topLevelMatch.index] = replacementLine;
+  if (topLevelMatches.length > 0) {
+    const keepIndex = topLevelMatches[topLevelMatches.length - 1];
+    lines[keepIndex] = replacementLine;
+    removeTomlLineIndexes(lines, topLevelMatches.slice(0, -1));
     return finalizeTomlText(lines);
   }
 
@@ -1109,4 +1161,21 @@ export const setCodexReasoningEffort = (
 
   lines.splice(topLevelEndIndex, 0, replacementLine);
   return finalizeTomlText(lines);
+};
+
+export const normalizeCodexKnownDuplicateFields = (
+  configText: string | undefined | null,
+): string => {
+  const normalizedText = normalizeTomlText(
+    typeof configText === "string" ? configText : "",
+  );
+  if (!normalizedText.trim()) {
+    return normalizedText;
+  }
+
+  let next = normalizedText;
+  next = setCodexBaseUrl(next, extractCodexBaseUrl(next) ?? "");
+  next = setCodexModelName(next, extractCodexModelName(next) ?? "");
+  next = setCodexReasoningEffort(next, extractCodexReasoningEffort(next) ?? "");
+  return next;
 };

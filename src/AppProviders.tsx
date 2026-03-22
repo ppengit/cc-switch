@@ -1,11 +1,9 @@
 import type { ReactNode } from "react";
-import {
-  QueryClientProvider,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { GlobalRuntimeErrorBridge } from "@/components/GlobalRuntimeErrorBridge";
 import { queryClient as defaultQueryClient } from "@/lib/query";
 import { UpdateProvider } from "./contexts/UpdateContext";
 
@@ -23,6 +21,7 @@ export function AppProviders({
       <TooltipProvider delayDuration={200}>
         <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
           <UpdateProvider>
+            <GlobalRuntimeErrorBridge />
             {children}
             <Toaster />
           </UpdateProvider>
