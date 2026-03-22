@@ -5,6 +5,16 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3-6] - 2026-03-22
+
+本版本是对 `3.12.3-5` 的编译修复重发版本。
+
+- 修复了 Rust 端两处明确的编译错误：
+  - `src/deeplink/provider.rs` 中 `toml::from_str` 传入 `String` 而非 `&str`
+  - `src/services/provider/live.rs` 中向 `normalize_codex_provider_fragment_for_template` 传入 `String` 而非 `&str`
+- 上述问题会直接导致 GitHub Actions 的 Windows / Linux / macOS 构建同时失败，本版本已修正
+- 其它功能内容与 `3.12.3-5` 保持一致
+
 ## [3.12.3-5] - 2026-03-22
 
 本版本是对 `3.12.3-4` 的发布链路加固版本。

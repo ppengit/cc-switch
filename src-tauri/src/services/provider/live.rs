@@ -678,7 +678,7 @@ fn apply_common_config_to_settings(
                 || trimmed.contains(CODEX_MCP_CONFIG_PLACEHOLDER)
             {
                 let normalized_provider_fragment =
-                    normalize_codex_provider_fragment_for_template(provider_fragment, trimmed)
+                    normalize_codex_provider_fragment_for_template(&provider_fragment, trimmed)
                         .unwrap_or_else(|_| provider_fragment.to_string());
                 let current_live_config =
                     crate::codex_config::read_codex_config_text().unwrap_or_default();

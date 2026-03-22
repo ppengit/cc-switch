@@ -549,7 +549,7 @@ fn merge_codex_config(
     if let Some(config_str) = config.get("config").and_then(|v| v.as_str()) {
         let config_str = crate::codex_config::sanitize_known_codex_toml_duplicates(config_str);
         // Parse TOML config string to extract base_url and model
-        if let Ok(toml_value) = toml::from_str::<toml::Value>(config_str) {
+        if let Ok(toml_value) = toml::from_str::<toml::Value>(&config_str) {
             // Extract base_url from model_providers section
             if request.endpoint.as_ref().is_none_or(|s| s.is_empty()) {
                 if let Some(base_url) = extract_codex_base_url(&toml_value) {
