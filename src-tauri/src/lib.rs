@@ -928,6 +928,7 @@ pub fn run() {
             commands::set_log_config,
             commands::restart_app,
             commands::check_for_updates,
+            commands::get_upstream_release_info,
             commands::is_portable_mode,
             commands::get_claude_plugin_status,
             commands::read_claude_plugin_config,
