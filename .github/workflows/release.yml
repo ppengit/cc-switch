@@ -15,14 +15,20 @@ concurrency:
 jobs:
   release:
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-2022
+            allow_failure: false
           - os: ubuntu-22.04
+            allow_failure: false
           - os: ubuntu-22.04-arm
             arch: arm64
+            allow_failure: false
           - os: macos-14
+            allow_failure: true
 
     steps:
       - name: Checkout

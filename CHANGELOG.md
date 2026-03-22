@@ -5,6 +5,17 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3-5] - 2026-03-22
+
+本版本是对 `3.12.3-4` 的发布链路加固版本。
+
+- 代码功能内容与 `3.12.3-4` 保持一致
+- 调整 GitHub release workflow：
+  - 关闭 matrix `fail-fast`
+  - 允许 `macOS` job 单独失败而不阻断 `Windows / Linux` 资产产出
+- 目的不是放弃 macOS，而是避免 macOS runner 的偶发失败直接导致本次 Windows 发布也被取消
+- 因此从这一版开始，即便 macOS 构建偶发失败，也能优先保证 Windows 和 Linux 的安装包按时发布
+
 ## [3.12.3-4] - 2026-03-22
 
 本版本是对 `3.12.3-3` 的重新发布。
