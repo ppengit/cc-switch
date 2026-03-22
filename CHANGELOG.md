@@ -5,6 +5,35 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.2+2] - 2026-03-22
+
+Full integration release based on upstream v3.12.2, preserving the local customization line while reorganizing provider configuration, session routing, and preview workflows.
+
+**Stats**: 57 commits | 256 files changed | +23,386 insertions | -8,046 deletions
+
+### Added
+
+- **OpenAI-Compatible Model Fetching**: Added model list fetching and suggestion dropdowns for Claude, Codex, Gemini, and OpenCode forms when the upstream endpoint supports the OpenAI-compatible `/models` API
+- **Live Config Editing in Final Preview**: Final config preview now supports opening, editing, and saving current live files directly in the preview panel
+- **Provider Row Quick Pin**: Added one-click "move to top" action for provider rows to make newly added providers easier to prioritize
+
+### Changed
+
+- **App Config Template Workflow**: Reframed common config into application-level templates for Claude, Codex, and Gemini, and separated it from default provider templates so provider records only store provider-specific fragments
+- **Codex Config Rendering**: Codex `config.toml` rendering now supports `{{provider.config}}` and optional `{{mcp.config}}`, with proxy takeover preview resolving `base_url` to the local proxy port
+- **Session Routing & Session Management**: Reworked session routing defaults, status text, and session manager structure so the dialog and list behavior match the customized workflow more closely
+- **Model Defaults**: Updated default model values across provider templates and universal provider flows to newer Claude, Codex, and Gemini defaults used by this customized release
+- **Stream Check Prompt Handling**: Global test prompt configuration now supports multiple lines and random prompt selection during provider checks
+
+### Fixed
+
+- **Config Preview Drift**: Fixed cases where expected preview output and actual live file content could diverge because app-level templates were being written back into provider config fragments
+- **Codex Template Sanitization**: Fixed legacy or invalid Codex default provider templates being stored in JSON-like or placeholder-mixed forms; incompatible templates are now normalized back to valid TOML templates
+- **Proxy Takeover Preview Accuracy**: Fixed final preview rendering to show the local proxy address when takeover is active instead of the original upstream provider URL
+- **UI Consistency in Provider Tools**: Fixed provider toolbar and list action inconsistencies, including unified icon+text buttons, widened actions column, dark-mode hover feedback, and restored dialog/list structure
+
+---
+
 ## [3.12.2] - 2026-03-12
 
 Post-v3.12.1 work focuses on Common Config safety during proxy takeover and more reliable Codex TOML editing.
