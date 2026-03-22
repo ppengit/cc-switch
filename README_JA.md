@@ -4,7 +4,7 @@
 
 ### Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw のオールインワン管理ツール
 
-[![Version](https://img.shields.io/badge/version-3.12.1-blue.svg)](https://github.com/ppengit/cc-switch/releases)
+[![Version](https://img.shields.io/badge/version-3.12.3--custom.1-blue.svg)](https://github.com/ppengit/cc-switch/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/ppengit/cc-switch/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
 [![Downloads](https://img.shields.io/endpoint?url=https://api.pinstudios.net/api/badges/downloads/ppengit/cc-switch/total)](https://github.com/ppengit/cc-switch/releases/latest)
@@ -126,7 +126,7 @@ Claude Code / Codex / Gemini 公式チャンネルが最安で元価格の 38% /
 
 ## 特長
 
-[完全な更新履歴](CHANGELOG.md) | [リリースノート](docs/release-notes/v3.12.1-ja.md)
+[完全な更新履歴](CHANGELOG.md)
 
 ### プロバイダ管理
 

@@ -14,15 +14,45 @@ const parseVersion = (rawVersion) => {
     throw new Error(`Unsupported base version format: ${version}`);
   }
 
+  const customMatch = version.match(/-custom\.(\d+)$/);
+  if (customMatch) {
+    const currentCustom = Number.parseInt(customMatch[1], 10);
+    const nextCustom = Number.isFinite(currentCustom) ? currentCustom + 1 : 1;
+
+    return {
+      core,
+      nextBuild: nextCustom,
+      nextVersion: `${core}-custom.${nextCustom}`,
+      displayVersion: `${core}.${nextCustom}`,
+    };
+  }
+
   const buildMatch = version.match(/\+(\d+)$/);
   const buildNumber = buildMatch ? Number.parseInt(buildMatch[1], 10) : 0;
-  const nextBuild = Number.isFinite(buildNumber) ? buildNumber + 1 : 1;
+  if (buildMatch) {
+    const nextBuild = Number.isFinite(buildNumber) ? buildNumber + 1 : 1;
+
+    return {
+      core,
+      nextBuild,
+      nextVersion: `${core}+${nextBuild}`,
+      displayVersion: `${core}.${nextBuild}`,
+    };
+  }
+
+  const segments = core.split(".").map((item) => Number.parseInt(item, 10));
+  const [major, minor, patch] = segments;
+  if (!segments.every((item) => Number.isFinite(item))) {
+    throw new Error(`Unsupported version number segments: ${version}`);
+  }
+
+  const nextPatch = patch + 1;
 
   return {
     core,
-    nextBuild,
-    nextVersion: `${core}+${nextBuild}`,
-    displayVersion: `${core}.${nextBuild}`,
+    nextBuild: 1,
+    nextVersion: `${major}.${minor}.${nextPatch}-custom.1`,
+    displayVersion: `${major}.${minor}.${nextPatch}.1`,
   };
 };
 
