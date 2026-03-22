@@ -217,7 +217,7 @@ fn update_command_for_tool(tool: &str, install_source: Option<&str>) -> Option<&
         },
         "codex" => Some("npm i -g @openai/codex@latest"),
         "gemini" => Some("npm i -g @google/gemini-cli@latest"),
-        "opencode" => Some("npm i -g opencode@latest"),
+        "opencode" => Some("npm i -g opencode-ai@latest"),
         "openclaw" => Some("npm i -g openclaw@latest"),
         _ => None,
     }
@@ -386,7 +386,7 @@ async fn get_single_tool_version_impl(
         "claude" => fetch_npm_latest_version(&client, "@anthropic-ai/claude-code").await,
         "codex" => fetch_npm_latest_version(&client, "@openai/codex").await,
         "gemini" => fetch_npm_latest_version(&client, "@google/gemini-cli").await,
-        "opencode" => fetch_github_latest_version(&client, "anomalyco/opencode").await,
+        "opencode" => fetch_npm_latest_version(&client, "opencode-ai").await,
         "openclaw" => fetch_npm_latest_version(&client, "openclaw").await,
         _ => None,
     };
@@ -1923,6 +1923,10 @@ mod tests {
         assert_eq!(
             update_command_for_tool("openclaw", None),
             Some("npm i -g openclaw@latest")
+        );
+        assert_eq!(
+            update_command_for_tool("opencode", None),
+            Some("npm i -g opencode-ai@latest")
         );
     }
 

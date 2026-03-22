@@ -111,7 +111,7 @@ npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
 # OpenCode
-npm i -g opencode@latest
+npm i -g opencode-ai@latest
 # OpenClaw
 npm i -g openclaw@latest`;
 
@@ -564,8 +564,16 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             const localVersion = tool?.version || t("common.unknown");
             const latestVersion = tool?.latest_version || t("common.unknown");
             const isUpdating = updatingTools[toolName] ?? false;
+            const hasNewerVersion = Boolean(
+              tool?.version &&
+                tool?.latest_version &&
+                compareLooseVersion(tool.version, tool.latest_version) < 0,
+            );
             const canUpdate =
-              !isUpdating && !isLoadingTools && !loadingTools[toolName];
+              hasNewerVersion &&
+              !isUpdating &&
+              !isLoadingTools &&
+              !loadingTools[toolName];
 
             return (
               <motion.div
@@ -663,21 +671,23 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     ) : (
                       <AlertCircle className="h-4 w-4 text-yellow-500" />
                     )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => tool && handleUpdateTool(tool)}
-                      disabled={!tool || !canUpdate}
-                    >
-                      {isUpdating
-                        ? t("settings.updatingTool", {
-                            defaultValue: "更新中",
-                          })
-                        : t("settings.updateTool", {
-                            defaultValue: "更新",
-                          })}
-                    </Button>
+                    {(hasNewerVersion || isUpdating) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => tool && handleUpdateTool(tool)}
+                        disabled={!tool || !canUpdate}
+                      >
+                        {isUpdating
+                          ? t("settings.updatingTool", {
+                              defaultValue: "更新中",
+                            })
+                          : t("settings.updateTool", {
+                              defaultValue: "更新",
+                            })}
+                      </Button>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
