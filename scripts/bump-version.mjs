@@ -14,16 +14,18 @@ const parseVersion = (rawVersion) => {
     throw new Error(`Unsupported base version format: ${version}`);
   }
 
-  const customMatch = version.match(/-custom\.(\d+)$/);
-  if (customMatch) {
-    const currentCustom = Number.parseInt(customMatch[1], 10);
-    const nextCustom = Number.isFinite(currentCustom) ? currentCustom + 1 : 1;
+  const prereleaseMatch = version.match(/-(\d+)$/);
+  if (prereleaseMatch) {
+    const currentPrerelease = Number.parseInt(prereleaseMatch[1], 10);
+    const nextPrerelease = Number.isFinite(currentPrerelease)
+      ? currentPrerelease + 1
+      : 1;
 
     return {
       core,
-      nextBuild: nextCustom,
-      nextVersion: `${core}-custom.${nextCustom}`,
-      displayVersion: `${core}.${nextCustom}`,
+      nextBuild: nextPrerelease,
+      nextVersion: `${core}-${nextPrerelease}`,
+      displayVersion: `${core}.${nextPrerelease}`,
     };
   }
 
@@ -48,13 +50,13 @@ const parseVersion = (rawVersion) => {
 
   const nextPatch = patch + 1;
 
-  return {
-    core,
-    nextBuild: 1,
-    nextVersion: `${major}.${minor}.${nextPatch}-custom.1`,
-    displayVersion: `${major}.${minor}.${nextPatch}.1`,
+    return {
+      core,
+      nextBuild: 1,
+      nextVersion: `${major}.${minor}.${nextPatch}-1`,
+      displayVersion: `${major}.${minor}.${nextPatch}.1`,
+    };
   };
-};
 
 const readJson = async (filePath) =>
   JSON.parse(await fs.readFile(filePath, "utf8"));

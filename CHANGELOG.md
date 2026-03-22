@@ -5,7 +5,7 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.12.3-custom.1] - 2026-03-22
+## [3.12.3-1] - 2026-03-22
 
 本版本是**基于上游 v3.12.2** 持续整合本地定制功能后的首个 GitHub 主仓正式自定义版本。  
 一方面，它继承了上游 3.12.2 的基础架构与能力；另一方面，它完整保留并收口了我们围绕供应商管理、会话路由、配置文件处理、最终配置预览、模型建议与自动发布链路所做的定制化增强。
@@ -14,10 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 版本定位
 
-- 版本号采用 `3.12.3-custom.1`
+- 版本号采用 `3.12.3-1`
 - 这是一个**基于上游 3.12.2 的自定义版本线**
 - 之所以不继续沿用 `3.12.2+N` 形式，是因为 `+build metadata` 对语义化版本优先级比较不友好，会影响自动更新判断
-- 改为 `3.12.3-custom.1` 后，既能保留“仍然贴近上游 3.12.2”这一语义，也能保证后续 GitHub 自动发布和 Tauri Updater 的版本比较行为更稳定
+- 改为 `3.12.3-1` 后，既能保留“仍然贴近上游 3.12.2 的小版本演进”这一语义，也能保证 GitHub 自动发布、Windows MSI 打包和 Tauri Updater 的版本比较行为更稳定
 
 ### 会话路由机制
 
