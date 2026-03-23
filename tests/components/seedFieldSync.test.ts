@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildSeedFieldSyncPlan,
-  createEmptySeedFieldFollowers,
-} from "@/components/providers/forms/helpers/seedFieldSync";
+import { buildSeedFieldSyncPlan } from "@/components/providers/forms/helpers/seedFieldSync";
 
 describe("seedFieldSync", () => {
-  it("会让最初为空的字段持续跟随首个输入字段", () => {
-    let followers = createEmptySeedFieldFollowers();
-
+  it("只会在目标字段为空时补充同步，不会持续跟随覆盖", () => {
     const firstPlan = buildSeedFieldSyncPlan({
       source: "name",
       value: "h",
@@ -16,7 +11,6 @@ describe("seedFieldSync", () => {
         websiteUrl: "",
         apiUrl: "",
       },
-      currentFollowers: followers,
       enabledFields: ["name", "websiteUrl", "apiUrl"],
     });
 
@@ -24,8 +18,6 @@ describe("seedFieldSync", () => {
       websiteUrl: "h",
       apiUrl: "h",
     });
-
-    followers = firstPlan.nextFollowers;
 
     const secondPlan = buildSeedFieldSyncPlan({
       source: "name",
@@ -35,51 +27,26 @@ describe("seedFieldSync", () => {
         websiteUrl: "h",
         apiUrl: "h",
       },
-      currentFollowers: followers,
       enabledFields: ["name", "websiteUrl", "apiUrl"],
     });
 
-    expect(secondPlan.updates).toEqual({
-      websiteUrl: "https://demo",
-      apiUrl: "https://demo",
-    });
+    expect(secondPlan.updates).toEqual({});
   });
 
-  it("目标字段被手动修改后会停止跟随", () => {
-    const initialFollowers = {
-      name: null,
-      websiteUrl: "name" as const,
-      apiUrl: "name" as const,
-    };
-
-    const websitePlan = buildSeedFieldSyncPlan({
-      source: "websiteUrl",
-      value: "https://site.example",
-      currentValues: {
-        name: "https://demo",
-        websiteUrl: "https://demo",
-        apiUrl: "https://demo",
-      },
-      currentFollowers: initialFollowers,
-      enabledFields: ["name", "websiteUrl", "apiUrl"],
-    });
-
-    expect(websitePlan.updates).toEqual({});
-
-    const nextPlan = buildSeedFieldSyncPlan({
+  it("目标字段清空后会在下次输入时再次补空同步", () => {
+    const plan = buildSeedFieldSyncPlan({
       source: "name",
       value: "https://next.example",
       currentValues: {
         name: "https://demo",
-        websiteUrl: "https://site.example",
+        websiteUrl: "",
         apiUrl: "https://demo",
       },
-      currentFollowers: websitePlan.nextFollowers,
       enabledFields: ["name", "websiteUrl", "apiUrl"],
     });
 
-    expect(nextPlan.updates).toEqual({
-      apiUrl: "https://next.example",
+    expect(plan.updates).toEqual({
+      websiteUrl: "https://next.example",
     });
   });
 
@@ -92,7 +59,6 @@ describe("seedFieldSync", () => {
         websiteUrl: "https://manual.example",
         apiUrl: "",
       },
-      currentFollowers: createEmptySeedFieldFollowers(),
       enabledFields: ["name", "websiteUrl", "apiUrl"],
     });
 
@@ -110,17 +76,11 @@ describe("seedFieldSync", () => {
         websiteUrl: "",
         apiUrl: "Provider",
       },
-      currentFollowers: {
-        name: null,
-        websiteUrl: null,
-        apiUrl: "name",
-      },
       enabledFields: ["name", "websiteUrl"],
     });
 
     expect(plan.updates).toEqual({
       websiteUrl: "Provider",
     });
-    expect(plan.nextFollowers.apiUrl).toBeNull();
   });
 });

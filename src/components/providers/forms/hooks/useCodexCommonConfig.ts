@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { configApi } from "@/lib/api";
-import { validateCodexCommonConfigSnippet } from "@/utils/providerConfigUtils";
+import {
+  getDefaultCodexCommonConfigSnippet,
+  normalizeCodexCommonConfigSnippetForEditing,
+  validateCodexCommonConfigSnippet,
+} from "@/utils/providerConfigUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:codex-common-config-snippet";
-const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
-# Add your common TOML configuration here`;
 
 interface UseCodexCommonConfigProps {
   codexConfig: string;
@@ -35,7 +37,7 @@ export function useCodexCommonConfig({
 
   const { t } = useTranslation();
   const [commonConfigSnippet, setCommonConfigSnippetState] = useState<string>(
-    DEFAULT_CODEX_COMMON_CONFIG_SNIPPET,
+    getDefaultCodexCommonConfigSnippet(),
   );
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -71,7 +73,9 @@ export function useCodexCommonConfig({
 
         if (snippet && snippet.trim()) {
           if (mounted) {
-            setCommonConfigSnippetState(snippet);
+            setCommonConfigSnippetState(
+              normalizeCodexCommonConfigSnippetForEditing(snippet),
+            );
           }
           return;
         }
@@ -81,9 +85,14 @@ export function useCodexCommonConfig({
             const legacySnippet =
               window.localStorage.getItem(LEGACY_STORAGE_KEY);
             if (legacySnippet && legacySnippet.trim()) {
-              await configApi.setCommonConfigSnippet("codex", legacySnippet);
+              const normalizedLegacySnippet =
+                normalizeCodexCommonConfigSnippetForEditing(legacySnippet);
+              await configApi.setCommonConfigSnippet(
+                "codex",
+                normalizedLegacySnippet,
+              );
               if (mounted) {
-                setCommonConfigSnippetState(legacySnippet);
+                setCommonConfigSnippetState(normalizedLegacySnippet);
               }
               window.localStorage.removeItem(LEGACY_STORAGE_KEY);
               console.log(

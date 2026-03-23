@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import { GripVertical, ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   DraggableAttributes,
@@ -59,6 +59,8 @@ interface ProviderCardProps {
   onToggleFailover?: (enabled: boolean) => void; // 切换故障转移队列
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
   sessionOccupancyCount?: number;
+  onReleaseSessionOccupancy?: () => void;
+  isReleasingSessionOccupancy?: boolean;
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
@@ -128,6 +130,8 @@ export function ProviderCard({
   onToggleFailover,
   activeProviderId,
   sessionOccupancyCount = 0,
+  onReleaseSessionOccupancy,
+  isReleasingSessionOccupancy = false,
   // OpenClaw: default model
   isDefaultModel,
   onSetAsDefault,
@@ -422,15 +426,44 @@ export function ProviderCard({
                   <FailoverPriorityBadge priority={failoverPriority} />
                 )}
 
+              {provider.isPublic && (
+                <span className="inline-flex items-center rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                  {t("provider.publicTag", { defaultValue: "public" })}
+                </span>
+              )}
+
               {sessionOccupancyCount > 0 && (
                 <span
-                  className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                   title={t("proxy.sessionRouting.occupiedSessions", {
                     defaultValue: "当前会话占用: {{count}}",
                     count: sessionOccupancyCount,
                   })}
                 >
                   S:{sessionOccupancyCount}
+                  {onReleaseSessionOccupancy && (
+                    <button
+                      type="button"
+                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-emerald-700/80 transition-colors hover:bg-emerald-200 hover:text-emerald-900 dark:text-emerald-200/80 dark:hover:bg-emerald-800/60 dark:hover:text-emerald-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onReleaseSessionOccupancy();
+                      }}
+                      disabled={isReleasingSessionOccupancy}
+                      aria-label={t("provider.releaseOccupancy", {
+                        defaultValue: "释放占用",
+                      })}
+                      title={t("provider.releaseOccupancy", {
+                        defaultValue: "释放占用",
+                      })}
+                    >
+                      {isReleasingSessionOccupancy ? (
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      ) : (
+                        <X className="h-2.5 w-2.5" />
+                      )}
+                    </button>
+                  )}
                 </span>
               )}
 

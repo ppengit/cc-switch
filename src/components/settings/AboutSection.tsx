@@ -129,6 +129,28 @@ const getToolInstallations = (
   ];
 };
 
+const TOOL_LOAD_TIMEOUT_MS = 8000;
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+};
+
 const ONE_CLICK_INSTALL_COMMANDS = `# Claude Code (Native install - recommended)
 curl -fsSL https://claude.ai/install.sh | bash
 # Codex
@@ -183,6 +205,27 @@ const compareLooseVersion = (left?: string | null, right?: string | null) => {
   return 0;
 };
 
+const getToolUpdateCommand = (
+  toolName: ToolName,
+  installSource?: string | null,
+) => {
+  if (toolName === "claude") {
+    return installSource === "npm"
+      ? "npm i -g @anthropic-ai/claude-code@latest"
+      : "claude update";
+  }
+  if (toolName === "codex") {
+    return "npm i -g @openai/codex@latest";
+  }
+  if (toolName === "gemini") {
+    return "npm i -g @google/gemini-cli@latest";
+  }
+  if (toolName === "opencode") {
+    return "opencode upgrade";
+  }
+  return "openclaw update";
+};
+
 export function AboutSection({ isPortable }: AboutSectionProps) {
   // ... (use hooks as before) ...
   const { t } = useTranslation();
@@ -223,9 +266,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       });
 
       try {
-        const updated = await settingsApi.getToolVersions(
-          toolNames,
-          wslOverrides,
+        const updated = await withTimeout(
+          settingsApi.getToolVersions(toolNames, wslOverrides),
+          TOOL_LOAD_TIMEOUT_MS,
+          "获取工具版本超时",
         );
 
         setToolVersions((prev) => {
@@ -255,9 +299,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     setIsLoadingTools(true);
     try {
       // Respect current UI overrides (shell / flag) when doing a full refresh.
-      const versions = await settingsApi.getToolVersions(
-        [...TOOL_NAMES],
-        wslShellByTool,
+      const versions = await withTimeout(
+        settingsApi.getToolVersions([...TOOL_NAMES], wslShellByTool),
+        TOOL_LOAD_TIMEOUT_MS,
+        "加载本地工具状态超时",
       );
       setToolVersions(versions);
     } catch (error) {
@@ -271,7 +316,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     async (notifyOnError = false) => {
       setIsCheckingUpstreamRelease(true);
       try {
-        const info = await settingsApi.getUpstreamReleaseInfo();
+        const info = await withTimeout(
+          settingsApi.getUpstreamReleaseInfo(),
+          TOOL_LOAD_TIMEOUT_MS,
+          "检测上游 Release 超时",
+        );
         setUpstreamRelease(info);
         setUpstreamReleaseError(info.error || null);
         if (notifyOnError && info.error) {
@@ -361,14 +410,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   useEffect(() => {
     let active = true;
-    const load = async () => {
+    const loadVersion = async () => {
       try {
-        const [appVersion] = await Promise.all([
-          getVersion(),
-          loadAllToolVersions(),
-          checkUpstreamRelease(),
-        ]);
-
+        const appVersion = await getVersion();
         if (active) {
           setVersion(appVersion);
         }
@@ -384,7 +428,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
     };
 
-    void load();
+    void loadVersion();
+    void loadAllToolVersions();
+    void checkUpstreamRelease();
     return () => {
       active = false;
     };
@@ -722,6 +768,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                       installation.source !== "default"
                         ? INSTALL_SOURCE_BADGE_CONFIG[installation.source]
                         : null;
+                    const updateCommand = getToolUpdateCommand(
+                      toolName,
+                      installation.source !== "default"
+                        ? installation.source
+                        : tool?.install_source,
+                    );
 
                     return (
                       <div
@@ -762,6 +814,18 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                                 })}
                                 : <span className="font-mono">{latestVersion}</span>
                               </div>
+                            </div>
+
+                            <div className="mt-2 rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground">
+                              <span className="mr-1">
+                                {t("settings.toolUpdateCommand", {
+                                  defaultValue: "更新命令",
+                                })}
+                                :
+                              </span>
+                              <code className="font-mono text-foreground">
+                                {updateCommand}
+                              </code>
                             </div>
 
                             {installation.error && !installation.version && (

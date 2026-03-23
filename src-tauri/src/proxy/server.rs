@@ -297,4 +297,16 @@ impl ProxyServer {
             .reset_provider_breaker(provider_id, app_type)
             .await;
     }
+
+    /// 读取指定 Provider 的熔断器状态
+    pub async fn get_circuit_breaker_stats(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Option<super::circuit_breaker::CircuitBreakerStats> {
+        self.state
+            .provider_router
+            .get_circuit_breaker_stats(provider_id, app_type)
+            .await
+    }
 }

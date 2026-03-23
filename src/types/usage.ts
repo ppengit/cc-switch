@@ -11,6 +11,7 @@ export interface RequestLog {
   requestId: string;
   providerId: string;
   providerName?: string;
+  providerIsPublic?: boolean;
   appType: string;
   model: string;
   requestModel?: string;
@@ -94,7 +95,9 @@ export interface LogFilters {
   appType?: string;
   providerName?: string;
   model?: string;
+  sessionQuery?: string;
   statusCode?: number;
+  sessionRoutingActive?: boolean;
   startDate?: number;
   endDate?: number;
 }

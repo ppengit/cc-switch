@@ -107,9 +107,9 @@ export const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
         <JsonEditor
           value={draftValue}
           onChange={setDraftValue}
-          placeholder={`# Common Codex config
+          placeholder={`{{provider.config}}
 
-# Add your common TOML configuration here`}
+{{mcp.config}}`}
           darkMode={isDarkMode}
           rows={16}
           showValidation={false}

@@ -269,11 +269,52 @@ impl RequestContext {
             }
         }
 
-        let assignment_candidate_provider_ids = if !stable_available_provider_ids.is_empty() {
-            stable_available_provider_ids
-        } else {
-            degraded_available_provider_ids
-        };
+        let (assignment_candidate_provider_ids, preferred_candidate_provider_ids) =
+            if !stable_available_provider_ids.is_empty() {
+                if app_config.public_provider_priority_enabled {
+                    let stable_public_provider_ids: HashSet<String> = stable_available_provider_ids
+                        .iter()
+                        .filter(|provider_id| {
+                            all_providers_map
+                                .get(provider_id.as_str())
+                                .map(|provider| provider.is_public)
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect();
+
+                    if !stable_public_provider_ids.is_empty() {
+                        let mut prioritized =
+                            Vec::with_capacity(stable_available_provider_ids.len());
+                        for provider_id in stable_available_provider_ids.iter() {
+                            if stable_public_provider_ids.contains(provider_id) {
+                                prioritized.push(provider_id.clone());
+                            }
+                        }
+                        for provider_id in stable_available_provider_ids.iter() {
+                            if !stable_public_provider_ids.contains(provider_id) {
+                                prioritized.push(provider_id.clone());
+                            }
+                        }
+                        (
+                            prioritized,
+                            stable_available_provider_ids
+                                .iter()
+                                .filter(|provider_id| {
+                                    stable_public_provider_ids.contains(provider_id.as_str())
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        )
+                    } else {
+                        (stable_available_provider_ids, Vec::new())
+                    }
+                } else {
+                    (stable_available_provider_ids, Vec::new())
+                }
+            } else {
+                (degraded_available_provider_ids, Vec::new())
+            };
 
         if assignment_candidate_provider_ids.is_empty() {
             log::warn!(
@@ -286,10 +327,11 @@ impl RequestContext {
 
         let binding = state
             .db
-            .assign_session_provider_from_candidates(
+            .assign_session_provider_from_candidates_with_preferred_pool(
                 app_type_str,
                 session_id,
                 &assignment_candidate_provider_ids,
+                &preferred_candidate_provider_ids,
                 app_config.session_routing_strategy.as_str(),
                 app_config.session_max_sessions_per_provider,
                 app_config.session_allow_shared_when_exhausted,
@@ -339,8 +381,12 @@ impl RequestContext {
         app_type_str: &str,
         app_config: &AppProxyConfig,
     ) -> Result<Vec<Provider>, ProxyError> {
-        let preferred_provider_id =
-            Self::resolve_session_default_provider_id(state, app_type_str, app_config);
+        let explicit_provider_id = app_config.session_default_provider_id.trim();
+        let preferred_provider_id = if explicit_provider_id.is_empty() {
+            Self::resolve_session_default_provider_id(state, app_type_str)
+        } else {
+            Some(explicit_provider_id.to_string())
+        };
 
         state
             .provider_router
@@ -348,6 +394,8 @@ impl RequestContext {
                 app_type_str,
                 preferred_provider_id.as_deref(),
                 app_config.auto_failover_enabled,
+                app_config.public_provider_priority_enabled,
+                !explicit_provider_id.is_empty(),
             )
             .await
             .map_err(Self::map_provider_selection_error)
@@ -356,13 +404,7 @@ impl RequestContext {
     fn resolve_session_default_provider_id(
         state: &ProxyState,
         app_type_str: &str,
-        app_config: &AppProxyConfig,
     ) -> Option<String> {
-        let explicit_provider_id = app_config.session_default_provider_id.trim();
-        if !explicit_provider_id.is_empty() {
-            return Some(explicit_provider_id.to_string());
-        }
-
         AppType::from_str(app_type_str)
             .ok()
             .and_then(|app_type| {

@@ -264,7 +264,9 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
       appType: appliedFilters.appType,
       providerName: appliedFilters.providerName,
       model: appliedFilters.model,
+      sessionQuery: appliedFilters.sessionQuery,
       statusCode: appliedFilters.statusCode,
+      sessionRoutingActive: appliedFilters.sessionRoutingActive,
       startDate:
         appliedTimeMode === "fixed" ? appliedFilters.startDate : undefined,
       endDate: appliedTimeMode === "fixed" ? appliedFilters.endDate : undefined,
@@ -615,6 +617,39 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
             </SelectContent>
           </Select>
 
+          <Select
+            value={
+              draftFilters.sessionRoutingActive == null
+                ? "all"
+                : draftFilters.sessionRoutingActive
+                  ? "enabled"
+                  : "disabled"
+            }
+            onValueChange={(v) =>
+              setDraftFilters({
+                ...draftFilters,
+                sessionRoutingActive: v === "all" ? undefined : v === "enabled",
+              })
+            }
+          >
+            <SelectTrigger className="w-[150px] bg-background">
+              <SelectValue
+                placeholder={t("usage.sessionRouting", {
+                  defaultValue: "会话路由",
+                })}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("common.all")}</SelectItem>
+              <SelectItem value="enabled">
+                {t("usage.sessionRoutingActive", "已启用")}
+              </SelectItem>
+              <SelectItem value="disabled">
+                {t("usage.sessionRoutingInactive", "未启用")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+
           <div className="flex items-center gap-2 flex-1 min-w-[300px]">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -638,6 +673,19 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                 setDraftFilters({
                   ...draftFilters,
                   model: e.target.value || undefined,
+                })
+              }
+            />
+            <Input
+              placeholder={t("usage.searchSessionPlaceholder", {
+                defaultValue: "搜索会话路由 / 会话 ID",
+              })}
+              className="w-[220px] bg-background"
+              value={draftFilters.sessionQuery || ""}
+              onChange={(e) =>
+                setDraftFilters({
+                  ...draftFilters,
+                  sessionQuery: e.target.value || undefined,
                 })
               }
             />
@@ -1001,11 +1049,20 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         {new Date(log.createdAt * 1000).toLocaleString(locale)}
                       </TableCell>
                       <TableCell>
-                        {log.providerName || t("usage.unknownProvider")}
+                        <div className="flex items-center gap-2">
+                          <span>
+                            {log.providerName || t("usage.unknownProvider")}
+                          </span>
+                          {log.providerIsPublic && (
+                            <span className="rounded border border-border/70 px-1 py-0 text-[10px] leading-none text-muted-foreground">
+                              {t("provider.publicTag", {
+                                defaultValue: "public",
+                              })}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
-                      <TableCell>
-                        {renderSessionRoutingCell(log)}
-                      </TableCell>
+                      <TableCell>{renderSessionRoutingCell(log)}</TableCell>
                       <TableCell className="font-mono text-xs max-w-[200px]">
                         <div
                           className="truncate"

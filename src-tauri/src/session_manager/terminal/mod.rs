@@ -26,7 +26,7 @@ pub fn launch_terminal(
             "wezterm" => launch_wezterm(command, cwd),
             "alacritty" => launch_alacritty(command, cwd),
             "custom" => launch_custom(command, cwd, _custom_config),
-            _ => Err(format!("Unsupported terminal target: {target}")),
+            _ => launch_macos_terminal(command, cwd),
         };
     }
 

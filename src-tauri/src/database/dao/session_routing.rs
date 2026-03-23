@@ -2,7 +2,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MASTER_ENABLED_KEY: &str = "session_routing_master_enabled";
 
@@ -14,6 +14,8 @@ pub struct SessionProviderBinding {
     pub provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_name: Option<String>,
+    #[serde(default)]
+    pub provider_is_public: bool,
     pub pinned: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -53,7 +55,7 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let mut stmt = if legacy_session_id.is_some() {
             conn.prepare(
-                "SELECT b.app_type, b.session_id, b.provider_id, p.name, b.pinned,
+                "SELECT b.app_type, b.session_id, b.provider_id, p.name, COALESCE(p.is_public, 0), b.pinned,
                         b.created_at, b.updated_at, b.last_seen_at
                  FROM session_provider_bindings b
                  LEFT JOIN providers p ON p.id = b.provider_id AND p.app_type = b.app_type
@@ -64,7 +66,7 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?
         } else {
             conn.prepare(
-                "SELECT b.app_type, b.session_id, b.provider_id, p.name, b.pinned,
+                "SELECT b.app_type, b.session_id, b.provider_id, p.name, COALESCE(p.is_public, 0), b.pinned,
                         b.created_at, b.updated_at, b.last_seen_at
                  FROM session_provider_bindings b
                  LEFT JOIN providers p ON p.id = b.provider_id AND p.app_type = b.app_type
@@ -83,7 +85,7 @@ impl Database {
         };
 
         if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
-            let last_seen_at: i64 = row.get(7).map_err(|e| AppError::Database(e.to_string()))?;
+            let last_seen_at: i64 = row.get(8).map_err(|e| AppError::Database(e.to_string()))?;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
             let stored_session_id: String =
@@ -94,9 +96,10 @@ impl Database {
                 session_id: display_session_id,
                 provider_id: row.get(2).map_err(|e| AppError::Database(e.to_string()))?,
                 provider_name: row.get(3).ok(),
-                pinned: row.get(4).map_err(|e| AppError::Database(e.to_string()))?,
-                created_at: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
-                updated_at: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
+                provider_is_public: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                pinned: row.get(5).map_err(|e| AppError::Database(e.to_string()))?,
+                created_at: row.get(6).map_err(|e| AppError::Database(e.to_string()))?,
+                updated_at: row.get(7).map_err(|e| AppError::Database(e.to_string()))?,
                 last_seen_at,
                 is_active: last_seen_at >= cutoff,
             }))
@@ -116,7 +119,7 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn
             .prepare(
-                "SELECT b.app_type, b.session_id, b.provider_id, p.name, b.pinned,
+                "SELECT b.app_type, b.session_id, b.provider_id, p.name, COALESCE(p.is_public, 0), b.pinned,
                         b.created_at, b.updated_at, b.last_seen_at
                  FROM session_provider_bindings b
                  LEFT JOIN providers p ON p.id = b.provider_id AND p.app_type = b.app_type
@@ -127,7 +130,7 @@ impl Database {
 
         let rows = stmt
             .query_map(params![app_type], |row| {
-                let last_seen_at: i64 = row.get(7)?;
+                let last_seen_at: i64 = row.get(8)?;
                 let raw_session_id: String = row.get(1)?;
                 let normalized_session_id = normalize_session_id_for_app(app_type, &raw_session_id);
                 Ok(SessionProviderBinding {
@@ -135,9 +138,10 @@ impl Database {
                     session_id: normalized_session_id,
                     provider_id: row.get(2)?,
                     provider_name: row.get(3).ok(),
-                    pinned: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    provider_is_public: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                    pinned: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                     last_seen_at,
                     is_active: last_seen_at >= cutoff,
                 })
@@ -410,6 +414,30 @@ impl Database {
         allow_shared_when_exhausted: bool,
         idle_ttl_minutes: u32,
     ) -> Result<Option<SessionProviderBinding>, AppError> {
+        self.assign_session_provider_from_candidates_with_preferred_pool(
+            app_type,
+            session_id,
+            candidate_provider_ids,
+            &[],
+            strategy,
+            max_sessions_per_provider,
+            allow_shared_when_exhausted,
+            idle_ttl_minutes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn assign_session_provider_from_candidates_with_preferred_pool(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        candidate_provider_ids: &[String],
+        preferred_provider_ids: &[String],
+        strategy: &str,
+        max_sessions_per_provider: u32,
+        allow_shared_when_exhausted: bool,
+        idle_ttl_minutes: u32,
+    ) -> Result<Option<SessionProviderBinding>, AppError> {
         if candidate_provider_ids.is_empty() {
             return Ok(None);
         }
@@ -419,6 +447,8 @@ impl Database {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
         let conn = lock_conn!(self.conn);
+        let preferred_provider_id_set: HashSet<String> =
+            preferred_provider_ids.iter().cloned().collect();
 
         let existing = query_binding_on_conn(&conn, app_type, canonical_session_id.as_str())?;
         if let Some(binding) = existing.as_ref() {
@@ -460,6 +490,7 @@ impl Database {
                     session_id: canonical_session_id.clone(),
                     provider_id: binding.provider_id,
                     provider_name: None,
+                    provider_is_public: false,
                     pinned: binding.pinned,
                     created_at: binding.created_at,
                     updated_at: now_ms,
@@ -534,18 +565,31 @@ impl Database {
             }
             chosen
         };
+        let prefer_public_pool = |pool: Vec<String>| -> Vec<String> {
+            let preferred_pool: Vec<String> = pool
+                .iter()
+                .filter(|provider_id| preferred_provider_id_set.contains(provider_id.as_str()))
+                .cloned()
+                .collect();
+            if preferred_pool.is_empty() {
+                pool
+            } else {
+                preferred_pool
+            }
+        };
+        let effective_target_pool = prefer_public_pool(target_pool);
         let chosen_provider_id = match strategy.as_str() {
             "round_robin" => {
                 let cursor = get_and_increment_session_round_robin_cursor_on_conn(&conn, app_type)?;
-                let index = (cursor as usize) % target_pool.len();
-                target_pool[index].clone()
+                let index = (cursor as usize) % effective_target_pool.len();
+                effective_target_pool[index].clone()
             }
-            "least_active" => choose_least_active(&target_pool),
+            "least_active" => choose_least_active(&effective_target_pool),
             // Priority should still avoid immediate sharing when there are idle providers.
             // We keep queue order as tie-breaker by scanning in target_pool order.
-            "priority" => choose_least_active(&target_pool),
-            "fixed" => target_pool[0].clone(),
-            _ => target_pool[0].clone(),
+            "priority" => choose_least_active(&effective_target_pool),
+            "fixed" => effective_target_pool[0].clone(),
+            _ => effective_target_pool[0].clone(),
         };
 
         let (created_at, pinned) = match existing {
@@ -578,6 +622,7 @@ impl Database {
             session_id: canonical_session_id,
             provider_id: chosen_provider_id,
             provider_name: None,
+            provider_is_public: false,
             pinned,
             created_at,
             updated_at: now_ms,
@@ -592,6 +637,30 @@ impl Database {
         app_type: &str,
         provider_id: &str,
         candidate_provider_ids: &[String],
+        strategy: &str,
+        max_sessions_per_provider: u32,
+        allow_shared_when_exhausted: bool,
+        idle_ttl_minutes: u32,
+    ) -> Result<usize, AppError> {
+        self.reassign_session_provider_bindings_for_provider_with_preferred_pool(
+            app_type,
+            provider_id,
+            candidate_provider_ids,
+            &[],
+            strategy,
+            max_sessions_per_provider,
+            allow_shared_when_exhausted,
+            idle_ttl_minutes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reassign_session_provider_bindings_for_provider_with_preferred_pool(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        candidate_provider_ids: &[String],
+        preferred_provider_ids: &[String],
         strategy: &str,
         max_sessions_per_provider: u32,
         allow_shared_when_exhausted: bool,
@@ -613,6 +682,8 @@ impl Database {
         if candidates.is_empty() {
             return Ok(0);
         }
+        let preferred_provider_id_set: HashSet<String> =
+            preferred_provider_ids.iter().cloned().collect();
 
         let mut stmt = conn
             .prepare(
@@ -673,6 +744,18 @@ impl Database {
             }
             chosen
         };
+        let prefer_public_pool = |pool: Vec<String>| -> Vec<String> {
+            let preferred_pool: Vec<String> = pool
+                .iter()
+                .filter(|candidate| preferred_provider_id_set.contains(candidate.as_str()))
+                .cloned()
+                .collect();
+            if preferred_pool.is_empty() {
+                pool
+            } else {
+                preferred_pool
+            }
+        };
 
         let mut reassigned = 0usize;
         for session_id in sessions {
@@ -687,9 +770,196 @@ impl Database {
                 .collect();
 
             let pool = if !eligible_provider_ids.is_empty() {
-                eligible_provider_ids
+                prefer_public_pool(eligible_provider_ids)
             } else if allow_shared_when_exhausted {
-                candidates.clone()
+                prefer_public_pool(candidates.clone())
+            } else {
+                continue;
+            };
+
+            let chosen_provider_id = match strategy.as_str() {
+                "round_robin" => {
+                    let cursor =
+                        get_and_increment_session_round_robin_cursor_on_conn(&conn, app_type)?;
+                    let index = (cursor as usize) % pool.len();
+                    pool[index].clone()
+                }
+                "least_active" => choose_least_active(&pool, &active_counts),
+                "priority" => choose_least_active(&pool, &active_counts),
+                "fixed" => pool[0].clone(),
+                _ => pool[0].clone(),
+            };
+
+            conn.execute(
+                "UPDATE session_provider_bindings
+                 SET provider_id = ?3, updated_at = ?4
+                 WHERE app_type = ?1 AND session_id = ?2",
+                params![app_type, session_id, chosen_provider_id, now_ms],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            if let Some(count) = active_counts.get_mut(provider_id) {
+                if *count > 0 {
+                    *count -= 1;
+                }
+            }
+            *active_counts.entry(chosen_provider_id.clone()).or_insert(0) += 1;
+            reassigned += 1;
+        }
+
+        Ok(reassigned)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reassign_session_provider_bindings_for_provider_limit(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        max_reassign_count: usize,
+        candidate_provider_ids: &[String],
+        strategy: &str,
+        max_sessions_per_provider: u32,
+        allow_shared_when_exhausted: bool,
+        idle_ttl_minutes: u32,
+    ) -> Result<usize, AppError> {
+        self.reassign_session_provider_bindings_for_provider_limit_with_preferred_pool(
+            app_type,
+            provider_id,
+            max_reassign_count,
+            candidate_provider_ids,
+            &[],
+            strategy,
+            max_sessions_per_provider,
+            allow_shared_when_exhausted,
+            idle_ttl_minutes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reassign_session_provider_bindings_for_provider_limit_with_preferred_pool(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        max_reassign_count: usize,
+        candidate_provider_ids: &[String],
+        preferred_provider_ids: &[String],
+        strategy: &str,
+        max_sessions_per_provider: u32,
+        allow_shared_when_exhausted: bool,
+        idle_ttl_minutes: u32,
+    ) -> Result<usize, AppError> {
+        if max_reassign_count == 0 || candidate_provider_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let cutoff = now_ms - (idle_ttl_minutes as i64) * 60 * 1000;
+        let conn = lock_conn!(self.conn);
+
+        let candidates: Vec<String> = candidate_provider_ids
+            .iter()
+            .filter(|candidate| candidate.as_str() != provider_id)
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let preferred_provider_id_set: HashSet<String> =
+            preferred_provider_ids.iter().cloned().collect();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id
+                 FROM session_provider_bindings
+                 WHERE app_type = ?1
+                   AND provider_id = ?2
+                   AND last_seen_at >= ?3
+                   AND COALESCE(pinned, 0) = 0
+                 ORDER BY last_seen_at DESC
+                 LIMIT ?4",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(
+                params![app_type, provider_id, cutoff, max_reassign_count as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(|e| AppError::Database(e.to_string()))?);
+        }
+
+        if sessions.is_empty() {
+            return Ok(0);
+        }
+
+        let mut active_counts = HashMap::<String, usize>::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider_id, COUNT(*)
+                 FROM session_provider_bindings
+                 WHERE app_type = ?1 AND last_seen_at >= ?2
+                 GROUP BY provider_id",
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![app_type, cutoff], |row| {
+                let provider_id: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((provider_id, count.max(0) as usize))
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for row in rows {
+            let (provider_id, count) = row.map_err(|e| AppError::Database(e.to_string()))?;
+            active_counts.insert(provider_id, count);
+        }
+
+        let has_limit = max_sessions_per_provider > 0;
+        let max_sessions = max_sessions_per_provider as usize;
+        let strategy = strategy.trim().to_ascii_lowercase();
+        let choose_least_active = |pool: &[String], counts: &HashMap<String, usize>| -> String {
+            let mut chosen = pool[0].clone();
+            let mut min_count = counts.get(&chosen).copied().unwrap_or(0);
+            for provider_id in pool.iter().skip(1) {
+                let current = counts.get(provider_id).copied().unwrap_or(0);
+                if current < min_count {
+                    min_count = current;
+                    chosen = provider_id.clone();
+                }
+            }
+            chosen
+        };
+        let prefer_public_pool = |pool: Vec<String>| -> Vec<String> {
+            let preferred_pool: Vec<String> = pool
+                .iter()
+                .filter(|candidate| preferred_provider_id_set.contains(candidate.as_str()))
+                .cloned()
+                .collect();
+            if preferred_pool.is_empty() {
+                pool
+            } else {
+                preferred_pool
+            }
+        };
+
+        let mut reassigned = 0usize;
+        for session_id in sessions {
+            let eligible_provider_ids: Vec<String> = candidates
+                .iter()
+                .filter(|candidate| {
+                    !has_limit
+                        || active_counts.get(candidate.as_str()).copied().unwrap_or(0)
+                            < max_sessions
+                })
+                .cloned()
+                .collect();
+
+            let pool = if !eligible_provider_ids.is_empty() {
+                prefer_public_pool(eligible_provider_ids)
+            } else if allow_shared_when_exhausted {
+                prefer_public_pool(candidates.clone())
             } else {
                 continue;
             };
@@ -945,6 +1215,12 @@ mod tests {
         )
     }
 
+    fn build_public_provider(id: &str, name: &str) -> Provider {
+        let mut provider = build_provider(id, name);
+        provider.is_public = true;
+        provider
+    }
+
     #[test]
     fn assign_session_provider_respects_capacity() {
         let db = Database::memory().expect("init database");
@@ -981,6 +1257,47 @@ mod tests {
 
         assert_eq!(first.provider_id, "a");
         assert_eq!(second.provider_id, "b");
+    }
+
+    #[test]
+    fn reassign_session_provider_limit_rebalances_overflow_sessions() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_provider("a", "A"))
+            .expect("save provider a");
+        db.save_provider("codex", &build_provider("b", "B"))
+            .expect("save provider b");
+        db.save_provider("codex", &build_provider("c", "C"))
+            .expect("save provider c");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "s1", "a", false, now_ms - 3000)
+            .expect("seed binding s1");
+        db.upsert_session_provider_binding("codex", "s2", "a", false, now_ms - 2000)
+            .expect("seed binding s2");
+        db.upsert_session_provider_binding("codex", "s3", "a", false, now_ms - 1000)
+            .expect("seed binding s3");
+
+        let reassigned = db
+            .reassign_session_provider_bindings_for_provider_limit(
+                "codex",
+                "a",
+                2,
+                &["a".to_string(), "b".to_string(), "c".to_string()],
+                "least_active",
+                1,
+                false,
+                30,
+            )
+            .expect("reassign overflow bindings");
+
+        assert_eq!(reassigned, 2);
+
+        let counts = db
+            .get_active_session_counts_map("codex", 30)
+            .expect("query active counts");
+        assert_eq!(counts.get("a").copied().unwrap_or(0), 1);
+        assert_eq!(counts.get("b").copied().unwrap_or(0), 1);
+        assert_eq!(counts.get("c").copied().unwrap_or(0), 1);
     }
 
     #[test]
@@ -1269,6 +1586,35 @@ mod tests {
         assert_eq!(first.provider_id, "a");
         assert_eq!(second.provider_id, "b");
         assert!(third.provider_id == "a" || third.provider_id == "b");
+    }
+
+    #[test]
+    fn assign_session_provider_preferred_pool_overrides_least_active() {
+        let db = Database::memory().expect("init database");
+        db.save_provider("codex", &build_public_provider("a", "Public A"))
+            .expect("save public provider a");
+        db.save_provider("codex", &build_provider("b", "Private B"))
+            .expect("save private provider b");
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding("codex", "existing-public", "a", false, now_ms)
+            .expect("seed public binding");
+
+        let binding = db
+            .assign_session_provider_from_candidates_with_preferred_pool(
+                "codex",
+                "new-session",
+                &["a".to_string(), "b".to_string()],
+                &["a".to_string()],
+                "least_active",
+                10,
+                false,
+                30,
+            )
+            .expect("assign with preferred pool")
+            .expect("binding exists");
+
+        assert_eq!(binding.provider_id, "a");
     }
 
     #[test]

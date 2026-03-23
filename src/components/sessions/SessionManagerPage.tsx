@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -26,7 +26,9 @@ import {
   useSetSessionProviderBindingPin,
   useSwitchSessionProviderBinding,
 } from "@/lib/query/proxy";
+import { useFailoverQueue } from "@/lib/query/failover";
 import { sessionsApi } from "@/lib/api";
+import { failoverApi } from "@/lib/api/failover";
 import { providersApi } from "@/lib/api/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -84,7 +86,14 @@ type ProviderFilter =
 interface SessionBindingPreview {
   providerId: string;
   providerName: string;
+  providerIsPublic: boolean;
   pinned: boolean;
+}
+
+interface SessionBindingProviderHealthState {
+  isHealthy: boolean;
+  consecutiveFailures: number;
+  isCircuitOpen: boolean;
 }
 
 function buildBindingLookupKeys(appType: string, sessionId: string): string[] {
@@ -186,11 +195,90 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     enabled: Boolean(selectedSessionAppType),
     staleTime: 30 * 1000,
   });
-  const providerOptions = useMemo(() => {
-    return Object.values(providersMap).sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-    );
-  }, [providersMap]);
+  const { data: opencodeLiveProviderIds = [] } = useQuery({
+    queryKey: ["opencodeLiveProviderIds", "session-manager"],
+    queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
+    enabled: selectedSessionAppType === "opencode",
+    staleTime: 30 * 1000,
+  });
+  const { data: openclawLiveProviderIds = [] } = useQuery({
+    queryKey: ["openclawLiveProviderIds", "session-manager"],
+    queryFn: () => providersApi.getOpenClawLiveProviderIds(),
+    enabled: selectedSessionAppType === "openclaw",
+    staleTime: 30 * 1000,
+  });
+  const { data: failoverQueue = [] } = useFailoverQueue(
+    (selectedSessionAppType ?? appId) as AppId,
+  );
+  const providersForSelection = useMemo(
+    () =>
+      Object.values(providersMap).sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+      ),
+    [providersMap],
+  );
+  const providerHealthQueries = useQueries({
+    queries: providersForSelection.map((provider) => ({
+      queryKey: ["providerHealth", provider.id, selectedSessionAppType],
+      queryFn: () =>
+        failoverApi.getProviderHealth(provider.id, selectedSessionAppType!),
+      enabled: Boolean(selectedSessionAppType),
+      staleTime: 5_000,
+      retry: false,
+    })),
+  });
+  const providerCircuitStatsQueries = useQueries({
+    queries: providersForSelection.map((provider) => ({
+      queryKey: [
+        "circuitBreakerStats",
+        provider.id,
+        selectedSessionAppType,
+        "session-manager",
+      ],
+      queryFn: () =>
+        failoverApi.getCircuitBreakerStats(
+          provider.id,
+          selectedSessionAppType!,
+        ),
+      enabled: Boolean(selectedSessionAppType),
+      staleTime: 5_000,
+      retry: false,
+    })),
+  });
+  const providerHealthMap = useMemo(() => {
+    const map = new Map<string, SessionBindingProviderHealthState>();
+    providersForSelection.forEach((provider, index) => {
+      const health = providerHealthQueries[index]?.data;
+      const circuitStats = providerCircuitStatsQueries[index]?.data;
+      map.set(provider.id, {
+        isHealthy: health?.is_healthy !== false,
+        consecutiveFailures: health?.consecutive_failures ?? 0,
+        isCircuitOpen: circuitStats?.state === "open",
+      });
+    });
+    return map;
+  }, [
+    providerCircuitStatsQueries,
+    providerHealthQueries,
+    providersForSelection,
+  ]);
+  const enabledFailoverProviderIdSet = useMemo(
+    () => new Set(failoverQueue.map((item) => item.providerId)),
+    [failoverQueue],
+  );
+  const liveEnabledProviderIdSet = useMemo(() => {
+    if (selectedSessionAppType === "opencode") {
+      return new Set(opencodeLiveProviderIds);
+    }
+    if (selectedSessionAppType === "openclaw") {
+      return new Set(openclawLiveProviderIds);
+    }
+    return null;
+  }, [
+    opencodeLiveProviderIds,
+    openclawLiveProviderIds,
+    selectedSessionAppType,
+  ]);
   const { data: codexBindings = [] } = useSessionProviderBindings("codex");
   const { data: claudeBindings = [] } = useSessionProviderBindings("claude");
   const { data: opencodeBindings = [] } =
@@ -198,6 +286,119 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const { data: openclawBindings = [] } =
     useSessionProviderBindings("openclaw");
   const { data: geminiBindings = [] } = useSessionProviderBindings("gemini");
+  const selectedAppBindings = useMemo(() => {
+    switch (selectedSessionAppType) {
+      case "claude":
+        return claudeBindings;
+      case "codex":
+        return codexBindings;
+      case "opencode":
+        return opencodeBindings;
+      case "openclaw":
+        return openclawBindings;
+      case "gemini":
+        return geminiBindings;
+      default:
+        return [];
+    }
+  }, [
+    claudeBindings,
+    codexBindings,
+    geminiBindings,
+    opencodeBindings,
+    openclawBindings,
+    selectedSessionAppType,
+  ]);
+  const selectedAppActiveSessionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const binding of selectedAppBindings) {
+      if (!binding.isActive) {
+        continue;
+      }
+      counts.set(binding.providerId, (counts.get(binding.providerId) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [selectedAppBindings]);
+  const providerOptions = useMemo(() => {
+    const autoFailoverEnabled =
+      selectedAppProxyConfig?.autoFailoverEnabled === true;
+    const healthyProviders = providersForSelection.filter((provider) => {
+      if (
+        liveEnabledProviderIdSet &&
+        !liveEnabledProviderIdSet.has(provider.id)
+      ) {
+        return false;
+      }
+      if (
+        autoFailoverEnabled &&
+        !enabledFailoverProviderIdSet.has(provider.id)
+      ) {
+        return false;
+      }
+      const providerState = providerHealthMap.get(provider.id);
+      return (
+        providerState?.isHealthy !== false &&
+        providerState?.isCircuitOpen !== true
+      );
+    });
+    const stableProviders = healthyProviders.filter(
+      (provider) =>
+        (providerHealthMap.get(provider.id)?.consecutiveFailures ?? 0) === 0,
+    );
+    const routingAlignedProviders =
+      stableProviders.length > 0 ? stableProviders : healthyProviders;
+    const stablePublicProviderIds =
+      selectedAppProxyConfig?.publicProviderPriorityEnabled === true &&
+      stableProviders.length > 0
+        ? new Set(
+            stableProviders
+              .filter((provider) => provider.isPublic === true)
+              .map((provider) => provider.id),
+          )
+        : null;
+    const prioritizedProviders =
+      stablePublicProviderIds && stablePublicProviderIds.size > 0
+        ? [
+            ...routingAlignedProviders.filter((provider) =>
+              stablePublicProviderIds.has(provider.id),
+            ),
+            ...routingAlignedProviders.filter(
+              (provider) => !stablePublicProviderIds.has(provider.id),
+            ),
+          ]
+        : routingAlignedProviders;
+    const maxSessions =
+      selectedAppProxyConfig?.sessionMaxSessionsPerProvider ?? 0;
+    const hasCapacityLimit =
+      maxSessions > 0 &&
+      selectedAppProxyConfig?.sessionAllowSharedWhenExhausted !== true;
+
+    if (!hasCapacityLimit) {
+      return prioritizedProviders;
+    }
+
+    return prioritizedProviders.filter((provider) => {
+      if (provider.id === sessionBinding?.providerId) {
+        return true;
+      }
+      return (
+        (selectedAppActiveSessionCounts.get(provider.id) ?? 0) < maxSessions
+      );
+    });
+  }, [
+    enabledFailoverProviderIdSet,
+    liveEnabledProviderIdSet,
+    providerHealthMap,
+    providersForSelection,
+    selectedAppProxyConfig?.autoFailoverEnabled,
+    selectedAppProxyConfig?.publicProviderPriorityEnabled,
+    selectedAppProxyConfig?.sessionAllowSharedWhenExhausted,
+    selectedAppProxyConfig?.sessionMaxSessionsPerProvider,
+    selectedAppActiveSessionCounts,
+    sessionBinding?.providerId,
+  ]);
 
   const sessionBindingPreviewMap = useMemo(() => {
     const map = new Map<string, SessionBindingPreview>();
@@ -217,6 +418,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       const preview: SessionBindingPreview = {
         providerId: binding.providerId,
         providerName,
+        providerIsPublic: binding.providerIsPublic === true,
         pinned: binding.pinned,
       };
       for (const key of buildBindingLookupKeys(
@@ -641,6 +843,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               onSelect={setSelectedKey}
                               bindingProviderName={bindingPreview?.providerName}
                               bindingProviderId={bindingPreview?.providerId}
+                              bindingProviderIsPublic={
+                                bindingPreview?.providerIsPublic
+                              }
                               bindingPinned={bindingPreview?.pinned}
                             />
                           );
@@ -790,6 +995,13 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                       }),
                                   })}
                             </Badge>
+                            {sessionBinding?.providerIsPublic && (
+                              <Badge variant="outline" className="text-[11px]">
+                                {t("provider.publicTag", {
+                                  defaultValue: "public",
+                                })}
+                              </Badge>
+                            )}
 
                             <Badge variant="outline" className="text-[11px]">
                               {sessionBinding
@@ -824,6 +1036,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                       type="button"
                                       variant="outline"
                                       role="combobox"
+                                      aria-label={t(
+                                        "sessionManager.bindingSwitchPlaceholder",
+                                        {
+                                          defaultValue: "选择提供商",
+                                        },
+                                      )}
                                       aria-expanded={bindingProviderPickerOpen}
                                       className="h-7 w-[220px] justify-between px-2 text-xs font-normal"
                                       disabled={
@@ -831,19 +1049,34 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                         providerOptions.length === 0
                                       }
                                     >
-                                      <span className="truncate text-left">
-                                        {sessionBinding?.providerName ??
+                                      <span className="flex min-w-0 items-center gap-1.5">
+                                        <span className="truncate text-left">
+                                          {sessionBinding?.providerName ??
+                                            providerOptions.find(
+                                              (provider) =>
+                                                provider.id ===
+                                                sessionBinding?.providerId,
+                                            )?.name ??
+                                            t(
+                                              "sessionManager.bindingSwitchPlaceholder",
+                                              {
+                                                defaultValue: "选择提供商",
+                                              },
+                                            )}
+                                        </span>
+                                        {(sessionBinding?.providerIsPublic ||
                                           providerOptions.find(
                                             (provider) =>
                                               provider.id ===
-                                              sessionBinding?.providerId,
-                                          )?.name ??
-                                          t(
-                                            "sessionManager.bindingSwitchPlaceholder",
-                                            {
-                                              defaultValue: "选择提供商",
-                                            },
-                                          )}
+                                                sessionBinding?.providerId &&
+                                              provider.isPublic,
+                                          )) && (
+                                          <span className="shrink-0 rounded border border-border/70 px-1 py-0 text-[10px] leading-none text-muted-foreground">
+                                            {t("provider.publicTag", {
+                                              defaultValue: "public",
+                                            })}
+                                          </span>
+                                        )}
                                       </span>
                                       <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
                                     </Button>
@@ -889,8 +1122,17 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                             <Check
                                               className={`size-3.5 ${provider.id === sessionBinding?.providerId ? "opacity-100" : "opacity-0"}`}
                                             />
-                                            <span className="truncate">
-                                              {provider.name}
+                                            <span className="flex min-w-0 items-center gap-1.5">
+                                              <span className="truncate">
+                                                {provider.name}
+                                              </span>
+                                              {provider.isPublic && (
+                                                <span className="shrink-0 rounded border border-border/70 px-1 py-0 text-[10px] leading-none text-muted-foreground">
+                                                  {t("provider.publicTag", {
+                                                    defaultValue: "public",
+                                                  })}
+                                                </span>
+                                              )}
                                             </span>
                                           </CommandItem>
                                         ))}

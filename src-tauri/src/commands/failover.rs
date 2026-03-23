@@ -55,7 +55,23 @@ pub async fn remove_from_failover_queue(
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(&app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    if app_config.session_routing_enabled {
+        crate::commands::proxy::reconcile_session_bindings_for_routing(
+            &state,
+            &app_type,
+            app_config.session_idle_ttl_minutes.max(1),
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 /// 获取指定应用的自动故障转移开关状态（从 proxy_config 表读取）

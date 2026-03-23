@@ -133,6 +133,8 @@ pub struct ProviderHealth {
     pub app_type: String,
     pub is_healthy: bool,
     pub consecutive_failures: u32,
+    #[serde(default)]
+    pub zero_token_anomaly_streak: u32,
     pub last_success_at: Option<String>,
     pub last_failure_at: Option<String>,
     pub last_error: Option<String>,
@@ -196,6 +198,12 @@ pub struct AppProxyConfig {
     pub circuit_error_rate_threshold: f64,
     /// 计算错误率的最小请求数
     pub circuit_min_requests: u32,
+    /// 是否启用 0/0 token 异常自动降级
+    #[serde(default)]
+    pub zero_token_anomaly_enabled: bool,
+    /// 连续出现多少次 0/0 token 异常后触发降级/熔断
+    #[serde(default = "default_zero_token_anomaly_threshold")]
+    pub zero_token_anomaly_threshold: u32,
     /// 是否启用会话级粘性调度
     pub session_routing_enabled: bool,
     /// 会话调度策略：fixed / round_robin / least_active / priority
@@ -203,12 +211,19 @@ pub struct AppProxyConfig {
     /// 未显式携带会话 ID 的请求默认使用的供应商；为空时跟随当前 provider
     #[serde(default)]
     pub session_default_provider_id: String,
+    /// 是否优先选择公共供应商
+    #[serde(default)]
+    pub public_provider_priority_enabled: bool,
     /// 单个供应商可绑定的最大并发会话数（0 表示不限制）
     pub session_max_sessions_per_provider: u32,
     /// 当全部供应商达到并发上限时，是否允许共享分配
     pub session_allow_shared_when_exhausted: bool,
     /// 会话空闲释放时间（分钟）
     pub session_idle_ttl_minutes: u32,
+}
+
+fn default_zero_token_anomaly_threshold() -> u32 {
+    3
 }
 
 impl AppProxyConfig {

@@ -53,6 +53,7 @@ const baseRequestLog: RequestLog = {
   requestId: "req-1",
   providerId: "provider-1",
   providerName: "Provider One",
+  providerIsPublic: true,
   appType: "claude",
   model: "claude-sonnet-4",
   requestModel: "claude-sonnet-4",
@@ -134,5 +135,14 @@ describe("RequestLogTable", () => {
     expect(screen.getByText("Feature Task")).toBeInTheDocument();
     expect(screen.getByText("session-12345678")).toBeInTheDocument();
     expect(screen.getByText("Provider One")).toBeInTheDocument();
+    expect(screen.getByText("public")).toBeInTheDocument();
+  });
+
+  it("renders the session routing search input", () => {
+    renderWithQueryClient(<RequestLogTable refreshIntervalMs={0} />);
+
+    expect(
+      screen.getByPlaceholderText(/搜索会话路由 \/ 会话 ID/i),
+    ).toBeInTheDocument();
   });
 });

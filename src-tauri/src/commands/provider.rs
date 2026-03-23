@@ -59,15 +59,30 @@ pub fn delete_provider(
 }
 
 #[tauri::command]
-pub fn remove_provider_from_live_config(
+pub async fn remove_provider_from_live_config(
     state: tauri::State<'_, AppState>,
     app: String,
     id: String,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     ProviderService::remove_from_live_config(state.inner(), app_type, &id)
-        .map(|_| true)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(&app)
+        .await
+        .map_err(|e| e.to_string())?;
+    if app_config.session_routing_enabled {
+        crate::commands::proxy::reconcile_session_bindings_for_routing(
+            &state,
+            &app,
+            app_config.session_idle_ttl_minutes.max(1),
+        )
+        .await?;
+    }
+
+    Ok(true)
 }
 
 fn switch_provider_internal(

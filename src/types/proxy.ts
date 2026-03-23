@@ -53,6 +53,7 @@ export interface ProviderHealth {
   app_type: string;
   is_healthy: boolean;
   consecutive_failures: number;
+  zero_token_anomaly_streak?: number;
   last_success_at: string | null;
   last_failure_at: string | null;
   last_error: string | null;
@@ -112,6 +113,7 @@ export interface SessionProviderBinding {
   sessionId: string;
   providerId: string;
   providerName?: string;
+  providerIsPublic?: boolean;
   pinned: boolean;
   createdAt: number;
   updatedAt: number;
@@ -153,10 +155,20 @@ export interface AppProxyConfig {
   circuitTimeoutSeconds: number;
   circuitErrorRateThreshold: number;
   circuitMinRequests: number;
+  zeroTokenAnomalyEnabled?: boolean;
+  zeroTokenAnomalyThreshold?: number;
   sessionRoutingEnabled: boolean;
   sessionRoutingStrategy: SessionRoutingStrategy;
   sessionDefaultProviderId: string;
+  publicProviderPriorityEnabled?: boolean;
   sessionMaxSessionsPerProvider: number;
   sessionAllowSharedWhenExhausted: boolean;
   sessionIdleTtlMinutes: number;
+}
+
+export interface ReleaseProviderSessionBindingsResult {
+  totalAffected: number;
+  reboundCount: number;
+  unboundCount: number;
+  suggestIncreaseMaxSessions: boolean;
 }

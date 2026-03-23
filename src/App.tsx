@@ -664,6 +664,7 @@ function App() {
       name: `${provider.name} copy`,
       settingsConfig: JSON.parse(JSON.stringify(provider.settingsConfig)), // 深拷贝
       websiteUrl: provider.websiteUrl,
+      isPublic: provider.isPublic,
       category: provider.category,
       sortIndex: newSortIndex, // 复制原 sortIndex + 1
       meta: provider.meta

@@ -3,7 +3,7 @@ use crate::error::AppError;
 use crate::provider::{Provider, ProviderMeta};
 use indexmap::IndexMap;
 use rusqlite::params;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 type OmoProviderRow = (
     String,
@@ -17,16 +17,63 @@ type OmoProviderRow = (
 );
 
 impl Database {
+    fn get_live_enabled_provider_id_set(
+        &self,
+        app_type: &str,
+    ) -> Result<Option<HashSet<String>>, AppError> {
+        match app_type {
+            "opencode" => Ok(Some(
+                crate::opencode_config::get_providers()
+                    .map_err(|e| AppError::Database(e.to_string()))?
+                    .keys()
+                    .cloned()
+                    .collect(),
+            )),
+            "openclaw" => Ok(Some(
+                crate::openclaw_config::get_providers()
+                    .map_err(|e| AppError::Database(e.to_string()))?
+                    .keys()
+                    .cloned()
+                    .collect(),
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn filter_provider_ids_for_routing_enablement(
+        &self,
+        app_type: &str,
+        provider_ids: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let Some(enabled_provider_ids) = self.get_live_enabled_provider_id_set(app_type)? else {
+            return Ok(provider_ids);
+        };
+
+        Ok(provider_ids
+            .into_iter()
+            .filter(|provider_id| enabled_provider_ids.contains(provider_id))
+            .collect())
+    }
+
     pub fn list_provider_ids_for_session_routing(
         &self,
         app_type: &str,
     ) -> Result<Vec<String>, AppError> {
         let conn = lock_conn!(self.conn);
+        let auto_failover_enabled = conn
+            .query_row(
+                "SELECT auto_failover_enabled FROM proxy_config WHERE app_type = ?1",
+                params![app_type],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .unwrap_or(false);
         let mut stmt = conn
             .prepare(
                 "SELECT id
                  FROM providers
                  WHERE app_type = ?1
+                   AND (?2 = 0 OR in_failover_queue = 1)
                  ORDER BY
                    COALESCE(sort_index, 999999),
                    created_at ASC,
@@ -35,12 +82,15 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let ids = stmt
-            .query_map(params![app_type], |row| row.get::<_, String>(0))
+            .query_map(
+                params![app_type, if auto_failover_enabled { 1 } else { 0 }],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(|e| AppError::Database(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        Ok(ids)
+        self.filter_provider_ids_for_routing_enablement(app_type, ids)
     }
 
     pub fn get_all_providers(
@@ -49,7 +99,7 @@ impl Database {
     ) -> Result<IndexMap<String, Provider>, AppError> {
         let conn = lock_conn!(self.conn);
         let mut stmt = conn.prepare(
-            "SELECT id, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
+            "SELECT id, name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue, is_public
              FROM providers WHERE app_type = ?1
              ORDER BY COALESCE(sort_index, 999999), created_at ASC, id ASC"
         ).map_err(|e| AppError::Database(e.to_string()))?;
@@ -68,6 +118,7 @@ impl Database {
                 let icon_color: Option<String> = row.get(9)?;
                 let meta_str: String = row.get(10)?;
                 let in_failover_queue: bool = row.get(11)?;
+                let is_public: bool = row.get(12)?;
 
                 let settings_config =
                     serde_json::from_str(&settings_config_str).unwrap_or(serde_json::Value::Null);
@@ -88,6 +139,7 @@ impl Database {
                         icon,
                         icon_color,
                         in_failover_queue,
+                        is_public,
                     },
                 ))
             })
@@ -160,7 +212,7 @@ impl Database {
     ) -> Result<Option<Provider>, AppError> {
         let conn = lock_conn!(self.conn);
         let result = conn.query_row(
-            "SELECT name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue
+            "SELECT name, settings_config, website_url, category, created_at, sort_index, notes, icon, icon_color, meta, in_failover_queue, is_public
              FROM providers WHERE id = ?1 AND app_type = ?2",
             params![id, app_type],
             |row| {
@@ -175,6 +227,7 @@ impl Database {
                 let icon_color: Option<String> = row.get(8)?;
                 let meta_str: String = row.get(9)?;
                 let in_failover_queue: bool = row.get(10)?;
+                let is_public: bool = row.get(11)?;
 
                 let settings_config = serde_json::from_str(&settings_config_str).unwrap_or(serde_json::Value::Null);
                 let meta: ProviderMeta = serde_json::from_str(&meta_str).unwrap_or_default();
@@ -192,6 +245,7 @@ impl Database {
                     icon,
                     icon_color,
                     in_failover_queue,
+                    is_public,
                 })
             },
         );
@@ -212,17 +266,18 @@ impl Database {
         let mut meta_clone = provider.meta.clone().unwrap_or_default();
         let endpoints = std::mem::take(&mut meta_clone.custom_endpoints);
 
-        let existing: Option<(bool, bool)> = tx
+        let existing: Option<(bool, bool, bool)> = tx
             .query_row(
-                "SELECT is_current, in_failover_queue FROM providers WHERE id = ?1 AND app_type = ?2",
+                "SELECT is_current, in_failover_queue, is_public FROM providers WHERE id = ?1 AND app_type = ?2",
                 params![provider.id, app_type],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .ok();
 
         let is_update = existing.is_some();
-        let (is_current, in_failover_queue) =
-            existing.unwrap_or((false, provider.in_failover_queue));
+        let (is_current, in_failover_queue, _existing_is_public) =
+            existing.unwrap_or((false, provider.in_failover_queue, provider.is_public));
+        let is_public = provider.is_public;
 
         if is_update {
             tx.execute(
@@ -238,8 +293,9 @@ impl Database {
                     icon_color = ?9,
                     meta = ?10,
                     is_current = ?11,
-                    in_failover_queue = ?12
-                WHERE id = ?13 AND app_type = ?14",
+                    in_failover_queue = ?12,
+                    is_public = ?13
+                WHERE id = ?14 AND app_type = ?15",
                 params![
                     provider.name,
                     serde_json::to_string(&provider.settings_config).map_err(|e| {
@@ -257,6 +313,7 @@ impl Database {
                     )))?,
                     is_current,
                     in_failover_queue,
+                    is_public,
                     provider.id,
                     app_type,
                 ],
@@ -266,8 +323,8 @@ impl Database {
             tx.execute(
                 "INSERT INTO providers (
                     id, app_type, name, settings_config, website_url, category,
-                    created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    created_at, sort_index, notes, icon, icon_color, meta, is_current, in_failover_queue, is_public
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     provider.id,
                     app_type,
@@ -285,6 +342,7 @@ impl Database {
                         .map_err(|e| AppError::Database(format!("Failed to serialize meta: {e}")))?,
                     is_current,
                     in_failover_queue,
+                    is_public,
                 ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -525,6 +583,7 @@ impl Database {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+            is_public: false,
         }))
     }
 }

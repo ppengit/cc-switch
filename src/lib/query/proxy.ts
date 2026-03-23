@@ -218,29 +218,6 @@ export function useUpdateAppProxyConfig() {
   });
 }
 
-export function useSessionRoutingMasterEnabled() {
-  return useQuery({
-    queryKey: ["sessionRoutingMasterEnabled"],
-    queryFn: () => proxyApi.getSessionRoutingMasterEnabled(),
-  });
-}
-
-export function useSetSessionRoutingMasterEnabled() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: (enabled: boolean) =>
-      proxyApi.setSessionRoutingMasterEnabled(enabled),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["sessionRoutingMasterEnabled"],
-      });
-      queryClient.invalidateQueries({ queryKey: ["sessionProviderBindings"] });
-      queryClient.invalidateQueries({ queryKey: ["providerSessionOccupancy"] });
-    },
-  });
-}
-
 export function useSessionProviderBindings(
   appType: string,
   idleTtlMinutes?: number,
@@ -364,6 +341,38 @@ export function useRemoveSessionProviderBinding() {
           variables.appType,
           variables.sessionId,
         ],
+      });
+    },
+  });
+}
+
+export function useReleaseProviderSessionBindings() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      providerId,
+      idleTtlMinutes,
+    }: {
+      appType: string;
+      providerId: string;
+      idleTtlMinutes?: number;
+    }) =>
+      proxyApi.releaseProviderSessionBindings(
+        appType,
+        providerId,
+        idleTtlMinutes,
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["sessionProviderBindings", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["providerSessionOccupancy", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
       });
     },
   });

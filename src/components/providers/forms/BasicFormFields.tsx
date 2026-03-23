@@ -9,6 +9,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import {
@@ -196,6 +197,37 @@ export function BasicFormFields({
                 }}
               />
             </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name="isPublic"
+        render={({ field }) => (
+          <FormItem className="rounded-lg border border-border/60 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-1">
+                <FormLabel>
+                  {t("provider.publicSwitch", {
+                    defaultValue: "是否公共",
+                  })}
+                </FormLabel>
+                <p className="text-xs text-muted-foreground">
+                  {t("provider.publicHint", {
+                    defaultValue:
+                      "标记为公共供应商。开启“公共优先”后，系统会优先在路由和故障转移中选择这些供应商。",
+                  })}
+                </p>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value === true}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+            </div>
             <FormMessage />
           </FormItem>
         )}

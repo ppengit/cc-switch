@@ -204,11 +204,11 @@ fn get_live_config_files_for_app(app_type: &AppType) -> Vec<LiveConfigFileEntry>
             build_live_config_file_entry("auth.json", codex_config::get_codex_auth_path()),
         ],
         AppType::Gemini => vec![
-            build_live_config_file_entry(".env", crate::gemini_config::get_gemini_env_path()),
             build_live_config_file_entry(
                 "settings.json",
                 crate::gemini_config::get_gemini_settings_path(),
             ),
+            build_live_config_file_entry(".env", crate::gemini_config::get_gemini_env_path()),
         ],
         AppType::OpenCode => vec![build_live_config_file_entry(
             "opencode.json",
@@ -782,6 +782,40 @@ fn build_app_config_preview_internal(
     })
 }
 
+fn build_current_live_config_snapshot_internal(
+    state: &crate::store::AppState,
+    app_type: AppType,
+) -> Result<AppConfigPreview, AppError> {
+    let app = app_type.as_str().to_string();
+    let current_provider_id =
+        crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+    let current_provider_name = current_provider_id.as_deref().and_then(|id| {
+        state
+            .db
+            .get_provider_by_id(id, app_type.as_str())
+            .ok()
+            .flatten()
+            .map(|provider| provider.name)
+    });
+
+    let files = get_live_config_files_for_app(&app_type)
+        .into_iter()
+        .map(|entry| {
+            let path = PathBuf::from(&entry.path);
+            let actual_text = std::fs::read_to_string(&path).unwrap_or_default();
+            build_config_preview_file(&entry.label, path, actual_text.clone(), actual_text)
+        })
+        .collect();
+
+    Ok(AppConfigPreview {
+        app,
+        current_provider_id,
+        current_provider_name,
+        files,
+        note: Some("直接显示当前 live 配置文件内容，可在此编辑并保存。".to_string()),
+    })
+}
+
 fn validate_template_for_app(
     state: &crate::store::AppState,
     app_type: &AppType,
@@ -910,6 +944,16 @@ pub async fn get_app_config_preview(
 ) -> Result<AppConfigPreview, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     build_app_config_preview_internal(state.inner(), app_type).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_current_live_config_snapshot(
+    app: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<AppConfigPreview, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    build_current_live_config_snapshot_internal(state.inner(), app_type)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

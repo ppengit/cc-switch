@@ -256,18 +256,22 @@ fn prune_sessions_index(
             index_path.display()
         )
     })?;
-    let mut index: serde_json::Map<String, Value> =
-        serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "Failed to parse OpenClaw sessions index {}: {e}",
-                index_path.display()
-            )
-        })?;
+    let mut index = parse_sessions_index_map(&content).map_err(|e| {
+        format!(
+            "Failed to parse OpenClaw sessions index {}: {e}",
+            index_path.display()
+        )
+    })?;
 
-    let source = source_path.to_string_lossy();
+    let source = normalize_index_path(source_path.to_string_lossy().as_ref());
     index.retain(|_, entry| {
         let same_id = entry.get("sessionId").and_then(Value::as_str) == Some(session_id);
-        let same_file = entry.get("sessionFile").and_then(Value::as_str) == Some(source.as_ref());
+        let same_file = entry
+            .get("sessionFile")
+            .and_then(Value::as_str)
+            .map(normalize_index_path)
+            .as_deref()
+            == Some(source.as_str());
         !(same_id || same_file)
     });
 
@@ -277,6 +281,19 @@ fn prune_sessions_index(
             index_path.display()
         )
     })
+}
+
+fn normalize_index_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn parse_sessions_index_map(
+    content: &str,
+) -> Result<serde_json::Map<String, Value>, serde_json::Error> {
+    match serde_json::from_str(content) {
+        Ok(map) => Ok(map),
+        Err(_) => serde_json::from_str(&normalize_index_path(content)),
+    }
 }
 
 #[cfg(test)]

@@ -4,12 +4,18 @@ import type { McpServer, Provider, Settings } from "@/types";
 import type { AppProxyConfig } from "@/types/proxy";
 import {
   addProvider,
+  addToFailoverQueueState,
   deleteProvider,
   getAppProxyConfig,
+  getAutoFailoverEnabledState,
   getCurrentProviderId,
+  getAvailableProvidersForFailover,
+  getFailoverQueue,
   getProviderDefaultTemplateState,
+  getProviderHealthState,
   getProviderSessionOccupancy,
   getProviders,
+  releaseProviderSessionBindings,
   getSessionMessages,
   getSessionProviderBinding,
   getSessionRoutingMasterEnabledState,
@@ -17,8 +23,10 @@ import {
   listProviders,
   listSessionProviderBindings,
   removeSessionProviderBinding,
+  removeFromFailoverQueueState,
   resetProviderState,
   setAppProxyConfig,
+  setAutoFailoverEnabledState,
   setCurrentProviderId,
   setProviderDefaultTemplateState,
   setSessionProviderBindingPin,
@@ -466,6 +474,17 @@ export const handlers = [
   ),
 
   http.post(
+    `${TAURI_ENDPOINT}/release_provider_session_bindings`,
+    async ({ request }) => {
+      const { appType, providerId } = await withJson<{
+        appType: AppId;
+        providerId: string;
+      }>(request);
+      return success(releaseProviderSessionBindings(appType, providerId));
+    },
+  ),
+
+  http.post(
     `${TAURI_ENDPOINT}/get_provider_session_occupancy`,
     async ({ request }) => {
       const { appType } = await withJson<{ appType: AppId }>(request);
@@ -504,17 +523,45 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
 
   // Failover / circuit breaker defaults
-  http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, () =>
-    success(false),
+  http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getAutoFailoverEnabledState(appType));
+  }),
+  http.post(`${TAURI_ENDPOINT}/get_failover_queue`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getFailoverQueue(appType));
+  }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_available_providers_for_failover`,
+    async ({ request }) => {
+      const { appType } = await withJson<{ appType: AppId }>(request);
+      return success(getAvailableProvidersForFailover(appType));
+    },
   ),
-  http.post(`${TAURI_ENDPOINT}/get_failover_queue`, () => success([])),
-  http.post(`${TAURI_ENDPOINT}/get_available_providers_for_failover`, () =>
-    success([]),
-  ),
-  http.post(`${TAURI_ENDPOINT}/add_to_failover_queue`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/add_to_failover_queue`, async ({ request }) => {
+    const { appType, providerId } = await withJson<{
+      appType: AppId;
+      providerId: string;
+    }>(request);
+    addToFailoverQueueState(appType, providerId);
+    return success(true);
+  }),
+  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, async ({ request }) => {
+    const { appType, providerId } = await withJson<{
+      appType: AppId;
+      providerId: string;
+    }>(request);
+    removeFromFailoverQueueState(appType, providerId);
+    return success(true);
+  }),
+  http.post(`${TAURI_ENDPOINT}/set_auto_failover_enabled`, async ({ request }) => {
+    const { appType, enabled } = await withJson<{
+      appType: AppId;
+      enabled: boolean;
+    }>(request);
+    setAutoFailoverEnabledState(appType, enabled === true);
+    return success(true);
+  }),
   http.post(`${TAURI_ENDPOINT}/reorder_failover_queue`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/set_failover_item_enabled`, () => success(true)),
 
@@ -530,18 +577,13 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/update_circuit_breaker_config`, () =>
     success(true),
   ),
-  http.post(`${TAURI_ENDPOINT}/get_provider_health`, () =>
-    success({
-      provider_id: "mock-provider",
-      app_type: "claude",
-      is_healthy: true,
-      consecutive_failures: 0,
-      last_success_at: null,
-      last_failure_at: null,
-      last_error: null,
-      updated_at: new Date().toISOString(),
-    }),
-  ),
+  http.post(`${TAURI_ENDPOINT}/get_provider_health`, async ({ request }) => {
+    const { providerId, appType } = await withJson<{
+      providerId: string;
+      appType: AppId;
+    }>(request);
+    return success(getProviderHealthState(appType, providerId));
+  }),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, () => success(null)),
 ];

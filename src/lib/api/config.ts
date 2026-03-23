@@ -120,6 +120,14 @@ export async function getAppConfigPreview(
   return invoke<AppConfigPreview>("get_app_config_preview", { app: appType });
 }
 
+export async function getCurrentLiveConfigSnapshot(
+  appType: Exclude<AppType, "omo" | "omo_slim">,
+): Promise<AppConfigPreview> {
+  return invoke<AppConfigPreview>("get_current_live_config_snapshot", {
+    app: appType,
+  });
+}
+
 export async function getConfigHealthReport(): Promise<AppConfigHealthReport[]> {
   return invoke<AppConfigHealthReport[]>("get_config_health_report");
 }

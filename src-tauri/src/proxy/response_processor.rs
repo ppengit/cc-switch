@@ -300,9 +300,6 @@ fn create_usage_collector(
     let session_routing_active = ctx.session_routing_active;
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
-        if !logging_enabled {
-            return;
-        }
         if let Some(usage) = stream_parser(&events) {
             let model = model_extractor(&events, &request_model);
             let latency_ms = start_time.elapsed().as_millis() as u64;
@@ -326,6 +323,7 @@ fn create_usage_collector(
                     status_code,
                     Some(session_id),
                     session_routing_active,
+                    logging_enabled,
                 )
                 .await;
             });
@@ -351,6 +349,7 @@ fn create_usage_collector(
                     status_code,
                     Some(session_id),
                     session_routing_active,
+                    logging_enabled,
                 )
                 .await;
             });
@@ -369,12 +368,11 @@ fn spawn_log_usage(
     status_code: u16,
     is_streaming: bool,
 ) {
-    // Check enable_logging before spawning the log task
-    if let Ok(config) = state.config.try_read() {
-        if !config.enable_logging {
-            return;
-        }
-    }
+    let logging_enabled = state
+        .config
+        .try_read()
+        .map(|config| config.enable_logging)
+        .unwrap_or(true);
 
     let state = state.clone();
     let provider_id = ctx.provider.id.clone();
@@ -399,6 +397,7 @@ fn spawn_log_usage(
             status_code,
             Some(session_id),
             session_routing_active,
+            logging_enabled,
         )
         .await;
     });
@@ -419,48 +418,140 @@ async fn log_usage_internal(
     status_code: u16,
     session_id: Option<String>,
     session_routing_active: bool,
+    logging_enabled: bool,
 ) {
     use super::usage::logger::UsageLogger;
 
-    let logger = UsageLogger::new(&state.db);
-    let (multiplier, pricing_model_source) =
-        logger.resolve_pricing_config(provider_id, app_type).await;
-    let pricing_model = if pricing_model_source == "request" {
-        request_model
-    } else {
-        model
-    };
+    let zero_token_anomaly = is_zero_token_success_anomaly(status_code, &usage);
+    let session_label = session_id.as_deref().unwrap_or("none").to_string();
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .unwrap_or_else(|error| {
+            log::warn!("[{app_type}] 读取代理配置失败，0/0 token 异常检测回退默认关闭: {error}");
+            crate::proxy::types::AppProxyConfig {
+                app_type: app_type.to_string(),
+                enabled: false,
+                force_model_enabled: false,
+                force_model: String::new(),
+                auto_failover_enabled: false,
+                max_retries: 3,
+                streaming_first_byte_timeout: 60,
+                streaming_idle_timeout: 120,
+                non_streaming_timeout: 600,
+                circuit_failure_threshold: 4,
+                circuit_success_threshold: 2,
+                circuit_timeout_seconds: 60,
+                circuit_error_rate_threshold: 0.6,
+                circuit_min_requests: 10,
+                zero_token_anomaly_enabled: false,
+                zero_token_anomaly_threshold: 3,
+                session_routing_enabled: false,
+                session_routing_strategy: "priority".to_string(),
+                session_default_provider_id: String::new(),
+                public_provider_priority_enabled: false,
+                session_max_sessions_per_provider: 1,
+                session_allow_shared_when_exhausted: true,
+                session_idle_ttl_minutes: 30,
+            }
+        });
 
-    let request_id = uuid::Uuid::new_v4().to_string();
-
-    log::debug!(
-        "[{app_type}] 记录请求日志: id={request_id}, provider={provider_id}, model={model}, streaming={is_streaming}, status={status_code}, latency_ms={latency_ms}, first_token_ms={first_token_ms:?}, session={}, input={}, output={}, cache_read={}, cache_creation={}",
-        session_id.as_deref().unwrap_or("none"),
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_tokens,
-        usage.cache_creation_tokens
-    );
-
-    if let Err(e) = logger.log_with_calculation(
-        request_id,
-        provider_id.to_string(),
-        app_type.to_string(),
-        model.to_string(),
-        request_model.to_string(),
-        pricing_model.to_string(),
-        usage,
-        multiplier,
-        latency_ms,
-        first_token_ms,
-        status_code,
-        session_id,
-        session_routing_active,
-        None, // provider_type
-        is_streaming,
-    ) {
-        log::warn!("[USG-001] 记录使用量失败: {e}");
+    if zero_token_anomaly && app_config.zero_token_anomaly_enabled {
+        let threshold = app_config.zero_token_anomaly_threshold.max(1);
+        let anomaly_message = format!(
+            "upstream returned successful response with zero token usage (streaming={is_streaming}, session={session_label})"
+        );
+        match state
+            .db
+            .increment_zero_token_anomaly_streak(
+                provider_id,
+                app_type,
+                Some(anomaly_message.clone()),
+            )
+            .await
+        {
+            Ok(streak) => {
+                log::warn!(
+                    "[{app_type}] 检测到 0/0 token 异常成功响应: provider={provider_id}, session={session_label}, model={model}, request_model={request_model}, streak={streak}/{threshold}, streaming={is_streaming}"
+                );
+                if streak >= threshold {
+                    if let Err(error) = state
+                        .provider_router
+                        .handle_zero_token_anomaly_threshold_hit(
+                            provider_id,
+                            app_type,
+                            anomaly_message,
+                        )
+                        .await
+                    {
+                        log::warn!(
+                            "[{app_type}] 处理 0/0 token 异常阈值命中失败: provider={provider_id}, error={error}"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "[{app_type}] 更新 0/0 token 异常连续计数失败: provider={provider_id}, error={error}"
+                );
+            }
+        }
+    } else if let Err(error) = state
+        .db
+        .reset_zero_token_anomaly_streak(provider_id, app_type)
+        .await
+    {
+        log::warn!(
+            "[{app_type}] 重置 0/0 token 异常连续计数失败: provider={provider_id}, error={error}"
+        );
     }
+
+    if logging_enabled {
+        let logger = UsageLogger::new(&state.db);
+        let (multiplier, pricing_model_source) =
+            logger.resolve_pricing_config(provider_id, app_type).await;
+        let pricing_model = if pricing_model_source == "request" {
+            request_model
+        } else {
+            model
+        };
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+
+        log::debug!(
+            "[{app_type}] 记录请求日志: id={request_id}, provider={provider_id}, model={model}, streaming={is_streaming}, status={status_code}, latency_ms={latency_ms}, first_token_ms={first_token_ms:?}, session={}, input={}, output={}, cache_read={}, cache_creation={}",
+            session_id.as_deref().unwrap_or("none"),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens
+        );
+
+        if let Err(e) = logger.log_with_calculation(
+            request_id,
+            provider_id.to_string(),
+            app_type.to_string(),
+            model.to_string(),
+            request_model.to_string(),
+            pricing_model.to_string(),
+            usage,
+            multiplier,
+            latency_ms,
+            first_token_ms,
+            status_code,
+            session_id,
+            session_routing_active,
+            None, // provider_type
+            is_streaming,
+        ) {
+            log::warn!("[USG-001] 记录使用量失败: {e}");
+        }
+    }
+}
+
+fn is_zero_token_success_anomaly(status_code: u16, usage: &TokenUsage) -> bool {
+    (200..300).contains(&status_code) && usage.input_tokens == 0 && usage.output_tokens == 0
 }
 
 /// 创建带日志记录和超时控制的透传流
@@ -684,6 +775,7 @@ mod tests {
             200,
             None,
             false,
+            true,
         )
         .await;
 
@@ -744,6 +836,7 @@ mod tests {
             200,
             None,
             false,
+            true,
         )
         .await;
 
@@ -765,6 +858,194 @@ mod tests {
             Decimal::from_str(&total_cost).unwrap(),
             Decimal::from_str("1.5").unwrap()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_zero_token_success_only_trips_after_threshold_and_reassigns_session_binding(
+    ) -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
+        let app_type = "codex";
+
+        insert_provider(&db, "provider-a", app_type, ProviderMeta::default())?;
+        insert_provider(&db, "provider-b", app_type, ProviderMeta::default())?;
+
+        let mut config = db.get_proxy_config_for_app(app_type).await?;
+        config.session_routing_enabled = true;
+        config.session_routing_strategy = "priority".to_string();
+        config.session_idle_ttl_minutes = 30;
+        config.zero_token_anomaly_enabled = true;
+        config.zero_token_anomaly_threshold = 2;
+        db.update_proxy_config_for_app(config).await?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding(app_type, "session-1", "provider-a", true, now_ms)?;
+
+        let state = build_state(db.clone());
+        log_usage_internal(
+            &state,
+            "provider-a",
+            app_type,
+            "resp-model",
+            "req-model",
+            TokenUsage::default(),
+            10,
+            None,
+            false,
+            200,
+            Some("session-1".to_string()),
+            true,
+            true,
+        )
+        .await;
+
+        let health_before = db.get_provider_health("provider-a", app_type).await?;
+        assert_eq!(health_before.zero_token_anomaly_streak, 1);
+        assert_eq!(health_before.consecutive_failures, 0);
+        assert!(health_before.is_healthy);
+
+        let binding_before = db
+            .get_session_provider_binding(app_type, "session-1", 30)?
+            .expect("binding should exist before threshold");
+        assert_eq!(binding_before.provider_id, "provider-a");
+
+        log_usage_internal(
+            &state,
+            "provider-a",
+            app_type,
+            "resp-model",
+            "req-model",
+            TokenUsage::default(),
+            12,
+            None,
+            false,
+            200,
+            Some("session-1".to_string()),
+            true,
+            true,
+        )
+        .await;
+
+        let health = db.get_provider_health("provider-a", app_type).await?;
+        assert_eq!(health.zero_token_anomaly_streak, 0);
+        assert_eq!(health.consecutive_failures, 1);
+        assert!(!health.is_healthy);
+        assert!(health
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("zero token usage"));
+
+        let binding = db
+            .get_session_provider_binding(app_type, "session-1", 30)?
+            .expect("binding should exist");
+        assert_eq!(binding.provider_id, "provider-b");
+        assert!(binding.pinned);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nonzero_success_does_not_mark_provider_degraded() -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
+        let app_type = "codex";
+
+        insert_provider(&db, "provider-ok", app_type, ProviderMeta::default())?;
+
+        let state = build_state(db.clone());
+        let usage = TokenUsage {
+            input_tokens: 128,
+            output_tokens: 64,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            model: None,
+        };
+
+        log_usage_internal(
+            &state,
+            "provider-ok",
+            app_type,
+            "resp-model",
+            "req-model",
+            usage,
+            10,
+            None,
+            false,
+            200,
+            Some("session-ok".to_string()),
+            true,
+            true,
+        )
+        .await;
+
+        let health = db.get_provider_health("provider-ok", app_type).await?;
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.zero_token_anomaly_streak, 0);
+        assert!(health.is_healthy);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_zero_token_anomaly_still_works_when_logging_disabled() -> Result<(), AppError> {
+        let db = Arc::new(Database::memory()?);
+        let app_type = "codex";
+
+        insert_provider(&db, "provider-a", app_type, ProviderMeta::default())?;
+        insert_provider(&db, "provider-b", app_type, ProviderMeta::default())?;
+
+        let mut config = db.get_proxy_config_for_app(app_type).await?;
+        config.session_routing_enabled = true;
+        config.session_routing_strategy = "priority".to_string();
+        config.session_idle_ttl_minutes = 30;
+        config.zero_token_anomaly_enabled = true;
+        config.zero_token_anomaly_threshold = 1;
+        db.update_proxy_config_for_app(config).await?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.upsert_session_provider_binding(app_type, "session-no-log", "provider-a", true, now_ms)?;
+
+        let state = build_state(db.clone());
+        {
+            let mut proxy_config = state.config.write().await;
+            proxy_config.enable_logging = false;
+        }
+
+        log_usage_internal(
+            &state,
+            "provider-a",
+            app_type,
+            "resp-model",
+            "req-model",
+            TokenUsage::default(),
+            10,
+            None,
+            false,
+            200,
+            Some("session-no-log".to_string()),
+            true,
+            false,
+        )
+        .await;
+
+        let health = db.get_provider_health("provider-a", app_type).await?;
+        assert_eq!(health.consecutive_failures, 1);
+        assert!(health.zero_token_anomaly_streak == 0);
+        assert!(!health.is_healthy);
+
+        let binding = db
+            .get_session_provider_binding(app_type, "session-no-log", 30)?
+            .expect("binding should exist");
+        assert_eq!(binding.provider_id, "provider-b");
+
+        let conn = crate::database::lock_conn!(db.conn);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        assert_eq!(count, 0);
+
         Ok(())
     }
 }

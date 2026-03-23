@@ -366,6 +366,9 @@ export interface UpdateTomlCommonConfigResult {
 
 const CODEX_PROVIDER_CONFIG_PLACEHOLDER = "{{provider.config}}";
 const CODEX_MCP_CONFIG_PLACEHOLDER = "{{mcp.config}}";
+const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `{{provider.config}}
+
+{{mcp.config}}`;
 
 const buildCommonSnippetBlock = (snippetString: string) => {
   const normalizedSnippet = normalizeLineEndings(snippetString).trim();
@@ -507,6 +510,27 @@ export const validateCodexCommonConfigSnippet = (
   }
 
   return "";
+};
+
+export const getDefaultCodexCommonConfigSnippet = () =>
+  DEFAULT_CODEX_COMMON_CONFIG_SNIPPET;
+
+export const normalizeCodexCommonConfigSnippetForEditing = (
+  snippetString: string | null | undefined,
+): string => {
+  const trimmed = (snippetString ?? "").trim();
+  if (!trimmed) {
+    return DEFAULT_CODEX_COMMON_CONFIG_SNIPPET;
+  }
+
+  if (!trimmed.includes(CODEX_PROVIDER_CONFIG_PLACEHOLDER)) {
+    const migrated = `${trimmed}\n\n${DEFAULT_CODEX_COMMON_CONFIG_SNIPPET}`;
+    if (!validateCodexCommonConfigSnippet(migrated)) {
+      return migrated;
+    }
+  }
+
+  return snippetString ?? "";
 };
 
 // 将通用配置片段写入/移除 TOML 配置

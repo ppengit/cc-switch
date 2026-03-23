@@ -1913,6 +1913,21 @@ impl ProxyService {
         }
         Ok(())
     }
+
+    /// 读取指定 Provider 的运行时熔断器状态
+    pub async fn get_provider_circuit_breaker_stats(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<Option<crate::proxy::CircuitBreakerStats>, String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return Ok(server
+                .get_circuit_breaker_stats(provider_id, app_type)
+                .await);
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

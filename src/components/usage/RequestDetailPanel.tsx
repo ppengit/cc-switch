@@ -43,13 +43,13 @@ export function RequestDetailPanel({
   const request = requestData ?? initialRequest ?? null;
   const sessionMeta =
     request?.sessionId != null
-      ? sessions.find(
+      ? (sessions.find(
           (session) =>
             session.sessionId === request.sessionId &&
             session.providerId === request.appType,
         ) ??
         sessions.find((session) => session.sessionId === request.sessionId) ??
-        null
+        null)
       : null;
   const sessionTitle = sessionMeta ? formatSessionTitle(sessionMeta) : "";
   const sessionProjectName = sessionMeta
@@ -172,6 +172,13 @@ export function RequestDetailPanel({
                   <span className="font-medium">
                     {request.providerName || t("usage.unknownProvider", "未知")}
                   </span>
+                  {request.providerIsPublic && (
+                    <span className="ml-2 rounded border border-border/70 px-1 py-0 text-[10px] leading-none text-muted-foreground">
+                      {t("provider.publicTag", {
+                        defaultValue: "public",
+                      })}
+                    </span>
+                  )}
                   <span className="ml-2 font-mono text-xs text-muted-foreground">
                     {request.providerId}
                   </span>

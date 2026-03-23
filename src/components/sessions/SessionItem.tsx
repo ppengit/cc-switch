@@ -24,6 +24,7 @@ interface SessionItemProps {
   onSelect: (key: string) => void;
   bindingProviderName?: string | null;
   bindingProviderId?: string | null;
+  bindingProviderIsPublic?: boolean | null;
   bindingPinned?: boolean | null;
 }
 
@@ -33,6 +34,7 @@ export function SessionItem({
   onSelect,
   bindingProviderName,
   bindingProviderId,
+  bindingProviderIsPublic,
   bindingPinned,
 }: SessionItemProps) {
   const { t } = useTranslation();
@@ -113,6 +115,14 @@ export function SessionItem({
           >
             {associatedProvider}
           </span>
+          {bindingProviderIsPublic && (
+            <Badge
+              variant="outline"
+              className="h-4 px-1.5 text-[10px] leading-none"
+            >
+              {t("provider.publicTag", { defaultValue: "public" })}
+            </Badge>
+          )}
           <Badge
             variant={bindingPinned ? "default" : "secondary"}
             className="h-4 px-1.5 text-[10px] leading-none"

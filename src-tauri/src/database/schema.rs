@@ -32,6 +32,7 @@ impl Database {
                 meta TEXT NOT NULL DEFAULT '{}',
                 is_current BOOLEAN NOT NULL DEFAULT 0,
                 in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+                is_public BOOLEAN NOT NULL DEFAULT 0,
                 PRIMARY KEY (id, app_type)
             )",
             [],
@@ -120,6 +121,8 @@ impl Database {
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
             circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60, circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+            zero_token_anomaly_enabled INTEGER NOT NULL DEFAULT 0,
+            zero_token_anomaly_threshold INTEGER NOT NULL DEFAULT 3,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             force_model_enabled INTEGER NOT NULL DEFAULT 0,
@@ -127,6 +130,7 @@ impl Database {
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
             session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
             session_default_provider_id TEXT NOT NULL DEFAULT '',
+            public_provider_priority_enabled INTEGER NOT NULL DEFAULT 0,
             session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
             session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
             session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
@@ -208,6 +212,7 @@ impl Database {
             provider_id TEXT NOT NULL, app_type TEXT NOT NULL, is_healthy INTEGER NOT NULL DEFAULT 1,
             consecutive_failures INTEGER NOT NULL DEFAULT 0, last_success_at TEXT, last_failure_at TEXT,
             last_error TEXT, updated_at TEXT NOT NULL,
+            zero_token_anomaly_streak INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (provider_id, app_type),
             FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
         )", []).map_err(|e| AppError::Database(e.to_string()))?;
@@ -294,6 +299,33 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_logs_status ON proxy_request_logs(status_code)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 10.1 Usage Daily Rollups 表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS usage_daily_rollups (
+                date TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                avg_latency_ms REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, app_type, provider_id, model)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_rollups_app_date
+             ON usage_daily_rollups(app_type, date)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -393,6 +425,18 @@ impl Database {
             "ALTER TABLE proxy_config ADD COLUMN session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30",
             [],
         );
+        let _ = Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "zero_token_anomaly_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        );
+        let _ = Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "zero_token_anomaly_threshold",
+            "INTEGER NOT NULL DEFAULT 3",
+        );
         if Self::table_exists(conn, "proxy_config")? {
             let _ = Self::add_column_if_missing(
                 conn,
@@ -407,6 +451,12 @@ impl Database {
                 "TEXT NOT NULL DEFAULT ''",
             );
         }
+        let _ = Self::add_column_if_missing(
+            conn,
+            "provider_health",
+            "zero_token_anomaly_streak",
+            "INTEGER NOT NULL DEFAULT 0",
+        );
 
         // 兼容：若旧版 proxy_config 仍为单例结构（无 app_type），则在启动时直接转换为 per-app 结构
         // 说明：user_version=2 时不会再触发 v1->v2 迁移，但新代码查询依赖 app_type 列。
@@ -422,6 +472,13 @@ impl Database {
             "providers",
             "in_failover_queue",
             "BOOLEAN NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(conn, "providers", "is_public", "BOOLEAN NOT NULL DEFAULT 0")?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "public_provider_priority_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
 
         // 删除旧的 failover_queue 表（如果存在）
@@ -516,6 +573,13 @@ impl Database {
                         );
                         Self::migrate_v8_to_v9(conn)?;
                         Self::set_user_version(conn, 9)?;
+                    }
+                    9 => {
+                        log::info!(
+                            "Migrating database from v9 to v10 (add public provider routing support)"
+                        );
+                        Self::migrate_v9_to_v10(conn)?;
+                        Self::set_user_version(conn, 10)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -876,6 +940,8 @@ impl Database {
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
             circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60, circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+            zero_token_anomaly_enabled INTEGER NOT NULL DEFAULT 0,
+            zero_token_anomaly_threshold INTEGER NOT NULL DEFAULT 3,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             session_routing_enabled INTEGER NOT NULL DEFAULT 0,
@@ -892,8 +958,9 @@ impl Database {
                 "INSERT INTO proxy_config_new (app_type, proxy_enabled, listen_address, listen_port, enable_logging,
                  enabled, auto_failover_enabled, max_retries, streaming_first_byte_timeout, streaming_idle_timeout,
                  non_streaming_timeout, circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                 circuit_error_rate_threshold, circuit_min_requests)
-                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 circuit_error_rate_threshold, circuit_min_requests, zero_token_anomaly_enabled,
+                 zero_token_anomaly_threshold)
+                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 3)",
                 rusqlite::params![app, old_config.0, old_config.1, old_config.3,
                     if takeover { 1 } else { 0 }, if failover { 1 } else { 0 },
                     retries, fb, idle, old_config.6, cb_f, cb_s, cb_t, cb_r, cb_m]
@@ -1245,6 +1312,18 @@ impl Database {
         Self::add_column_if_missing(
             conn,
             "proxy_config",
+            "zero_token_anomaly_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "zero_token_anomaly_threshold",
+            "INTEGER NOT NULL DEFAULT 3",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
             "default_cost_multiplier",
             "TEXT NOT NULL DEFAULT '1'",
         )?;
@@ -1318,10 +1397,13 @@ impl Database {
                 circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
                 circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
                 circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                zero_token_anomaly_enabled INTEGER NOT NULL DEFAULT 0,
+                zero_token_anomaly_threshold INTEGER NOT NULL DEFAULT 3,
                 default_cost_multiplier TEXT NOT NULL DEFAULT '1',
                 pricing_model_source TEXT NOT NULL DEFAULT 'response',
                 session_routing_enabled INTEGER NOT NULL DEFAULT 0,
                 session_routing_strategy TEXT NOT NULL DEFAULT 'priority',
+                public_provider_priority_enabled INTEGER NOT NULL DEFAULT 0,
                 session_max_sessions_per_provider INTEGER NOT NULL DEFAULT 1,
                 session_allow_shared_when_exhausted INTEGER NOT NULL DEFAULT 1,
                 session_idle_ttl_minutes INTEGER NOT NULL DEFAULT 30,
@@ -1338,18 +1420,22 @@ impl Database {
                 enabled, auto_failover_enabled, max_retries, streaming_first_byte_timeout,
                 streaming_idle_timeout, non_streaming_timeout, circuit_failure_threshold,
                 circuit_success_threshold, circuit_timeout_seconds, circuit_error_rate_threshold,
-                circuit_min_requests, default_cost_multiplier, pricing_model_source,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes, created_at, updated_at
+                circuit_min_requests, zero_token_anomaly_enabled, zero_token_anomaly_threshold,
+                default_cost_multiplier, pricing_model_source,
+                session_routing_enabled, session_routing_strategy, public_provider_priority_enabled,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted,
+                session_idle_ttl_minutes, created_at, updated_at
             )
             SELECT
                 app_type, proxy_enabled, listen_address, listen_port, enable_logging,
                 enabled, auto_failover_enabled, max_retries, streaming_first_byte_timeout,
                 streaming_idle_timeout, non_streaming_timeout, circuit_failure_threshold,
                 circuit_success_threshold, circuit_timeout_seconds, circuit_error_rate_threshold,
-                circuit_min_requests, default_cost_multiplier, pricing_model_source,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes, created_at, updated_at
+                circuit_min_requests, zero_token_anomaly_enabled, zero_token_anomaly_threshold,
+                default_cost_multiplier, pricing_model_source,
+                session_routing_enabled, session_routing_strategy, 0,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted,
+                session_idle_ttl_minutes, created_at, updated_at
             FROM proxy_config
             WHERE app_type IN ('claude','codex','gemini','opencode','openclaw')",
             [],
@@ -1464,6 +1550,28 @@ impl Database {
         .map_err(|e| {
             AppError::Database(format!("backfill session_default_provider_id failed: {e}"))
         })?;
+
+        Ok(())
+    }
+
+    fn migrate_v9_to_v10(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "providers")? {
+            Self::add_column_if_missing(
+                conn,
+                "providers",
+                "is_public",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+
+        if Self::table_exists(conn, "proxy_config")? {
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "public_provider_priority_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
 
         Ok(())
     }

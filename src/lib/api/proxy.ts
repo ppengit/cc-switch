@@ -4,6 +4,7 @@ import type {
   GlobalProxyConfig,
   ProviderSessionOccupancy,
   ProxyConfig,
+  ReleaseProviderSessionBindingsResult,
   ProxyServerInfo,
   ProxyStatus,
   ProxyTakeoverStatus,
@@ -73,14 +74,6 @@ export const proxyApi = {
     return invoke("update_proxy_config_for_app", { config });
   },
 
-  async getSessionRoutingMasterEnabled(): Promise<boolean> {
-    return invoke("get_session_routing_master_enabled");
-  },
-
-  async setSessionRoutingMasterEnabled(enabled: boolean): Promise<void> {
-    return invoke("set_session_routing_master_enabled", { enabled });
-  },
-
   async listSessionProviderBindings(
     appType: string,
     idleTtlMinutes?: number,
@@ -136,6 +129,18 @@ export const proxyApi = {
     return invoke("remove_session_provider_binding", {
       appType,
       sessionId,
+    });
+  },
+
+  async releaseProviderSessionBindings(
+    appType: string,
+    providerId: string,
+    idleTtlMinutes?: number,
+  ): Promise<ReleaseProviderSessionBindingsResult> {
+    return invoke("release_provider_session_bindings", {
+      appType,
+      providerId,
+      idleTtlMinutes,
     });
   },
 

@@ -299,6 +299,11 @@ impl CircuitBreaker {
         self.transition_to_closed().await;
     }
 
+    pub async fn force_open(&self) {
+        log::warn!("[{}] 熔断器强制打开 → Open", log_cb::TRIGGERED_FAILURES);
+        self.transition_to_open().await;
+    }
+
     fn allow_half_open_probe(&self) -> AllowResult {
         // 半开状态限流：只允许有限请求通过进行探测
         let max_half_open_requests = 1u32;

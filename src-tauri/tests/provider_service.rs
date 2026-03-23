@@ -855,7 +855,7 @@ fn provider_service_delete_claude_removes_provider_files() {
 }
 
 #[test]
-fn provider_service_delete_current_provider_returns_error() {
+fn provider_service_delete_current_provider_switches_to_fallback() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -877,11 +877,72 @@ fn provider_service_delete_current_provider_returns_error() {
                 None,
             ),
         );
+        manager.providers.insert(
+            "next".to_string(),
+            Provider::with_id(
+                "next".to_string(),
+                "Next".to_string(),
+                json!({
+                    "env": { "ANTHROPIC_API_KEY": "next-key" }
+                }),
+                None,
+            ),
+        );
     }
 
     let app_state = create_test_state_with_config(&config).expect("create test state");
 
-    let err = ProviderService::delete(&app_state, AppType::Claude, "keep")
+    ProviderService::delete(&app_state, AppType::Claude, "keep")
+        .expect("deleting current provider should switch to fallback");
+
+    let providers = app_state
+        .db
+        .get_all_providers(AppType::Claude.as_str())
+        .expect("get all providers");
+    assert!(
+        !providers.contains_key("keep"),
+        "deleted current provider should be removed"
+    );
+
+    let current = ProviderService::current(&app_state, AppType::Claude)
+        .expect("read effective current provider");
+    assert_eq!(current.as_str(), "next", "effective current should switch");
+
+    let db_current = app_state
+        .db
+        .get_current_provider(AppType::Claude.as_str())
+        .expect("get current provider");
+    assert_eq!(db_current.as_deref(), Some("next"), "db current should switch");
+}
+
+#[test]
+fn provider_service_delete_last_current_provider_returns_error() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Gemini)
+            .expect("gemini manager");
+        manager.current = "keep".to_string();
+        manager.providers.insert(
+            "keep".to_string(),
+            Provider::with_id(
+                "keep".to_string(),
+                "Keep".to_string(),
+                json!({
+                    "env": { "ANTHROPIC_API_KEY": "keep-key" }
+                }),
+                None,
+            ),
+        );
+    }
+
+    let app_state = create_test_state_with_config(&config).expect("create test state");
+
+    let err = ProviderService::delete(&app_state, AppType::Gemini, "keep")
         .expect_err("deleting current provider should fail");
     match err {
         AppError::Localized { zh, .. } => assert!(
@@ -901,4 +962,55 @@ fn provider_service_delete_current_provider_returns_error() {
         ),
         other => panic!("expected Config/Message error, got {other:?}"),
     }
+}
+
+#[test]
+fn provider_service_rejects_duplicate_endpoint_and_credentials() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "existing".to_string();
+        manager.providers.insert(
+            "existing".to_string(),
+            Provider::with_id(
+                "existing".to_string(),
+                "Existing".to_string(),
+                json!({
+                    "auth": { "OPENAI_API_KEY": "same-key" },
+                    "config": "model_provider = \"custom\"\nbase_url = \"https://api.example.com/v1/\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let app_state = create_test_state_with_config(&config).expect("create test state");
+
+    let err = ProviderService::add(
+        &app_state,
+        AppType::Codex,
+        Provider::with_id(
+            "duplicate".to_string(),
+            "Duplicate".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "same-key" },
+                "config": "model_provider = \"custom\"\nbase_url = \"https://api.example.com/\"\n"
+            }),
+            None,
+        ),
+    )
+    .expect_err("duplicate endpoint + key should be rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("相同请求地址和凭证的供应商已存在")
+            || message.contains("Existing"),
+        "unexpected message: {message}"
+    );
 }

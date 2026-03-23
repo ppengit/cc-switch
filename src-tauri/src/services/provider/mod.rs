@@ -139,6 +139,56 @@ base_url = "http://localhost:8080"
 }
 
 impl ProviderService {
+    fn normalize_provider_endpoint_identity(base_url: &str) -> String {
+        let mut normalized = base_url.trim().trim_end_matches('/').to_string();
+        if normalized.to_ascii_lowercase().ends_with("/v1") {
+            normalized.truncate(normalized.len().saturating_sub(3));
+            normalized = normalized.trim_end_matches('/').to_string();
+        }
+        normalized.to_ascii_lowercase()
+    }
+
+    fn ensure_unique_endpoint_credentials(
+        state: &AppState,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
+        let Ok((credential, base_url)) = Self::extract_credentials(provider, app_type) else {
+            return Ok(());
+        };
+
+        let normalized_base_url = Self::normalize_provider_endpoint_identity(&base_url);
+        let normalized_credential = credential.trim().to_string();
+        if normalized_base_url.is_empty() || normalized_credential.is_empty() {
+            return Ok(());
+        }
+
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        let duplicate = providers.values().find(|existing| {
+            if existing.id == provider.id {
+                return false;
+            }
+
+            let Ok((existing_credential, existing_base_url)) =
+                Self::extract_credentials(existing, app_type)
+            else {
+                return false;
+            };
+
+            Self::normalize_provider_endpoint_identity(&existing_base_url) == normalized_base_url
+                && existing_credential.trim() == normalized_credential
+        });
+
+        if let Some(existing) = duplicate {
+            return Err(AppError::Message(format!(
+                "相同请求地址和凭证的供应商已存在：{}",
+                existing.name
+            )));
+        }
+
+        Ok(())
+    }
+
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
         if matches!(app_type, AppType::Claude) {
             let mut v = provider.settings_config.clone();
@@ -179,6 +229,7 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
+        Self::ensure_unique_endpoint_credentials(state, &app_type, &provider)?;
 
         // Save to database
         state.db.save_provider(app_type.as_str(), &provider)?;
@@ -221,6 +272,7 @@ impl ProviderService {
         Self::normalize_provider_if_claude(&app_type, &mut provider);
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
+        Self::ensure_unique_endpoint_credentials(state, &app_type, &provider)?;
 
         // Save to database
         state.db.save_provider(app_type.as_str(), &provider)?;
@@ -354,9 +406,25 @@ impl ProviderService {
         let db_current = state.db.get_current_provider(app_type.as_str())?;
 
         if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
-            return Err(AppError::Message(
-                "无法删除当前正在使用的供应商".to_string(),
-            ));
+            let next_current_id = state
+                .db
+                .get_all_providers(app_type.as_str())?
+                .into_values()
+                .find(|provider| provider.id != id)
+                .map(|provider| provider.id);
+
+            let Some(next_current_id) = next_current_id else {
+                return Err(AppError::Message(
+                    "无法删除当前正在使用的供应商，请至少保留一个可切换的供应商".to_string(),
+                ));
+            };
+
+            state.db.delete_provider(app_type.as_str(), id)?;
+            crate::settings::set_current_provider(&app_type, Some(&next_current_id))?;
+            state
+                .db
+                .set_current_provider(app_type.as_str(), &next_current_id)?;
+            return Self::sync_current_provider_for_app(state, app_type);
         }
 
         state.db.delete_provider(app_type.as_str(), id)

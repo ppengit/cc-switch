@@ -28,6 +28,8 @@ export interface Provider {
   iconColor?: string; // 图标颜色（Hex 格式，如 "#00A67E"）
   // 是否加入故障转移队列
   inFailoverQueue?: boolean;
+  // 是否为公共供应商
+  isPublic?: boolean;
 }
 
 export interface AppConfig {

@@ -141,6 +141,13 @@
     "sessionOccupancyHint": "アクティブセッション数：{{count}}",
     "sessionOccupancyDetailsTitle": "アクティブセッション数：{{count}}",
     "sessionOccupancyMore": "ほか {{count}} 件のセッション",
+    "releaseOccupancy": "占有を解放",
+    "releaseOccupancySuccess": "{{count}} 件のセッションを解放して再バインドしました",
+    "releaseOccupancyNoop": "解放できるアクティブなセッション占有はありません",
+    "releaseOccupancyPartial": "{{total}} 件のセッションを処理しました：{{rebound}} 件を再バインドし、{{unbound}} 件は利用可能なプロバイダーがないためバインド解除しました",
+    "releaseOccupancyPartialSuggestLimit": "{{total}} 件のセッションを処理しました：{{rebound}} 件を再バインドし、{{unbound}} 件は空きのあるプロバイダーがないためバインド解除しました。現在のプロバイダーごとの最大セッション数は {{limit}} です。この値を増やすことを検討してください。",
+    "releaseOccupancyFailed": "プロバイダー占有の解放に失敗しました",
+    "openSessionRoutingSettings": "セッションルーティング設定を開く",
     "sessionProjectLabel": "プロジェクト",
     "sessionIdLabel": "セッション",
     "idHint": "プロバイダーの一意ID",
@@ -170,6 +177,9 @@
     "websiteUrl": "Web サイト URL",
     "notes": "メモ",
     "notesPlaceholder": "例: 会社用アカウント",
+    "publicSwitch": "公共プロバイダー",
+    "publicHint": "このプロバイダーを公共としてマークします。「公共優先」を有効にすると、セッションルーティングとフェイルオーバーで優先されます。",
+    "publicTag": "public",
     "configJson": "Config JSON",
     "writeCommonConfig": "共通設定を書き込む",
     "editCommonConfigButton": "共通設定を編集",
@@ -286,19 +296,31 @@
         "title": "クラウド同期",
         "description": "WebDAV でデバイス間のデータを同期"
       },
-      "rectifier": {
-        "title": "整流器",
-        "description": "API リクエストの互換性問題を自動修正",
-        "enabled": "整流器を有効化",
-        "enabledDescription": "マスタースイッチ、オフにするとすべての整流機能が無効になります",
-        "requestGroup": "リクエスト整流",
-        "responseGroup": "レスポンス整流",
-        "thinkingSignature": "Thinking 署名整流",
-        "thinkingSignatureDescription": "Anthropic タイプのプロバイダーが thinking 署名の非互換性や不正なリクエストエラーを返した場合、互換性のない thinking 関連ブロックを自動削除し、同じプロバイダーで 1 回リトライします",
-        "thinkingBudget": "Thinking Budget 整流",
-        "thinkingBudgetDescription": "Anthropic タイプのプロバイダーが budget_tokens 制約エラー（例: 1024 以上）を返した場合、thinking を enabled に正規化し、thinking 予算を 32000 に設定し、必要に応じて max_tokens を 64000 に引き上げて 1 回リトライします"
-      },
-      "logConfig": {
+        "rectifier": {
+          "title": "整流器",
+          "description": "API リクエストの互換性問題を自動修正",
+          "enabled": "整流器を有効化",
+          "enabledDescription": "マスタースイッチ、オフにするとすべての整流機能が無効になります",
+          "requestGroup": "リクエスト整流",
+          "responseGroup": "レスポンス整流",
+          "thinkingSignature": "Thinking 署名整流",
+          "thinkingSignatureDescription": "Anthropic タイプのプロバイダーが thinking 署名の非互換性や不正なリクエストエラーを返した場合、互換性のない thinking 関連ブロックを自動削除し、同じプロバイダーで 1 回リトライします",
+          "thinkingBudget": "Thinking Budget 整流",
+          "thinkingBudgetDescription": "Anthropic タイプのプロバイダーが budget_tokens 制約エラー（例: 1024 以上）を返した場合、thinking を enabled に正規化し、thinking 予算を 32000 に設定し、必要に応じて max_tokens を 64000 に引き上げて 1 回リトライします"
+        },
+        "optimizer": {
+          "title": "Optimizer",
+          "description": "Bedrock などのシナリオ向けに、リクエスト最適化とキャッシュ注入を制御します。",
+          "enabled": "Optimizer を有効化",
+          "thinkingOptimizer": "Thinking 最適化",
+          "thinkingOptimizerDescription": "対象が対応している場合、thinking 関連のリクエストパラメーターを最適化します。",
+          "cacheInjection": "キャッシュ注入",
+          "cacheInjectionDescription": "キャッシュ関連設定を自動挿入し、ヒット率を高めます。",
+          "cacheTtl": "キャッシュ TTL",
+          "cacheTtl5m": "5 分",
+          "cacheTtl1h": "1 時間"
+        },
+        "logConfig": {
         "title": "ログ管理",
         "description": "ログ出力レベルを制御",
         "enabled": "ログを有効化",
@@ -1836,6 +1858,11 @@
       "configSaved": "自動フェイルオーバー設定を保存しました",
       "configSaveFailed": "保存に失敗しました",
       "validationFailed": "以下のフィールドが有効範囲外です: {{fields}}",
+      "zeroTokenSettings": "0/0 Token 異常処理",
+      "zeroTokenEnabled": "0/0 Token 異常の自動降格を有効化",
+      "zeroTokenEnabledHint": "上流が成功を返したのに入力/出力 token がどちらも 0 の場合、連続回数を数えてしきい値到達後に降格とセッション再割り当てを行います。",
+      "zeroTokenThreshold": "0/0 Token 連続しきい値",
+      "zeroTokenThresholdHint": "有効化後、この回数だけ連続して 0/0 token 異常が発生したときにのみ、そのプロバイダーを降格/熔断します（推奨: 2-5）。",
       "retrySettings": "リトライとタイムアウト設定",
       "failureThreshold": "失敗しきい値",
       "failureThresholdHint": "この回数連続で失敗するとサーキットブレーカーが開きます（推奨: 3-10）",
@@ -1869,7 +1896,16 @@
       "loadFailed": "強制モデル設定の読み込みに失敗しました。"
     },
     "sessionRouting": {
-      "enabledBadge": "有効"
+      "enabledBadge": "有効",
+      "defaultProvider": "セッション ID なしリクエストの既定プロバイダー",
+      "defaultProviderFollowCurrent": "現在のプロバイダーに追従",
+      "defaultProviderHint": "セッション ID を持たないリクエストは、このプロバイダーを常に先に使用し、セッションバインディングは作成しません。",
+      "defaultProviderHintWithFailover": "セッション ID を持たないリクエストはまずこのプロバイダーを使用し、失敗時はフェイルオーバーキューで順に試行します。",
+      "defaultProviderFollowCurrentHint": "空欄なら現在のプロバイダーに追従します。これはセッションルーティング時のアプリ既定フォールバックです。",
+      "defaultProviderFollowCurrentHintWithFailover": "空欄なら最初に現在のプロバイダーを使い、失敗した場合はフェイルオーバーキューに沿って続行します。",
+      "publicPriority": "公共優先",
+      "publicPriorityHint": "有効にすると、セッションルーティングとフェイルオーバーは正常な公共プロバイダーを優先します。公共プロバイダーがすべて無効・劣化・サーキットオープンの場合のみ、元のキュー順を使用します。",
+      "publicPrioritySaved": "公共優先設定を保存しました"
     }
   },
   "streamCheck": {

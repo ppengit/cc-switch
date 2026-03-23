@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeCodexCommonConfigSnippetForEditing,
   hasTomlCommonConfigSnippet,
   updateTomlCommonConfigSnippet,
   validateCodexCommonConfigSnippet,
@@ -56,5 +57,17 @@ command = "echo"
 `;
 
     expect(validateCodexCommonConfigSnippet(snippet)).toContain("mcp_servers");
+  });
+
+  it("migrates legacy codex snippets to include provider and mcp placeholders for editing", () => {
+    const snippet = `approval_policy = "never"
+sandbox_mode = "danger-full-access"`;
+
+    const normalized = normalizeCodexCommonConfigSnippetForEditing(snippet);
+
+    expect(normalized).toContain("approval_policy = \"never\"");
+    expect(normalized).toContain("{{provider.config}}");
+    expect(normalized).toContain("{{mcp.config}}");
+    expect(validateCodexCommonConfigSnippet(normalized)).toBe("");
   });
 });

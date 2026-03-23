@@ -40,6 +40,10 @@ pub struct Provider {
     #[serde(default)]
     #[serde(rename = "inFailoverQueue")]
     pub in_failover_queue: bool,
+    /// 是否为公共供应商
+    #[serde(default)]
+    #[serde(rename = "isPublic")]
+    pub is_public: bool,
 }
 
 impl Provider {
@@ -63,6 +67,7 @@ impl Provider {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+            is_public: false,
         }
     }
 }
@@ -444,6 +449,7 @@ impl UniversalProvider {
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            is_public: false,
         })
     }
 
@@ -509,6 +515,7 @@ requires_openai_auth = true"#
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            is_public: false,
         })
     }
 
@@ -544,6 +551,7 @@ requires_openai_auth = true"#
             icon: self.icon.clone(),
             icon_color: self.icon_color.clone(),
             in_failover_queue: false,
+            is_public: false,
         })
     }
 }

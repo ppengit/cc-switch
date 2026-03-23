@@ -138,6 +138,13 @@
     "sessionOccupancyHint": "Active session count: {{count}}",
     "sessionOccupancyDetailsTitle": "Active session count: {{count}}",
     "sessionOccupancyMore": "And {{count}} more sessions",
+    "releaseOccupancy": "Release occupancy",
+    "releaseOccupancySuccess": "Released and rebound {{count}} sessions",
+    "releaseOccupancyNoop": "There are no active session occupancies to release",
+    "releaseOccupancyPartial": "Processed {{total}} sessions: {{rebound}} rebound, {{unbound}} unbound because no provider was available",
+    "releaseOccupancyPartialSuggestLimit": "Processed {{total}} sessions: {{rebound}} rebound, {{unbound}} unbound because no idle provider was available. The current max sessions per provider is {{limit}}. Consider increasing this value.",
+    "releaseOccupancyFailed": "Failed to release provider occupancy",
+    "openSessionRoutingSettings": "Open session routing settings",
     "sessionProjectLabel": "Project",
     "sessionIdLabel": "Session",
     "sessionTitle": "Session Title",
@@ -180,6 +187,9 @@
     "websiteUrl": "Website URL",
     "notes": "Notes",
     "notesPlaceholder": "e.g., Company dedicated account",
+    "publicSwitch": "Public Provider",
+    "publicHint": "Mark this as a public provider. When \"Prefer Public\" is enabled, session routing and failover will prioritize these providers.",
+    "publicTag": "public",
     "configJson": "Config JSON",
     "writeCommonConfig": "Write common config",
     "editCommonConfigButton": "Edit common config",
@@ -296,19 +306,31 @@
         "title": "Cloud Sync",
         "description": "Sync data across devices via WebDAV"
       },
-      "rectifier": {
-        "title": "Rectifier",
-        "description": "Automatically fix API request compatibility issues",
-        "enabled": "Enable Rectifier",
-        "enabledDescription": "Master switch, all rectification features will be disabled when turned off",
-        "requestGroup": "Request Rectification",
-        "responseGroup": "Response Rectification",
-        "thinkingSignature": "Thinking Signature Rectification",
-        "thinkingSignatureDescription": "When an Anthropic-type provider returns thinking signature incompatibility or illegal request errors, automatically removes incompatible thinking-related blocks and retries once with the same provider",
-        "thinkingBudget": "Thinking Budget Rectification",
-        "thinkingBudgetDescription": "When an Anthropic-type provider returns budget_tokens constraint errors (such as at least 1024), automatically normalizes thinking to enabled, sets thinking budget to 32000, and raises max_tokens to 64000 if needed, then retries once"
-      },
-      "logConfig": {
+        "rectifier": {
+          "title": "Rectifier",
+          "description": "Automatically fix API request compatibility issues",
+          "enabled": "Enable Rectifier",
+          "enabledDescription": "Master switch, all rectification features will be disabled when turned off",
+          "requestGroup": "Request Rectification",
+          "responseGroup": "Response Rectification",
+          "thinkingSignature": "Thinking Signature Rectification",
+          "thinkingSignatureDescription": "When an Anthropic-type provider returns thinking signature incompatibility or illegal request errors, automatically removes incompatible thinking-related blocks and retries once with the same provider",
+          "thinkingBudget": "Thinking Budget Rectification",
+          "thinkingBudgetDescription": "When an Anthropic-type provider returns budget_tokens constraint errors (such as at least 1024), automatically normalizes thinking to enabled, sets thinking budget to 32000, and raises max_tokens to 64000 if needed, then retries once"
+        },
+        "optimizer": {
+          "title": "Optimizer",
+          "description": "Control request optimization and cache injection for scenarios such as Bedrock.",
+          "enabled": "Enable Optimizer",
+          "thinkingOptimizer": "Thinking optimizer",
+          "thinkingOptimizerDescription": "Optimize thinking-related request parameters when the target supports it.",
+          "cacheInjection": "Cache injection",
+          "cacheInjectionDescription": "Automatically inject cache-related config to improve hit rate.",
+          "cacheTtl": "Cache TTL",
+          "cacheTtl5m": "5 minutes",
+          "cacheTtl1h": "1 hour"
+        },
+        "logConfig": {
         "title": "Log Management",
         "description": "Control log output level",
         "enabled": "Enable Logging",
@@ -1849,6 +1871,11 @@
       "configSaved": "Auto failover config saved",
       "configSaveFailed": "Failed to save",
       "validationFailed": "The following fields are out of valid range: {{fields}}",
+      "zeroTokenSettings": "0/0 Token Anomaly Handling",
+      "zeroTokenEnabled": "Enable automatic downgrade for 0/0 token anomalies",
+      "zeroTokenEnabledHint": "When the upstream returns success but both input and output tokens are 0, count consecutive occurrences and trigger downgrade plus session reassignment once the threshold is reached.",
+      "zeroTokenThreshold": "0/0 token consecutive threshold",
+      "zeroTokenThresholdHint": "When enabled, the provider is downgraded/circuit-opened only after this many consecutive 0/0 token anomalies (recommended: 2-5).",
       "retrySettings": "Retry & Timeout Settings",
       "failureThreshold": "Failure Threshold",
       "failureThresholdHint": "Open circuit breaker after this many consecutive failures (recommended: 3-10)",
@@ -1888,7 +1915,10 @@
       "defaultProviderHint": "Requests without a session ID always try this provider first and do not create a session binding.",
       "defaultProviderHintWithFailover": "Requests without a session ID try this provider first; if it fails, they fall back through the failover queue.",
       "defaultProviderFollowCurrentHint": "Leave empty to follow the current provider. This is the app-default fallback behavior in session routing mode.",
-      "defaultProviderFollowCurrentHintWithFailover": "Leave empty to follow the current provider first; if it fails, continue through the failover queue."
+      "defaultProviderFollowCurrentHintWithFailover": "Leave empty to follow the current provider first; if it fails, continue through the failover queue.",
+      "publicPriority": "Prefer Public",
+      "publicPriorityHint": "When enabled, session routing and failover prefer healthy public providers first. If all public providers are disabled, degraded, or circuit-open, the original queue order is used.",
+      "publicPrioritySaved": "Public priority setting saved"
     }
   },
   "streamCheck": {

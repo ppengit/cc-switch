@@ -73,6 +73,7 @@ import {
 import {
   useAppProxyConfig,
   useProviderSessionOccupancy,
+  useReleaseProviderSessionBindings,
   useSessionProviderBindings,
   useUpdateAppProxyConfig,
 } from "@/lib/query/proxy";
@@ -110,6 +111,7 @@ import {
 } from "@/lib/api/model-test";
 import {
   extractCodexModelName,
+  normalizeCodexCommonConfigSnippetForEditing,
   setCodexModelName,
   validateCodexCommonConfigSnippet,
   validateJsonConfig,
@@ -158,35 +160,6 @@ function buildLiveConfigSignature(files: LiveConfigFileEntry[]): string {
       ].join(":"),
     )
     .join("|");
-}
-
-type PreviewDiffLine = {
-  kind: "context" | "add" | "remove";
-  text: string;
-};
-
-function buildPreviewDiffLines(file: AppConfigPreviewFile): PreviewDiffLine[] {
-  const expectedLines = file.expectedText.replace(/\r\n/g, "\n").split("\n");
-  const actualLines = file.actualText.replace(/\r\n/g, "\n").split("\n");
-  const maxLen = Math.max(expectedLines.length, actualLines.length);
-  const lines: PreviewDiffLine[] = [];
-
-  for (let index = 0; index < maxLen; index += 1) {
-    const expected = expectedLines[index] ?? "";
-    const actual = actualLines[index] ?? "";
-    if (expected === actual) {
-      lines.push({ kind: "context", text: expected });
-      continue;
-    }
-    if (expected) {
-      lines.push({ kind: "remove", text: expected });
-    }
-    if (actual) {
-      lines.push({ kind: "add", text: actual });
-    }
-  }
-
-  return lines;
 }
 
 type TestModelKey = "claudeModel" | "codexModel" | "geminiModel";
@@ -343,7 +316,8 @@ const SESSION_ROUTING_STRATEGY_OPTIONS: Array<{
   {
     value: "priority",
     label: "列表顺序优先",
-    description: "按照当前提供商列表顺序分配，会话路由不再依赖故障转移队列。",
+    description:
+      "按照当前启用提供商列表顺序分配；自动故障转移开启时仅使用故障转移队列中的供应商。",
   },
   {
     value: "least_active",
@@ -557,9 +531,9 @@ export function ProviderList({
   const buildRecentTerminalTargets = useCallback(
     (target?: TerminalTargetPreference) =>
       normalizeRecentPaths([
+        ...recentSessionProjectDirs,
         target?.lastCwd ?? null,
         ...(target?.recentCwds ?? []),
-        ...recentSessionProjectDirs,
       ]),
     [normalizeRecentPaths, recentSessionProjectDirs],
   );
@@ -849,7 +823,11 @@ export function ProviderList({
           appId as "claude" | "codex" | "gemini",
         );
         if (!active) return;
-        setCommonConfigSnippet(snippet || "");
+        setCommonConfigSnippet(
+          appId === "codex"
+            ? normalizeCodexCommonConfigSnippetForEditing(snippet)
+            : (snippet ?? ""),
+        );
 
         if (isSupportedProviderTemplateApp(appId)) {
           const template = await configApi.getProviderDefaultTemplate(appId);
@@ -909,7 +887,7 @@ export function ProviderList({
   const loadConfigPreview = useCallback(async () => {
     try {
       setIsConfigPreviewLoading(true);
-      const preview = await configApi.getAppConfigPreview(appId);
+      const preview = await configApi.getCurrentLiveConfigSnapshot(appId);
       setConfigPreview(preview);
       setPreviewDrafts(
         Object.fromEntries(
@@ -920,7 +898,7 @@ export function ProviderList({
       console.error("[ProviderList] Failed to load config preview", error);
       toast.error(
         t("provider.configPreviewLoadFailed", {
-          defaultValue: "加载最终配置预览失败: {{error}}",
+          defaultValue: "加载当前环境配置失败: {{error}}",
           error: String(error),
         }),
       );
@@ -1116,6 +1094,7 @@ export function ProviderList({
     appId,
     appProxyConfig?.sessionIdleTtlMinutes,
   );
+  const releaseProviderSessionBindings = useReleaseProviderSessionBindings();
   const providerSessionCountMap = useMemo(() => {
     return new Map(
       providerSessionOccupancy.map((item) => [
@@ -1175,37 +1154,136 @@ export function ProviderList({
     enabled: false,
     strategy: "priority" as SessionRoutingStrategy,
     defaultProviderId: "",
+    publicPriorityEnabled: false,
     maxSessionsPerProvider: "1",
     allowSharedWhenExhausted: false,
     idleTtlMinutes: "30",
   });
 
+  const handleReleaseProviderOccupancy = useCallback(
+    async (provider: Provider) => {
+      try {
+        const result = await releaseProviderSessionBindings.mutateAsync({
+          appType: appId,
+          providerId: provider.id,
+          idleTtlMinutes: appProxyConfig?.sessionIdleTtlMinutes,
+        });
+
+        if (result.totalAffected === 0) {
+          toast.info(
+            t("provider.releaseOccupancyNoop", {
+              defaultValue: "当前没有可释放的活跃会话占用",
+            }),
+          );
+          return;
+        }
+
+        if (result.unboundCount > 0) {
+          if (result.suggestIncreaseMaxSessions) {
+            toast.warning(
+              t("provider.releaseOccupancyPartialSuggestLimit", {
+                defaultValue:
+                  "已处理 {{total}} 个会话：{{rebound}} 个已重绑，{{unbound}} 个因无可用空闲供应商已解绑。当前每个供应商最大会话数为 {{limit}}，可考虑提高该值。",
+                total: result.totalAffected,
+                rebound: result.reboundCount,
+                unbound: result.unboundCount,
+                limit: appProxyConfig?.sessionMaxSessionsPerProvider ?? 1,
+              }),
+              {
+                action: {
+                  label: t("provider.openSessionRoutingSettings", {
+                    defaultValue: "打开会话路由设置",
+                  }),
+                  onClick: () => setIsSessionRoutingDialogOpen(true),
+                },
+              },
+            );
+          } else {
+            toast.warning(
+              t("provider.releaseOccupancyPartial", {
+                defaultValue:
+                  "已处理 {{total}} 个会话：{{rebound}} 个已重绑，{{unbound}} 个因无可用供应商已解绑",
+                total: result.totalAffected,
+                rebound: result.reboundCount,
+                unbound: result.unboundCount,
+              }),
+            );
+          }
+          return;
+        }
+
+        toast.success(
+          t("provider.releaseOccupancySuccess", {
+            defaultValue: "已释放占用并重绑 {{count}} 个会话",
+            count: result.reboundCount,
+          }),
+        );
+      } catch (error) {
+        toast.error(
+          t("provider.releaseOccupancyFailed", {
+            defaultValue: "释放供应商占用失败",
+          }) +
+            ": " +
+            String(error),
+        );
+      }
+    },
+    [
+      appId,
+      appProxyConfig?.sessionIdleTtlMinutes,
+      appProxyConfig?.sessionMaxSessionsPerProvider,
+      releaseProviderSessionBindings,
+      t,
+    ],
+  );
+
   const sessionRoutingProviderOptions = useMemo(
     () =>
-      Object.values(providers).sort((left, right) => {
-        const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
-        const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
-        if (leftSort !== rightSort) {
-          return leftSort - rightSort;
-        }
+      Object.values(providers)
+        .filter(
+          (provider) =>
+            isProviderInConfig(provider.id) &&
+            (!isAutoFailoverActive || failoverQueueSet.has(provider.id)),
+        )
+        .sort((left, right) => {
+          const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
+          const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
+          if (leftSort !== rightSort) {
+            return leftSort - rightSort;
+          }
 
-        const leftCreatedAt = left.createdAt ?? Number.MAX_SAFE_INTEGER;
-        const rightCreatedAt = right.createdAt ?? Number.MAX_SAFE_INTEGER;
-        if (leftCreatedAt !== rightCreatedAt) {
-          return leftCreatedAt - rightCreatedAt;
-        }
+          const leftCreatedAt = left.createdAt ?? Number.MAX_SAFE_INTEGER;
+          const rightCreatedAt = right.createdAt ?? Number.MAX_SAFE_INTEGER;
+          if (leftCreatedAt !== rightCreatedAt) {
+            return leftCreatedAt - rightCreatedAt;
+          }
 
-        return left.name.localeCompare(right.name);
-      }),
-    [providers],
+          return left.name.localeCompare(right.name);
+        }),
+    [failoverQueueSet, isAutoFailoverActive, isProviderInConfig, providers],
   );
   const effectiveSessionDefaultProviderId = useMemo(() => {
     const explicitProviderId = appProxyConfig?.sessionDefaultProviderId?.trim();
     if (explicitProviderId) {
-      return explicitProviderId;
+      if (!isAutoFailoverActive || failoverQueueSet.has(explicitProviderId)) {
+        return explicitProviderId;
+      }
+      return failoverQueue?.[0]?.providerId ?? "";
     }
-    return currentProviderId;
-  }, [appProxyConfig?.sessionDefaultProviderId, currentProviderId]);
+    if (!isAutoFailoverActive) {
+      return currentProviderId;
+    }
+    if (currentProviderId && failoverQueueSet.has(currentProviderId)) {
+      return currentProviderId;
+    }
+    return failoverQueue?.[0]?.providerId ?? "";
+  }, [
+    appProxyConfig?.sessionDefaultProviderId,
+    currentProviderId,
+    failoverQueue,
+    failoverQueueSet,
+    isAutoFailoverActive,
+  ]);
   const currentProviderName = useMemo(() => {
     if (!currentProviderId) {
       return "";
@@ -1219,6 +1297,8 @@ export function ProviderList({
       enabled: appProxyConfig.sessionRoutingEnabled,
       strategy: appProxyConfig.sessionRoutingStrategy,
       defaultProviderId: appProxyConfig.sessionDefaultProviderId || "",
+      publicPriorityEnabled:
+        appProxyConfig.publicProviderPriorityEnabled === true,
       maxSessionsPerProvider: String(
         appProxyConfig.sessionMaxSessionsPerProvider,
       ),
@@ -1234,6 +1314,8 @@ export function ProviderList({
       sessionRoutingForm.strategy !== appProxyConfig.sessionRoutingStrategy ||
       sessionRoutingForm.defaultProviderId !==
         (appProxyConfig.sessionDefaultProviderId || "") ||
+      sessionRoutingForm.publicPriorityEnabled !==
+        (appProxyConfig.publicProviderPriorityEnabled === true) ||
       Number(sessionRoutingForm.maxSessionsPerProvider || 0) !==
         appProxyConfig.sessionMaxSessionsPerProvider ||
       sessionRoutingForm.allowSharedWhenExhausted !==
@@ -1250,6 +1332,8 @@ export function ProviderList({
       ) ?? SESSION_ROUTING_STRATEGY_OPTIONS[0],
     [sessionRoutingForm.strategy],
   );
+  const isSessionRoutingControlsDisabled =
+    updateAppProxyConfig.isPending || !sessionRoutingForm.enabled;
 
   const handleSaveSessionRoutingConfig = useCallback(async () => {
     if (!appProxyConfig) return;
@@ -1284,6 +1368,7 @@ export function ProviderList({
         sessionRoutingEnabled: sessionRoutingForm.enabled,
         sessionRoutingStrategy: sessionRoutingForm.strategy,
         sessionDefaultProviderId: sessionRoutingForm.defaultProviderId,
+        publicProviderPriorityEnabled: sessionRoutingForm.publicPriorityEnabled,
         sessionMaxSessionsPerProvider: maxSessions,
         sessionAllowSharedWhenExhausted:
           sessionRoutingForm.allowSharedWhenExhausted,
@@ -1293,7 +1378,26 @@ export function ProviderList({
         defaultValue: "会话路由配置已保存",
       }),
     });
+    setIsSessionRoutingDialogOpen(false);
   }, [appProxyConfig, sessionRoutingForm, t, updateAppProxyConfig]);
+
+  const handleTogglePublicPriority = useCallback(
+    async (checked: boolean) => {
+      if (!appProxyConfig) return;
+      if (!appProxyConfig.sessionRoutingEnabled) return;
+
+      await updateAppProxyConfig.mutateAsync({
+        config: {
+          ...appProxyConfig,
+          publicProviderPriorityEnabled: checked,
+        },
+        successMessage: t("proxy.sessionRouting.publicPrioritySaved", {
+          defaultValue: checked ? "公共优先已启用" : "公共优先已关闭",
+        }),
+      });
+    },
+    [appProxyConfig, t, updateAppProxyConfig],
+  );
 
   const [filterField, setFilterField] = useState<ProviderFilterField>("all");
   const [filterKeyword, setFilterKeyword] = useState("");
@@ -2159,6 +2263,10 @@ export function ProviderList({
     () => new Set(selectedModelFilters),
     [selectedModelFilters],
   );
+  const selectedModelFilterPreview = useMemo(
+    () => selectedModelFilters.slice(0, 3),
+    [selectedModelFilters],
+  );
 
   const buildProviderSearchFieldMap = useCallback(
     (
@@ -2428,9 +2536,10 @@ export function ProviderList({
       const isOmoCategory =
         provider.category === "omo" || provider.category === "omo-slim";
       if (isAdditiveMode || isOmoCategory) return true;
-      return !isCurrentProvider(provider);
+      if (!isCurrentProvider(provider)) return true;
+      return sortedProviders.some((candidate) => candidate.id !== provider.id);
     },
-    [isAdditiveMode, isCurrentProvider],
+    [isAdditiveMode, isCurrentProvider, sortedProviders],
   );
 
   const deletableSelectedProviders = useMemo(
@@ -2977,7 +3086,18 @@ export function ProviderList({
                     showSessionOccupancy={Boolean(
                       appProxyConfig?.sessionRoutingEnabled,
                     )}
+                    onReleaseSessionOccupancy={
+                      appProxyConfig?.sessionRoutingEnabled
+                        ? () => void handleReleaseProviderOccupancy(provider)
+                        : undefined
+                    }
+                    isReleasingSessionOccupancy={
+                      releaseProviderSessionBindings.isPending &&
+                      releaseProviderSessionBindings.variables?.providerId ===
+                        provider.id
+                    }
                     isCurrent={isCurrentProvider(provider)}
+                    canDelete={canDeleteProvider(provider)}
                     isInConfig={isProviderInConfig(provider.id)}
                     isOmo={provider.category === "omo"}
                     isOmoSlim={provider.category === "omo-slim"}
@@ -3095,7 +3215,7 @@ export function ProviderList({
                 <Eye className="h-4 w-4" />
               )}
               {t("provider.configPreview", {
-                defaultValue: "最终配置预览",
+                defaultValue: "当前环境配置",
               })}
             </Button>
 
@@ -3123,6 +3243,33 @@ export function ProviderList({
                   {isBulkFailoverToggling && (
                     <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
                   )}
+                </div>
+              </div>
+            )}
+
+            {appProxyConfig && (
+              <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+                <Switch
+                  checked={
+                    appProxyConfig.publicProviderPriorityEnabled === true
+                  }
+                  onCheckedChange={(checked) =>
+                    void handleTogglePublicPriority(checked)
+                  }
+                  disabled={
+                    updateAppProxyConfig.isPending ||
+                    !appProxyConfig.sessionRoutingEnabled
+                  }
+                  aria-label={t("proxy.sessionRouting.publicPriority", {
+                    defaultValue: "公共优先",
+                  })}
+                />
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="font-medium">
+                    {t("proxy.sessionRouting.publicPriority", {
+                      defaultValue: "公共优先",
+                    })}
+                  </span>
                 </div>
               </div>
             )}
@@ -3181,7 +3328,7 @@ export function ProviderList({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-[220px]">
                   <DropdownMenuItem
-                    onClick={() => void handleOpenAppTerminalWithMode("manual")}
+                    onSelect={() => void handleOpenAppTerminalWithMode("manual")}
                   >
                     {t("provider.terminalTargetManual", {
                       defaultValue: "手动选择",
@@ -3199,7 +3346,7 @@ export function ProviderList({
                           <DropdownMenuItem
                             key={path}
                             title={path}
-                            onClick={() =>
+                            onSelect={() =>
                               void handleOpenAppTerminalWithMode("recent", path)
                             }
                           >
@@ -3217,7 +3364,7 @@ export function ProviderList({
                         <>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
-                            onClick={() => void handleClearRecentTerminals()}
+                            onSelect={() => void handleClearRecentTerminals()}
                           >
                             {t("provider.terminalTargetRecentClear", {
                               defaultValue: "清除最近打开",
@@ -3389,29 +3536,41 @@ export function ProviderList({
                     )}
                   </div>
                   {searchMatches.length > 0 && (
-                    <div className="mt-2 max-h-40 space-y-1 overflow-y-auto pr-1">
+                    <div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto pr-1">
                       {searchMatches.map((match, index) => (
                         <button
                           key={match.id}
                           type="button"
                           className={cn(
-                            "flex w-full items-start justify-between gap-3 rounded-md border px-2 py-1.5 text-left transition-colors hover:border-border/80 hover:bg-muted/50 dark:hover:bg-muted/35",
+                            "flex w-full items-start justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
                             activeSearchMatchId === match.id
-                              ? "border-amber-300/80 bg-amber-50/80 dark:border-amber-500/30 dark:bg-amber-400/[0.08]"
-                              : "border-transparent bg-muted/30 dark:bg-muted/20",
+                              ? "border-sky-300/80 bg-sky-50/90 shadow-sm dark:border-sky-500/30 dark:bg-sky-400/[0.08]"
+                              : "border-border/50 bg-muted/20 hover:border-border/80 hover:bg-muted/35 dark:bg-muted/15 dark:hover:bg-muted/25",
                           )}
                           onClick={() => scrollToProviderMatch(match.id)}
                         >
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-foreground">
-                              {index + 1}. {match.name}
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-background px-1.5 text-[11px] font-semibold text-muted-foreground">
+                                {index + 1}
+                              </span>
+                              <span className="truncate text-sm font-medium text-foreground">
+                                {match.name}
+                              </span>
                             </span>
                             {match.detail && (
-                              <span className="block truncate text-xs text-muted-foreground">
+                              <span className="mt-1 block truncate text-xs text-muted-foreground">
                                 {match.detail}
                               </span>
                             )}
                           </span>
+                          {activeSearchMatchId === match.id && (
+                            <span className="shrink-0 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                              {t("provider.searchLocatorFocus", {
+                                defaultValue: "定位中",
+                              })}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -3429,7 +3588,11 @@ export function ProviderList({
               </Label>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline" className="h-8">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 min-w-[180px] justify-between gap-3"
+                  >
                     {modelFilterLabel}
                   </Button>
                 </DropdownMenuTrigger>
@@ -3458,6 +3621,7 @@ export function ProviderList({
                       <DropdownMenuCheckboxItem
                         key={modelName}
                         checked={selectedModelFilterSet.has(modelName)}
+                        className="rounded-md border border-transparent data-[state=checked]:border-sky-300/50 data-[state=checked]:bg-sky-500/10 data-[state=checked]:text-sky-700 dark:data-[state=checked]:border-sky-500/30 dark:data-[state=checked]:bg-sky-400/[0.08] dark:data-[state=checked]:text-sky-300"
                         onCheckedChange={(checked) => {
                           setSelectedModelFilters((current) => {
                             if (checked === true) {
@@ -3469,17 +3633,44 @@ export function ProviderList({
                         }}
                         onSelect={(event) => event.preventDefault()}
                       >
-                        <span
-                          className="max-w-[220px] truncate"
-                          title={modelName}
-                        >
-                          {modelName}
-                        </span>
+                        <div className="flex w-full items-center justify-between gap-3">
+                          <span
+                            className="max-w-[180px] truncate"
+                            title={modelName}
+                          >
+                            {modelName}
+                          </span>
+                          {selectedModelFilterSet.has(modelName) && (
+                            <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+                              {t("common.selected", {
+                                defaultValue: "已选",
+                              })}
+                            </span>
+                          )}
+                        </div>
                       </DropdownMenuCheckboxItem>
                     ))
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
+              {selectedModelFilterPreview.length > 0 && (
+                <div className="flex max-w-[280px] flex-wrap gap-1 pt-1">
+                  {selectedModelFilterPreview.map((modelName) => (
+                    <span
+                      key={modelName}
+                      className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-700 dark:text-sky-300"
+                      title={modelName}
+                    >
+                      {modelName}
+                    </span>
+                  ))}
+                  {selectedModelFilters.length > selectedModelFilterPreview.length && (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                      +{selectedModelFilters.length - selectedModelFilterPreview.length}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             <Button
@@ -3777,6 +3968,34 @@ export function ProviderList({
                 </div>
               </div>
 
+              <div className="rounded-lg border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {t("proxy.sessionRouting.publicPriority", {
+                        defaultValue: "公共优先",
+                      })}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t("proxy.sessionRouting.publicPriorityHint", {
+                        defaultValue:
+                          "开启后，会话路由和故障转移会优先选择正常的公共供应商；当公共供应商全部未启用、降级或熔断时，再按原队列顺序分配。",
+                      })}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={sessionRoutingForm.publicPriorityEnabled}
+                    onCheckedChange={(checked) =>
+                      setSessionRoutingForm((current) => ({
+                        ...current,
+                        publicPriorityEnabled: checked,
+                      }))
+                    }
+                    disabled={isSessionRoutingControlsDisabled}
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground">
                   {t("proxy.sessionRouting.strategy", {
@@ -3792,7 +4011,7 @@ export function ProviderList({
                     }))
                   }
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  disabled={updateAppProxyConfig.isPending}
+                  disabled={isSessionRoutingControlsDisabled}
                 >
                   {SESSION_ROUTING_STRATEGY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -3820,7 +4039,7 @@ export function ProviderList({
                     }))
                   }
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  disabled={updateAppProxyConfig.isPending}
+                  disabled={isSessionRoutingControlsDisabled}
                 >
                   <option value="">
                     {t("proxy.sessionRouting.defaultProviderFollowCurrent", {
@@ -3831,7 +4050,9 @@ export function ProviderList({
                   </option>
                   {sessionRoutingProviderOptions.map((provider) => (
                     <option key={provider.id} value={provider.id}>
-                      {provider.name}
+                      {provider.isPublic
+                        ? `${provider.name} (public)`
+                        : provider.name}
                     </option>
                   ))}
                 </select>
@@ -3888,7 +4109,7 @@ export function ProviderList({
                       }))
                     }
                     className="h-9 text-sm"
-                    disabled={updateAppProxyConfig.isPending}
+                    disabled={isSessionRoutingControlsDisabled}
                   />
                 </div>
 
@@ -3912,7 +4133,7 @@ export function ProviderList({
                       }))
                     }
                     className="h-9 text-sm"
-                    disabled={updateAppProxyConfig.isPending}
+                    disabled={isSessionRoutingControlsDisabled}
                   />
                 </div>
               </div>
@@ -3940,7 +4161,7 @@ export function ProviderList({
                         allowSharedWhenExhausted: checked,
                       }))
                     }
-                    disabled={updateAppProxyConfig.isPending}
+                    disabled={isSessionRoutingControlsDisabled}
                   />
                 </div>
               </div>
@@ -4417,7 +4638,7 @@ export function ProviderList({
       <FullScreenPanel
         isOpen={isConfigPreviewOpen}
         title={t("provider.configPreviewTitle", {
-          defaultValue: "最终配置预览",
+          defaultValue: "当前环境配置",
         })}
         onClose={() => setIsConfigPreviewOpen(false)}
         footer={
@@ -4457,7 +4678,7 @@ export function ProviderList({
               <span>
                 {t("provider.liveConfigChanged", {
                   defaultValue:
-                    "检测到实际配置文件发生变化。请刷新预览后再决定是否保存。",
+                    "检测到实际配置文件发生变化。请先刷新当前环境配置，再决定是否保存。",
                 })}
               </span>
             </div>
@@ -4486,7 +4707,6 @@ export function ProviderList({
 
           {configPreview?.files?.length ? (
             configPreview.files.map((file) => {
-              const diffLines = file.differs ? buildPreviewDiffLines(file) : [];
               const draftValue = previewDrafts[file.path] ?? file.actualText;
               const isOpening = openingLiveConfigPath === file.path;
               const isSaving = savingPreviewFilePath === file.path;
@@ -4511,22 +4731,6 @@ export function ProviderList({
                       </code>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div
-                        className={cn(
-                          "rounded-full px-2 py-1 text-xs",
-                          file.differs
-                            ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                            : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-                        )}
-                      >
-                        {file.differs
-                          ? t("provider.configPreviewDiffers", {
-                              defaultValue: "与预期不一致",
-                            })
-                          : t("provider.configPreviewMatched", {
-                              defaultValue: "与预期一致",
-                            })}
-                      </div>
                       <Button
                         type="button"
                         variant="outline"
@@ -4553,98 +4757,55 @@ export function ProviderList({
                     </div>
                   </div>
 
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    <div className="space-y-2">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
                       <div className="text-xs font-medium text-muted-foreground">
-                        {t("provider.expectedConfig", {
-                          defaultValue: "预期渲染结果",
+                        {t("provider.actualConfig", {
+                          defaultValue: "当前 live 文件",
                         })}
                       </div>
-                      <JsonEditor
-                        value={file.expectedText || " "}
-                        onChange={() => {}}
-                        height={previewPaneHeight}
-                        showValidation={false}
-                        language={editorLanguage}
-                        readOnly={true}
-                        showFormatButton={false}
-                      />
-                      {showsFormatButton && <div className="h-7" aria-hidden="true" />}
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => void handleSavePreviewFile(file)}
+                        disabled={isSaving}
+                        className="h-7 gap-2 px-2 text-xs"
+                      >
+                        {isSaving ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Save className="h-3.5 w-3.5" />
+                        )}
+                        {t("common.save", {
+                          defaultValue: "保存",
+                        })}
+                      </Button>
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-medium text-muted-foreground">
-                          {t("provider.actualConfig", {
-                            defaultValue: "当前 live 文件",
-                          })}
-                        </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => void handleSavePreviewFile(file)}
-                          disabled={isSaving}
-                          className="h-7 gap-2 px-2 text-xs"
-                        >
-                          {isSaving ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Save className="h-3.5 w-3.5" />
-                          )}
-                          {t("common.save", {
-                            defaultValue: "保存",
-                          })}
-                        </Button>
-                      </div>
-                      <JsonEditor
-                        value={draftValue}
-                        onChange={(value) =>
-                          handlePreviewDraftChange(file.path, value)
-                        }
-                        height={previewPaneHeight}
-                        showValidation={editorLanguage !== "javascript"}
-                        language={editorLanguage}
-                      />
-                    </div>
+                    <JsonEditor
+                      value={draftValue}
+                      onChange={(value) =>
+                        handlePreviewDraftChange(file.path, value)
+                      }
+                      height={previewPaneHeight}
+                      showValidation={editorLanguage !== "javascript"}
+                      language={editorLanguage}
+                    />
+                    {showsFormatButton && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("provider.liveConfigEditHint", {
+                          defaultValue:
+                            "上方直接编辑的是当前环境实际使用的 live 配置文件内容。",
+                        })}
+                      </p>
+                    )}
                   </div>
-
-                  {file.differs && (
-                    <div className="space-y-2">
-                      <div className="text-xs font-medium text-muted-foreground">
-                        {t("provider.configPreviewDiff", {
-                          defaultValue: "差异",
-                        })}
-                      </div>
-                      <div className="max-h-[260px] overflow-auto rounded border border-border/60 bg-background">
-                        {diffLines.map((line, index) => (
-                          <div
-                            key={`${file.path}:diff:${index}`}
-                            className={cn(
-                              "px-3 py-1 font-mono text-xs leading-5 whitespace-pre-wrap",
-                              line.kind === "add" &&
-                                "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-                              line.kind === "remove" &&
-                                "bg-rose-500/10 text-rose-700 dark:text-rose-300",
-                              line.kind === "context" &&
-                                "text-muted-foreground",
-                            )}
-                          >
-                            {line.kind === "add"
-                              ? `+ ${line.text}`
-                              : line.kind === "remove"
-                                ? `- ${line.text}`
-                                : `  ${line.text}`}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               );
             })
           ) : (
             <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
               {t("provider.configPreviewEmpty", {
-                defaultValue: "当前应用暂无可预览的最终配置。",
+                defaultValue: "当前应用暂无可展示的 live 配置文件。",
               })}
             </div>
           )}
@@ -4692,7 +4853,10 @@ interface SortableProviderTableRowProps {
   sessionCount?: number;
   occupancyDetails?: ProviderOccupancyDetail[];
   showSessionOccupancy?: boolean;
+  onReleaseSessionOccupancy?: () => void;
+  isReleasingSessionOccupancy?: boolean;
   isCurrent: boolean;
+  canDelete: boolean;
   isInConfig: boolean;
   isOmo: boolean;
   isOmoSlim: boolean;
@@ -4741,7 +4905,10 @@ function SortableProviderTableRow({
   sessionCount = 0,
   occupancyDetails = [],
   showSessionOccupancy = false,
+  onReleaseSessionOccupancy,
+  isReleasingSessionOccupancy = false,
   isCurrent,
+  canDelete,
   isInConfig,
   isOmo,
   isOmoSlim,
@@ -4795,16 +4962,15 @@ function SortableProviderTableRow({
     rowIndex % 2 === 0
       ? "bg-background dark:bg-background/60"
       : "bg-muted/45 dark:bg-muted/30";
-  const searchMatchRowClass = isActiveSearchMatch
-    ? "bg-amber-100/60 dark:bg-amber-400/[0.08]"
+  const stickyCellBgClass = baseStickyCellBgClass;
+  const searchBadgeLabel = isActiveSearchMatch
+    ? t("provider.searchLocatorFocus", { defaultValue: "定位中" })
+    : t("provider.searchMatchedBadge", { defaultValue: "匹配" });
+  const nameCellHighlightClass = isActiveSearchMatch
+    ? "ring-1 ring-inset ring-sky-300/80 bg-sky-50/80 dark:ring-sky-500/35 dark:bg-sky-400/[0.08]"
     : isSearchMatched
-      ? "bg-amber-50/55 dark:bg-amber-400/[0.05]"
+      ? "ring-1 ring-inset ring-border/70 bg-muted/25 dark:bg-muted/15"
       : "";
-  const stickyCellBgClass = isActiveSearchMatch
-    ? "bg-amber-100/80 dark:bg-amber-400/[0.1]"
-    : isSearchMatched
-      ? "bg-amber-50/80 dark:bg-amber-400/[0.06]"
-      : baseStickyCellBgClass;
 
   const website = provider.websiteUrl?.trim() ?? "";
   const notes = provider.notes?.trim() ?? "";
@@ -4833,16 +4999,9 @@ function SortableProviderTableRow({
       data-provider-id={provider.id}
       className={cn(
         "border-b border-border/60 transition-colors",
-        isActiveSearchMatch
-          ? "hover:bg-amber-100/80 dark:hover:bg-amber-400/[0.12]"
-          : isSearchMatched
-            ? "hover:bg-amber-50/80 dark:hover:bg-amber-400/[0.08]"
-            : "hover:bg-muted/45 dark:hover:bg-muted/35",
+        "hover:bg-muted/45 dark:hover:bg-muted/35",
         rowClass,
-        searchMatchRowClass,
         isDragging && "z-10 bg-accent/40",
-        isActiveSearchMatch &&
-          "outline outline-1 -outline-offset-1 outline-amber-300/80 dark:outline-amber-500/35",
       )}
     >
       <td
@@ -4907,19 +5066,38 @@ function SortableProviderTableRow({
           stickyCellBgClass,
         )}
       >
-        <div className="min-w-0">
-          <div className="truncate font-medium" title={provider.name}>
-            {website ? (
-              <button
-                type="button"
-                className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
-                title={website}
-                onClick={() => onOpenWebsite(website)}
+        <div className={cn("min-w-0 rounded-lg px-2 py-1", nameCellHighlightClass)}>
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="truncate font-medium" title={provider.name}>
+              {website ? (
+                <button
+                  type="button"
+                  className="block max-w-full truncate text-left text-blue-600 hover:underline dark:text-blue-400"
+                  title={website}
+                  onClick={() => onOpenWebsite(website)}
+                >
+                  {provider.name}
+                </button>
+              ) : (
+                provider.name
+              )}
+            </div>
+            {isSearchMatched && (
+              <span
+                className={cn(
+                  "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                  isActiveSearchMatch
+                    ? "bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                    : "bg-muted text-muted-foreground",
+                )}
               >
-                {provider.name}
-              </button>
-            ) : (
-              provider.name
+                {searchBadgeLabel}
+              </span>
+            )}
+            {provider.isPublic && (
+              <span className="shrink-0 rounded border border-border/70 px-1 py-0 text-[10px] leading-none text-muted-foreground">
+                {t("provider.publicTag", { defaultValue: "public" })}
+              </span>
             )}
           </div>
         </div>
@@ -4972,11 +5150,34 @@ function SortableProviderTableRow({
           {showOccupancyBadge && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
                   {t("provider.sessionOccupancy", {
                     defaultValue: "占用 {{count}}",
                     count: sessionCount,
                   })}
+                  {onReleaseSessionOccupancy && (
+                    <button
+                      type="button"
+                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-amber-700/80 transition-colors hover:bg-amber-200 hover:text-amber-900 dark:text-amber-200/80 dark:hover:bg-amber-800/60 dark:hover:text-amber-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onReleaseSessionOccupancy();
+                      }}
+                      disabled={isReleasingSessionOccupancy}
+                      aria-label={t("provider.releaseOccupancy", {
+                        defaultValue: "释放占用",
+                      })}
+                      title={t("provider.releaseOccupancy", {
+                        defaultValue: "释放占用",
+                      })}
+                    >
+                      {isReleasingSessionOccupancy ? (
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      ) : (
+                        <X className="h-2.5 w-2.5" />
+                      )}
+                    </button>
+                  )}
                 </span>
               </TooltipTrigger>
               <TooltipContent className="max-w-sm text-left leading-relaxed">
@@ -5059,6 +5260,7 @@ function SortableProviderTableRow({
           <ProviderActions
             appId={appId}
             isCurrent={isCurrent}
+            canDelete={canDelete}
             isInConfig={isInConfig}
             isTesting={isTesting}
             isProxyTakeover={isProxyTakeover}

@@ -10,6 +10,15 @@ use crate::store::AppState;
 use std::collections::HashSet;
 use std::net::IpAddr;
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseProviderSessionBindingsResult {
+    pub total_affected: usize,
+    pub rebound_count: usize,
+    pub unbound_count: usize,
+    pub suggest_increase_max_sessions: bool,
+}
+
 fn is_loopback_listen_address(address: &str) -> bool {
     let trimmed = address.trim();
     if trimmed.eq_ignore_ascii_case("localhost") {
@@ -44,6 +53,13 @@ fn normalize_app_proxy_config(mut config: AppProxyConfig) -> Result<AppProxyConf
     if config.force_model_enabled && config.force_model.is_empty() {
         return Err(
             "强制模型已开启时，模型名称不能为空 / forceModel is required when enabled".to_string(),
+        );
+    }
+
+    if !(1..=20).contains(&config.zero_token_anomaly_threshold) {
+        return Err(
+            "0/0 token 异常连续阈值必须在 1-20 之间 / zeroTokenAnomalyThreshold must be between 1 and 20"
+                .to_string(),
         );
     }
 
@@ -175,39 +191,13 @@ pub async fn update_proxy_config_for_app(
             .map_err(|e| e.to_string())?;
     }
 
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn get_session_routing_master_enabled(
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, String> {
-    state
-        .db
-        .get_session_routing_master_enabled()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn set_session_routing_master_enabled(
-    state: tauri::State<'_, AppState>,
-    enabled: bool,
-) -> Result<(), String> {
-    let previous = state
-        .db
-        .get_session_routing_master_enabled()
-        .map_err(|e| e.to_string())?;
-
-    state
-        .db
-        .set_session_routing_master_enabled(enabled)
-        .map_err(|e| e.to_string())?;
-
-    if previous != enabled {
-        state
-            .db
-            .clear_all_session_provider_bindings()
-            .map_err(|e| e.to_string())?;
+    if config.session_routing_enabled {
+        reconcile_session_bindings_for_routing(
+            state.inner(),
+            &config.app_type,
+            config.session_idle_ttl_minutes.max(1),
+        )
+        .await?;
     }
 
     Ok(())
@@ -278,17 +268,84 @@ pub async fn get_session_provider_binding(
     get_session_provider_binding_internal(&state, &app_type, &session_id, idle_ttl_minutes).await
 }
 
-#[tauri::command]
-pub async fn switch_session_provider_binding(
-    state: tauri::State<'_, AppState>,
-    app_type: String,
-    session_id: String,
-    provider_id: String,
+async fn validate_switch_session_provider_binding_target(
+    state: &AppState,
+    app_type: &str,
+    provider_id: &str,
+    existing_binding: Option<&SessionProviderBinding>,
+    idle_ttl_minutes: u32,
+) -> Result<(), String> {
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !app_config.session_routing_enabled {
+        return Err("当前应用未启用会话路由，无法手动切换会话绑定".to_string());
+    }
+
+    let candidate_provider_ids =
+        resolve_session_routing_candidate_provider_ids(state, app_type).await?;
+    if candidate_provider_ids.is_empty() {
+        return Err("当前没有可用于会话路由的供应商".to_string());
+    }
+
+    if !candidate_provider_ids
+        .iter()
+        .any(|candidate| candidate == provider_id)
+    {
+        return Err("目标供应商当前未启用、已降级/熔断，或不在会话路由候选集中".to_string());
+    }
+
+    if matches!(
+        state
+            .proxy_service
+            .get_provider_circuit_breaker_stats(provider_id, app_type)
+            .await
+            .map_err(|e| e.to_string())?
+            .as_ref()
+            .map(|stats| stats.state),
+        Some(crate::proxy::CircuitState::Open)
+    ) {
+        return Err("目标供应商当前处于熔断状态，无法切换会话绑定".to_string());
+    }
+
+    if app_config.session_allow_shared_when_exhausted
+        || app_config.session_max_sessions_per_provider == 0
+        || existing_binding
+            .map(|binding| binding.provider_id.as_str() == provider_id)
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let active_counts = state
+        .db
+        .get_active_session_counts_map(app_type, idle_ttl_minutes)
+        .map_err(|e| e.to_string())?;
+    let max_sessions = app_config.session_max_sessions_per_provider as usize;
+    let current_count = active_counts.get(provider_id).copied().unwrap_or(0);
+
+    if current_count >= max_sessions {
+        return Err(format!(
+            "目标供应商已达到最大会话数限制（{max_sessions}），请先解绑占用或提高上限"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn switch_session_provider_binding_internal(
+    state: &AppState,
+    app_type: &str,
+    session_id: &str,
+    provider_id: &str,
     pin: Option<bool>,
 ) -> Result<SessionProviderBinding, String> {
     if state
         .db
-        .get_provider_by_id(&provider_id, &app_type)
+        .get_provider_by_id(provider_id, app_type)
         .map_err(|e| e.to_string())?
         .is_none()
     {
@@ -297,24 +354,57 @@ pub async fn switch_session_provider_binding(
         ));
     }
 
-    let ttl = resolve_session_idle_ttl(&state, &app_type, None).await?;
+    let ttl = resolve_session_idle_ttl(state, app_type, None).await?;
     let existing = state
         .db
-        .get_session_provider_binding(&app_type, &session_id, ttl)
+        .get_session_provider_binding(app_type, session_id, ttl)
         .map_err(|e| e.to_string())?;
+
+    validate_switch_session_provider_binding_target(
+        state,
+        app_type,
+        provider_id,
+        existing.as_ref(),
+        ttl,
+    )
+    .await?;
+
     let pinned = pin.unwrap_or_else(|| existing.as_ref().map(|item| item.pinned).unwrap_or(false));
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     state
         .db
-        .upsert_session_provider_binding(&app_type, &session_id, &provider_id, pinned, now_ms)
+        .upsert_session_provider_binding(app_type, session_id, provider_id, pinned, now_ms)
         .map_err(|e| e.to_string())?;
 
     state
         .db
-        .get_session_provider_binding(&app_type, &session_id, ttl)
+        .get_session_provider_binding(app_type, session_id, ttl)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "failed to read session binding after switch".to_string())
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn switch_session_provider_binding_test_hook(
+    state: &AppState,
+    app_type: &str,
+    session_id: &str,
+    provider_id: &str,
+    pin: Option<bool>,
+) -> Result<SessionProviderBinding, String> {
+    switch_session_provider_binding_internal(state, app_type, session_id, provider_id, pin).await
+}
+
+#[tauri::command]
+pub async fn switch_session_provider_binding(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+    provider_id: String,
+    pin: Option<bool>,
+) -> Result<SessionProviderBinding, String> {
+    switch_session_provider_binding_internal(&state, &app_type, &session_id, &provider_id, pin)
+        .await
 }
 
 #[tauri::command]
@@ -341,6 +431,137 @@ pub async fn remove_session_provider_binding(
         .db
         .remove_session_provider_binding(&app_type, &session_id)
         .map_err(|e| e.to_string())
+}
+
+async fn release_provider_session_bindings_internal(
+    state: &AppState,
+    app_type: &str,
+    provider_id: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<ReleaseProviderSessionBindingsResult, String> {
+    let ttl = resolve_session_idle_ttl(state, app_type, idle_ttl_minutes).await?;
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !app_config.session_routing_enabled {
+        return Ok(ReleaseProviderSessionBindingsResult {
+            total_affected: 0,
+            rebound_count: 0,
+            unbound_count: 0,
+            suggest_increase_max_sessions: false,
+        });
+    }
+
+    let target_bindings: Vec<SessionProviderBinding> = state
+        .db
+        .list_session_provider_bindings(app_type, ttl)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|binding| binding.is_active && binding.provider_id == provider_id)
+        .collect();
+
+    if target_bindings.is_empty() {
+        return Ok(ReleaseProviderSessionBindingsResult {
+            total_affected: 0,
+            rebound_count: 0,
+            unbound_count: 0,
+            suggest_increase_max_sessions: false,
+        });
+    }
+
+    let candidate_provider_ids =
+        resolve_session_routing_candidate_provider_ids(state, app_type).await?;
+    let preferred_candidate_provider_ids =
+        resolve_public_priority_candidate_provider_ids(state, app_type, &candidate_provider_ids)
+            .await?;
+    let rebound_count = if !candidate_provider_ids.is_empty() {
+        state
+            .db
+            .reassign_session_provider_bindings_for_provider_with_preferred_pool(
+                app_type,
+                provider_id,
+                &candidate_provider_ids,
+                &preferred_candidate_provider_ids,
+                app_config.session_routing_strategy.as_str(),
+                app_config.session_max_sessions_per_provider,
+                app_config.session_allow_shared_when_exhausted,
+                ttl,
+            )
+            .map_err(|e| e.to_string())?
+    } else {
+        0
+    };
+
+    let remaining_bindings: Vec<SessionProviderBinding> = state
+        .db
+        .list_session_provider_bindings(app_type, ttl)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|binding| binding.is_active && binding.provider_id == provider_id)
+        .collect();
+    let unbound_count = remaining_bindings.len();
+
+    for binding in remaining_bindings {
+        state
+            .db
+            .remove_session_provider_binding(app_type, &binding.session_id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let suggest_increase_max_sessions = if unbound_count == 0
+        || app_config.session_max_sessions_per_provider == 0
+        || app_config.session_allow_shared_when_exhausted
+    {
+        false
+    } else {
+        let alternative_candidates: Vec<&String> = candidate_provider_ids
+            .iter()
+            .filter(|candidate| candidate.as_str() != provider_id)
+            .collect();
+        if alternative_candidates.is_empty() {
+            false
+        } else {
+            let counts = state
+                .db
+                .get_active_session_counts_map(app_type, ttl)
+                .map_err(|e| e.to_string())?;
+            let max_sessions = app_config.session_max_sessions_per_provider as usize;
+            alternative_candidates.iter().all(|candidate| {
+                counts.get(candidate.as_str()).copied().unwrap_or(0) >= max_sessions
+            })
+        }
+    };
+
+    Ok(ReleaseProviderSessionBindingsResult {
+        total_affected: target_bindings.len(),
+        rebound_count,
+        unbound_count,
+        suggest_increase_max_sessions,
+    })
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn release_provider_session_bindings_test_hook(
+    state: &AppState,
+    app_type: &str,
+    provider_id: &str,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<ReleaseProviderSessionBindingsResult, String> {
+    release_provider_session_bindings_internal(state, app_type, provider_id, idle_ttl_minutes).await
+}
+
+#[tauri::command]
+pub async fn release_provider_session_bindings(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    provider_id: String,
+    idle_ttl_minutes: Option<u32>,
+) -> Result<ReleaseProviderSessionBindingsResult, String> {
+    release_provider_session_bindings_internal(&state, &app_type, &provider_id, idle_ttl_minutes)
+        .await
 }
 
 #[tauri::command]
@@ -374,7 +595,119 @@ pub async fn get_provider_session_occupancy_test_hook(
     get_provider_session_occupancy_internal(state, app_type, idle_ttl_minutes).await
 }
 
-async fn reconcile_session_bindings_for_routing(
+async fn resolve_session_routing_candidate_provider_ids(
+    state: &AppState,
+    app_type: &str,
+) -> Result<Vec<String>, String> {
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    let ordered_provider_ids = state
+        .db
+        .list_provider_ids_for_session_routing(app_type)
+        .map_err(|e| e.to_string())?;
+    if ordered_provider_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let providers_map = state
+        .db
+        .get_all_providers(app_type)
+        .map_err(|e| e.to_string())?;
+
+    let mut stable_provider_ids = Vec::new();
+    let mut degraded_provider_ids = Vec::new();
+    for provider_id in ordered_provider_ids {
+        let health = state
+            .db
+            .get_provider_health(&provider_id, app_type)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !health.is_healthy {
+            continue;
+        }
+
+        if health.consecutive_failures == 0 {
+            stable_provider_ids.push(provider_id);
+        } else {
+            degraded_provider_ids.push(provider_id);
+        }
+    }
+
+    if !stable_provider_ids.is_empty() && app_config.public_provider_priority_enabled {
+        let stable_public_provider_ids: HashSet<String> = stable_provider_ids
+            .iter()
+            .filter(|provider_id| {
+                providers_map
+                    .get(provider_id.as_str())
+                    .map(|provider| provider.is_public)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        if !stable_public_provider_ids.is_empty() {
+            let mut prioritized = Vec::with_capacity(stable_provider_ids.len());
+            for provider_id in stable_provider_ids.iter() {
+                if stable_public_provider_ids.contains(provider_id) {
+                    prioritized.push(provider_id.clone());
+                }
+            }
+            for provider_id in stable_provider_ids.iter() {
+                if !stable_public_provider_ids.contains(provider_id) {
+                    prioritized.push(provider_id.clone());
+                }
+            }
+            return Ok(prioritized);
+        }
+    }
+
+    Ok(if !stable_provider_ids.is_empty() {
+        stable_provider_ids
+    } else {
+        degraded_provider_ids
+    })
+}
+
+async fn resolve_public_priority_candidate_provider_ids(
+    state: &AppState,
+    app_type: &str,
+    candidate_provider_ids: &[String],
+) -> Result<Vec<String>, String> {
+    if candidate_provider_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !app_config.public_provider_priority_enabled {
+        return Ok(Vec::new());
+    }
+
+    let providers_map = state
+        .db
+        .get_all_providers(app_type)
+        .map_err(|e| e.to_string())?;
+
+    Ok(candidate_provider_ids
+        .iter()
+        .filter(|provider_id| {
+            providers_map
+                .get(provider_id.as_str())
+                .map(|provider| provider.is_public)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect())
+}
+
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn reconcile_session_bindings_for_routing(
     state: &AppState,
     app_type: &str,
     idle_ttl_minutes: u32,
@@ -397,45 +730,11 @@ async fn reconcile_session_bindings_for_routing(
         .filter(|binding| binding.is_active)
         .collect();
 
-    let ordered_provider_ids = state
-        .db
-        .list_provider_ids_for_session_routing(app_type)
-        .map_err(|e| e.to_string())?;
-    if ordered_provider_ids.is_empty() {
-        for binding in active_bindings {
-            state
-                .db
-                .remove_session_provider_binding(app_type, &binding.session_id)
-                .map_err(|e| e.to_string())?;
-        }
-        return Ok(());
-    }
-
-    let mut stable_provider_ids = Vec::new();
-    let mut degraded_provider_ids = Vec::new();
-    for provider_id in ordered_provider_ids {
-        let health = state
-            .db
-            .get_provider_health(&provider_id, app_type)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !health.is_healthy {
-            continue;
-        }
-
-        if health.consecutive_failures == 0 {
-            stable_provider_ids.push(provider_id);
-        } else {
-            degraded_provider_ids.push(provider_id);
-        }
-    }
-
-    let candidate_provider_ids = if !stable_provider_ids.is_empty() {
-        stable_provider_ids
-    } else {
-        degraded_provider_ids
-    };
+    let candidate_provider_ids =
+        resolve_session_routing_candidate_provider_ids(state, app_type).await?;
+    let preferred_candidate_provider_ids =
+        resolve_public_priority_candidate_provider_ids(state, app_type, &candidate_provider_ids)
+            .await?;
     if candidate_provider_ids.is_empty() {
         for binding in active_bindings {
             state
@@ -468,6 +767,36 @@ async fn reconcile_session_bindings_for_routing(
             state
                 .db
                 .remove_session_provider_binding(app_type, &binding.session_id)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if app_config.session_max_sessions_per_provider > 0 {
+        let max_sessions = app_config.session_max_sessions_per_provider as usize;
+        for provider_id in candidate_provider_ids.iter() {
+            let active_counts = state
+                .db
+                .get_active_session_counts_map(app_type, idle_ttl_minutes)
+                .map_err(|e| e.to_string())?;
+            let current_count = active_counts.get(provider_id).copied().unwrap_or(0);
+            if current_count <= max_sessions {
+                continue;
+            }
+
+            let overflow = current_count - max_sessions;
+            let _ = state
+                .db
+                .reassign_session_provider_bindings_for_provider_limit_with_preferred_pool(
+                    app_type,
+                    provider_id,
+                    overflow,
+                    &candidate_provider_ids,
+                    &preferred_candidate_provider_ids,
+                    app_config.session_routing_strategy.as_str(),
+                    app_config.session_max_sessions_per_provider,
+                    app_config.session_allow_shared_when_exhausted,
+                    idle_ttl_minutes,
+                )
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -774,8 +1103,8 @@ pub async fn get_circuit_breaker_stats(
     provider_id: String,
     app_type: String,
 ) -> Result<Option<CircuitBreakerStats>, String> {
-    // 这个功能需要访问运行中的代理服务器的内存状态
-    // 目前先返回 None，后续可以通过 ProxyService 暴露接口来实现
-    let _ = (state, provider_id, app_type);
-    Ok(None)
+    state
+        .proxy_service
+        .get_provider_circuit_breaker_stats(&provider_id, &app_type)
+        .await
 }

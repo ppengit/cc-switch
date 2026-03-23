@@ -227,8 +227,8 @@ fn update_command_for_tool(tool: &str, install_source: Option<&str>) -> Option<&
         },
         "codex" => Some("npm i -g @openai/codex@latest"),
         "gemini" => Some("npm i -g @google/gemini-cli@latest"),
-        "opencode" => Some("npm i -g opencode-ai@latest"),
-        "openclaw" => Some("npm i -g openclaw@latest"),
+        "opencode" => Some("opencode upgrade"),
+        "openclaw" => Some("openclaw update"),
         _ => None,
     }
 }
@@ -599,7 +599,9 @@ fn try_get_npm_package_version_wsl(
 ) -> (Option<String>, Option<String>) {
     let command = format!("npm ls -g {package} --depth=0 --json");
     match run_wsl_shell_capture(distro, force_shell, force_shell_flag, &command) {
-        Ok((_success, stdout, stderr)) => parse_npm_package_version_stdout(&stdout, &stderr, package),
+        Ok((_success, stdout, stderr)) => {
+            parse_npm_package_version_stdout(&stdout, &stderr, package)
+        }
         Err(err) => (None, Some(err)),
     }
 }
@@ -652,8 +654,12 @@ fn collect_claude_installations_wsl(
         path_error,
     );
 
-    let (npm_version, npm_error) =
-        try_get_npm_package_version_wsl("@anthropic-ai/claude-code", distro, force_shell, force_shell_flag);
+    let (npm_version, npm_error) = try_get_npm_package_version_wsl(
+        "@anthropic-ai/claude-code",
+        distro,
+        force_shell,
+        force_shell_flag,
+    );
     upsert_tool_installation(
         &mut installations,
         CLAUDE_INSTALL_SOURCE_NPM.to_string(),
@@ -878,7 +884,21 @@ fn detect_claude_install_source_local() -> Option<String> {
         .as_deref()
         .and_then(detect_claude_install_source_from_path)
         .map(str::to_string)
-        .or_else(detect_claude_install_source_via_doctor_local)
+        .or_else(|| {
+            let (npm_version, _) = try_get_npm_package_version_local("@anthropic-ai/claude-code");
+            if npm_version.is_some() {
+                return Some(CLAUDE_INSTALL_SOURCE_NPM.to_string());
+            }
+
+            let has_native_candidate = default_claude_native_candidate_paths()
+                .into_iter()
+                .any(|candidate| candidate.exists());
+            if has_native_candidate {
+                return Some(CLAUDE_INSTALL_SOURCE_NATIVE.to_string());
+            }
+
+            None
+        })
 }
 
 /// 尝试直接执行命令获取版本
@@ -1050,11 +1070,23 @@ fn detect_claude_install_source_wsl(
         .and_then(detect_claude_install_source_from_match_text)
         .map(str::to_string)
         .or_else(|| {
-            let (_, stdout, stderr) =
-                run_wsl_shell_capture(distro, force_shell, force_shell_flag, "claude doctor")
-                    .ok()?;
-            let combined = format!("{stdout}\n{stderr}");
-            parse_claude_doctor_install_source(&combined).map(str::to_string)
+            let (npm_version, _) = try_get_npm_package_version_wsl(
+                "@anthropic-ai/claude-code",
+                distro,
+                force_shell,
+                force_shell_flag,
+            );
+            if npm_version.is_some() {
+                return Some(CLAUDE_INSTALL_SOURCE_NPM.to_string());
+            }
+
+            let (native_version, _) =
+                try_get_claude_native_version_wsl(distro, force_shell, force_shell_flag);
+            if native_version.is_some() {
+                return Some(CLAUDE_INSTALL_SOURCE_NATIVE.to_string());
+            }
+
+            None
         })
 }
 
@@ -2202,11 +2234,11 @@ mod tests {
         );
         assert_eq!(
             update_command_for_tool("openclaw", None),
-            Some("npm i -g openclaw@latest")
+            Some("openclaw update")
         );
         assert_eq!(
             update_command_for_tool("opencode", None),
-            Some("npm i -g opencode-ai@latest")
+            Some("opencode upgrade")
         );
     }
 

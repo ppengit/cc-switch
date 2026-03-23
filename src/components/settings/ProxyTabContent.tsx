@@ -149,70 +149,91 @@ export function ProxyTabContent({
                   <TabsTrigger value="gemini">Gemini</TabsTrigger>
                 </TabsList>
                 <TabsContent value="claude" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="claude"
-                      disabled={!isRunning}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="claude"
-                      disabled={!isRunning}
-                    />
-                  </div>
+                  <AutoFailoverConfigPanel
+                    appType="claude"
+                    disabled={!isRunning}
+                  />
+                  <Accordion type="multiple" defaultValue={[]} className="w-full">
+                    <AccordionItem
+                      value="claude-queue"
+                      className="rounded-lg border border-border/60 px-4"
+                    >
+                      <AccordionTrigger className="py-3 hover:no-underline">
+                        <div className="text-left">
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground font-normal">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="pb-4">
+                        <FailoverQueueManager
+                          appType="claude"
+                          disabled={!isRunning}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
                 </TabsContent>
                 <TabsContent value="codex" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="codex"
-                      disabled={!isRunning}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="codex"
-                      disabled={!isRunning}
-                    />
-                  </div>
+                  <AutoFailoverConfigPanel
+                    appType="codex"
+                    disabled={!isRunning}
+                  />
+                  <Accordion type="multiple" defaultValue={[]} className="w-full">
+                    <AccordionItem
+                      value="codex-queue"
+                      className="rounded-lg border border-border/60 px-4"
+                    >
+                      <AccordionTrigger className="py-3 hover:no-underline">
+                        <div className="text-left">
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground font-normal">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="pb-4">
+                        <FailoverQueueManager
+                          appType="codex"
+                          disabled={!isRunning}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
                 </TabsContent>
                 <TabsContent value="gemini" className="mt-4 space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-sm font-semibold">
-                        {t("proxy.failoverQueue.title")}
-                      </h4>
-                      <p className="text-xs text-muted-foreground">
-                        {t("proxy.failoverQueue.description")}
-                      </p>
-                    </div>
-                    <FailoverQueueManager
-                      appType="gemini"
-                      disabled={!isRunning}
-                    />
-                  </div>
-                  <div className="border-t border-border/50 pt-6">
-                    <AutoFailoverConfigPanel
-                      appType="gemini"
-                      disabled={!isRunning}
-                    />
-                  </div>
+                  <AutoFailoverConfigPanel
+                    appType="gemini"
+                    disabled={!isRunning}
+                  />
+                  <Accordion type="multiple" defaultValue={[]} className="w-full">
+                    <AccordionItem
+                      value="gemini-queue"
+                      className="rounded-lg border border-border/60 px-4"
+                    >
+                      <AccordionTrigger className="py-3 hover:no-underline">
+                        <div className="text-left">
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground font-normal">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="pb-4">
+                        <FailoverQueueManager
+                          appType="gemini"
+                          disabled={!isRunning}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
                 </TabsContent>
               </Tabs>
             </div>

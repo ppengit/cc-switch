@@ -111,6 +111,7 @@ export function AddProviderDialog({
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
         websiteUrl: values.websiteUrl?.trim() || undefined,
+        isPublic: values.isPublic === true,
         settingsConfig: parsedConfig,
         icon: values.icon?.trim() || undefined,
         iconColor: values.iconColor?.trim() || undefined,

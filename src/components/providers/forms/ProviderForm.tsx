@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
@@ -94,7 +94,6 @@ import {
 } from "./helpers/opencodeFormUtils";
 import {
   buildSeedFieldSyncPlan,
-  createEmptySeedFieldFollowers,
   type SeedFieldValues,
   type SeedSyncField,
 } from "./helpers/seedFieldSync";
@@ -130,6 +129,7 @@ interface ProviderFormProps {
     name?: string;
     websiteUrl?: string;
     notes?: string;
+    isPublic?: boolean;
     settingsConfig?: Record<string, unknown>;
     category?: ProviderCategory;
     meta?: ProviderMeta;
@@ -279,6 +279,7 @@ export function ProviderForm({
       name: initialData?.name ?? "",
       websiteUrl: initialData?.websiteUrl ?? "",
       notes: initialData?.notes ?? "",
+      isPublic: initialData?.isPublic ?? false,
       settingsConfig: initialData?.settingsConfig
         ? JSON.stringify(initialData.settingsConfig, null, 2)
         : renderedDefaultProviderSettingsConfig,
@@ -1292,11 +1293,6 @@ export function ProviderForm({
           : ["name", "websiteUrl"],
     [enableSeedFieldSync, hasSeedApiUrlField],
   );
-  const seedFieldFollowersRef = useRef(createEmptySeedFieldFollowers());
-
-  useEffect(() => {
-    seedFieldFollowersRef.current = createEmptySeedFieldFollowers();
-  }, [appId, category, defaultValues, hasSeedApiUrlField, selectedPresetId]);
 
   const setSeedFieldValue = useCallback(
     (field: SeedSyncField, value: string) => {
@@ -1366,15 +1362,12 @@ export function ProviderForm({
         websiteUrl: watchedWebsiteUrl,
         apiUrl: watchedApiUrl,
       };
-      const { nextFollowers, updates } = buildSeedFieldSyncPlan({
+      const { updates } = buildSeedFieldSyncPlan({
         source,
         value,
         currentValues,
-        currentFollowers: seedFieldFollowersRef.current,
         enabledFields: enabledSeedFields,
       });
-
-      seedFieldFollowersRef.current = nextFollowers;
 
       for (const [field, nextValue] of Object.entries(updates)) {
         setSeedFieldValue(field as SeedSyncField, nextValue ?? "");
@@ -1536,6 +1529,7 @@ export function ProviderForm({
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
+        isPublic: false,
         settingsConfig: JSON.stringify({ auth, config }, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
@@ -1553,6 +1547,7 @@ export function ProviderForm({
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
+        isPublic: false,
         settingsConfig: JSON.stringify(preset.settingsConfig, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
@@ -1569,6 +1564,7 @@ export function ProviderForm({
         form.reset({
           name: preset.category === "omo" ? "OMO" : "OMO Slim",
           websiteUrl: preset.websiteUrl ?? "",
+          isPublic: false,
           settingsConfig: JSON.stringify({}, null, 2),
           icon: preset.icon ?? "",
           iconColor: preset.iconColor ?? "",
@@ -1581,6 +1577,7 @@ export function ProviderForm({
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
+        isPublic: false,
         settingsConfig: JSON.stringify(config, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
@@ -1608,6 +1605,7 @@ export function ProviderForm({
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
+        isPublic: false,
         settingsConfig: JSON.stringify(config, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
@@ -1632,6 +1630,7 @@ export function ProviderForm({
     form.reset({
       name: preset.nameKey ? t(preset.nameKey) : preset.name,
       websiteUrl: preset.websiteUrl ?? "",
+      isPublic: false,
       settingsConfig: JSON.stringify(config, null, 2),
       icon: preset.icon ?? "",
       iconColor: preset.iconColor ?? "",

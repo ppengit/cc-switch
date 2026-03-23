@@ -8,6 +8,9 @@ import type {
 } from "@/types";
 import type {
   AppProxyConfig,
+  FailoverQueueItem,
+  ProviderHealth,
+  ReleaseProviderSessionBindingsResult,
   ProviderSessionOccupancy,
   SessionProviderBinding,
 } from "@/types/proxy";
@@ -16,6 +19,7 @@ type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
 type AppProxyConfigState = Record<AppId, AppProxyConfig>;
+type ProviderHealthState = Record<AppId, Record<string, ProviderHealth>>;
 type SessionBindingsState = Record<AppId, Record<string, SessionProviderBinding>>;
 type ProviderDefaultTemplateState = Partial<
   Record<"claude" | "codex" | "gemini", string | null>
@@ -100,9 +104,12 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   circuitTimeoutSeconds: 60,
   circuitErrorRateThreshold: 50,
   circuitMinRequests: 5,
+  zeroTokenAnomalyEnabled: false,
+  zeroTokenAnomalyThreshold: 3,
   sessionRoutingEnabled: false,
   sessionRoutingStrategy: "priority",
   sessionDefaultProviderId: "",
+  publicProviderPriorityEnabled: false,
   sessionMaxSessionsPerProvider: 1,
   sessionAllowSharedWhenExhausted: false,
   sessionIdleTtlMinutes: 30,
@@ -124,11 +131,20 @@ const createDefaultSessionBindings = (): SessionBindingsState => ({
   openclaw: {},
 });
 
+const createDefaultProviderHealthState = (): ProviderHealthState => ({
+  claude: {},
+  codex: {},
+  gemini: {},
+  opencode: {},
+  openclaw: {},
+});
+
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
 let appProxyConfigs = createDefaultAppProxyConfigs();
 let sessionRoutingMasterEnabled = false;
 let sessionBindings = createDefaultSessionBindings();
+let providerHealthState = createDefaultProviderHealthState();
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -184,6 +200,7 @@ export const resetProviderState = () => {
   appProxyConfigs = createDefaultAppProxyConfigs();
   sessionRoutingMasterEnabled = false;
   sessionBindings = createDefaultSessionBindings();
+  providerHealthState = createDefaultProviderHealthState();
   settingsState = {
     showInTray: true,
     minimizeToTrayOnClose: true,
@@ -324,6 +341,92 @@ export const setAppProxyConfig = (appType: AppId, value: AppProxyConfig) => {
   appProxyConfigs[appType] = JSON.parse(JSON.stringify(value)) as AppProxyConfig;
 };
 
+export const getAutoFailoverEnabledState = (appType: AppId) =>
+  appProxyConfigs[appType]?.autoFailoverEnabled === true;
+
+export const setAutoFailoverEnabledState = (appType: AppId, enabled: boolean) => {
+  appProxyConfigs[appType] = {
+    ...appProxyConfigs[appType],
+    autoFailoverEnabled: enabled,
+  };
+};
+
+export const getFailoverQueue = (appType: AppId): FailoverQueueItem[] =>
+  Object.values(providers[appType] ?? {})
+    .filter((provider) => provider.inFailoverQueue === true)
+    .sort((left, right) => {
+      const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
+      const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
+      if (leftSort !== rightSort) return leftSort - rightSort;
+      const leftCreated = left.createdAt ?? Number.MAX_SAFE_INTEGER;
+      const rightCreated = right.createdAt ?? Number.MAX_SAFE_INTEGER;
+      if (leftCreated !== rightCreated) return leftCreated - rightCreated;
+      return left.name.localeCompare(right.name);
+    })
+    .map((provider) => ({
+      providerId: provider.id,
+      providerName: provider.name,
+      sortIndex: provider.sortIndex,
+    }));
+
+export const getAvailableProvidersForFailover = (appType: AppId): Provider[] =>
+  Object.values(providers[appType] ?? {})
+    .filter((provider) => provider.inFailoverQueue !== true)
+    .map((provider) => JSON.parse(JSON.stringify(provider)) as Provider);
+
+export const addToFailoverQueueState = (appType: AppId, providerId: string) => {
+  const provider = providers[appType]?.[providerId];
+  if (!provider) return;
+  providers[appType][providerId] = {
+    ...provider,
+    inFailoverQueue: true,
+  };
+};
+
+export const removeFromFailoverQueueState = (
+  appType: AppId,
+  providerId: string,
+) => {
+  const provider = providers[appType]?.[providerId];
+  if (!provider) return;
+  providers[appType][providerId] = {
+    ...provider,
+    inFailoverQueue: false,
+  };
+};
+
+export const getProviderHealthState = (
+  appType: AppId,
+  providerId: string,
+): ProviderHealth => {
+  return (
+    providerHealthState[appType]?.[providerId] ?? {
+      provider_id: providerId,
+      app_type: appType,
+      is_healthy: true,
+      consecutive_failures: 0,
+      zero_token_anomaly_streak: 0,
+      last_success_at: null,
+      last_failure_at: null,
+      last_error: null,
+      updated_at: new Date().toISOString(),
+    }
+  );
+};
+
+export const setProviderHealthState = (
+  appType: AppId,
+  providerId: string,
+  value: Partial<ProviderHealth>,
+) => {
+  providerHealthState[appType][providerId] = {
+    ...getProviderHealthState(appType, providerId),
+    ...value,
+    provider_id: providerId,
+    app_type: appType,
+  };
+};
+
 export const listSessionProviderBindings = (
   appType: AppId,
 ): SessionProviderBinding[] =>
@@ -349,11 +452,13 @@ export const switchSessionProviderBinding = (
   const now = Date.now();
   const currentBinding = sessionBindings[appType]?.[sessionId];
   const providerName = providers[appType]?.[providerId]?.name ?? providerId;
+  const providerIsPublic = providers[appType]?.[providerId]?.isPublic === true;
   const next: SessionProviderBinding = {
     appType,
     sessionId,
     providerId,
     providerName,
+    providerIsPublic,
     pinned: pin ?? currentBinding?.pinned ?? false,
     createdAt: currentBinding?.createdAt ?? now,
     updatedAt: now,
@@ -406,6 +511,68 @@ export const getProviderSessionOccupancy = (
       sessionCount,
     }))
     .sort((a, b) => a.providerName.localeCompare(b.providerName));
+};
+
+export const releaseProviderSessionBindings = (
+  appType: AppId,
+  providerId: string,
+): ReleaseProviderSessionBindingsResult => {
+  const bindings = Object.values(sessionBindings[appType] ?? {}).filter(
+    (binding) => binding.isActive && binding.providerId === providerId,
+  );
+  if (bindings.length === 0) {
+    return {
+      totalAffected: 0,
+      reboundCount: 0,
+      unboundCount: 0,
+      suggestIncreaseMaxSessions: false,
+    };
+  }
+
+  const config = appProxyConfigs[appType];
+  const candidates = Object.keys(providers[appType] ?? {}).filter(
+    (id) => id !== providerId,
+  );
+  let reboundCount = 0;
+  let unboundCount = 0;
+
+  for (const binding of bindings) {
+    const occupancy = getProviderSessionOccupancy(appType);
+    const availableCandidate = candidates.find((candidateId) => {
+      const count =
+        occupancy.find((item) => item.providerId === candidateId)?.sessionCount ?? 0;
+      if (!config.sessionAllowSharedWhenExhausted) {
+        return count < config.sessionMaxSessionsPerProvider;
+      }
+      return true;
+    });
+
+    if (availableCandidate) {
+      switchSessionProviderBinding(
+        appType,
+        binding.sessionId,
+        availableCandidate,
+        binding.pinned,
+      );
+      reboundCount += 1;
+    } else {
+      removeSessionProviderBinding(appType, binding.sessionId);
+      unboundCount += 1;
+    }
+  }
+
+  const suggestIncreaseMaxSessions =
+    unboundCount > 0 &&
+    !config.sessionAllowSharedWhenExhausted &&
+    config.sessionMaxSessionsPerProvider > 0 &&
+    candidates.length > 0;
+
+  return {
+    totalAffected: bindings.length,
+    reboundCount,
+    unboundCount,
+    suggestIncreaseMaxSessions,
+  };
 };
 
 export const getSettings = () =>

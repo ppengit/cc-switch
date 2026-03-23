@@ -33,6 +33,7 @@ const useSessionsQueryMock = vi.fn();
 const useAppProxyConfigMock = vi.fn();
 const useSessionProviderBindingsMock = vi.fn();
 const useProviderSessionOccupancyMock = vi.fn();
+const releaseProviderSessionBindingsMutateAsyncMock = vi.fn();
 const updateAppProxyConfigMutateAsyncMock = vi.fn();
 
 vi.mock("sonner", () => ({
@@ -104,6 +105,12 @@ vi.mock("@/lib/query/proxy", () => ({
     useProviderSessionOccupancyMock(...args),
   useSessionProviderBindings: (...args: unknown[]) =>
     useSessionProviderBindingsMock(...args),
+  useReleaseProviderSessionBindings: () => ({
+    mutateAsync: (...args: unknown[]) =>
+      releaseProviderSessionBindingsMutateAsyncMock(...args),
+    isPending: false,
+    variables: undefined,
+  }),
   useUpdateAppProxyConfig: () => ({
     mutateAsync: (...args: unknown[]) =>
       updateAppProxyConfigMutateAsyncMock(...args),
@@ -175,6 +182,7 @@ beforeEach(() => {
   useAppProxyConfigMock.mockReset();
   useSessionProviderBindingsMock.mockReset();
   useProviderSessionOccupancyMock.mockReset();
+  releaseProviderSessionBindingsMutateAsyncMock.mockReset();
   updateAppProxyConfigMutateAsyncMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
@@ -462,6 +470,36 @@ describe("ProviderList Component", () => {
     expect(row).not.toBeNull();
     expect(within(row!.cells[5]).getByText("当前流量")).toBeInTheDocument();
     expect(within(row!.cells[5]).getByText("当前")).toBeInTheDocument();
+  });
+
+  it("allows deleting the current switch-mode provider when another fallback provider exists", () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+    const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: providerAlpha, beta: providerBeta }}
+        currentProviderId="beta"
+        appId="codex"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const betaActionProps = providerActionsRenderSpy.mock.calls.find(
+      ([props]) => props.isCurrent === true,
+    )?.[0];
+
+    expect(betaActionProps?.canDelete).toBe(true);
   });
 
   it("maps no-session default to current provider when session routing follows current", () => {

@@ -83,8 +83,8 @@ impl Database {
                 tx.execute(
                     "INSERT OR REPLACE INTO providers (
                         id, app_type, name, settings_config, website_url, category,
-                        created_at, sort_index, notes, icon, icon_color, meta, is_current
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        created_at, sort_index, notes, icon, icon_color, meta, is_current, is_public
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         id,
                         app_type,
@@ -99,6 +99,7 @@ impl Database {
                         provider.icon_color,
                         to_json_string(&meta_clone)?,
                         is_current,
+                        provider.is_public,
                     ],
                 )
                 .map_err(|e| AppError::Database(format!("Migrate provider failed: {e}")))?;

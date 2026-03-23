@@ -8,8 +8,15 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import type { SessionMessage, SessionMeta } from "@/types";
-import { setSessionFixtures } from "../msw/state";
+import type { Provider, SessionMessage, SessionMeta } from "@/types";
+import {
+  addToFailoverQueueState,
+  setAppProxyConfig,
+  setProviderHealthState,
+  setProviders,
+  setSessionFixtures,
+  switchSessionProviderBinding,
+} from "../msw/state";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -70,8 +77,8 @@ const renderPage = () => {
 };
 
 const openSearch = () => {
-  const searchButton = Array.from(screen.getAllByRole("button")).find((button) =>
-    button.querySelector(".lucide-search"),
+  const searchButton = Array.from(screen.getAllByRole("button")).find(
+    (button) => button.querySelector(".lucide-search"),
   );
 
   if (!searchButton) {
@@ -178,11 +185,110 @@ describe("SessionManagerPage", () => {
       expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument(),
     );
 
-    expect(screen.getByText("sessionManager.selectSession")).toBeInTheDocument();
+    expect(
+      screen.getByText("sessionManager.selectSession"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("sessionManager.emptySession"),
     ).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("filters out disabled, degraded, unhealthy, and full providers from session binding switcher", async () => {
+    const providers: Record<string, Provider> = {
+      healthy: {
+        id: "healthy",
+        name: "Healthy Provider",
+        settingsConfig: {},
+        inFailoverQueue: true,
+        isPublic: true,
+      },
+      degraded: {
+        id: "degraded",
+        name: "Degraded Provider",
+        settingsConfig: {},
+        inFailoverQueue: true,
+      },
+      disabled: {
+        id: "disabled",
+        name: "Disabled Provider",
+        settingsConfig: {},
+        inFailoverQueue: false,
+      },
+      unhealthy: {
+        id: "unhealthy",
+        name: "Open Circuit Provider",
+        settingsConfig: {},
+        inFailoverQueue: true,
+      },
+      full: {
+        id: "full",
+        name: "Full Provider",
+        settingsConfig: {},
+        inFailoverQueue: true,
+      },
+    };
+
+    setProviders("codex", providers);
+    setAppProxyConfig("codex", {
+      appType: "codex",
+      enabled: false,
+      forceModelEnabled: false,
+      forceModel: "",
+      autoFailoverEnabled: true,
+      maxRetries: 3,
+      streamingFirstByteTimeout: 30,
+      streamingIdleTimeout: 30,
+      nonStreamingTimeout: 60,
+      circuitFailureThreshold: 3,
+      circuitSuccessThreshold: 2,
+      circuitTimeoutSeconds: 60,
+      circuitErrorRateThreshold: 50,
+      circuitMinRequests: 5,
+      zeroTokenAnomalyEnabled: false,
+      zeroTokenAnomalyThreshold: 3,
+      sessionRoutingEnabled: true,
+      sessionRoutingStrategy: "priority",
+      sessionDefaultProviderId: "",
+      sessionMaxSessionsPerProvider: 1,
+      sessionAllowSharedWhenExhausted: false,
+      sessionIdleTtlMinutes: 30,
+    });
+    addToFailoverQueueState("codex", "healthy");
+    addToFailoverQueueState("codex", "degraded");
+    addToFailoverQueueState("codex", "unhealthy");
+    addToFailoverQueueState("codex", "full");
+    setProviderHealthState("codex", "healthy", { is_healthy: true });
+    setProviderHealthState("codex", "degraded", {
+      is_healthy: true,
+      consecutive_failures: 1,
+    });
+    setProviderHealthState("codex", "unhealthy", {
+      is_healthy: false,
+      consecutive_failures: 3,
+    });
+    setProviderHealthState("codex", "full", { is_healthy: true });
+    switchSessionProviderBinding("codex", "codex-session-1", "healthy", false);
+    switchSessionProviderBinding("codex", "occupied-by-full", "full", false);
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: /选择提供商/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Healthy Provider")).toBeInTheDocument(),
+    );
+    expect(screen.getAllByText("public").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Disabled Provider")).not.toBeInTheDocument();
+    expect(screen.queryByText("Degraded Provider")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open Circuit Provider")).not.toBeInTheDocument();
+    expect(screen.queryByText("Full Provider")).not.toBeInTheDocument();
   });
 });

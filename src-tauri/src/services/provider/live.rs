@@ -83,6 +83,29 @@ fn extract_codex_mcp_fragment(config_text: &str) -> Option<String> {
     None
 }
 
+fn merge_codex_mcp_fragments(primary: &str, secondary: &str) -> String {
+    let primary = primary.trim();
+    let secondary = secondary.trim();
+
+    if primary.is_empty() {
+        return secondary.to_string();
+    }
+    if secondary.is_empty() {
+        return primary.to_string();
+    }
+
+    let primary_doc = primary.parse::<DocumentMut>();
+    let secondary_doc = secondary.parse::<DocumentMut>();
+
+    match (primary_doc, secondary_doc) {
+        (Ok(mut primary_doc), Ok(secondary_doc)) => {
+            merge_toml_table_like(primary_doc.as_table_mut(), secondary_doc.as_table());
+            primary_doc.to_string().trim().to_string()
+        }
+        _ => primary.to_string(),
+    }
+}
+
 fn render_codex_config_template(
     template: &str,
     provider_fragment: &str,
@@ -680,11 +703,14 @@ fn apply_common_config_to_settings(
                 let normalized_provider_fragment =
                     normalize_codex_provider_fragment_for_template(&provider_fragment, trimmed)
                         .unwrap_or_else(|_| provider_fragment.to_string());
+                let provider_mcp =
+                    extract_codex_mcp_fragment(&provider_fragment).unwrap_or_default();
                 let current_live_config =
                     crate::codex_config::read_codex_config_text().unwrap_or_default();
                 let current_mcp =
                     extract_codex_mcp_fragment(&current_live_config).unwrap_or_default();
-                render_codex_config_template(trimmed, &normalized_provider_fragment, &current_mcp)
+                let merged_mcp = merge_codex_mcp_fragments(&current_mcp, &provider_mcp);
+                render_codex_config_template(trimmed, &normalized_provider_fragment, &merged_mcp)
             } else {
                 let mut target_doc = if provider_fragment.trim().is_empty() {
                     DocumentMut::new()

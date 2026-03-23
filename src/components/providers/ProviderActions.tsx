@@ -33,6 +33,7 @@ import type { TerminalTargetMode } from "@/types";
 interface ProviderActionsProps {
   appId?: AppId;
   isCurrent: boolean;
+  canDelete?: boolean;
   isInConfig?: boolean;
   isTesting?: boolean;
   isProxyTakeover?: boolean;
@@ -60,6 +61,7 @@ interface ProviderActionsProps {
 export function ProviderActions({
   appId,
   isCurrent,
+  canDelete,
   isInConfig = false,
   isTesting,
   isProxyTakeover = false,
@@ -210,7 +212,8 @@ export function ProviderActions({
 
   const buttonState = getMainButtonState();
 
-  const canDelete = isOmo || isAdditiveMode ? true : !isCurrent;
+  const deleteEnabled =
+    canDelete ?? (isOmo || isAdditiveMode ? true : !isCurrent);
 
   return (
     <div className="flex items-center gap-1.5">
@@ -336,7 +339,7 @@ export function ProviderActions({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[220px]">
               <DropdownMenuItem
-                onClick={() => onOpenTerminalWithMode("manual")}
+                onSelect={() => onOpenTerminalWithMode("manual")}
               >
                 {t("provider.terminalTargetManual", {
                   defaultValue: "手动选择",
@@ -354,7 +357,7 @@ export function ProviderActions({
                       <DropdownMenuItem
                         key={path}
                         title={path}
-                        onClick={() => onOpenTerminalWithMode("recent", path)}
+                        onSelect={() => onOpenTerminalWithMode("recent", path)}
                       >
                         <span className="truncate">{path}</span>
                       </DropdownMenuItem>
@@ -369,7 +372,7 @@ export function ProviderActions({
                   {hasRecentTargets && onClearRecentTerminals && (
                     <>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={onClearRecentTerminals}>
+                      <DropdownMenuItem onSelect={onClearRecentTerminals}>
                         {t("provider.terminalTargetRecentClear", {
                           defaultValue: "清除最近打开",
                         })}
@@ -385,12 +388,13 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={canDelete ? onDelete : undefined}
+          onClick={deleteEnabled ? onDelete : undefined}
           title={t("common.delete")}
           className={cn(
             iconButtonClass,
-            canDelete && "hover:text-red-500 dark:hover:text-red-400",
-            !canDelete && "opacity-40 cursor-not-allowed text-muted-foreground",
+            deleteEnabled && "hover:text-red-500 dark:hover:text-red-400",
+            !deleteEnabled &&
+              "opacity-40 cursor-not-allowed text-muted-foreground",
           )}
         >
           <Trash2 className="h-4 w-4" />

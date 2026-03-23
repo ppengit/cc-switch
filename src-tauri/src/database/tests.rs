@@ -704,6 +704,7 @@ fn dry_run_validates_schema_compatibility() {
             icon: None,
             icon_color: None,
             in_failover_queue: false,
+            is_public: false,
         },
     );
 
@@ -823,9 +824,12 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .await
         .expect("get opencode proxy config");
     opencode.session_routing_enabled = true;
+    opencode.public_provider_priority_enabled = true;
     opencode.session_max_sessions_per_provider = 2;
     opencode.force_model_enabled = true;
     opencode.force_model = "gpt-5.4".to_string();
+    opencode.zero_token_anomaly_enabled = true;
+    opencode.zero_token_anomaly_threshold = 4;
     db.update_proxy_config_for_app(opencode)
         .await
         .expect("update opencode proxy config");
@@ -835,9 +839,12 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .await
         .expect("get openclaw proxy config");
     openclaw.session_routing_enabled = true;
+    openclaw.public_provider_priority_enabled = true;
     openclaw.session_idle_ttl_minutes = 45;
     openclaw.force_model_enabled = true;
     openclaw.force_model = "claude-sonnet-4-5-20250929".to_string();
+    openclaw.zero_token_anomaly_enabled = true;
+    openclaw.zero_token_anomaly_threshold = 2;
     db.update_proxy_config_for_app(openclaw)
         .await
         .expect("update openclaw proxy config");
@@ -847,16 +854,22 @@ async fn proxy_config_round_trip_for_opencode_and_openclaw() {
         .await
         .expect("reload opencode proxy config");
     assert!(opencode_after.session_routing_enabled);
+    assert!(opencode_after.public_provider_priority_enabled);
     assert_eq!(opencode_after.session_max_sessions_per_provider, 2);
     assert!(opencode_after.force_model_enabled);
     assert_eq!(opencode_after.force_model, "gpt-5.4");
+    assert!(opencode_after.zero_token_anomaly_enabled);
+    assert_eq!(opencode_after.zero_token_anomaly_threshold, 4);
 
     let openclaw_after = db
         .get_proxy_config_for_app("openclaw")
         .await
         .expect("reload openclaw proxy config");
     assert!(openclaw_after.session_routing_enabled);
+    assert!(openclaw_after.public_provider_priority_enabled);
     assert_eq!(openclaw_after.session_idle_ttl_minutes, 45);
     assert!(openclaw_after.force_model_enabled);
     assert_eq!(openclaw_after.force_model, "claude-sonnet-4-5-20250929");
+    assert!(openclaw_after.zero_token_anomaly_enabled);
+    assert_eq!(openclaw_after.zero_token_anomaly_threshold, 2);
 }

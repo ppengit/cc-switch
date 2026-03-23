@@ -26,7 +26,9 @@ type RequestLogsKey = {
   appType?: string;
   providerName?: string;
   model?: string;
+  sessionQuery?: string;
   statusCode?: number;
+  sessionRoutingActive?: boolean;
   startDate?: number;
   endDate?: number;
 };
@@ -47,7 +49,9 @@ export const usageKeys = {
       key.appType ?? "",
       key.providerName ?? "",
       key.model ?? "",
+      key.sessionQuery ?? "",
       key.statusCode ?? -1,
+      key.sessionRoutingActive == null ? "all" : key.sessionRoutingActive ? "on" : "off",
       key.startDate ?? 0,
       key.endDate ?? 0,
       page,
@@ -130,7 +134,9 @@ export function useRequestLogs({
     appType: filters.appType,
     providerName: filters.providerName,
     model: filters.model,
+    sessionQuery: filters.sessionQuery,
     statusCode: filters.statusCode,
+    sessionRoutingActive: filters.sessionRoutingActive,
     startDate: timeMode === "fixed" ? filters.startDate : undefined,
     endDate: timeMode === "fixed" ? filters.endDate : undefined,
   };

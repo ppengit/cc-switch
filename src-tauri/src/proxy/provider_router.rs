@@ -8,7 +8,7 @@ use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
 use crate::proxy::types::AppProxyConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -22,6 +22,28 @@ pub struct ProviderRouter {
 }
 
 impl ProviderRouter {
+    fn prioritize_stable_public_provider_ids(
+        ordered_provider_ids: &[String],
+        stable_public_provider_ids: &HashSet<String>,
+    ) -> Vec<String> {
+        if stable_public_provider_ids.is_empty() {
+            return ordered_provider_ids.to_vec();
+        }
+
+        let mut prioritized = Vec::with_capacity(ordered_provider_ids.len());
+        for provider_id in ordered_provider_ids {
+            if stable_public_provider_ids.contains(provider_id) {
+                prioritized.push(provider_id.clone());
+            }
+        }
+        for provider_id in ordered_provider_ids {
+            if !stable_public_provider_ids.contains(provider_id) {
+                prioritized.push(provider_id.clone());
+            }
+        }
+        prioritized
+    }
+
     /// 创建新的供应商路由器
     pub fn new(db: Arc<Database>) -> Self {
         Self {
@@ -52,14 +74,55 @@ impl ProviderRouter {
         if auto_failover_enabled {
             // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
+            let public_provider_priority_enabled = self
+                .db
+                .get_proxy_config_for_app(app_type)
+                .await
+                .map(|config| config.public_provider_priority_enabled)
+                .unwrap_or(false);
 
             // 使用 DAO 返回的排序结果，确保和前端展示一致
-            let ordered_ids: Vec<String> = self
-                .db
-                .get_failover_queue(app_type)?
-                .into_iter()
-                .map(|item| item.provider_id)
-                .collect();
+            let ordered_ids = self.db.filter_provider_ids_for_routing_enablement(
+                app_type,
+                self.db
+                    .get_failover_queue(app_type)?
+                    .into_iter()
+                    .map(|item| item.provider_id)
+                    .collect::<Vec<_>>(),
+            )?;
+
+            let ordered_ids = if public_provider_priority_enabled {
+                let mut stable_public_provider_ids = HashSet::new();
+
+                for provider_id in ordered_ids.iter() {
+                    let Some(provider) = all_providers.get(provider_id) else {
+                        continue;
+                    };
+                    if !provider.is_public {
+                        continue;
+                    }
+
+                    let circuit_key = format!("{app_type}:{}", provider.id);
+                    let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+                    if !breaker.is_available().await {
+                        continue;
+                    }
+
+                    match self.db.get_provider_health(&provider.id, app_type).await {
+                        Ok(health) if health.is_healthy && health.consecutive_failures == 0 => {
+                            stable_public_provider_ids.insert(provider.id.clone());
+                        }
+                        _ => {}
+                    }
+                }
+
+                Self::prioritize_stable_public_provider_ids(
+                    &ordered_ids,
+                    &stable_public_provider_ids,
+                )
+            } else {
+                ordered_ids
+            };
 
             total_providers = ordered_ids.len();
 
@@ -112,8 +175,8 @@ impl ProviderRouter {
     /// 会话路由候选提供商选择
     ///
     /// 与普通故障转移选择不同：
-    /// - 始终基于“该应用下全部提供商”构建候选集（优先队列内，再补充其余）
-    /// - 不依赖 auto_failover_enabled 开关，避免会话路由被“仅当前提供商”限制
+    /// - 自动故障转移开启时，仅使用故障转移队列中已启用的提供商
+    /// - 自动故障转移关闭时，使用该应用下全部提供商
     /// - 仍遵循熔断器可用性过滤，保护不可用上游
     pub async fn select_session_routing_providers(
         &self,
@@ -160,45 +223,55 @@ impl ProviderRouter {
         app_type: &str,
         preferred_provider_id: Option<&str>,
         auto_failover_enabled: bool,
+        public_provider_priority_enabled: bool,
+        explicit_preferred_provider: bool,
     ) -> Result<Vec<Provider>, AppError> {
         let all_providers = self.db.get_all_providers(app_type)?;
-        let mut ordered_provider_ids = Vec::new();
+        let fallback_provider_ids = if auto_failover_enabled {
+            self.db.filter_provider_ids_for_routing_enablement(
+                app_type,
+                self.db
+                    .get_failover_queue(app_type)?
+                    .into_iter()
+                    .map(|item| item.provider_id)
+                    .collect::<Vec<_>>(),
+            )?
+        } else {
+            self.db.list_provider_ids_for_session_routing(app_type)?
+        };
 
+        let mut ordered_provider_ids = Vec::new();
         if let Some(provider_id) = preferred_provider_id
             .map(str::trim)
             .filter(|provider_id| !provider_id.is_empty())
         {
-            ordered_provider_ids.push(provider_id.to_string());
+            let is_available_for_default = fallback_provider_ids
+                .iter()
+                .any(|fallback_id| fallback_id == provider_id);
+            if is_available_for_default {
+                ordered_provider_ids.push(provider_id.to_string());
+            }
         }
 
-        if auto_failover_enabled {
-            for item in self.db.get_failover_queue(app_type)? {
-                if !ordered_provider_ids.contains(&item.provider_id) {
-                    ordered_provider_ids.push(item.provider_id);
+        if !(explicit_preferred_provider && !auto_failover_enabled) {
+            for provider_id in fallback_provider_ids {
+                if !ordered_provider_ids.contains(&provider_id) {
+                    ordered_provider_ids.push(provider_id);
                 }
             }
         } else if ordered_provider_ids.is_empty() {
-            let current_id = AppType::from_str(app_type)
-                .ok()
-                .and_then(|app_enum| {
-                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
-                        .ok()
-                        .flatten()
-                })
-                .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
-
-            if let Some(current_id) = current_id {
-                ordered_provider_ids.push(current_id);
-            }
+            ordered_provider_ids = fallback_provider_ids;
         }
 
         if ordered_provider_ids.is_empty() {
             return Err(AppError::NoProvidersConfigured);
         }
 
-        let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
+        let mut stable = Vec::new();
+        let mut degraded = Vec::new();
+        let mut explicit_chain = Vec::new();
 
         for provider_id in ordered_provider_ids {
             let Some(provider) = all_providers.get(&provider_id).cloned() else {
@@ -206,19 +279,68 @@ impl ProviderRouter {
             };
             total_providers += 1;
 
-            if !auto_failover_enabled {
-                result.push(provider);
+            let circuit_key = format!("{app_type}:{}", provider.id);
+            let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+            if !breaker.is_available().await {
+                circuit_open_count += 1;
                 continue;
             }
 
-            let circuit_key = format!("{app_type}:{}", provider.id);
-            let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
-            if breaker.is_available().await {
-                result.push(provider);
-            } else {
-                circuit_open_count += 1;
+            if explicit_preferred_provider {
+                explicit_chain.push(provider);
+                continue;
+            }
+
+            match self.db.get_provider_health(&provider.id, app_type).await {
+                Ok(health) if health.is_healthy && health.consecutive_failures == 0 => {
+                    stable.push(provider);
+                }
+                Ok(health) if health.is_healthy => {
+                    degraded.push(provider);
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    stable.push(provider);
+                }
             }
         }
+
+        let result = if explicit_preferred_provider {
+            explicit_chain
+        } else if !stable.is_empty() {
+            let stable = if public_provider_priority_enabled {
+                let stable_public_provider_ids: HashSet<String> = stable
+                    .iter()
+                    .filter(|provider| provider.is_public)
+                    .map(|provider| provider.id.clone())
+                    .collect();
+
+                if stable_public_provider_ids.is_empty() {
+                    stable
+                } else {
+                    let mut prioritized = Vec::with_capacity(stable.len());
+                    for provider in stable.iter() {
+                        if stable_public_provider_ids.contains(&provider.id) {
+                            prioritized.push(provider.clone());
+                        }
+                    }
+                    for provider in stable.iter() {
+                        if !stable_public_provider_ids.contains(&provider.id) {
+                            prioritized.push(provider.clone());
+                        }
+                    }
+                    prioritized
+                }
+            } else {
+                stable
+            };
+
+            let mut result = stable;
+            result.extend(degraded);
+            result
+        } else {
+            degraded
+        };
 
         if result.is_empty() {
             if total_providers > 0 && circuit_open_count == total_providers {
@@ -317,6 +439,29 @@ impl ProviderRouter {
         Ok(())
     }
 
+    pub async fn handle_zero_token_anomaly_threshold_hit(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        error_msg: String,
+    ) -> Result<(), AppError> {
+        let app_config = self.db.get_proxy_config_for_app(app_type).await?;
+        let circuit_key = format!("{app_type}:{provider_id}");
+        let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+        breaker.force_open().await;
+
+        self.db
+            .update_provider_health_with_threshold(provider_id, app_type, false, Some(error_msg), 1)
+            .await?;
+
+        if app_config.session_routing_enabled {
+            self.maybe_reassign_session_routing_bindings(app_type, provider_id, &app_config)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn maybe_reassign_session_routing_bindings(
         &self,
         app_type: &str,
@@ -334,6 +479,12 @@ impl ProviderRouter {
             }
             Err(error) => return Err(error),
         };
+
+        let public_provider_ids: HashSet<String> = available
+            .iter()
+            .filter(|provider| provider.is_public)
+            .map(|provider| provider.id.clone())
+            .collect();
 
         let mut stable = Vec::new();
         let mut degraded = Vec::new();
@@ -357,16 +508,36 @@ impl ProviderRouter {
             }
         }
 
-        let mut candidates = if !stable.is_empty() { stable } else { degraded };
+        let mut candidates = if !stable.is_empty() {
+            if app_config.public_provider_priority_enabled {
+                Self::prioritize_stable_public_provider_ids(&stable, &public_provider_ids)
+            } else {
+                stable
+            }
+        } else {
+            degraded
+        };
         candidates.retain(|id| id != provider_id);
         if candidates.is_empty() {
             return Ok(0);
         }
+        let preferred_candidate_provider_ids = if app_config.public_provider_priority_enabled {
+            candidates
+                .iter()
+                .filter(|candidate| public_provider_ids.contains(candidate.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
-        let reassigned = self.db.reassign_session_provider_bindings_for_provider(
+        let reassigned = self
+            .db
+            .reassign_session_provider_bindings_for_provider_with_preferred_pool(
             app_type,
             provider_id,
             &candidates,
+            &preferred_candidate_provider_ids,
             app_config.session_routing_strategy.as_str(),
             app_config.session_max_sessions_per_provider,
             app_config.session_allow_shared_when_exhausted,
@@ -701,6 +872,42 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_session_routing_uses_enabled_queue_only_when_failover_enabled() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        let mut provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+        provider_c.sort_index = Some(3);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.save_provider("codex", &provider_c).unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        db.add_to_failover_queue("codex", "c").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_routing_providers("codex")
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
+        assert_eq!(ids, vec!["b", "c"]);
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_session_routing_priority_uses_provider_order_not_failover_queue() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());
@@ -744,7 +951,7 @@ mod tests {
 
         let router = ProviderRouter::new(db.clone());
         let providers = router
-            .select_session_default_providers("codex", Some("b"), false)
+            .select_session_default_providers("codex", Some("b"), false, false, true)
             .await
             .unwrap();
 
@@ -769,12 +976,68 @@ mod tests {
 
         let router = ProviderRouter::new(db.clone());
         let providers = router
-            .select_session_default_providers("codex", None, false)
+            .select_session_default_providers("codex", Some("a"), false, false, false)
             .await
             .unwrap();
 
-        assert_eq!(providers.len(), 1);
+        assert_eq!(providers.len(), 2);
         assert_eq!(providers[0].id, "a");
+        assert_eq!(providers[1].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_follow_current_skips_degraded_current_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+        db.update_provider_health_with_threshold("a", "codex", false, Some("soft fail".into()), 3)
+            .await
+            .unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", Some("a"), false, false, false)
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
+        assert_eq!(ids, vec!["b", "a"]);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_prioritize_public_stable_provider_in_follow_current_mode(
+    ) {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.is_public = true;
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", Some("a"), false, true, false)
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
+        assert_eq!(ids, vec!["b", "a"]);
     }
 
     #[tokio::test]
@@ -793,17 +1056,47 @@ mod tests {
         db.save_provider("codex", &provider_a).unwrap();
         db.save_provider("codex", &provider_b).unwrap();
         db.save_provider("codex", &provider_c).unwrap();
+        db.add_to_failover_queue("codex", "a").unwrap();
         db.add_to_failover_queue("codex", "b").unwrap();
         db.add_to_failover_queue("codex", "c").unwrap();
 
         let router = ProviderRouter::new(db.clone());
         let providers = router
-            .select_session_default_providers("codex", Some("a"), true)
+            .select_session_default_providers("codex", Some("a"), true, false, true)
             .await
             .unwrap();
 
         let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_session_default_providers_ignore_disabled_preferred_when_failover_enabled() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        let provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.save_provider("codex", &provider_c).unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        db.add_to_failover_queue("codex", "c").unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_session_default_providers("codex", Some("a"), true, false, true)
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = providers.into_iter().map(|provider| provider.id).collect();
+        assert_eq!(ids, vec!["b", "c"]);
     }
 
     #[tokio::test]

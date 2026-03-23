@@ -1076,3 +1076,112 @@ fn import_sql_accepts_cc_switch_exported_backup() {
         "imported providers should contain test-provider"
     );
 }
+
+#[test]
+fn import_sql_preserves_zero_token_anomaly_proxy_config_fields() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let mut config_seed = MultiAppConfig::default();
+    {
+        let manager = config_seed
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "seed-provider".to_string();
+        manager.providers.insert(
+            "seed-provider".to_string(),
+            Provider::with_id(
+                "seed-provider".to_string(),
+                "Seed Provider".to_string(),
+                json!({"auth": {"OPENAI_API_KEY": "seed-key"}}),
+                None,
+            ),
+        );
+    }
+
+    let state = create_test_state_with_config(&config_seed).expect("create test state");
+    let mut config = futures::executor::block_on(state.db.get_proxy_config_for_app("codex"))
+        .expect("get codex proxy config");
+    config.zero_token_anomaly_enabled = true;
+    config.zero_token_anomaly_threshold = 5;
+    futures::executor::block_on(state.db.update_proxy_config_for_app(config))
+        .expect("update codex proxy config");
+
+    let export_path = home.join("cc-switch-export-zero-token.sql");
+    state
+        .db
+        .export_sql(&export_path)
+        .expect("export should succeed");
+
+    reset_test_fs();
+    let imported_state = create_test_state().expect("create imported test state");
+    imported_state
+        .db
+        .import_sql(&export_path)
+        .expect("import should succeed");
+
+    let imported = futures::executor::block_on(imported_state.db.get_proxy_config_for_app("codex"))
+        .expect("reload codex proxy config");
+    assert!(imported.zero_token_anomaly_enabled);
+    assert_eq!(imported.zero_token_anomaly_threshold, 5);
+}
+
+#[test]
+fn import_sql_preserves_public_provider_routing_fields() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let mut config_seed = MultiAppConfig::default();
+    {
+        let manager = config_seed
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "public-provider".to_string();
+        let mut provider = Provider::with_id(
+            "public-provider".to_string(),
+            "Public Provider".to_string(),
+            json!({"auth": {"OPENAI_API_KEY": "seed-key"}}),
+            None,
+        );
+        provider.is_public = true;
+        manager
+            .providers
+            .insert("public-provider".to_string(), provider);
+    }
+
+    let state = create_test_state_with_config(&config_seed).expect("create test state");
+    let mut config = futures::executor::block_on(state.db.get_proxy_config_for_app("codex"))
+        .expect("get codex proxy config");
+    config.session_routing_enabled = true;
+    config.public_provider_priority_enabled = true;
+    futures::executor::block_on(state.db.update_proxy_config_for_app(config))
+        .expect("update codex proxy config");
+
+    let export_path = home.join("cc-switch-export-public.sql");
+    state
+        .db
+        .export_sql(&export_path)
+        .expect("export should succeed");
+
+    reset_test_fs();
+    let imported_state = create_test_state().expect("create imported test state");
+    imported_state
+        .db
+        .import_sql(&export_path)
+        .expect("import should succeed");
+
+    let imported_config =
+        futures::executor::block_on(imported_state.db.get_proxy_config_for_app("codex"))
+            .expect("reload codex proxy config");
+    assert!(imported_config.session_routing_enabled);
+    assert!(imported_config.public_provider_priority_enabled);
+
+    let imported_provider = imported_state
+        .db
+        .get_provider_by_id("public-provider", AppType::Codex.as_str())
+        .expect("reload provider")
+        .expect("provider should exist");
+    assert!(imported_provider.is_public);
+}

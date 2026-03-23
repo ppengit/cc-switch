@@ -201,9 +201,10 @@ impl Database {
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests,
+                        zero_token_anomaly_enabled, zero_token_anomaly_threshold,
                         session_routing_enabled, session_routing_strategy, session_default_provider_id,
-                        session_max_sessions_per_provider, session_allow_shared_when_exhausted,
-                        session_idle_ttl_minutes
+                        public_provider_priority_enabled, session_max_sessions_per_provider,
+                        session_allow_shared_when_exhausted, session_idle_ttl_minutes
                  FROM proxy_config WHERE app_type = ?1",
                 [app_type],
                 |row| {
@@ -222,12 +223,15 @@ impl Database {
                         circuit_timeout_seconds: row.get::<_, i32>(11)? as u32,
                         circuit_error_rate_threshold: row.get(12)?,
                         circuit_min_requests: row.get::<_, i32>(13)? as u32,
-                        session_routing_enabled: row.get::<_, i32>(14)? != 0,
-                        session_routing_strategy: row.get(15)?,
-                        session_default_provider_id: row.get(16)?,
-                        session_max_sessions_per_provider: row.get::<_, i32>(17)? as u32,
-                        session_allow_shared_when_exhausted: row.get::<_, i32>(18)? != 0,
-                        session_idle_ttl_minutes: row.get::<_, i32>(19)? as u32,
+                        zero_token_anomaly_enabled: row.get::<_, i32>(14)? != 0,
+                        zero_token_anomaly_threshold: row.get::<_, i32>(15)? as u32,
+                        session_routing_enabled: row.get::<_, i32>(16)? != 0,
+                        session_routing_strategy: row.get(17)?,
+                        session_default_provider_id: row.get(18)?,
+                        public_provider_priority_enabled: row.get::<_, i32>(19)? != 0,
+                        session_max_sessions_per_provider: row.get::<_, i32>(20)? as u32,
+                        session_allow_shared_when_exhausted: row.get::<_, i32>(21)? != 0,
+                        session_idle_ttl_minutes: row.get::<_, i32>(22)? as u32,
                     })
                 },
             )
@@ -254,9 +258,12 @@ impl Database {
                     circuit_timeout_seconds: 60,
                     circuit_error_rate_threshold: 0.6,
                     circuit_min_requests: 10,
+                    zero_token_anomaly_enabled: false,
+                    zero_token_anomaly_threshold: 3,
                     session_routing_enabled: false,
                     session_routing_strategy: "priority".to_string(),
                     session_default_provider_id: String::new(),
+                    public_provider_priority_enabled: false,
                     session_max_sessions_per_provider: 1,
                     session_allow_shared_when_exhausted: true,
                     session_idle_ttl_minutes: 30,
@@ -288,12 +295,15 @@ impl Database {
                 circuit_timeout_seconds = ?12,
                 circuit_error_rate_threshold = ?13,
                 circuit_min_requests = ?14,
-                session_routing_enabled = ?15,
-                session_routing_strategy = ?16,
-                session_default_provider_id = ?17,
-                session_max_sessions_per_provider = ?18,
-                session_allow_shared_when_exhausted = ?19,
-                session_idle_ttl_minutes = ?20,
+                zero_token_anomaly_enabled = ?15,
+                zero_token_anomaly_threshold = ?16,
+                session_routing_enabled = ?17,
+                session_routing_strategy = ?18,
+                session_default_provider_id = ?19,
+                public_provider_priority_enabled = ?20,
+                session_max_sessions_per_provider = ?21,
+                session_allow_shared_when_exhausted = ?22,
+                session_idle_ttl_minutes = ?23,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
@@ -311,9 +321,20 @@ impl Database {
                 config.circuit_timeout_seconds as i32,
                 config.circuit_error_rate_threshold,
                 config.circuit_min_requests as i32,
+                if config.zero_token_anomaly_enabled {
+                    1
+                } else {
+                    0
+                },
+                config.zero_token_anomaly_threshold as i32,
                 if config.session_routing_enabled { 1 } else { 0 },
                 config.session_routing_strategy,
                 config.session_default_provider_id,
+                if config.public_provider_priority_enabled {
+                    1
+                } else {
+                    0
+                },
                 config.session_max_sessions_per_provider as i32,
                 if config.session_allow_shared_when_exhausted {
                     1
@@ -352,9 +373,9 @@ impl Database {
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, 0, 'priority', 1, 1, 30)",
+                session_routing_enabled, session_routing_strategy, public_provider_priority_enabled,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted, session_idle_ttl_minutes
+            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, 0, 'priority', 0, 1, 1, 30)",
             rusqlite::params![
                 app_type,
                 retries,
@@ -386,9 +407,9 @@ impl Database {
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15, 0, 'priority', 1, 1, 30)",
+                session_routing_enabled, session_routing_strategy, public_provider_priority_enabled,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted, session_idle_ttl_minutes
+            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15, 0, 'priority', 0, 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -400,9 +421,9 @@ impl Database {
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 1, 1, 30)",
+                session_routing_enabled, session_routing_strategy, public_provider_priority_enabled,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted, session_idle_ttl_minutes
+            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 0, 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -414,9 +435,9 @@ impl Database {
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests,
-                session_routing_enabled, session_routing_strategy, session_max_sessions_per_provider,
-                session_allow_shared_when_exhausted, session_idle_ttl_minutes
-            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 1, 1, 30)",
+                session_routing_enabled, session_routing_strategy, public_provider_priority_enabled,
+                session_max_sessions_per_provider, session_allow_shared_when_exhausted, session_idle_ttl_minutes
+            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10, 0, 'priority', 0, 1, 1, 30)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -530,6 +551,7 @@ impl Database {
 
             conn.query_row(
                 "SELECT provider_id, app_type, is_healthy, consecutive_failures,
+                        zero_token_anomaly_streak,
                         last_success_at, last_failure_at, last_error, updated_at
                  FROM provider_health
                  WHERE provider_id = ?1 AND app_type = ?2",
@@ -540,10 +562,11 @@ impl Database {
                         app_type: row.get(1)?,
                         is_healthy: row.get::<_, i64>(2)? != 0,
                         consecutive_failures: row.get::<_, i64>(3)? as u32,
-                        last_success_at: row.get(4)?,
-                        last_failure_at: row.get(5)?,
-                        last_error: row.get(6)?,
-                        updated_at: row.get(7)?,
+                        zero_token_anomaly_streak: row.get::<_, i64>(4)? as u32,
+                        last_success_at: row.get(5)?,
+                        last_failure_at: row.get(6)?,
+                        last_error: row.get(7)?,
+                        updated_at: row.get(8)?,
                     })
                 },
             )
@@ -557,6 +580,7 @@ impl Database {
                 app_type: app_type.to_string(),
                 is_healthy: true,
                 consecutive_failures: 0,
+                zero_token_anomaly_streak: 0,
                 last_success_at: None,
                 last_failure_at: None,
                 last_error: None,
@@ -626,13 +650,13 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO provider_health
              (provider_id, app_type, is_healthy, consecutive_failures,
-              last_success_at, last_failure_at, last_error, updated_at)
+              last_success_at, last_failure_at, last_error, updated_at, zero_token_anomaly_streak)
              VALUES (?1, ?2, ?3, ?4,
                      COALESCE(?5, (SELECT last_success_at FROM provider_health
                                    WHERE provider_id = ?1 AND app_type = ?2)),
                      COALESCE(?6, (SELECT last_failure_at FROM provider_health
                                    WHERE provider_id = ?1 AND app_type = ?2)),
-                     ?7, ?8)",
+                     ?7, ?8, 0)",
             rusqlite::params![
                 provider_id,
                 app_type,
@@ -646,6 +670,55 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        Ok(())
+    }
+
+    pub async fn increment_zero_token_anomaly_streak(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        error_msg: Option<String>,
+    ) -> Result<u32, AppError> {
+        let conn = lock_conn!(self.conn);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO provider_health
+             (provider_id, app_type, is_healthy, consecutive_failures,
+              last_success_at, last_failure_at, last_error, updated_at, zero_token_anomaly_streak)
+             VALUES (?1, ?2, 1, 0, NULL, NULL, ?3, ?4, 1)
+             ON CONFLICT(provider_id, app_type) DO UPDATE SET
+               zero_token_anomaly_streak = zero_token_anomaly_streak + 1,
+               last_error = excluded.last_error,
+               updated_at = excluded.updated_at",
+            rusqlite::params![provider_id, app_type, error_msg, now],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.query_row(
+            "SELECT zero_token_anomaly_streak
+             FROM provider_health
+             WHERE provider_id = ?1 AND app_type = ?2",
+            rusqlite::params![provider_id, app_type],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| v as u32)
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    pub async fn reset_zero_token_anomaly_streak(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE provider_health
+             SET zero_token_anomaly_streak = 0, updated_at = datetime('now')
+             WHERE provider_id = ?1 AND app_type = ?2",
+            rusqlite::params![provider_id, app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
 
