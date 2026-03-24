@@ -83,6 +83,7 @@ import {
 } from "@/lib/query/omo";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -97,6 +98,7 @@ import {
 } from "@/components/ui/dialog";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import JsonEditor from "@/components/JsonEditor";
+import TextCodeEditor from "@/components/TextCodeEditor";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -124,6 +126,13 @@ import {
 } from "@/utils/providerDefaultTemplateUtils";
 import type { SessionRoutingStrategy } from "@/types/proxy";
 import { formatSessionTitle, getBaseName } from "@/components/sessions/utils";
+import {
+  getDirtyPreviewFiles,
+  getLiveConfigEditorMode,
+  getLiveConfigTextSyntax,
+  getPreviewDraftValue,
+  isPreviewDraftDirty,
+} from "./liveConfigPreviewUtils";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -439,6 +448,7 @@ export function ProviderList({
   const [savingPreviewFilePath, setSavingPreviewFilePath] = useState<
     string | null
   >(null);
+  const [isSavingAllPreviewFiles, setIsSavingAllPreviewFiles] = useState(false);
   const [hasLiveConfigChanged, setHasLiveConfigChanged] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const listScrollRef = useRef<HTMLDivElement>(null);
@@ -2798,11 +2808,18 @@ export function ProviderList({
     [],
   );
 
+  const handleResetPreviewDraft = useCallback((file: AppConfigPreviewFile) => {
+    setPreviewDrafts((current) => ({
+      ...current,
+      [file.path]: file.actualText,
+    }));
+  }, []);
+
   const handleSavePreviewFile = useCallback(
     async (file: AppConfigPreviewFile) => {
       try {
         setSavingPreviewFilePath(file.path);
-        const nextContent = previewDrafts[file.path] ?? file.actualText;
+        const nextContent = getPreviewDraftValue(file, previewDrafts);
         await configApi.saveLiveConfigFile(appId, file.label, nextContent);
         await loadLiveConfigFiles({ resetSignature: true });
         await loadConfigPreview();
@@ -2835,6 +2852,64 @@ export function ProviderList({
       t,
     ],
   );
+
+  const dirtyPreviewFiles = useMemo(
+    () => getDirtyPreviewFiles(configPreview?.files ?? [], previewDrafts),
+    [configPreview?.files, previewDrafts],
+  );
+
+  const handleSaveAllPreviewFiles = useCallback(async () => {
+    if (!configPreview) return;
+
+    const filesToSave = getDirtyPreviewFiles(
+      configPreview.files,
+      previewDrafts,
+    );
+    if (filesToSave.length === 0) {
+      return;
+    }
+
+    try {
+      setIsSavingAllPreviewFiles(true);
+      for (const file of filesToSave) {
+        await configApi.saveLiveConfigFile(
+          appId,
+          file.label,
+          getPreviewDraftValue(file, previewDrafts),
+        );
+      }
+      await loadLiveConfigFiles({ resetSignature: true });
+      await loadConfigPreview();
+      await queryClient.invalidateQueries({ queryKey: ["providers"] });
+      toast.success(
+        t("provider.saveAllLiveConfigSuccess", {
+          defaultValue: "已保存 {{count}} 个 live 配置文件",
+          count: filesToSave.length,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        "[ProviderList] Failed to save all live config files",
+        error,
+      );
+      toast.error(
+        t("provider.saveAllLiveConfigFailed", {
+          defaultValue: "批量保存 live 配置文件失败: {{error}}",
+          error: String(error),
+        }),
+      );
+    } finally {
+      setIsSavingAllPreviewFiles(false);
+    }
+  }, [
+    appId,
+    configPreview,
+    loadConfigPreview,
+    loadLiveConfigFiles,
+    previewDrafts,
+    queryClient,
+    t,
+  ]);
 
   const handleBatchDelete = useCallback(async () => {
     if (deletableSelectedProviders.length === 0) {
@@ -3328,7 +3403,9 @@ export function ProviderList({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-[220px]">
                   <DropdownMenuItem
-                    onSelect={() => void handleOpenAppTerminalWithMode("manual")}
+                    onSelect={() =>
+                      void handleOpenAppTerminalWithMode("manual")
+                    }
                   >
                     {t("provider.terminalTargetManual", {
                       defaultValue: "手动选择",
@@ -3664,9 +3741,12 @@ export function ProviderList({
                       {modelName}
                     </span>
                   ))}
-                  {selectedModelFilters.length > selectedModelFilterPreview.length && (
+                  {selectedModelFilters.length >
+                    selectedModelFilterPreview.length && (
                     <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                      +{selectedModelFilters.length - selectedModelFilterPreview.length}
+                      +
+                      {selectedModelFilters.length -
+                        selectedModelFilterPreview.length}
                     </span>
                   )}
                 </div>
@@ -4645,6 +4725,29 @@ export function ProviderList({
           <>
             <Button
               type="button"
+              onClick={() => void handleSaveAllPreviewFiles()}
+              disabled={
+                dirtyPreviewFiles.length === 0 ||
+                isSavingAllPreviewFiles ||
+                savingPreviewFilePath !== null ||
+                hasLiveConfigChanged
+              }
+              className="gap-2"
+            >
+              {isSavingAllPreviewFiles ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {t("provider.saveAllLiveConfig", {
+                defaultValue: dirtyPreviewFiles.length
+                  ? "保存全部已修改文件 ({{count}})"
+                  : "保存全部已修改文件",
+                count: dirtyPreviewFiles.length,
+              })}
+            </Button>
+            <Button
+              type="button"
               variant="outline"
               onClick={() => void loadConfigPreview()}
               disabled={isConfigPreviewLoading}
@@ -4707,26 +4810,49 @@ export function ProviderList({
 
           {configPreview?.files?.length ? (
             configPreview.files.map((file) => {
-              const draftValue = previewDrafts[file.path] ?? file.actualText;
+              const draftValue = getPreviewDraftValue(file, previewDrafts);
               const isOpening = openingLiveConfigPath === file.path;
               const isSaving = savingPreviewFilePath === file.path;
-              const editorLanguage =
-                file.label === "config.toml" || file.label === ".env"
-                  ? "javascript"
-                  : "json";
-              const previewPaneHeight = 320;
-              const showsFormatButton = editorLanguage !== "javascript";
+              const isDirty = isPreviewDraftDirty(file, previewDrafts);
+              const saveDisabled =
+                !isDirty || isSavingAllPreviewFiles || hasLiveConfigChanged;
+              const editorMode = getLiveConfigEditorMode(file);
+              const textSyntax = getLiveConfigTextSyntax(file);
+              const previewPaneHeight = "min(56vh, 520px)";
+              const showsFormatButton = editorMode === "json";
               return (
                 <div
                   key={`${file.path}:${file.label}`}
                   className="space-y-3 rounded-lg border border-border/60 px-4 py-4"
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-foreground">
-                        {file.label}
+                    <div className="min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-medium text-foreground">
+                          {file.label}
+                        </div>
+                        {isDirty && (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          >
+                            {t("provider.liveConfigDraftDirty", {
+                              defaultValue: "未保存",
+                            })}
+                          </Badge>
+                        )}
+                        {file.differs && (
+                          <Badge
+                            variant="outline"
+                            className="border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                          >
+                            {t("provider.liveConfigDiffersFromExpected", {
+                              defaultValue: "与预期配置不同",
+                            })}
+                          </Badge>
+                        )}
                       </div>
-                      <code className="text-xs text-muted-foreground break-all">
+                      <code className="block text-xs text-muted-foreground break-all">
                         {file.path}
                       </code>
                     </div>
@@ -4735,7 +4861,40 @@ export function ProviderList({
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={!file.exists || isOpening}
+                        disabled={
+                          !isDirty || isSaving || isSavingAllPreviewFiles
+                        }
+                        onClick={() => handleResetPreviewDraft(file)}
+                        className="gap-2"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        {t("common.reset", {
+                          defaultValue: "重置",
+                        })}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => void handleSavePreviewFile(file)}
+                        disabled={saveDisabled || isSaving}
+                        className="gap-2"
+                      >
+                        {isSaving ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Save className="h-4 w-4" />
+                        )}
+                        {t("common.save", {
+                          defaultValue: "保存",
+                        })}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          !file.exists || isOpening || isSavingAllPreviewFiles
+                        }
                         onClick={() =>
                           void handleOpenLiveConfigFile({
                             label: file.label,
@@ -4757,6 +4916,15 @@ export function ProviderList({
                     </div>
                   </div>
 
+                  {file.differs && (
+                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs text-sky-700 dark:text-sky-300">
+                      {t("provider.liveConfigExpectedHint", {
+                        defaultValue:
+                          "当前 live 文件内容与系统预期配置不同。编辑和保存前，请确认这是你希望保留的实际运行配置。",
+                      })}
+                    </div>
+                  )}
+
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-xs font-medium text-muted-foreground">
@@ -4764,37 +4932,48 @@ export function ProviderList({
                           defaultValue: "当前 live 文件",
                         })}
                       </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => void handleSavePreviewFile(file)}
-                        disabled={isSaving}
-                        className="h-7 gap-2 px-2 text-xs"
-                      >
-                        {isSaving ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Save className="h-3.5 w-3.5" />
-                        )}
-                        {t("common.save", {
-                          defaultValue: "保存",
+                      <div className="text-xs text-muted-foreground">
+                        {t("provider.liveConfigStatusHint", {
+                          defaultValue: isDirty
+                            ? "有未保存改动"
+                            : "已与磁盘内容同步",
                         })}
-                      </Button>
+                      </div>
                     </div>
-                    <JsonEditor
-                      value={draftValue}
-                      onChange={(value) =>
-                        handlePreviewDraftChange(file.path, value)
-                      }
-                      height={previewPaneHeight}
-                      showValidation={editorLanguage !== "javascript"}
-                      language={editorLanguage}
-                    />
+                    {editorMode === "text" && (
+                      <TextCodeEditor
+                        value={draftValue}
+                        onChange={(value) =>
+                          handlePreviewDraftChange(file.path, value)
+                        }
+                        height={previewPaneHeight}
+                        language={textSyntax}
+                      />
+                    )}
+                    {editorMode === "json" && (
+                      <JsonEditor
+                        value={draftValue}
+                        onChange={(value) =>
+                          handlePreviewDraftChange(file.path, value)
+                        }
+                        height={previewPaneHeight}
+                        showValidation={true}
+                        language="json"
+                      />
+                    )}
                     {showsFormatButton && (
                       <p className="text-xs text-muted-foreground">
                         {t("provider.liveConfigEditHint", {
                           defaultValue:
                             "上方直接编辑的是当前环境实际使用的 live 配置文件内容。",
+                        })}
+                      </p>
+                    )}
+                    {editorMode === "text" && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("provider.liveConfigTextEditHint", {
+                          defaultValue:
+                            "当前文件不是 JSON，已按纯文本模式编辑，不执行 JSON 校验和格式化。",
                         })}
                       </p>
                     )}
@@ -5066,7 +5245,9 @@ function SortableProviderTableRow({
           stickyCellBgClass,
         )}
       >
-        <div className={cn("min-w-0 rounded-lg px-2 py-1", nameCellHighlightClass)}>
+        <div
+          className={cn("min-w-0 rounded-lg px-2 py-1", nameCellHighlightClass)}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <div className="truncate font-medium" title={provider.name}>
               {website ? (
