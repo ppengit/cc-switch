@@ -41,6 +41,11 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   const { t } = useTranslation();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   // JSON linter 函数
   const jsonLinter = useMemo(
@@ -155,7 +160,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const newValue = update.state.doc.toString();
-            onChange(newValue);
+            onChangeRef.current(newValue);
           }
         }),
       );
@@ -219,7 +224,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [darkMode, rows, height, language, jsonLinter, onChange, placeholderText, readOnly]); // 依赖项中包含只会影响实例行为的配置项
+  }, [darkMode, rows, height, language, jsonLinter, placeholderText, readOnly]); // 依赖项中包含只会影响实例行为的配置项
 
   // 当 value 从外部改变时更新编辑器内容
   useEffect(() => {

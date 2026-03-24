@@ -14,6 +14,28 @@ export function formatJSON(value: string): string {
 }
 
 /**
+ * 安全整理纯文本配置
+ *
+ * 仅执行不会改变配置语义的空白规范化：
+ * - 统一换行符为 LF
+ * - 移除每行末尾的空格/Tab
+ * - 非空内容确保文件末尾只有一个换行
+ *
+ * @param value - 原始文本
+ * @returns 整理后的文本
+ */
+export function formatTextConfig(value: string): string {
+  const normalized = value.replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "");
+  const withoutTrailingBlankLines = normalized.replace(/\n+$/g, "");
+
+  if (!withoutTrailingBlankLines.trim()) {
+    return "";
+  }
+
+  return `${withoutTrailingBlankLines}\n`;
+}
+
+/**
  * 智能解析 MCP JSON 配置
  * 支持两种格式：
  * 1. 纯配置对象：{ "command": "npx", "args": [...], ... }
