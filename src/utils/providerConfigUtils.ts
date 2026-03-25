@@ -84,6 +84,233 @@ export interface UpdateCommonConfigResult {
   error?: string;
 }
 
+const JSON_PROVIDER_CONFIG_PLACEHOLDER = "{{provider.config}}";
+const JSON_MCP_CONFIG_PLACEHOLDER = "{{mcp.config}}";
+
+const DEFAULT_JSON_COMMON_CONFIG_TEMPLATES = {
+  claude: {
+    [JSON_PROVIDER_CONFIG_PLACEHOLDER]: {},
+    includeCoAuthoredBy: false,
+    mcpServers: JSON_MCP_CONFIG_PLACEHOLDER,
+  },
+  gemini: {
+    [JSON_PROVIDER_CONFIG_PLACEHOLDER]: {},
+    config: {
+      ui: {
+        inlineThinkingMode: "full",
+      },
+    },
+    mcpServers: JSON_MCP_CONFIG_PLACEHOLDER,
+  },
+} as const;
+
+export interface JsonCommonConfigTemplateParseResult {
+  commonConfig: Record<string, any>;
+  hasMcpPlaceholder: boolean;
+  template: Record<string, any>;
+}
+
+const countJsonTemplatePlaceholderValues = (
+  value: unknown,
+  placeholder: string,
+): number => {
+  if (value === placeholder) {
+    return 1;
+  }
+
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (count, item) =>
+        count + countJsonTemplatePlaceholderValues(item, placeholder),
+      0,
+    );
+  }
+
+  if (isPlainObject(value)) {
+    return Object.values(value).reduce(
+      (count, item) =>
+        count + countJsonTemplatePlaceholderValues(item, placeholder),
+      0,
+    );
+  }
+
+  return 0;
+};
+
+const stripJsonTemplatePlaceholderValues = (
+  value: unknown,
+  placeholder: string,
+): unknown => {
+  if (value === placeholder) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripJsonTemplatePlaceholderValues(item, placeholder))
+      .filter((item) => item !== undefined);
+  }
+
+  if (isPlainObject(value)) {
+    const next: Record<string, unknown> = {};
+    Object.entries(value).forEach(([key, item]) => {
+      const stripped = stripJsonTemplatePlaceholderValues(item, placeholder);
+      if (stripped !== undefined) {
+        next[key] = stripped;
+      }
+    });
+    return next;
+  }
+
+  return value;
+};
+
+const parseJsonCommonConfigTemplateInternal = (
+  appId: "claude" | "gemini",
+  value: string,
+  fieldName: string,
+):
+  | { error: string }
+  | {
+      result: JsonCommonConfigTemplateParseResult;
+    } => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {
+      result: {
+        commonConfig: {},
+        hasMcpPlaceholder: false,
+        template: {},
+      },
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return {
+      error: `${fieldName}JSON格式错误，请检查语法`,
+    };
+  }
+
+  if (!isPlainObject(parsed)) {
+    return {
+      error: `${fieldName}必须是 JSON 对象`,
+    };
+  }
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      parsed,
+      JSON_PROVIDER_CONFIG_PLACEHOLDER,
+    )
+  ) {
+    return {
+      error: `${appId === "claude" ? "Claude" : "Gemini"} 应用配置模板必须包含顶层 ${JSON_PROVIDER_CONFIG_PLACEHOLDER} 占位符`,
+    };
+  }
+
+  const mcpPlaceholderCount = countJsonTemplatePlaceholderValues(
+    parsed,
+    JSON_MCP_CONFIG_PLACEHOLDER,
+  );
+  if (mcpPlaceholderCount > 1) {
+    return {
+      error: `${appId === "claude" ? "Claude" : "Gemini"} 应用配置模板最多只能包含一个 ${JSON_MCP_CONFIG_PLACEHOLDER} 占位符`,
+    };
+  }
+
+  const template = deepClone(parsed);
+  delete template[JSON_PROVIDER_CONFIG_PLACEHOLDER];
+  const commonConfig = stripJsonTemplatePlaceholderValues(
+    template,
+    JSON_MCP_CONFIG_PLACEHOLDER,
+  );
+
+  return {
+    result: {
+      commonConfig: isPlainObject(commonConfig) ? commonConfig : {},
+      hasMcpPlaceholder: mcpPlaceholderCount === 1,
+      template: parsed,
+    },
+  };
+};
+
+export const getDefaultJsonCommonConfigTemplate = (
+  appId: "claude" | "gemini",
+): string =>
+  JSON.stringify(DEFAULT_JSON_COMMON_CONFIG_TEMPLATES[appId], null, 2);
+
+export const parseJsonCommonConfigTemplate = (
+  appId: "claude" | "gemini",
+  value: string,
+  fieldName: string = "应用配置模板",
+):
+  | { error: string }
+  | {
+      result: JsonCommonConfigTemplateParseResult;
+    } => parseJsonCommonConfigTemplateInternal(appId, value, fieldName);
+
+export const validateJsonCommonConfigTemplate = (
+  appId: "claude" | "gemini",
+  value: string,
+  fieldName: string = "应用配置模板",
+): string => {
+  if (!value.trim()) {
+    return "";
+  }
+
+  const parsed = parseJsonCommonConfigTemplateInternal(appId, value, fieldName);
+  return "error" in parsed ? parsed.error : "";
+};
+
+export const normalizeJsonCommonConfigTemplateForEditing = (
+  appId: "claude" | "gemini",
+  value: string | null | undefined,
+): string => {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return getDefaultJsonCommonConfigTemplate(appId);
+  }
+
+  const parsed = parseJsonCommonConfigTemplateInternal(
+    appId,
+    trimmed,
+    "应用配置模板",
+  );
+  if (!("error" in parsed)) {
+    return JSON.stringify(parsed.result.template, null, 2);
+  }
+
+  try {
+    const legacyParsed = JSON.parse(trimmed);
+    if (!isPlainObject(legacyParsed)) {
+      return value ?? "";
+    }
+
+    const migrated: Record<string, unknown> = {
+      [JSON_PROVIDER_CONFIG_PLACEHOLDER]: {},
+      ...legacyParsed,
+    };
+    if (!Object.prototype.hasOwnProperty.call(migrated, "mcpServers")) {
+      migrated.mcpServers = JSON_MCP_CONFIG_PLACEHOLDER;
+    }
+
+    const validationError = validateJsonCommonConfigTemplate(
+      appId,
+      JSON.stringify(migrated, null, 2),
+    );
+    if (!validationError) {
+      return JSON.stringify(migrated, null, 2);
+    }
+  } catch {
+    return value ?? "";
+  }
+
+  return value ?? "";
+};
+
 // 验证JSON配置格式
 export const validateJsonConfig = (
   value: string,

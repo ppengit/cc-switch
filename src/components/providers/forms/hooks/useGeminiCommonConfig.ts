@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { configApi } from "@/lib/api";
+import {
+  getDefaultJsonCommonConfigTemplate,
+  normalizeJsonCommonConfigTemplateForEditing,
+  parseJsonCommonConfigTemplate,
+} from "@/utils/providerConfigUtils";
 
 const LEGACY_STORAGE_KEY = "cc-switch:gemini-common-config-snippet";
-const DEFAULT_GEMINI_COMMON_CONFIG_SNIPPET = "{}";
 
 const GEMINI_COMMON_ENV_FORBIDDEN_KEYS = [
   "GOOGLE_GEMINI_BASE_URL",
@@ -55,7 +59,7 @@ export function useGeminiCommonConfig({
 
   const { t } = useTranslation();
   const [commonConfigSnippet, setCommonConfigSnippetState] = useState<string>(
-    DEFAULT_GEMINI_COMMON_CONFIG_SNIPPET,
+    getDefaultJsonCommonConfigTemplate("gemini"),
   );
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -77,32 +81,22 @@ export function useGeminiCommonConfig({
           env: {},
           config: {},
           hasContent: false,
-          normalizedValue: "{}",
+          normalizedValue: "",
         };
       }
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
+      const templateParsed = parseJsonCommonConfigTemplate("gemini", trimmed);
+      if ("error" in templateParsed) {
         return {
           env: {},
           config: {},
           hasContent: false,
-          normalizedValue: "{}",
-          error: t("geminiConfig.invalidJsonFormat"),
+          normalizedValue: "",
+          error: templateParsed.error,
         };
       }
 
-      if (!isPlainObject(parsed)) {
-        return {
-          env: {},
-          config: {},
-          hasContent: false,
-          normalizedValue: "{}",
-          error: t("geminiConfig.invalidJsonFormat"),
-        };
-      }
+      const parsed = templateParsed.result.commonConfig;
 
       const hasStructuredSections =
         Object.prototype.hasOwnProperty.call(parsed, "env") ||
@@ -119,7 +113,7 @@ export function useGeminiCommonConfig({
           env: {},
           config: {},
           hasContent: false,
-          normalizedValue: "{}",
+          normalizedValue: "",
           error: t("geminiConfig.invalidJsonFormat"),
         };
       }
@@ -132,7 +126,7 @@ export function useGeminiCommonConfig({
           env: {},
           config: {},
           hasContent: false,
-          normalizedValue: "{}",
+          normalizedValue: "",
           error: t("geminiConfig.invalidJsonFormat"),
         };
       }
@@ -149,7 +143,7 @@ export function useGeminiCommonConfig({
           env: {},
           config: {},
           hasContent: false,
-          normalizedValue: "{}",
+          normalizedValue: "",
           error: t("geminiConfig.commonConfigInvalidKeys", {
             keys: forbiddenKeys.join(", "),
           }),
@@ -163,7 +157,7 @@ export function useGeminiCommonConfig({
             env: {},
             config: {},
             hasContent: false,
-            normalizedValue: "{}",
+            normalizedValue: "",
             error: t("geminiConfig.commonConfigInvalidValues"),
           };
         }
@@ -182,13 +176,25 @@ export function useGeminiCommonConfig({
       if (Object.keys(config).length > 0) {
         normalizedPayload.config = config;
       }
+      if (templateParsed.result.hasMcpPlaceholder) {
+        normalizedPayload.mcpServers = "{{mcp.config}}";
+      }
 
       return {
         env,
         config,
         hasContent:
-          Object.keys(env).length > 0 || Object.keys(config).length > 0,
-        normalizedValue: JSON.stringify(normalizedPayload, null, 2),
+          Object.keys(env).length > 0 ||
+          Object.keys(config).length > 0 ||
+          templateParsed.result.hasMcpPlaceholder,
+        normalizedValue: JSON.stringify(
+          {
+            "{{provider.config}}": {},
+            ...normalizedPayload,
+          },
+          null,
+          2,
+        ),
       };
     },
     [t],
@@ -205,7 +211,12 @@ export function useGeminiCommonConfig({
           const parsed = parseSnippet(snippet);
           if (mounted) {
             setCommonConfigSnippetState(
-              parsed.error ? snippet : parsed.normalizedValue,
+              parsed.error
+                ? snippet
+                : normalizeJsonCommonConfigTemplateForEditing(
+                    "gemini",
+                    parsed.normalizedValue,
+                  ),
             );
           }
           return;
@@ -216,7 +227,12 @@ export function useGeminiCommonConfig({
             const legacySnippet =
               window.localStorage.getItem(LEGACY_STORAGE_KEY);
             if (legacySnippet && legacySnippet.trim()) {
-              const parsed = parseSnippet(legacySnippet);
+              const parsed = parseSnippet(
+                normalizeJsonCommonConfigTemplateForEditing(
+                  "gemini",
+                  legacySnippet,
+                ),
+              );
               if (parsed.error) {
                 console.warn(
                   "[迁移] legacy Gemini 通用配置片段格式不符合当前规则，跳过迁移",
@@ -287,9 +303,20 @@ export function useGeminiCommonConfig({
       }
 
       setCommonConfigError("");
-      setCommonConfigSnippetState(parsed.normalizedValue);
+      setCommonConfigSnippetState(
+        normalizeJsonCommonConfigTemplateForEditing(
+          "gemini",
+          parsed.normalizedValue,
+        ),
+      );
       configApi
-        .setCommonConfigSnippet("gemini", parsed.normalizedValue)
+        .setCommonConfigSnippet(
+          "gemini",
+          normalizeJsonCommonConfigTemplateForEditing(
+            "gemini",
+            parsed.normalizedValue,
+          ),
+        )
         .catch((error: unknown) => {
           console.error("保存 Gemini 通用配置失败:", error);
           setCommonConfigError(
@@ -320,14 +347,20 @@ export function useGeminiCommonConfig({
         return;
       }
 
-      const parsed = parseSnippet(extracted);
+      const parsed = parseSnippet(
+        normalizeJsonCommonConfigTemplateForEditing("gemini", extracted),
+      );
       if (parsed.error) {
         setCommonConfigError(t("geminiConfig.extractedConfigInvalid"));
         return;
       }
 
-      setCommonConfigSnippetState(parsed.normalizedValue);
-      await configApi.setCommonConfigSnippet("gemini", parsed.normalizedValue);
+      const normalizedValue = normalizeJsonCommonConfigTemplateForEditing(
+        "gemini",
+        parsed.normalizedValue,
+      );
+      setCommonConfigSnippetState(normalizedValue);
+      await configApi.setCommonConfigSnippet("gemini", normalizedValue);
     } catch (error) {
       console.error("提取 Gemini 通用配置失败:", error);
       setCommonConfigError(

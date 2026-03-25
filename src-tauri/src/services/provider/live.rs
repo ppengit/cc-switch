@@ -23,6 +23,250 @@ use super::normalize_claude_models_in_value;
 
 const CODEX_PROVIDER_CONFIG_PLACEHOLDER: &str = "{{provider.config}}";
 const CODEX_MCP_CONFIG_PLACEHOLDER: &str = "{{mcp.config}}";
+const JSON_PROVIDER_CONFIG_PLACEHOLDER: &str = "{{provider.config}}";
+const JSON_MCP_CONFIG_PLACEHOLDER: &str = "{{mcp.config}}";
+const CLAUDE_DEFAULT_COMMON_CONFIG_TEMPLATE: &str = r#"{
+  "{{provider.config}}": {},
+  "includeCoAuthoredBy": false,
+  "mcpServers": "{{mcp.config}}"
+}"#;
+const GEMINI_DEFAULT_COMMON_CONFIG_TEMPLATE: &str = r#"{
+  "{{provider.config}}": {},
+  "config": {
+    "ui": {
+      "inlineThinkingMode": "full"
+    }
+  },
+  "mcpServers": "{{mcp.config}}"
+}"#;
+
+fn json_template_app_name(app_type: &AppType) -> &'static str {
+    match app_type {
+        AppType::Claude => "Claude",
+        AppType::Gemini => "Gemini",
+        _ => "JSON",
+    }
+}
+
+fn default_json_common_config_template(app_type: &AppType) -> Option<&'static str> {
+    match app_type {
+        AppType::Claude => Some(CLAUDE_DEFAULT_COMMON_CONFIG_TEMPLATE),
+        AppType::Gemini => Some(GEMINI_DEFAULT_COMMON_CONFIG_TEMPLATE),
+        _ => None,
+    }
+}
+
+fn json_template_has_provider_placeholder(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|obj| obj.contains_key(JSON_PROVIDER_CONFIG_PLACEHOLDER))
+}
+
+fn json_count_placeholder_values(value: &Value, placeholder: &str) -> usize {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .map(|item| json_count_placeholder_values(item, placeholder))
+            .sum(),
+        Value::Object(map) => map
+            .values()
+            .map(|item| json_count_placeholder_values(item, placeholder))
+            .sum(),
+        Value::String(text) if text == placeholder => 1,
+        _ => 0,
+    }
+}
+
+fn json_replace_placeholder_values(
+    value: &mut Value,
+    placeholder: &str,
+    replacement: Option<&Value>,
+) {
+    match value {
+        Value::Array(items) => {
+            let mut index = 0usize;
+            while index < items.len() {
+                if items[index].as_str() == Some(placeholder) {
+                    if let Some(replacement_value) = replacement {
+                        items[index] = replacement_value.clone();
+                        index += 1;
+                    } else {
+                        items.remove(index);
+                    }
+                    continue;
+                }
+
+                json_replace_placeholder_values(&mut items[index], placeholder, replacement);
+                index += 1;
+            }
+        }
+        Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let remove_key = map
+                    .get(&key)
+                    .is_some_and(|item| item.as_str() == Some(placeholder));
+                if remove_key {
+                    if let Some(replacement_value) = replacement {
+                        map.insert(key, replacement_value.clone());
+                    } else {
+                        map.remove(&key);
+                    }
+                    continue;
+                }
+
+                if let Some(item) = map.get_mut(&key) {
+                    json_replace_placeholder_values(item, placeholder, replacement);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_json_common_template_base_value(value: &Value) -> Value {
+    let mut template = value.clone();
+    if let Some(obj) = template.as_object_mut() {
+        obj.remove(JSON_PROVIDER_CONFIG_PLACEHOLDER);
+    }
+    json_replace_placeholder_values(&mut template, JSON_MCP_CONFIG_PLACEHOLDER, None);
+    template
+}
+
+fn read_json_template_mcp_value(app_type: &AppType) -> Option<Value> {
+    let path = match app_type {
+        AppType::Claude => Some(get_claude_settings_path()),
+        AppType::Gemini => Some(crate::gemini_config::get_gemini_settings_path()),
+        _ => None,
+    }?;
+
+    let live_settings = read_json_file::<Value>(&path).ok()?;
+    live_settings.get("mcpServers").cloned()
+}
+
+fn render_json_common_config_template(
+    app_type: &AppType,
+    provider_settings: &Value,
+    snippet: &Value,
+) -> Result<Value, AppError> {
+    if !provider_settings.is_object() {
+        return Err(AppError::Config(format!(
+            "{} 供应商配置必须是 JSON 对象",
+            json_template_app_name(app_type)
+        )));
+    }
+
+    let mut rendered = provider_settings.clone();
+    let mut template = snippet.clone();
+
+    if let Some(obj) = template.as_object_mut() {
+        obj.remove(JSON_PROVIDER_CONFIG_PLACEHOLDER);
+    }
+
+    let mcp_value = read_json_template_mcp_value(app_type);
+    json_replace_placeholder_values(
+        &mut template,
+        JSON_MCP_CONFIG_PLACEHOLDER,
+        mcp_value.as_ref(),
+    );
+
+    json_deep_merge(&mut rendered, &template);
+    Ok(rendered)
+}
+
+pub(crate) fn validate_json_common_config_template_text(
+    app_type: &AppType,
+    snippet: &str,
+) -> Result<(), AppError> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let parsed = serde_json::from_str::<Value>(trimmed)
+        .map_err(|e| AppError::Message(format!("无效的 JSON 格式: {e}")))?;
+
+    if !parsed.is_object() {
+        return Err(AppError::Message(
+            "应用配置模板必须是 JSON 对象".to_string(),
+        ));
+    }
+
+    if !json_template_has_provider_placeholder(&parsed) {
+        return Err(AppError::Message(format!(
+            "{} 应用配置模板必须包含顶层 {} 占位符",
+            json_template_app_name(app_type),
+            JSON_PROVIDER_CONFIG_PLACEHOLDER
+        )));
+    }
+
+    let mcp_placeholder_count = json_count_placeholder_values(&parsed, JSON_MCP_CONFIG_PLACEHOLDER);
+    if mcp_placeholder_count > 1 {
+        return Err(AppError::Message(format!(
+            "{} 应用配置模板最多只能包含一个 {} 占位符",
+            json_template_app_name(app_type),
+            JSON_MCP_CONFIG_PLACEHOLDER
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn normalize_json_common_config_template_text(
+    app_type: &AppType,
+    snippet: &str,
+) -> Result<String, AppError> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return Ok(default_json_common_config_template(app_type)
+            .unwrap_or_default()
+            .to_string());
+    }
+
+    let parsed = serde_json::from_str::<Value>(trimmed)
+        .map_err(|e| AppError::Message(format!("无效的 JSON 格式: {e}")))?;
+
+    if !parsed.is_object() {
+        return Err(AppError::Message(
+            "应用配置模板必须是 JSON 对象".to_string(),
+        ));
+    }
+
+    if json_template_has_provider_placeholder(&parsed) {
+        validate_json_common_config_template_text(app_type, trimmed)?;
+        return serde_json::to_string_pretty(&parsed)
+            .map_err(|e| AppError::Message(format!("JSON 序列化失败: {e}")));
+    }
+
+    let mut wrapped = serde_json::Map::new();
+    wrapped.insert(
+        JSON_PROVIDER_CONFIG_PLACEHOLDER.to_string(),
+        Value::Object(serde_json::Map::new()),
+    );
+
+    if let Some(obj) = parsed.as_object() {
+        for (key, value) in obj {
+            wrapped.insert(key.clone(), value.clone());
+        }
+    }
+
+    if !wrapped.contains_key("mcpServers") {
+        wrapped.insert(
+            "mcpServers".to_string(),
+            Value::String(JSON_MCP_CONFIG_PLACEHOLDER.to_string()),
+        );
+    }
+
+    let wrapped_value = Value::Object(wrapped);
+    validate_json_common_config_template_text(
+        app_type,
+        &serde_json::to_string(&wrapped_value)
+            .map_err(|e| AppError::Message(format!("JSON 序列化失败: {e}")))?,
+    )?;
+
+    serde_json::to_string_pretty(&wrapped_value)
+        .map_err(|e| AppError::Message(format!("JSON 序列化失败: {e}")))
+}
 
 pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     let mut v = settings.clone();
@@ -562,7 +806,14 @@ pub(crate) fn settings_contain_common_config(
 
     match app_type {
         AppType::Claude => match serde_json::from_str::<Value>(trimmed) {
-            Ok(source) if source.is_object() => json_is_subset(settings, &source),
+            Ok(source) if source.is_object() => {
+                let common_only = if json_template_has_provider_placeholder(&source) {
+                    build_json_common_template_base_value(&source)
+                } else {
+                    source
+                };
+                json_is_subset(settings, &common_only)
+            }
             _ => false,
         },
         AppType::Codex => {
@@ -585,7 +836,14 @@ pub(crate) fn settings_contain_common_config(
             toml_item_is_subset(target_doc.as_item(), source_doc.as_item())
         }
         AppType::Gemini => match serde_json::from_str::<Value>(trimmed) {
-            Ok(source) => gemini_settings_contain_common_config(settings, &source),
+            Ok(source) => {
+                let common_only = if json_template_has_provider_placeholder(&source) {
+                    build_json_common_template_base_value(&source)
+                } else {
+                    source
+                };
+                gemini_settings_contain_common_config(settings, &common_only)
+            }
             _ => false,
         },
         AppType::OpenCode | AppType::OpenClaw => false,
@@ -629,10 +887,22 @@ pub(crate) fn remove_common_config_from_settings(
 
     match app_type {
         AppType::Claude => {
-            let source = serde_json::from_str::<Value>(trimmed)
+            let parsed = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Claude common config: {e}")))?;
+            let has_mcp_placeholder =
+                json_count_placeholder_values(&parsed, JSON_MCP_CONFIG_PLACEHOLDER) > 0;
+            let source = if json_template_has_provider_placeholder(&parsed) {
+                build_json_common_template_base_value(&parsed)
+            } else {
+                parsed
+            };
             let mut result = settings.clone();
             json_deep_remove(&mut result, &source);
+            if has_mcp_placeholder {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.remove("mcpServers");
+                }
+            }
             Ok(result)
         }
         AppType::Codex => {
@@ -660,10 +930,22 @@ pub(crate) fn remove_common_config_from_settings(
             Ok(result)
         }
         AppType::Gemini => {
-            let source = serde_json::from_str::<Value>(trimmed)
+            let parsed = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
+            let has_mcp_placeholder =
+                json_count_placeholder_values(&parsed, JSON_MCP_CONFIG_PLACEHOLDER) > 0;
+            let source = if json_template_has_provider_placeholder(&parsed) {
+                build_json_common_template_base_value(&parsed)
+            } else {
+                parsed
+            };
             let mut result = settings.clone();
             remove_gemini_common_config_from_settings(&mut result, &source);
+            if has_mcp_placeholder {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.remove("mcpServers");
+                }
+            }
             Ok(result)
         }
         AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
@@ -684,9 +966,13 @@ fn apply_common_config_to_settings(
         AppType::Claude => {
             let source = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Claude common config: {e}")))?;
-            let mut result = settings.clone();
-            json_deep_merge(&mut result, &source);
-            Ok(result)
+            if json_template_has_provider_placeholder(&source) {
+                render_json_common_config_template(app_type, settings, &source)
+            } else {
+                let mut result = settings.clone();
+                json_deep_merge(&mut result, &source);
+                Ok(result)
+            }
         }
         AppType::Codex => {
             let mut result = settings.clone();
@@ -737,9 +1023,13 @@ fn apply_common_config_to_settings(
         AppType::Gemini => {
             let source = serde_json::from_str::<Value>(trimmed)
                 .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
-            let mut result = settings.clone();
-            apply_gemini_common_config_to_settings(&mut result, &source);
-            Ok(result)
+            if json_template_has_provider_placeholder(&source) {
+                render_json_common_config_template(app_type, settings, &source)
+            } else {
+                let mut result = settings.clone();
+                apply_gemini_common_config_to_settings(&mut result, &source);
+                Ok(result)
+            }
         }
         AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
     }
@@ -1627,6 +1917,29 @@ mod tests {
     }
 
     #[test]
+    fn claude_common_config_template_apply_and_remove_roundtrip() {
+        let settings = json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-test"
+            }
+        });
+        let snippet = r#"{
+  "{{provider.config}}": {},
+  "includeCoAuthoredBy": false,
+  "mcpServers": "{{mcp.config}}"
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::Claude, &settings, snippet).unwrap();
+        assert_eq!(applied["includeCoAuthoredBy"], json!(false));
+        assert_eq!(applied["env"]["ANTHROPIC_API_KEY"], json!("sk-test"));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Claude, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
     fn codex_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
         let settings = json!({
             "auth": {
@@ -1806,6 +2119,34 @@ approval_policy = "never"
             json!("gemini-3.1-pro-preview")
         );
         assert_eq!(applied["config"]["ui"]["inlineThinkingMode"], json!("full"));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Gemini, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn gemini_common_config_template_apply_and_remove_roundtrip() {
+        let settings = json!({
+            "env": {
+                "GEMINI_API_KEY": "sk-test"
+            }
+        });
+        let snippet = r#"{
+  "{{provider.config}}": {},
+  "env": {
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  },
+  "mcpServers": "{{mcp.config}}"
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::Gemini, &settings, snippet).unwrap();
+        assert_eq!(
+            applied["env"]["GEMINI_MODEL"],
+            json!("gemini-3.1-pro-preview")
+        );
+        assert_eq!(applied["env"]["GEMINI_API_KEY"], json!("sk-test"));
 
         let stripped =
             remove_common_config_from_settings(&AppType::Gemini, &applied, snippet).unwrap();

@@ -329,7 +329,21 @@ fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), S
     }
 
     match app_type {
-        "claude" | "gemini" | "omo" | "omo-slim" => {
+        "claude" => {
+            crate::services::provider::validate_json_common_config_template_text(
+                &AppType::Claude,
+                snippet,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "gemini" => {
+            crate::services::provider::validate_json_common_config_template_text(
+                &AppType::Gemini,
+                snippet,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "omo" | "omo-slim" => {
             serde_json::from_str::<serde_json::Value>(snippet)
                 .map_err(invalid_json_format_error)?;
         }
@@ -952,8 +966,7 @@ pub async fn get_current_live_config_snapshot(
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<AppConfigPreview, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    build_current_live_config_snapshot_internal(state.inner(), app_type)
-        .map_err(|e| e.to_string())
+    build_current_live_config_snapshot_internal(state.inner(), app_type).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1101,15 +1114,32 @@ pub async fn set_common_config_snippet(
     snippet: String,
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<(), String> {
-    let is_cleared = snippet.trim().is_empty();
+    let normalized_snippet = match app_type.as_str() {
+        "claude" => crate::services::provider::normalize_json_common_config_template_text(
+            &AppType::Claude,
+            &snippet,
+        )
+        .map_err(|e| e.to_string())?,
+        "gemini" => crate::services::provider::normalize_json_common_config_template_text(
+            &AppType::Gemini,
+            &snippet,
+        )
+        .map_err(|e| e.to_string())?,
+        _ => snippet.clone(),
+    };
+    let is_cleared = normalized_snippet.trim().is_empty();
     let old_snippet = state
         .db
         .get_config_snippet(&app_type)
         .map_err(|e| e.to_string())?;
 
-    validate_common_config_snippet(&app_type, &snippet)?;
+    validate_common_config_snippet(&app_type, &normalized_snippet)?;
 
-    let value = if is_cleared { None } else { Some(snippet) };
+    let value = if is_cleared {
+        None
+    } else {
+        Some(normalized_snippet)
+    };
 
     if matches!(app_type.as_str(), "claude" | "codex" | "gemini") {
         if let Some(legacy_snippet) = old_snippet
@@ -1256,6 +1286,36 @@ mod tests {
     fn validate_common_config_snippet_rejects_codex_template_without_provider_placeholder() {
         let err = validate_common_config_snippet("codex", "approval_policy = \"never\"")
             .expect_err("codex template without provider placeholder should be rejected");
+        assert!(
+            err.contains("{{provider.config}}"),
+            "expected provider placeholder validation error, got {err}"
+        );
+    }
+
+    #[test]
+    fn validate_common_config_snippet_accepts_claude_json_template() {
+        validate_common_config_snippet(
+            "claude",
+            r#"{
+  "{{provider.config}}": {},
+  "includeCoAuthoredBy": false,
+  "mcpServers": "{{mcp.config}}"
+}"#,
+        )
+        .expect("claude template with provider placeholder should be valid");
+    }
+
+    #[test]
+    fn validate_common_config_snippet_rejects_gemini_template_without_provider_placeholder() {
+        let err = validate_common_config_snippet(
+            "gemini",
+            r#"{
+  "env": {
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  }
+}"#,
+        )
+        .expect_err("gemini template without provider placeholder should be rejected");
         assert!(
             err.contains("{{provider.config}}"),
             "expected provider placeholder validation error, got {err}"

@@ -9,8 +9,10 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
+import { http, HttpResponse } from "msw";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { server } from "../msw/server";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -365,7 +367,9 @@ describe("ProviderList Component", () => {
     expect(screen.getAllByText("Alpha Labs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
     expect(
-      screen.getByText(/定位到 1 个供应商|Locate 1 providers?|provider\.searchLocatorMatches/i),
+      screen.getByText(
+        /定位到 1 个供应商|Locate 1 providers?|provider\.searchLocatorMatches/i,
+      ),
     ).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "alpha" } });
@@ -417,8 +421,12 @@ describe("ProviderList Component", () => {
     expect(
       within(rows[0].cells[5]).queryByText("当前流量"),
     ).not.toBeInTheDocument();
-    expect(within(rows[0].cells[5]).queryByText("当前")).not.toBeInTheDocument();
-    expect(within(rows[1].cells[5]).getByText("无会话默认")).toBeInTheDocument();
+    expect(
+      within(rows[0].cells[5]).queryByText("当前"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(rows[1].cells[5]).getByText("无会话默认"),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/队列 P/i)).not.toBeInTheDocument();
 
     const modelHeader = screen.getByText("模型").closest("th");
@@ -466,7 +474,9 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    const row = container.querySelector("tbody tr") as HTMLTableRowElement | null;
+    const row = container.querySelector(
+      "tbody tr",
+    ) as HTMLTableRowElement | null;
     expect(row).not.toBeNull();
     expect(within(row!.cells[5]).getByText("当前流量")).toBeInTheDocument();
     expect(within(row!.cells[5]).getByText("当前")).toBeInTheDocument();
@@ -541,7 +551,9 @@ describe("ProviderList Component", () => {
     expect(
       within(rows[0].cells[5]).getByText("无会话默认(跟随当前)"),
     ).toBeInTheDocument();
-    expect(within(rows[0].cells[5]).queryByText("当前")).not.toBeInTheDocument();
+    expect(
+      within(rows[0].cells[5]).queryByText("当前"),
+    ).not.toBeInTheDocument();
     expect(
       within(rows[0].cells[5]).queryByText("当前流量"),
     ).not.toBeInTheDocument();
@@ -590,7 +602,9 @@ describe("ProviderList Component", () => {
 
     await waitFor(() => expect(checkProviderMock).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: /关闭|common\.close/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /关闭|common\.close/i }),
+    );
     firstRender.unmount();
 
     await act(async () => {
@@ -630,5 +644,115 @@ describe("ProviderList Component", () => {
     expect(
       screen.getAllByText(/失败|streamCheck\.failedShort/i).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("clears live config change warning after refreshing the current environment config", async () => {
+    const intervalCallbacks: Array<() => void> = [];
+    const setIntervalSpy = vi.spyOn(window, "setInterval").mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      intervalCallbacks.push(callback as () => void);
+      return 1 as unknown as number;
+    }) as typeof window.setInterval);
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation(() => {});
+
+    try {
+      let modifiedAt = 1;
+      let snapshotText =
+        '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "https://example.com"\n  }\n}';
+
+      server.use(
+        http.post("http://tauri.local/get_live_config_files", async () =>
+          HttpResponse.json([
+            {
+              label: "settings.json",
+              path: "C:/mock/.claude/settings.json",
+              exists: true,
+              modifiedAt,
+              sizeBytes: snapshotText.length,
+            },
+          ]),
+        ),
+        http.post(
+          "http://tauri.local/get_current_live_config_snapshot",
+          async () =>
+            HttpResponse.json({
+              app: "claude",
+              currentProviderId: "provider-1",
+              currentProviderName: "Test Provider",
+              note: "直接显示当前 live 配置文件内容，可在此编辑并保存。",
+              files: [
+                {
+                  label: "settings.json",
+                  path: "C:/mock/.claude/settings.json",
+                  expectedText: snapshotText,
+                  actualText: snapshotText,
+                  differs: false,
+                },
+              ],
+            }),
+        ),
+      );
+
+      const provider = createProvider();
+      useDragSortMock.mockReturnValue({
+        sortedProviders: [provider],
+        sensors: [],
+        handleDragEnd: vi.fn(),
+      });
+
+      renderWithQueryClient(
+        <ProviderList
+          providers={{ "provider-1": provider }}
+          currentProviderId="provider-1"
+          appId="claude"
+          onSwitch={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onDuplicate={vi.fn()}
+          onOpenWebsite={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "当前环境配置" }),
+      );
+
+      await screen.findByText(
+        "直接显示当前 live 配置文件内容，可在此编辑并保存。",
+      );
+      expect(
+        screen.queryByText(
+          "检测到实际配置文件发生变化。请先刷新当前环境配置，再决定是否保存。",
+        ),
+      ).not.toBeInTheDocument();
+
+      modifiedAt = 2;
+      snapshotText =
+        '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "https://changed.example.com"\n  }\n}';
+
+      await act(async () => {
+        intervalCallbacks[0]?.();
+      });
+
+      await screen.findByText(
+        "检测到实际配置文件发生变化。请先刷新当前环境配置，再决定是否保存。",
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText(
+            "检测到实际配置文件发生变化。请先刷新当前环境配置，再决定是否保存。",
+          ),
+        ).not.toBeInTheDocument();
+      });
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 });

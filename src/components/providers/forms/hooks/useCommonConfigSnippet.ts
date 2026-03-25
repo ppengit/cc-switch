@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { validateJsonConfig } from "@/utils/providerConfigUtils";
+import {
+  getDefaultJsonCommonConfigTemplate,
+  normalizeJsonCommonConfigTemplateForEditing,
+  parseJsonCommonConfigTemplate,
+  validateJsonCommonConfigTemplate,
+} from "@/utils/providerConfigUtils";
 import { configApi } from "@/lib/api";
 
 const LEGACY_STORAGE_KEY = "cc-switch:common-config-snippet";
-const DEFAULT_COMMON_CONFIG_SNIPPET = `{
-  "includeCoAuthoredBy": false
-}`;
 
 interface UseCommonConfigSnippetProps {
   settingsConfig: string;
@@ -38,7 +40,7 @@ export function useCommonConfigSnippet({
 
   const { t } = useTranslation();
   const [commonConfigSnippet, setCommonConfigSnippetState] = useState<string>(
-    DEFAULT_COMMON_CONFIG_SNIPPET,
+    getDefaultJsonCommonConfigTemplate("claude"),
   );
   const [commonConfigError, setCommonConfigError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -58,7 +60,9 @@ export function useCommonConfigSnippet({
 
         if (snippet && snippet.trim()) {
           if (mounted) {
-            setCommonConfigSnippetState(snippet);
+            setCommonConfigSnippetState(
+              normalizeJsonCommonConfigTemplateForEditing("claude", snippet),
+            );
           }
           return;
         }
@@ -68,9 +72,17 @@ export function useCommonConfigSnippet({
             const legacySnippet =
               window.localStorage.getItem(LEGACY_STORAGE_KEY);
             if (legacySnippet && legacySnippet.trim()) {
-              await configApi.setCommonConfigSnippet("claude", legacySnippet);
+              const normalizedLegacySnippet =
+                normalizeJsonCommonConfigTemplateForEditing(
+                  "claude",
+                  legacySnippet,
+                );
+              await configApi.setCommonConfigSnippet(
+                "claude",
+                normalizedLegacySnippet,
+              );
               if (mounted) {
-                setCommonConfigSnippetState(legacySnippet);
+                setCommonConfigSnippetState(normalizedLegacySnippet);
               }
               window.localStorage.removeItem(LEGACY_STORAGE_KEY);
               console.log(
@@ -100,7 +112,8 @@ export function useCommonConfigSnippet({
   const useCommonConfig = useMemo(() => {
     if (!enabled) return false;
 
-    const validationError = validateJsonConfig(
+    const validationError = validateJsonCommonConfigTemplate(
+      "claude",
       commonConfigSnippet,
       "应用配置模板",
     );
@@ -109,12 +122,16 @@ export function useCommonConfigSnippet({
     }
 
     try {
-      const parsed = JSON.parse(commonConfigSnippet);
+      const parsed = parseJsonCommonConfigTemplate(
+        "claude",
+        commonConfigSnippet,
+      );
+      if ("error" in parsed) {
+        return false;
+      }
       return (
-        parsed &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed) &&
-        Object.keys(parsed).length > 0
+        Object.keys(parsed.result.commonConfig).length > 0 ||
+        parsed.result.hasMcpPlaceholder
       );
     } catch {
       return false;
@@ -141,16 +158,25 @@ export function useCommonConfigSnippet({
         return;
       }
 
-      const validationError = validateJsonConfig(value, "应用配置模板");
+      const validationError = validateJsonCommonConfigTemplate(
+        "claude",
+        value,
+        "应用配置模板",
+      );
       if (validationError) {
         setCommonConfigError(validationError);
         return;
       }
 
       setCommonConfigError("");
-      setCommonConfigSnippetState(value);
+      setCommonConfigSnippetState(
+        normalizeJsonCommonConfigTemplateForEditing("claude", value),
+      );
       configApi
-        .setCommonConfigSnippet("claude", value)
+        .setCommonConfigSnippet(
+          "claude",
+          normalizeJsonCommonConfigTemplateForEditing("claude", value),
+        )
         .catch((error: unknown) => {
           console.error("保存通用配置失败:", error);
           setCommonConfigError(
@@ -175,14 +201,22 @@ export function useCommonConfigSnippet({
         return;
       }
 
-      const validationError = validateJsonConfig(extracted, "提取的配置");
+      const normalizedExtracted = normalizeJsonCommonConfigTemplateForEditing(
+        "claude",
+        extracted,
+      );
+      const validationError = validateJsonCommonConfigTemplate(
+        "claude",
+        normalizedExtracted,
+        "提取的配置",
+      );
       if (validationError) {
         setCommonConfigError(validationError);
         return;
       }
 
-      setCommonConfigSnippetState(extracted);
-      await configApi.setCommonConfigSnippet("claude", extracted);
+      setCommonConfigSnippetState(normalizedExtracted);
+      await configApi.setCommonConfigSnippet("claude", normalizedExtracted);
     } catch (error) {
       console.error("提取通用配置失败:", error);
       setCommonConfigError(

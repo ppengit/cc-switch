@@ -113,10 +113,13 @@ import {
 } from "@/lib/api/model-test";
 import {
   extractCodexModelName,
+  getDefaultJsonCommonConfigTemplate,
+  normalizeJsonCommonConfigTemplateForEditing,
   normalizeCodexCommonConfigSnippetForEditing,
+  parseJsonCommonConfigTemplate,
   setCodexModelName,
   validateCodexCommonConfigSnippet,
-  validateJsonConfig,
+  validateJsonCommonConfigTemplate,
 } from "@/utils/providerConfigUtils";
 import {
   getFallbackProviderDefaultTemplate,
@@ -836,7 +839,9 @@ export function ProviderList({
         setCommonConfigSnippet(
           appId === "codex"
             ? normalizeCodexCommonConfigSnippetForEditing(snippet)
-            : (snippet ?? ""),
+            : appId === "claude" || appId === "gemini"
+              ? normalizeJsonCommonConfigTemplateForEditing(appId, snippet)
+              : (snippet ?? ""),
         );
 
         if (isSupportedProviderTemplateApp(appId)) {
@@ -894,32 +899,38 @@ export function ProviderList({
     [appId],
   );
 
-  const loadConfigPreview = useCallback(async () => {
-    try {
-      setIsConfigPreviewLoading(true);
-      const preview = await configApi.getCurrentLiveConfigSnapshot(appId);
-      setConfigPreview(preview);
-      setPreviewDrafts(
-        Object.fromEntries(
-          preview.files.map((file) => [file.path, file.actualText]),
-        ),
-      );
-    } catch (error) {
-      console.error("[ProviderList] Failed to load config preview", error);
-      toast.error(
-        t("provider.configPreviewLoadFailed", {
-          defaultValue: "加载当前环境配置失败: {{error}}",
-          error: String(error),
-        }),
-      );
-    } finally {
-      setIsConfigPreviewLoading(false);
-    }
-  }, [appId, t]);
+  const loadConfigPreview = useCallback(
+    async (options?: { resetLiveSignature?: boolean }) => {
+      try {
+        setIsConfigPreviewLoading(true);
+        const preview = await configApi.getCurrentLiveConfigSnapshot(appId);
+        setConfigPreview(preview);
+        setPreviewDrafts(
+          Object.fromEntries(
+            preview.files.map((file) => [file.path, file.actualText]),
+          ),
+        );
+        if (options?.resetLiveSignature) {
+          await loadLiveConfigFiles({ resetSignature: true });
+        }
+      } catch (error) {
+        console.error("[ProviderList] Failed to load config preview", error);
+        toast.error(
+          t("provider.configPreviewLoadFailed", {
+            defaultValue: "加载当前环境配置失败: {{error}}",
+            error: String(error),
+          }),
+        );
+      } finally {
+        setIsConfigPreviewLoading(false);
+      }
+    },
+    [appId, loadLiveConfigFiles, t],
+  );
 
   useEffect(() => {
     if (!isConfigPreviewOpen) return;
-    void loadConfigPreview();
+    void loadConfigPreview({ resetLiveSignature: true });
   }, [isConfigPreviewOpen, loadConfigPreview]);
 
   useEffect(() => {
@@ -1464,30 +1475,19 @@ export function ProviderList({
         return { env: {}, config: {} };
       }
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
+      const templateParsed = parseJsonCommonConfigTemplate("gemini", trimmed);
+      if ("error" in templateParsed) {
         return {
           env: {},
           config: {},
-          error: t("geminiConfig.invalidJsonFormat", {
-            defaultValue: "JSON 格式错误，请检查语法",
-          }),
+          error: templateParsed.error,
         };
       }
 
-      if (!isPlainObject(parsed)) {
-        return {
-          env: {},
-          config: {},
-          error: t("geminiConfig.invalidJsonFormat", {
-            defaultValue: "JSON 格式错误，请检查语法",
-          }),
-        };
-      }
-
-      const parsedObj = parsed as Record<string, unknown>;
+      const parsedObj = templateParsed.result.commonConfig as Record<
+        string,
+        unknown
+      >;
       const hasStructured =
         Object.prototype.hasOwnProperty.call(parsedObj, "env") ||
         Object.prototype.hasOwnProperty.call(parsedObj, "config");
@@ -1808,7 +1808,8 @@ export function ProviderList({
 
     let validationError = "";
     if (appId === "claude") {
-      validationError = validateJsonConfig(
+      validationError = validateJsonCommonConfigTemplate(
+        "claude",
         commonConfigSnippet,
         t("claudeConfig.commonConfigSnippet", {
           defaultValue: "应用配置模板",
@@ -2821,8 +2822,7 @@ export function ProviderList({
         setSavingPreviewFilePath(file.path);
         const nextContent = getPreviewDraftValue(file, previewDrafts);
         await configApi.saveLiveConfigFile(appId, file.label, nextContent);
-        await loadLiveConfigFiles({ resetSignature: true });
-        await loadConfigPreview();
+        await loadConfigPreview({ resetLiveSignature: true });
         await queryClient.invalidateQueries({ queryKey: ["providers"] });
         toast.success(
           t("provider.saveLiveConfigSuccess", {
@@ -2878,8 +2878,7 @@ export function ProviderList({
           getPreviewDraftValue(file, previewDrafts),
         );
       }
-      await loadLiveConfigFiles({ resetSignature: true });
-      await loadConfigPreview();
+      await loadConfigPreview({ resetLiveSignature: true });
       await queryClient.invalidateQueries({ queryKey: ["providers"] });
       toast.success(
         t("provider.saveAllLiveConfigSuccess", {
@@ -4620,11 +4619,11 @@ export function ProviderList({
                 : appId === "gemini"
                   ? t("geminiConfig.commonConfigHint", {
                       defaultValue:
-                        "该片段是 Gemini live 配置模板的公共部分；系统会在写入时叠加当前供应商和 MCP 配置",
+                        "该模板会在写入 Gemini live 配置时渲染；必须包含顶层 {{provider.config}}，可选 {{mcp.config}}。",
                     })
                   : t("claudeConfig.commonConfigHint", {
                       defaultValue:
-                        "该片段是 Claude live 配置模板的公共部分；系统会在写入时叠加当前供应商和 MCP 配置",
+                        "该模板会在写入 Claude live 配置时渲染；必须包含顶层 {{provider.config}}，可选 {{mcp.config}}。",
                     })}
             </p>
 
@@ -4642,15 +4641,15 @@ export function ProviderList({
 
 {{mcp.config}}`
                   : appId === "gemini"
-                    ? `{\n  \"env\": {\n    \"GEMINI_MODEL\": \"gemini-3.1-pro-preview\"\n  },\n  \"config\": {\n    \"ui\": {\n      \"inlineThinkingMode\": \"full\"\n    }\n  }\n}`
-                    : `{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://your-api-endpoint.com\"\n  }\n}`
+                    ? getDefaultJsonCommonConfigTemplate("gemini")
+                    : getDefaultJsonCommonConfigTemplate("claude")
               }
               darkMode={
                 typeof document !== "undefined" &&
                 document.documentElement.classList.contains("dark")
               }
               rows={16}
-              showValidation={appId !== "codex"}
+              showValidation={false}
               language={appId === "codex" ? "javascript" : "json"}
             />
 
@@ -4749,7 +4748,9 @@ export function ProviderList({
             <Button
               type="button"
               variant="outline"
-              onClick={() => void loadConfigPreview()}
+              onClick={() =>
+                void loadConfigPreview({ resetLiveSignature: true })
+              }
               disabled={isConfigPreviewLoading}
               className="gap-2"
             >

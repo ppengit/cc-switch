@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Save, Download, Loader2 } from "lucide-react";
 import JsonEditor from "@/components/JsonEditor";
+import { getDefaultJsonCommonConfigTemplate } from "@/utils/providerConfigUtils";
 
 interface CommonConfigEditorProps {
   value: string;
@@ -99,15 +100,10 @@ export function CommonConfigEditor({
         <JsonEditor
           value={localValue}
           onChange={handleLocalChange}
-          placeholder={`{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com",
-    "ANTHROPIC_AUTH_TOKEN": "your-api-key-here"
-  }
-}`}
+          placeholder={getDefaultJsonCommonConfigTemplate("claude")}
           darkMode={isDarkMode}
           rows={14}
-          showValidation={true}
+          showValidation={false}
           language="json"
         />
       </div>
@@ -152,20 +148,16 @@ export function CommonConfigEditor({
           <p className="text-sm text-muted-foreground">
             {t("claudeConfig.commonConfigHint", {
               defaultValue:
-                "这是 Claude 的应用配置模板。写入 live 配置时，系统会注入当前供应商配置和 MCP 配置。",
+                "这是 Claude 的应用配置模板。模板必须包含顶层 {{provider.config}}，可选 {{mcp.config}}；写入 live 配置时系统会注入当前供应商和 MCP 配置。",
             })}
           </p>
           <JsonEditor
             value={commonConfigSnippet}
             onChange={onCommonConfigSnippetChange}
-            placeholder={`{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com"
-  }
-}`}
+            placeholder={getDefaultJsonCommonConfigTemplate("claude")}
             darkMode={isDarkMode}
             rows={16}
-            showValidation={true}
+            showValidation={false}
             language="json"
           />
           {commonConfigError && (

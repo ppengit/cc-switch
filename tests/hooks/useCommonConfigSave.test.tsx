@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useCommonConfigSnippet } from "@/components/providers/forms/hooks/useCommonConfigSnippet";
 import { useCodexCommonConfig } from "@/components/providers/forms/hooks/useCodexCommonConfig";
 import { useGeminiCommonConfig } from "@/components/providers/forms/hooks/useGeminiCommonConfig";
 
@@ -84,6 +85,38 @@ describe("common config snippet saving", () => {
     expect(onConfigChange).not.toHaveBeenCalled();
   });
 
+  it("persists a Claude common config template with provider placeholders", async () => {
+    const onConfigChange = vi.fn();
+    const { result } = renderHook(() =>
+      useCommonConfigSnippet({
+        settingsConfig: "{}",
+        onConfigChange,
+        enabled: true,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.handleCommonConfigSnippetChange(`{
+  "{{provider.config}}": {},
+  "includeCoAuthoredBy": false,
+  "mcpServers": "{{mcp.config}}"
+}`);
+    });
+
+    expect(result.current.commonConfigError).toBe("");
+    expect(setCommonConfigSnippetMock).toHaveBeenCalledWith(
+      "claude",
+      `{
+  "{{provider.config}}": {},
+  "includeCoAuthoredBy": false,
+  "mcpServers": "{{mcp.config}}"
+}`,
+    );
+    expect(onConfigChange).not.toHaveBeenCalled();
+  });
+
   it("does not persist an invalid Gemini common config snippet", async () => {
     const onEnvChange = vi.fn();
     const { result } = renderHook(() =>
@@ -101,7 +134,10 @@ describe("common config snippet saving", () => {
     let saved = false;
     act(() => {
       saved = result.current.handleCommonConfigSnippetChange(
-        JSON.stringify({ GEMINI_MODEL: 123 }),
+        JSON.stringify({
+          "{{provider.config}}": {},
+          env: { GEMINI_MODEL: 123 },
+        }),
       );
     });
 

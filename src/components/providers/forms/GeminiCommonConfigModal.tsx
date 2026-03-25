@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { Button } from "@/components/ui/button";
 import JsonEditor from "@/components/JsonEditor";
+import { getDefaultJsonCommonConfigTemplate } from "@/utils/providerConfigUtils";
 
 interface GeminiCommonConfigModalProps {
   isOpen: boolean;
@@ -99,26 +100,17 @@ export const GeminiCommonConfigModal: React.FC<
         <p className="text-sm text-muted-foreground">
           {t("geminiConfig.commonConfigHint", {
             defaultValue:
-              "该片段支持 env / config 两部分（env 不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY）",
+              "该模板必须包含顶层 {{provider.config}}，可选 {{mcp.config}}。公共 env 仍不允许包含 GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY。",
           })}
         </p>
 
         <JsonEditor
           value={draftValue}
           onChange={setDraftValue}
-          placeholder={`{
-  "env": {
-    "GEMINI_MODEL": "gemini-3.1-pro-preview"
-  },
-  "config": {
-    "ui": {
-      "inlineThinkingMode": "full"
-    }
-  }
-}`}
+          placeholder={getDefaultJsonCommonConfigTemplate("gemini")}
           darkMode={isDarkMode}
           rows={16}
-          showValidation={true}
+          showValidation={false}
           language="json"
         />
 

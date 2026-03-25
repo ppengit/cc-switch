@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  getDefaultJsonCommonConfigTemplate,
   normalizeCodexCommonConfigSnippetForEditing,
+  normalizeJsonCommonConfigTemplateForEditing,
   hasTomlCommonConfigSnippet,
+  parseJsonCommonConfigTemplate,
   updateTomlCommonConfigSnippet,
   validateCodexCommonConfigSnippet,
+  validateJsonCommonConfigTemplate,
 } from "@/utils/providerConfigUtils";
 
 describe("providerConfigUtils codex common config", () => {
@@ -44,7 +48,9 @@ model = "gpt-4.1"
     const result = updateTomlCommonConfigSnippet(configText, "", false);
 
     expect(result.error).toBeUndefined();
-    expect(result.updatedConfig).not.toContain("# cc-switch common config start");
+    expect(result.updatedConfig).not.toContain(
+      "# cc-switch common config start",
+    );
     expect(result.updatedConfig).toContain(`model = "gpt-4.1"`);
   });
 
@@ -65,9 +71,71 @@ sandbox_mode = "danger-full-access"`;
 
     const normalized = normalizeCodexCommonConfigSnippetForEditing(snippet);
 
-    expect(normalized).toContain("approval_policy = \"never\"");
+    expect(normalized).toContain('approval_policy = "never"');
     expect(normalized).toContain("{{provider.config}}");
     expect(normalized).toContain("{{mcp.config}}");
     expect(validateCodexCommonConfigSnippet(normalized)).toBe("");
+  });
+});
+
+describe("providerConfigUtils json common config templates", () => {
+  it("provides a Claude default template with provider and mcp placeholders", () => {
+    const template = getDefaultJsonCommonConfigTemplate("claude");
+
+    expect(template).toContain('"{{provider.config}}"');
+    expect(template).toContain('"mcpServers": "{{mcp.config}}"');
+    expect(validateJsonCommonConfigTemplate("claude", template)).toBe("");
+  });
+
+  it("migrates legacy Claude snippets to a template with provider placeholder", () => {
+    const normalized = normalizeJsonCommonConfigTemplateForEditing(
+      "claude",
+      `{
+  "includeCoAuthoredBy": false
+}`,
+    );
+
+    expect(normalized).toContain('"{{provider.config}}"');
+    expect(normalized).toContain('"includeCoAuthoredBy": false');
+    expect(normalized).toContain('"mcpServers": "{{mcp.config}}"');
+    expect(validateJsonCommonConfigTemplate("claude", normalized)).toBe("");
+  });
+
+  it("parses Gemini templates and strips placeholders from common content", () => {
+    const parsed = parseJsonCommonConfigTemplate(
+      "gemini",
+      `{
+  "{{provider.config}}": {},
+  "env": {
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  },
+  "mcpServers": "{{mcp.config}}"
+}`,
+    );
+
+    expect("error" in parsed).toBe(false);
+    if ("error" in parsed) {
+      return;
+    }
+
+    expect(parsed.result.hasMcpPlaceholder).toBe(true);
+    expect(parsed.result.commonConfig).toEqual({
+      env: {
+        GEMINI_MODEL: "gemini-3.1-pro-preview",
+      },
+    });
+  });
+
+  it("rejects Gemini templates without provider placeholder", () => {
+    expect(
+      validateJsonCommonConfigTemplate(
+        "gemini",
+        `{
+  "env": {
+    "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  }
+}`,
+      ),
+    ).toContain("{{provider.config}}");
   });
 });

@@ -30,8 +30,9 @@ pub use live::{
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    build_effective_settings_with_common_config, normalize_json_common_config_template_text,
+    normalize_provider_common_config_for_storage, strip_common_config_from_live_settings,
+    sync_current_provider_for_app_to_live, validate_json_common_config_template_text,
     write_live_with_common_config,
 };
 
@@ -917,6 +918,38 @@ impl ProviderService {
         }
     }
 
+    fn wrap_json_common_config_template(
+        app_type: &AppType,
+        common_config: Value,
+    ) -> Result<String, AppError> {
+        if common_config.as_object().is_none_or(|obj| obj.is_empty()) {
+            return Ok("{}".to_string());
+        }
+
+        let mut wrapped = serde_json::Map::new();
+        wrapped.insert("{{provider.config}}".to_string(), serde_json::json!({}));
+
+        if let Some(obj) = common_config.as_object() {
+            for (key, value) in obj {
+                wrapped.insert(key.clone(), value.clone());
+            }
+        }
+
+        if !wrapped.contains_key("mcpServers") {
+            wrapped.insert(
+                "mcpServers".to_string(),
+                Value::String("{{mcp.config}}".to_string()),
+            );
+        }
+
+        let wrapped_value = Value::Object(wrapped);
+        live::normalize_json_common_config_template_text(
+            app_type,
+            &serde_json::to_string(&wrapped_value)
+                .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))?,
+        )
+    }
+
     /// Extract common config for Claude (JSON format)
     fn extract_claude_common_config(settings: &Value) -> Result<String, AppError> {
         let mut config = settings.clone();
@@ -968,8 +1001,7 @@ impl ProviderService {
             return Ok("{}".to_string());
         }
 
-        serde_json::to_string_pretty(&config)
-            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+        Self::wrap_json_common_config_template(&AppType::Claude, config)
     }
 
     /// Extract common config for Codex (TOML format)
@@ -1069,8 +1101,7 @@ impl ProviderService {
             return Ok("{}".to_string());
         }
 
-        serde_json::to_string_pretty(&Value::Object(snippet))
-            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+        Self::wrap_json_common_config_template(&AppType::Gemini, Value::Object(snippet))
     }
 
     /// Extract common config for OpenCode (JSON format)
