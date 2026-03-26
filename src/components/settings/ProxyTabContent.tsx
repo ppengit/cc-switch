@@ -1,5 +1,14 @@
-import { useState } from "react";
-import { Server, Activity, FlaskConical, Zap, Globe } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import {
+  Activity,
+  FlaskConical,
+  Globe,
+  ListOrdered,
+  Server,
+  ShieldAlert,
+  Target,
+  Zap,
+} from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { ProxyPanel } from "@/components/proxy";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
+import { ForceModelPanel } from "@/components/proxy/ForceModelPanel";
+import { ZeroTokenConfigPanel } from "@/components/proxy/ZeroTokenConfigPanel";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
 import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
@@ -23,6 +34,44 @@ import type { SettingsFormState } from "@/hooks/useSettings";
 interface ProxyTabContentProps {
   settings: SettingsFormState;
   onAutoSave: (updates: Partial<SettingsFormState>) => Promise<void>;
+}
+
+const PROXY_APP_TABS = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+  { value: "gemini", label: "Gemini" },
+] as const;
+
+function ProxyAppTabs({
+  children,
+}: {
+  children: (appType: "claude" | "codex" | "gemini") => ReactNode;
+}) {
+  return (
+    <Tabs defaultValue="claude" className="w-full">
+      <TabsList className="grid w-full grid-cols-3">
+        {PROXY_APP_TABS.map((tab) => (
+          <TabsTrigger key={tab.value} value={tab.value}>
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+
+      {PROXY_APP_TABS.map((tab) => (
+        <TabsContent key={tab.value} value={tab.value} className="mt-4">
+          {children(tab.value)}
+        </TabsContent>
+      ))}
+    </Tabs>
+  );
+}
+
+function ProxyRunningNotice({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-4">
+      <p className="text-sm text-yellow-600 dark:text-yellow-400">{message}</p>
+    </div>
+  );
 }
 
 export function ProxyTabContent({
@@ -63,6 +112,10 @@ export function ProxyTabContent({
     }
   };
 
+  const proxyRequiredMessage = t("proxy.settings.proxyRequired", {
+    defaultValue: "需要先启动代理服务才能修改当前代理相关配置",
+  });
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -71,7 +124,6 @@ export function ProxyTabContent({
       className="space-y-4"
     >
       <Accordion type="multiple" defaultValue={[]} className="w-full space-y-4">
-        {/* Local Proxy */}
         <AccordionItem
           value="proxy"
           className="rounded-xl glass-card overflow-hidden"
@@ -89,7 +141,7 @@ export function ProxyTabContent({
               </div>
               <Badge
                 variant={isRunning ? "default" : "secondary"}
-                className="gap-1.5 h-6 ml-auto mr-2"
+                className="ml-auto mr-2 h-6 gap-1.5"
               >
                 <Activity
                   className={`h-3 w-3 ${isRunning ? "animate-pulse" : ""}`}
@@ -100,7 +152,7 @@ export function ProxyTabContent({
               </Badge>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <ProxyPanel
               enableLocalProxy={settings?.enableLocalProxy ?? false}
               onEnableLocalProxyChange={(checked) =>
@@ -112,7 +164,6 @@ export function ProxyTabContent({
           </AccordionContent>
         </AccordionItem>
 
-        {/* Auto Failover */}
         <AccordionItem
           value="failover"
           className="rounded-xl glass-card overflow-hidden"
@@ -130,117 +181,136 @@ export function ProxyTabContent({
               </div>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <div className="space-y-6">
               {!isRunning && (
-                <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
-                  <p className="text-sm text-yellow-600 dark:text-yellow-400">
-                    {t("proxy.failover.proxyRequired", {
-                      defaultValue: "需要先启动代理服务才能配置故障转移",
-                    })}
-                  </p>
-                </div>
+                <ProxyRunningNotice message={proxyRequiredMessage} />
               )}
-
-              <Tabs defaultValue="claude" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
-                  <TabsTrigger value="claude">Claude</TabsTrigger>
-                  <TabsTrigger value="codex">Codex</TabsTrigger>
-                  <TabsTrigger value="gemini">Gemini</TabsTrigger>
-                </TabsList>
-                <TabsContent value="claude" className="mt-4 space-y-6">
+              <ProxyAppTabs>
+                {(appType) => (
                   <AutoFailoverConfigPanel
-                    appType="claude"
+                    appType={appType}
                     disabled={!isRunning}
                   />
-                  <Accordion type="multiple" defaultValue={[]} className="w-full">
-                    <AccordionItem
-                      value="claude-queue"
-                      className="rounded-lg border border-border/60 px-4"
-                    >
-                      <AccordionTrigger className="py-3 hover:no-underline">
-                        <div className="text-left">
-                          <h4 className="text-sm font-semibold">
-                            {t("proxy.failoverQueue.title")}
-                          </h4>
-                          <p className="text-xs text-muted-foreground font-normal">
-                            {t("proxy.failoverQueue.description")}
-                          </p>
-                        </div>
-                      </AccordionTrigger>
-                      <AccordionContent className="pb-4">
-                        <FailoverQueueManager
-                          appType="claude"
-                          disabled={!isRunning}
-                        />
-                      </AccordionContent>
-                    </AccordionItem>
-                  </Accordion>
-                </TabsContent>
-                <TabsContent value="codex" className="mt-4 space-y-6">
-                  <AutoFailoverConfigPanel
-                    appType="codex"
-                    disabled={!isRunning}
-                  />
-                  <Accordion type="multiple" defaultValue={[]} className="w-full">
-                    <AccordionItem
-                      value="codex-queue"
-                      className="rounded-lg border border-border/60 px-4"
-                    >
-                      <AccordionTrigger className="py-3 hover:no-underline">
-                        <div className="text-left">
-                          <h4 className="text-sm font-semibold">
-                            {t("proxy.failoverQueue.title")}
-                          </h4>
-                          <p className="text-xs text-muted-foreground font-normal">
-                            {t("proxy.failoverQueue.description")}
-                          </p>
-                        </div>
-                      </AccordionTrigger>
-                      <AccordionContent className="pb-4">
-                        <FailoverQueueManager
-                          appType="codex"
-                          disabled={!isRunning}
-                        />
-                      </AccordionContent>
-                    </AccordionItem>
-                  </Accordion>
-                </TabsContent>
-                <TabsContent value="gemini" className="mt-4 space-y-6">
-                  <AutoFailoverConfigPanel
-                    appType="gemini"
-                    disabled={!isRunning}
-                  />
-                  <Accordion type="multiple" defaultValue={[]} className="w-full">
-                    <AccordionItem
-                      value="gemini-queue"
-                      className="rounded-lg border border-border/60 px-4"
-                    >
-                      <AccordionTrigger className="py-3 hover:no-underline">
-                        <div className="text-left">
-                          <h4 className="text-sm font-semibold">
-                            {t("proxy.failoverQueue.title")}
-                          </h4>
-                          <p className="text-xs text-muted-foreground font-normal">
-                            {t("proxy.failoverQueue.description")}
-                          </p>
-                        </div>
-                      </AccordionTrigger>
-                      <AccordionContent className="pb-4">
-                        <FailoverQueueManager
-                          appType="gemini"
-                          disabled={!isRunning}
-                        />
-                      </AccordionContent>
-                    </AccordionItem>
-                  </Accordion>
-                </TabsContent>
-              </Tabs>
+                )}
+              </ProxyAppTabs>
             </div>
           </AccordionContent>
         </AccordionItem>
 
-        {/* Model Test Config */}
+        <AccordionItem
+          value="failoverQueue"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <ListOrdered className="h-5 w-5 text-amber-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("proxy.failoverQueue.title", {
+                    defaultValue: "故障转移队列",
+                  })}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("proxy.failoverQueue.description", {
+                    defaultValue: "管理各应用的供应商故障转移顺序",
+                  })}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
+            <div className="space-y-6">
+              {!isRunning && (
+                <ProxyRunningNotice message={proxyRequiredMessage} />
+              )}
+              <ProxyAppTabs>
+                {(appType) => (
+                  <FailoverQueueManager
+                    appType={appType}
+                    disabled={!isRunning}
+                  />
+                )}
+              </ProxyAppTabs>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem
+          value="forceModel"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <Target className="h-5 w-5 text-rose-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("settings.advanced.forceModel.title", {
+                    defaultValue: "强制模型",
+                  })}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("settings.advanced.forceModel.description", {
+                    defaultValue:
+                      "单独控制各应用经过本地代理时的模型改写策略。",
+                  })}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
+            <div className="space-y-6">
+              {!isRunning && (
+                <ProxyRunningNotice message={proxyRequiredMessage} />
+              )}
+              <ProxyAppTabs>
+                {(appType) => (
+                  <ForceModelPanel appType={appType} disabled={!isRunning} />
+                )}
+              </ProxyAppTabs>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem
+          value="zeroToken"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <ShieldAlert className="h-5 w-5 text-yellow-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("settings.advanced.zeroToken.title", {
+                    defaultValue: "0/0 Token 异常",
+                  })}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("settings.advanced.zeroToken.description", {
+                    defaultValue:
+                      "单独配置空回保护与连续异常阈值，避免和故障转移核心参数混在一起。",
+                  })}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
+            <div className="space-y-6">
+              {!isRunning && (
+                <ProxyRunningNotice message={proxyRequiredMessage} />
+              )}
+              <ProxyAppTabs>
+                {(appType) => (
+                  <ZeroTokenConfigPanel
+                    appType={appType}
+                    disabled={!isRunning}
+                  />
+                )}
+              </ProxyAppTabs>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
         <AccordionItem
           value="modelTest"
           className="rounded-xl glass-card overflow-hidden"
@@ -258,12 +328,11 @@ export function ProxyTabContent({
               </div>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <ModelTestConfigPanel />
           </AccordionContent>
         </AccordionItem>
 
-        {/* Rectifier */}
         <AccordionItem
           value="rectifier"
           className="rounded-xl glass-card overflow-hidden"
@@ -281,12 +350,11 @@ export function ProxyTabContent({
               </div>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <RectifierConfigPanel />
           </AccordionContent>
         </AccordionItem>
 
-        {/* Global Outbound Proxy */}
         <AccordionItem
           value="globalProxy"
           className="rounded-xl glass-card overflow-hidden"
@@ -304,7 +372,7 @@ export function ProxyTabContent({
               </div>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+          <AccordionContent className="border-t border-border/50 px-6 pb-6 pt-4">
             <GlobalProxySettings />
           </AccordionContent>
         </AccordionItem>

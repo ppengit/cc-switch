@@ -81,9 +81,14 @@ describe("AddProviderDialog", () => {
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
     const submitted = handleSubmit.mock.calls[0][0];
+    const submitOptions = handleSubmit.mock.calls[0][1];
     expect(submitted.meta?.custom_endpoints).toEqual(
       mockFormValues.meta?.custom_endpoints,
     );
+    expect(submitOptions).toEqual({
+      pinToTop: true,
+      enableNow: true,
+    });
     expect(handleOpenChange).toHaveBeenCalledWith(false);
   });
 
@@ -123,6 +128,42 @@ describe("AddProviderDialog", () => {
         addedAt: expect.any(Number),
         lastUsed: undefined,
       },
+    });
+  });
+
+  it("允许在提交前关闭置顶和启用开关", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="claude"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /provider\.addOptions\.pinToTop|置顶|Pin to Top|先頭に固定/i,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /provider\.addOptions\.enableNow|启用|Enable Now|今すぐ有効化/i,
+      }),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "common.add",
+      }),
+    );
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(handleSubmit.mock.calls[0][1]).toEqual({
+      pinToTop: false,
+      enableNow: false,
     });
   });
 });

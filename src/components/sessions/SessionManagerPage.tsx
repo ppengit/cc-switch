@@ -114,7 +114,15 @@ function buildBindingLookupKeys(appType: string, sessionId: string): string[] {
   return keys;
 }
 
-export function SessionManagerPage({ appId }: { appId: string }) {
+interface SessionManagerPageProps {
+  appId: AppId;
+  onAppChange?: (appId: AppId) => void;
+}
+
+export function SessionManagerPage({
+  appId,
+  onAppChange,
+}: SessionManagerPageProps) {
   const { t } = useTranslation();
   const { data, isLoading, refetch } = useSessionsQuery();
   const sessions = data ?? [];
@@ -137,6 +145,20 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (providerFilter === "all") return;
+    if (providerFilter === appId) return;
+    setProviderFilter(appId as ProviderFilter);
+  }, [appId, providerFilter]);
+
+  const handleProviderFilterChange = (value: string) => {
+    const nextFilter = value as ProviderFilter;
+    setProviderFilter(nextFilter);
+    if (nextFilter !== "all") {
+      onAppChange?.(nextFilter as AppId);
+    }
+  };
 
   // 娴ｈ法鏁?FlexSearch 閸忋劍鏋冮幖婊呭偍
   const { search: searchSessions } = useSessionSearch({
@@ -705,9 +727,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
                       <Select
                         value={providerFilter}
-                        onValueChange={(value) =>
-                          setProviderFilter(value as ProviderFilter)
-                        }
+                        onValueChange={handleProviderFilterChange}
                       >
                         <Tooltip>
                           <TooltipTrigger asChild>

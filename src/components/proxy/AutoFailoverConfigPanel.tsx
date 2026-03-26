@@ -34,8 +34,6 @@ export function AutoFailoverConfigPanel({
     circuitTimeoutSeconds: "60",
     circuitErrorRateThreshold: "50", // 存储百分比值
     circuitMinRequests: "10",
-    zeroTokenAnomalyEnabled: false,
-    zeroTokenAnomalyThreshold: "3",
   });
 
   useEffect(() => {
@@ -53,8 +51,6 @@ export function AutoFailoverConfigPanel({
           Math.round(config.circuitErrorRateThreshold * 100),
         ),
         circuitMinRequests: String(config.circuitMinRequests),
-        zeroTokenAnomalyEnabled: config.zeroTokenAnomalyEnabled === true,
-        zeroTokenAnomalyThreshold: String(config.zeroTokenAnomalyThreshold ?? 3),
       });
     }
   }, [config]);
@@ -80,7 +76,6 @@ export function AutoFailoverConfigPanel({
       circuitTimeoutSeconds: { min: 0, max: 300 },
       circuitErrorRateThreshold: { min: 0, max: 100 },
       circuitMinRequests: { min: 5, max: 100 },
-      zeroTokenAnomalyThreshold: { min: 1, max: 20 },
     };
 
     // 解析原始值
@@ -94,7 +89,6 @@ export function AutoFailoverConfigPanel({
       circuitTimeoutSeconds: parseNum(formData.circuitTimeoutSeconds),
       circuitErrorRateThreshold: parseNum(formData.circuitErrorRateThreshold),
       circuitMinRequests: parseNum(formData.circuitMinRequests),
-      zeroTokenAnomalyThreshold: parseNum(formData.zeroTokenAnomalyThreshold),
     };
 
     // 校验是否超出范围（NaN 也视为无效）
@@ -154,11 +148,6 @@ export function AutoFailoverConfigPanel({
       ranges.circuitMinRequests,
       t("proxy.autoFailover.minRequests", "最小请求数"),
     );
-    checkRange(
-      raw.zeroTokenAnomalyThreshold,
-      ranges.zeroTokenAnomalyThreshold,
-      t("proxy.autoFailover.zeroTokenThreshold", "0/0 Token 连续阈值"),
-    );
 
     if (errors.length > 0) {
       toast.error(
@@ -186,8 +175,6 @@ export function AutoFailoverConfigPanel({
           circuitTimeoutSeconds: raw.circuitTimeoutSeconds,
           circuitErrorRateThreshold: raw.circuitErrorRateThreshold / 100,
           circuitMinRequests: raw.circuitMinRequests,
-          zeroTokenAnomalyEnabled: formData.zeroTokenAnomalyEnabled,
-          zeroTokenAnomalyThreshold: raw.zeroTokenAnomalyThreshold,
         },
         skipSuccessToast: true,
         skipErrorToast: true,
@@ -218,8 +205,6 @@ export function AutoFailoverConfigPanel({
           Math.round(config.circuitErrorRateThreshold * 100),
         ),
         circuitMinRequests: String(config.circuitMinRequests),
-        zeroTokenAnomalyEnabled: config.zeroTokenAnomalyEnabled === true,
-        zeroTokenAnomalyThreshold: String(config.zeroTokenAnomalyThreshold ?? 3),
       });
     }
   };
@@ -253,71 +238,31 @@ export function AutoFailoverConfigPanel({
           </AlertDescription>
         </Alert>
 
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
-          <h4 className="text-sm font-semibold">
-            {t("proxy.autoFailover.zeroTokenSettings", "0/0 Token 异常处理")}
-          </h4>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/50 px-3 py-3">
-                <div className="pr-4">
-                  <Label htmlFor={`zeroTokenAnomalyEnabled-${appType}`}>
-                    {t(
-                      "proxy.autoFailover.zeroTokenEnabled",
-                      "启用 0/0 Token 异常自动降级",
-                    )}
-                  </Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {t(
-                      "proxy.autoFailover.zeroTokenEnabledHint",
-                      "当上游成功返回但输入/输出 token 都为 0 时，按连续次数统计并在命中阈值后触发降级与会话迁移。",
-                    )}
-                  </p>
-                </div>
-                <Switch
-                  id={`zeroTokenAnomalyEnabled-${appType}`}
-                  checked={formData.zeroTokenAnomalyEnabled}
-                  onCheckedChange={(checked) =>
-                    setFormData({
-                      ...formData,
-                      zeroTokenAnomalyEnabled: checked,
-                    })
-                  }
-                  disabled={isDisabled}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor={`zeroTokenAnomalyThreshold-${appType}`}>
-                {t(
-                  "proxy.autoFailover.zeroTokenThreshold",
-                  "0/0 Token 连续阈值",
-                )}
-              </Label>
-              <Input
-                id={`zeroTokenAnomalyThreshold-${appType}`}
-                type="number"
-                min="1"
-                max="20"
-                value={formData.zeroTokenAnomalyThreshold}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    zeroTokenAnomalyThreshold: e.target.value,
-                  })
-                }
-                disabled={isDisabled}
-              />
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "proxy.autoFailover.zeroTokenThresholdHint",
-                  "启用后，连续命中多少次 0/0 token 异常才会将该供应商降级/熔断（建议: 2-5）。",
-                )}
-              </p>
-            </div>
+        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/50 px-3 py-3">
+          <div className="pr-4">
+            <Label htmlFor={`autoFailoverEnabled-${appType}`}>
+              {t("proxy.failover.autoSwitch", {
+                defaultValue: "自动故障转移",
+              })}
+            </Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("proxy.failover.autoSwitchDescription", {
+                defaultValue:
+                  "开启后将立即切换到队列 P1，并在请求失败时自动切换到队列中的下一个供应商",
+              })}
+            </p>
           </div>
+          <Switch
+            id={`autoFailoverEnabled-${appType}`}
+            checked={formData.autoFailoverEnabled}
+            onCheckedChange={(checked) =>
+              setFormData((current) => ({
+                ...current,
+                autoFailoverEnabled: checked,
+              }))
+            }
+            disabled={isDisabled}
+          />
         </div>
 
         {/* 重试与超时配置 */}

@@ -59,8 +59,10 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 
-const DEFAULT_MAIN_WINDOW_WIDTH: u32 = 1280;
-const DEFAULT_MAIN_WINDOW_HEIGHT: u32 = 800;
+const LEGACY_DEFAULT_MAIN_WINDOW_WIDTH: u32 = 1280;
+const LEGACY_DEFAULT_MAIN_WINDOW_HEIGHT: u32 = 800;
+const DEFAULT_MAIN_WINDOW_WIDTH: u32 = 1360;
+const DEFAULT_MAIN_WINDOW_HEIGHT: u32 = 860;
 const MIN_MAIN_WINDOW_WIDTH: u32 = 900;
 const MIN_MAIN_WINDOW_HEIGHT: u32 = 600;
 
@@ -69,6 +71,18 @@ fn clamp_main_window_size(width: u32, height: u32) -> (u32, u32) {
         width.max(MIN_MAIN_WINDOW_WIDTH),
         height.max(MIN_MAIN_WINDOW_HEIGHT),
     )
+}
+
+fn normalize_saved_main_window_size(width: u32, height: u32) -> (u32, u32) {
+    let upgraded_size =
+        if width == LEGACY_DEFAULT_MAIN_WINDOW_WIDTH && height == LEGACY_DEFAULT_MAIN_WINDOW_HEIGHT
+        {
+            (DEFAULT_MAIN_WINDOW_WIDTH, DEFAULT_MAIN_WINDOW_HEIGHT)
+        } else {
+            (width, height)
+        };
+
+    clamp_main_window_size(upgraded_size.0, upgraded_size.1)
 }
 
 fn persist_main_window_size(app: &tauri::AppHandle) {
@@ -99,7 +113,7 @@ fn apply_startup_window_size(app: &tauri::AppHandle) {
     };
 
     if let Some(saved) = crate::settings::get_main_window_size() {
-        let (mut width, mut height) = clamp_main_window_size(saved.width, saved.height);
+        let (mut width, mut height) = normalize_saved_main_window_size(saved.width, saved.height);
 
         // Clamp to current monitor bounds to avoid oversized windows from legacy DPI bugs.
         if let Ok(monitor) = window.current_monitor() {
@@ -129,6 +143,35 @@ fn apply_startup_window_size(app: &tauri::AppHandle) {
             }));
             let _ = window.center();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        normalize_saved_main_window_size, DEFAULT_MAIN_WINDOW_HEIGHT, DEFAULT_MAIN_WINDOW_WIDTH,
+        MIN_MAIN_WINDOW_HEIGHT, MIN_MAIN_WINDOW_WIDTH,
+    };
+
+    #[test]
+    fn upgrades_legacy_default_window_size() {
+        assert_eq!(
+            normalize_saved_main_window_size(1280, 800),
+            (DEFAULT_MAIN_WINDOW_WIDTH, DEFAULT_MAIN_WINDOW_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn preserves_custom_saved_window_size() {
+        assert_eq!(normalize_saved_main_window_size(1480, 920), (1480, 920));
+    }
+
+    #[test]
+    fn clamps_saved_window_size_to_minimums() {
+        assert_eq!(
+            normalize_saved_main_window_size(720, 480),
+            (MIN_MAIN_WINDOW_WIDTH, MIN_MAIN_WINDOW_HEIGHT)
+        );
     }
 }
 

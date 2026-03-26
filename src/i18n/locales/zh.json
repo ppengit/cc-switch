@@ -127,6 +127,10 @@
     "searchScopeHint": "根据名称、备注和官网链接匹配结果。",
     "searchCloseHint": "按 Esc 关闭",
     "searchCloseAriaLabel": "关闭供应商搜索",
+    "searchLocatorMatches": "定位到 {{count}} 个供应商，可点击快速跳转",
+    "searchLocatorNoMatch": "没有匹配的供应商",
+    "searchLocatorFocus": "定位中",
+    "searchMatchedBadge": "匹配",
     "filterField": "筛选字段",
     "filterAll": "全部字段",
     "filterByName": "供应商名称",
@@ -190,6 +194,12 @@
     "publicSwitch": "是否公共",
     "publicHint": "标记为公共供应商。开启“公共优先”后，系统会在会话路由和故障转移中优先选择这些供应商。",
     "publicTag": "public",
+    "addOptions": {
+      "pinToTop": "置顶",
+      "pinToTopHint": "新增后置顶到列表首位；支持故障转移时也会排到队列最前。",
+      "enableNow": "启用",
+      "enableNowHint": "保存后立即启用此供应商；独占模式会设为当前，累加模式会写入 live 配置。"
+    },
     "configJson": "配置 JSON",
     "writeCommonConfig": "写入通用配置",
     "editCommonConfigButton": "编辑通用配置",
@@ -284,7 +294,15 @@
       },
       "failover": {
         "title": "自动故障转移",
-        "description": "配置故障转移队列和熔断策略"
+        "description": "配置自动故障转移的开关、重试、超时与熔断策略"
+      },
+      "forceModel": {
+        "title": "强制模型",
+        "description": "单独管理各应用经过本地代理时的模型改写策略"
+      },
+      "zeroToken": {
+        "title": "0/0 Token 异常",
+        "description": "单独管理空回保护与连续异常阈值"
       },
       "pricing": {
         "title": "成本定价",
@@ -1758,6 +1776,7 @@
     "settings": {
       "title": "代理服务设置",
       "description": "配置本地代理服务器的监听地址、端口和运行参数，保存后立即生效。",
+      "proxyRequired": "需要先启动代理服务才能修改当前代理相关配置",
       "alert": {
         "autoApply": "保存后将自动同步到正在运行的代理服务，无需手动重启。"
       },

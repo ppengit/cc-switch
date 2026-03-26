@@ -128,6 +128,10 @@
     "searchScopeHint": "Matches provider name, notes, and URL.",
     "searchCloseHint": "Press Esc to close",
     "searchCloseAriaLabel": "Close provider search",
+    "searchLocatorMatches": "Found {{count}} providers. Click to jump.",
+    "searchLocatorNoMatch": "No matching providers",
+    "searchLocatorFocus": "Focused",
+    "searchMatchedBadge": "Match",
     "filterField": "Filter field",
     "filterAll": "All fields",
     "filterByName": "Provider name",
@@ -190,6 +194,12 @@
     "publicSwitch": "Public Provider",
     "publicHint": "Mark this as a public provider. When \"Prefer Public\" is enabled, session routing and failover will prioritize these providers.",
     "publicTag": "public",
+    "addOptions": {
+      "pinToTop": "Pin to Top",
+      "pinToTopHint": "Place the new provider at the top of the list. On failover-capable apps it also becomes the first queue candidate.",
+      "enableNow": "Enable Now",
+      "enableNowHint": "Enable the provider immediately after saving. Exclusive apps switch to it, additive apps write it into live config."
+    },
     "configJson": "Config JSON",
     "writeCommonConfig": "Write common config",
     "editCommonConfigButton": "Edit common config",
@@ -284,7 +294,15 @@
       },
       "failover": {
         "title": "Auto Failover",
-        "description": "Configure failover queue and circuit breaker strategy"
+        "description": "Configure auto failover toggles, retry behavior, timeout, and circuit breaker strategy"
+      },
+      "forceModel": {
+        "title": "Force Model",
+        "description": "Manage per-app model rewrite rules for requests passing through the local proxy"
+      },
+      "zeroToken": {
+        "title": "0/0 Token Anomaly",
+        "description": "Manage empty-response protection and repeated anomaly thresholds separately"
       },
       "pricing": {
         "title": "Cost Pricing",
@@ -1758,6 +1776,7 @@
     "settings": {
       "title": "Proxy Service Settings",
       "description": "Configure local proxy server listening address, port and runtime parameters. Changes take effect immediately after saving.",
+      "proxyRequired": "Start the proxy service before changing these proxy-related settings.",
       "alert": {
         "autoApply": "Changes will be automatically synced to the running proxy service without manual restart."
       },

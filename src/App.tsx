@@ -42,9 +42,13 @@ import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 import { listenWhenBridgeReady } from "@/lib/tauriBridge";
 import { isWindows, isLinux } from "@/lib/platform";
+import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
+import {
+  AddProviderDialog,
+  type AddProviderSubmitOptions,
+} from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
@@ -121,9 +125,27 @@ const SESSION_SUPPORTED_APPS: AppId[] = [
   "opencode",
   "openclaw",
 ];
+const ADDITIVE_APPS: AppId[] = ["opencode", "openclaw"];
 
 const isSessionSupportedApp = (app: AppId): boolean =>
   SESSION_SUPPORTED_APPS.includes(app);
+const isAdditiveApp = (app: AppId): boolean => ADDITIVE_APPS.includes(app);
+
+const compareProvidersByStoredOrder = (left: Provider, right: Provider) => {
+  const leftSort = left.sortIndex ?? Number.MAX_SAFE_INTEGER;
+  const rightSort = right.sortIndex ?? Number.MAX_SAFE_INTEGER;
+  if (leftSort !== rightSort) {
+    return leftSort - rightSort;
+  }
+
+  const leftCreatedAt = left.createdAt ?? 0;
+  const rightCreatedAt = right.createdAt ?? 0;
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt - rightCreatedAt;
+  }
+
+  return left.id.localeCompare(right.id);
+};
 
 const getInitialApp = (): AppId => {
   const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
@@ -775,6 +797,77 @@ function App() {
     }
   };
 
+  const handleAddProvider = useCallback(
+    async (
+      providerInput: Omit<Provider, "id"> & {
+        providerKey?: string;
+        suggestedDefaults?: OpenClawSuggestedDefaults;
+      },
+      options: AddProviderSubmitOptions,
+    ) => {
+      const supportsFailoverQueue =
+        !isAdditiveApp(activeApp) &&
+        providerInput.category !== "omo" &&
+        providerInput.category !== "omo-slim";
+      const preparedProvider = {
+        ...providerInput,
+        inFailoverQueue:
+          options.pinToTop && supportsFailoverQueue
+            ? true
+            : providerInput.inFailoverQueue,
+      };
+
+      const createdProvider = await addProvider(preparedProvider);
+      if (!createdProvider?.id) {
+        return;
+      }
+
+      if (options.pinToTop) {
+        const orderedProviders = Object.values(providers).sort(
+          compareProvidersByStoredOrder,
+        );
+        const updates = [
+          createdProvider,
+          ...orderedProviders.filter(
+            (provider) => provider.id !== createdProvider.id,
+          ),
+        ].map((provider, index) => ({
+          id: provider.id,
+          sortIndex: index,
+        }));
+
+        try {
+          await providersApi.updateSortOrder(updates, activeApp);
+          await queryClient.invalidateQueries({
+            queryKey: ["providers", activeApp],
+          });
+          if (supportsFailoverQueue) {
+            await queryClient.invalidateQueries({
+              queryKey: ["failoverQueue", activeApp],
+            });
+          }
+          try {
+            await providersApi.updateTrayMenu();
+          } catch (error) {
+            console.error("[App] Failed to refresh tray menu", error);
+          }
+        } catch (error) {
+          console.error("[App] Failed to move provider to top", error);
+          toast.error(
+            t("provider.moveToTopFailed", {
+              defaultValue: "置顶失败",
+            }),
+          );
+        }
+      }
+
+      if (options.enableNow) {
+        await switchProvider(createdProvider);
+      }
+    },
+    [activeApp, addProvider, providers, queryClient, switchProvider, t],
+  );
+
   const handleOpenSessionsView = useCallback(() => {
     const preferredSessionApp = getPreferredSessionApp();
     if (preferredSessionApp !== activeApp) {
@@ -841,7 +934,13 @@ function App() {
           );
 
         case "sessions":
-          return <SessionManagerPage key={activeApp} appId={activeApp} />;
+          return (
+            <SessionManagerPage
+              key={activeApp}
+              appId={activeApp}
+              onAppChange={setActiveApp}
+            />
+          );
         case "workspace":
           return <WorkspaceFilesPanel />;
         case "openclawEnv":
@@ -1339,7 +1438,7 @@ function App() {
         open={isAddOpen}
         onOpenChange={setIsAddOpen}
         appId={activeApp}
-        onSubmit={addProvider}
+        onSubmit={handleAddProvider}
       />
 
       <EditProviderDialog

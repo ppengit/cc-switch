@@ -378,6 +378,40 @@ describe("ProviderList Component", () => {
     expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
   });
 
+  it("closes provider search with Escape", () => {
+    const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
+    const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: providerAlpha, beta: providerBeta }}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    const searchInput = screen.getByTestId("provider-filter-keyword-input");
+    fireEvent.change(searchInput, { target: { value: "beta" } });
+
+    fireEvent.keyDown(searchInput, { key: "Escape" });
+
+    expect(
+      screen.queryByTestId("provider-filter-keyword-input"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows explicit no-session default badge during session routing and keeps status/actions columns non-resizable", () => {
     const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
     const providerBeta = createProvider({ id: "beta", name: "Beta Works" });

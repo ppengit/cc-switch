@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus } from "lucide-react";
+import { ArrowUpToLine, Play, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
@@ -21,6 +22,11 @@ import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 
+export interface AddProviderSubmitOptions {
+  pinToTop: boolean;
+  enableNow: boolean;
+}
+
 interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,6 +36,7 @@ interface AddProviderDialogProps {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
     },
+    options: AddProviderSubmitOptions,
   ) => Promise<void> | void;
 }
 
@@ -48,6 +55,15 @@ export function AddProviderDialog({
   const [universalFormOpen, setUniversalFormOpen] = useState(false);
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
+  const [pinToTop, setPinToTop] = useState(true);
+  const [enableNow, setEnableNow] = useState(true);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveTab("app-specific");
+    setPinToTop(true);
+    setEnableNow(true);
+  }, [open]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -244,15 +260,67 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      await onSubmit(providerData);
+      await onSubmit(providerData, {
+        pinToTop,
+        enableNow,
+      });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, enableNow, onOpenChange, onSubmit, pinToTop],
   );
 
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
       <>
+        <div className="mr-auto flex flex-wrap items-center gap-3">
+          <label className="flex min-w-[188px] items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 px-3 py-2 backdrop-blur-sm">
+            <div className="min-w-0">
+              <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <ArrowUpToLine className="h-4 w-4 text-muted-foreground" />
+                {t("provider.addOptions.pinToTop", {
+                  defaultValue: "置顶",
+                })}
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {t("provider.addOptions.pinToTopHint", {
+                  defaultValue:
+                    "新增后置顶到列表首位；支持故障转移时也会排到队列最前。",
+                })}
+              </span>
+            </div>
+            <Switch
+              checked={pinToTop}
+              onCheckedChange={setPinToTop}
+              aria-label={t("provider.addOptions.pinToTop", {
+                defaultValue: "置顶",
+              })}
+            />
+          </label>
+
+          <label className="flex min-w-[188px] items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 px-3 py-2 backdrop-blur-sm">
+            <div className="min-w-0">
+              <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <Play className="h-4 w-4 text-muted-foreground" />
+                {t("provider.addOptions.enableNow", {
+                  defaultValue: "启用",
+                })}
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {t("provider.addOptions.enableNowHint", {
+                  defaultValue:
+                    "保存后立即启用此供应商；独占模式会设为当前，累加模式会写入 live 配置。",
+                })}
+              </span>
+            </div>
+            <Switch
+              checked={enableNow}
+              onCheckedChange={setEnableNow}
+              aria-label={t("provider.addOptions.enableNow", {
+                defaultValue: "启用",
+              })}
+            />
+          </label>
+        </div>
         <Button
           variant="outline"
           onClick={() => onOpenChange(false)}

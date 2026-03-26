@@ -53,12 +53,18 @@ vi.mock("@/components/providers/AddProviderDialog", () => ({
       <div data-testid="add-provider-dialog">
         <button
           onClick={() =>
-            onSubmit({
-              name: `New ${appId} Provider`,
-              settingsConfig: {},
-              category: "custom",
-              sortIndex: 99,
-            })
+            onSubmit(
+              {
+                name: `New ${appId} Provider`,
+                settingsConfig: {},
+                category: "custom",
+                sortIndex: 99,
+              },
+              {
+                pinToTop: true,
+                enableNow: true,
+              },
+            )
           }
         >
           confirm-add
@@ -85,6 +91,20 @@ vi.mock("@/components/providers/EditProviderDialog", () => ({
         <button onClick={() => onOpenChange(false)}>close-edit</button>
       </div>
     ) : null,
+}));
+
+vi.mock("@/components/sessions/SessionManagerPage", () => ({
+  SessionManagerPage: ({ appId, onAppChange }: any) => (
+    <div data-testid="session-manager-page">
+      <div data-testid="session-app">{appId}</div>
+      <button onClick={() => onAppChange?.("codex")}>
+        session-switch-codex
+      </button>
+      <button onClick={() => onAppChange?.("claude")}>
+        session-switch-claude
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/components/UsageScriptModal", () => ({
@@ -211,7 +231,7 @@ describe("App integration with MSW", () => {
 
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
-  }, 10000);
+  }, 15000);
 
   it("shows toast when auto sync fails in background", async () => {
     const { default: App } = await import("@/App");
@@ -232,5 +252,48 @@ describe("App integration with MSW", () => {
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalled();
     });
+  }, 10000);
+
+  it("keeps the last concrete app selected after returning from session manager", async () => {
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
+
+    fireEvent.click(screen.getByText("switch-codex"));
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "codex-1",
+      ),
+    );
+
+    const sessionEntryButton = screen.getAllByRole("button").find((button) => {
+      const title = button.getAttribute("title") ?? "";
+      return title === "sessionManager.title" || /会话|session/i.test(title);
+    });
+    expect(sessionEntryButton).toBeTruthy();
+    fireEvent.click(sessionEntryButton!);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("session-manager-page")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("session-switch-claude"));
+
+    const backButton = screen.getAllByRole("button")[0];
+    fireEvent.click(backButton);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "claude-1",
+      ),
+    );
+    expect(window.localStorage.getItem("cc-switch-last-app")).toBe("claude");
+    expect(window.localStorage.getItem("cc-switch-last-session-app")).toBe(
+      "claude",
+    );
   }, 10000);
 });

@@ -124,6 +124,10 @@
     "searchScopeHint": "名前・メモ・URL を対象に検索します。",
     "searchCloseHint": "Esc で閉じる",
     "searchCloseAriaLabel": "検索を閉じる",
+    "searchLocatorMatches": "{{count}} 件のプロバイダーが見つかりました。クリックで移動できます",
+    "searchLocatorNoMatch": "一致するプロバイダーはありません",
+    "searchLocatorFocus": "移動中",
+    "searchMatchedBadge": "一致",
     "filterField": "フィルター項目",
     "filterAll": "すべての項目",
     "filterByName": "プロバイダー名",
@@ -180,6 +184,12 @@
     "publicSwitch": "公共プロバイダー",
     "publicHint": "このプロバイダーを公共としてマークします。「公共優先」を有効にすると、セッションルーティングとフェイルオーバーで優先されます。",
     "publicTag": "public",
+    "addOptions": {
+      "pinToTop": "先頭に固定",
+      "pinToTopHint": "追加後に一覧の先頭へ移動します。フェイルオーバー対応アプリではキュー先頭にも並びます。",
+      "enableNow": "今すぐ有効化",
+      "enableNowHint": "保存後すぐにこのプロバイダーを有効化します。排他モードでは現在のプロバイダーに切り替わり、加算モードでは live 設定へ書き込みます。"
+    },
     "configJson": "Config JSON",
     "writeCommonConfig": "共通設定を書き込む",
     "editCommonConfigButton": "共通設定を編集",
@@ -274,7 +284,15 @@
       },
       "failover": {
         "title": "自動フェイルオーバー",
-        "description": "フェイルオーバーキューとサーキットブレーカー戦略を設定"
+        "description": "自動フェイルオーバーの切り替え、リトライ、タイムアウト、サーキットブレーカー戦略を設定"
+      },
+      "forceModel": {
+        "title": "強制モデル",
+        "description": "ローカルプロキシ経由のリクエストに対するアプリ別のモデル書き換えルールを管理"
+      },
+      "zeroToken": {
+        "title": "0/0 Token 異常",
+        "description": "空応答保護と連続異常しきい値を個別に管理"
       },
       "pricing": {
         "title": "コスト計算",
@@ -1745,6 +1763,7 @@
     "settings": {
       "title": "プロキシサービス設定",
       "description": "ローカルプロキシサーバーのリッスンアドレス、ポート、実行パラメータを設定します。保存後すぐに反映されます。",
+      "proxyRequired": "現在のプロキシ関連設定を変更するには、先にプロキシサービスを起動してください。",
       "alert": {
         "autoApply": "変更は実行中のプロキシサービスに自動的に同期され、手動での再起動は不要です。"
       },

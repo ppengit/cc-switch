@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   fireEvent,
@@ -17,6 +18,56 @@ import {
   setSessionFixtures,
   switchSessionProviderBinding,
 } from "../msw/state";
+
+vi.mock("@/components/ui/select", async () => {
+  const React = await import("react");
+  const SelectContext = React.createContext<{
+    onValueChange?: (value: string) => void;
+  }>({});
+
+  return {
+    Select: ({
+      value: _value,
+      onValueChange,
+      children,
+    }: {
+      value?: string;
+      onValueChange?: (value: string) => void;
+      children: React.ReactNode;
+    }) => (
+      <SelectContext.Provider value={{ onValueChange }}>
+        <div>{children}</div>
+      </SelectContext.Provider>
+    ),
+    SelectTrigger: React.forwardRef(
+      (
+        { children, ...props }: any,
+        ref: React.ForwardedRef<HTMLButtonElement>,
+      ) => (
+        <button ref={ref} type="button" role="combobox" {...props}>
+          {children}
+        </button>
+      ),
+    ),
+    SelectContent: ({ children }: { children: React.ReactNode }) => (
+      <div>{children}</div>
+    ),
+    SelectItem: ({
+      value,
+      children,
+    }: {
+      value: string;
+      children: React.ReactNode;
+    }) => {
+      const { onValueChange } = React.useContext(SelectContext);
+      return (
+        <button type="button" onClick={() => onValueChange?.(value)}>
+          {children}
+        </button>
+      );
+    },
+  };
+});
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -61,7 +112,9 @@ vi.mock("@/components/ConfirmDialog", () => ({
     ) : null,
 }));
 
-const renderPage = () => {
+const renderPage = (
+  props?: Partial<ComponentProps<typeof SessionManagerPage>>,
+) => {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -71,7 +124,7 @@ const renderPage = () => {
 
   return render(
     <QueryClientProvider client={client}>
-      <SessionManagerPage appId="codex" />
+      <SessionManagerPage appId="codex" {...props} />
     </QueryClientProvider>,
   );
 };
@@ -290,5 +343,25 @@ describe("SessionManagerPage", () => {
     expect(screen.queryByText("Degraded Provider")).not.toBeInTheDocument();
     expect(screen.queryByText("Open Circuit Provider")).not.toBeInTheDocument();
     expect(screen.queryByText("Full Provider")).not.toBeInTheDocument();
+  });
+
+  it("syncs the selected specific app back to the parent state", async () => {
+    const handleAppChange = vi.fn();
+
+    renderPage({ onAppChange: handleAppChange });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.mouseDown(screen.getAllByRole("combobox")[0]);
+
+    fireEvent.click(screen.getByText("Claude Code"));
+
+    await waitFor(() => {
+      expect(handleAppChange).toHaveBeenCalledWith("claude");
+    });
   });
 });

@@ -100,6 +100,7 @@ import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import JsonEditor from "@/components/JsonEditor";
 import TextCodeEditor from "@/components/TextCodeEditor";
 import { cn } from "@/lib/utils";
+import { isTextEditableTarget } from "@/utils/domUtils";
 import {
   Tooltip,
   TooltipContent,
@@ -797,6 +798,15 @@ export function ProviderList({
     },
     [],
   );
+
+  const dismissProviderSearch = useCallback(() => {
+    setFilterKeyword("");
+    setActiveSearchMatchId(null);
+    setIsFilterPanelOpen(false);
+    requestAnimationFrame(() => {
+      filterInputRef.current?.blur();
+    });
+  }, []);
 
   useEffect(() => {
     if (!enableStreamCheck || !modelKey) return;
@@ -1921,6 +1931,28 @@ export function ProviderList({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!isFilterPanelOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape") {
+        return;
+      }
+
+      if (isTextEditableTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      dismissProviderSearch();
+    };
+
+    window.addEventListener("keydown", handleKeyDown, false);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, false);
+    };
+  }, [dismissProviderSearch, isFilterPanelOpen]);
 
   useEffect(() => {
     const container = listScrollRef.current;
@@ -3498,7 +3530,17 @@ export function ProviderList({
               size="icon"
               variant={isFilterPanelOpen ? "default" : "outline"}
               className="h-8 w-8"
-              onClick={() => setIsFilterPanelOpen((current) => !current)}
+              onClick={() => {
+                if (isFilterPanelOpen) {
+                  dismissProviderSearch();
+                  return;
+                }
+                setIsFilterPanelOpen(true);
+                requestAnimationFrame(() => {
+                  filterInputRef.current?.focus();
+                  filterInputRef.current?.select();
+                });
+              }}
               aria-label={filterToggleLabel}
               title={filterToggleLabel}
             >
@@ -3516,7 +3558,7 @@ export function ProviderList({
         </div>
 
         {isFilterPanelOpen && (
-          <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+          <div className="mt-2 flex flex-wrap items-end gap-2 rounded-2xl border border-border/70 bg-background/75 px-3 py-2 shadow-[0_20px_48px_-34px_rgba(15,23,42,0.35)] backdrop-blur-sm">
             <div className="w-[190px] space-y-1">
               <Label className="text-xs text-muted-foreground">
                 {t("provider.filterField", { defaultValue: "筛选字段" })}
@@ -3555,6 +3597,12 @@ export function ProviderList({
                 value={filterKeyword}
                 onChange={(event) => setFilterKeyword(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    dismissProviderSearch();
+                    return;
+                  }
                   if (event.key !== "Enter") return;
                   const targetId = activeSearchMatchId ?? searchMatches[0]?.id;
                   if (!targetId) return;
@@ -3580,7 +3628,7 @@ export function ProviderList({
                 </Button>
               )}
               {filterKeyword.trim().length > 0 && (
-                <div className="mt-2 rounded-lg border border-border/70 bg-background/95 p-2 shadow-sm">
+                <div className="mt-2 rounded-2xl border border-border/70 bg-background/90 p-2.5 shadow-[0_18px_42px_-30px_rgba(15,23,42,0.42)] backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
                     <span>
                       {searchMatches.length > 0
@@ -3598,7 +3646,7 @@ export function ProviderList({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-6 px-2 text-xs"
+                        className="h-7 rounded-full border border-border/70 bg-background/80 px-3 text-xs font-medium text-foreground hover:border-sky-200/80 hover:bg-background dark:hover:border-sky-500/40"
                         onClick={() =>
                           scrollToProviderMatch(
                             activeSearchMatchId ?? searchMatches[0].id,
@@ -3618,16 +3666,23 @@ export function ProviderList({
                           key={match.id}
                           type="button"
                           className={cn(
-                            "flex w-full items-start justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
+                            "flex w-full items-start justify-between gap-3 rounded-2xl border px-3 py-2 text-left transition-all",
                             activeSearchMatchId === match.id
-                              ? "border-sky-300/80 bg-sky-50/90 shadow-sm dark:border-sky-500/30 dark:bg-sky-400/[0.08]"
-                              : "border-border/50 bg-muted/20 hover:border-border/80 hover:bg-muted/35 dark:bg-muted/15 dark:hover:bg-muted/25",
+                              ? "border-sky-300/80 bg-background shadow-[0_16px_38px_-26px_rgba(14,116,144,0.45)] ring-1 ring-sky-200/70 dark:border-sky-500/35 dark:ring-sky-500/20"
+                              : "border-border/60 bg-background/70 hover:border-border hover:shadow-[0_12px_28px_-26px_rgba(15,23,42,0.32)]",
                           )}
                           onClick={() => scrollToProviderMatch(match.id)}
                         >
                           <span className="min-w-0 flex-1">
                             <span className="flex items-center gap-2">
-                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-background px-1.5 text-[11px] font-semibold text-muted-foreground">
+                              <span
+                                className={cn(
+                                  "inline-flex h-5 min-w-5 items-center justify-center rounded-full border px-1.5 text-[11px] font-semibold",
+                                  activeSearchMatchId === match.id
+                                    ? "border-sky-200/80 text-sky-700 dark:border-sky-500/30 dark:text-sky-300"
+                                    : "border-border/70 text-muted-foreground",
+                                )}
+                              >
                                 {index + 1}
                               </span>
                               <span className="truncate text-sm font-medium text-foreground">
@@ -3641,7 +3696,8 @@ export function ProviderList({
                             )}
                           </span>
                           {activeSearchMatchId === match.id && (
-                            <span className="shrink-0 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                            <span className="flex shrink-0 items-center gap-1 rounded-full border border-sky-300/70 bg-background/90 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:border-sky-500/35 dark:text-sky-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-current" />
                               {t("provider.searchLocatorFocus", {
                                 defaultValue: "定位中",
                               })}
@@ -4429,6 +4485,11 @@ export function ProviderList({
                           defaultValue: "失败原因",
                         })}
                       </th>
+                      <th className="px-3 py-2 text-left">
+                        {t("common.actions", {
+                          defaultValue: "操作",
+                        })}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4445,6 +4506,10 @@ export function ProviderList({
                       let statusClass = "text-muted-foreground";
                       let statusDetail = "";
                       let failureReason = "—";
+                      const canDisableFromBatch = failoverQueueSet.has(
+                        provider.id,
+                      );
+                      const canDeleteFromBatch = canDeleteProvider(provider);
                       if (hasResult) {
                         if (!result) {
                           statusLabel = t("streamCheck.failedShort", {
@@ -4541,12 +4606,62 @@ export function ProviderList({
                               <span className="text-muted-foreground">—</span>
                             ) : (
                               <span
-                                className="block max-w-[360px] truncate text-rose-500"
+                                className="block max-w-[360px] cursor-help truncate text-rose-500"
                                 title={failureReason}
                               >
                                 {failureReason}
                               </span>
                             )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                disabled={!canDisableFromBatch}
+                                onClick={() =>
+                                  handleToggleFailover(provider.id, false)
+                                }
+                                title={
+                                  canDisableFromBatch
+                                    ? t("provider.batchDisable", {
+                                        defaultValue: "停用供应商",
+                                      })
+                                    : t("provider.batchDisableUnavailable", {
+                                        defaultValue:
+                                          "仅当供应商当前位于故障转移队列中时可停用",
+                                      })
+                                }
+                              >
+                                {t("common.disable", {
+                                  defaultValue: "停用",
+                                })}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 border-rose-300 px-2 text-xs text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-950/30"
+                                disabled={!canDeleteFromBatch}
+                                onClick={() => onDelete(provider)}
+                                title={
+                                  canDeleteFromBatch
+                                    ? t("provider.batchDeleteSingle", {
+                                        defaultValue: "删除供应商",
+                                      })
+                                    : t("provider.batchDeleteUnavailable", {
+                                        defaultValue:
+                                          "当前供应商受保护，至少保留一个可切换供应商后才能删除",
+                                      })
+                                }
+                              >
+                                {t("common.delete", {
+                                  defaultValue: "删除",
+                                })}
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -5147,9 +5262,9 @@ function SortableProviderTableRow({
     ? t("provider.searchLocatorFocus", { defaultValue: "定位中" })
     : t("provider.searchMatchedBadge", { defaultValue: "匹配" });
   const nameCellHighlightClass = isActiveSearchMatch
-    ? "ring-1 ring-inset ring-sky-300/80 bg-sky-50/80 dark:ring-sky-500/35 dark:bg-sky-400/[0.08]"
+    ? "ring-1 ring-inset ring-sky-300/80 shadow-[0_12px_28px_-24px_rgba(14,116,144,0.55)] dark:ring-sky-500/35"
     : isSearchMatched
-      ? "ring-1 ring-inset ring-border/70 bg-muted/25 dark:bg-muted/15"
+      ? "ring-1 ring-inset ring-border/70"
       : "";
 
   const website = provider.websiteUrl?.trim() ?? "";
@@ -5267,10 +5382,10 @@ function SortableProviderTableRow({
             {isSearchMatched && (
               <span
                 className={cn(
-                  "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                  "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm",
                   isActiveSearchMatch
-                    ? "bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                    : "bg-muted text-muted-foreground",
+                    ? "border-sky-300/70 bg-background/85 text-sky-700 shadow-[0_10px_24px_-20px_rgba(14,116,144,0.55)] dark:border-sky-500/35 dark:text-sky-300"
+                    : "border-border/70 bg-background/80 text-muted-foreground",
                 )}
               >
                 {searchBadgeLabel}
