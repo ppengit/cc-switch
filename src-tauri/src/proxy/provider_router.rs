@@ -534,15 +534,15 @@ impl ProviderRouter {
         let reassigned = self
             .db
             .reassign_session_provider_bindings_for_provider_with_preferred_pool(
-            app_type,
-            provider_id,
-            &candidates,
-            &preferred_candidate_provider_ids,
-            app_config.session_routing_strategy.as_str(),
-            app_config.session_max_sessions_per_provider,
-            app_config.session_allow_shared_when_exhausted,
-            app_config.session_idle_ttl_minutes,
-        )?;
+                app_type,
+                provider_id,
+                &candidates,
+                &preferred_candidate_provider_ids,
+                app_config.session_routing_strategy.as_str(),
+                app_config.session_max_sessions_per_provider,
+                app_config.session_allow_shared_when_exhausted,
+                app_config.session_idle_ttl_minutes,
+            )?;
 
         if reassigned > 0 {
             log::info!(

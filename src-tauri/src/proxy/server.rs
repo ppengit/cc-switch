@@ -221,6 +221,11 @@ impl ProxyServer {
             app_type.to_string(),
             (provider_id.to_string(), provider_name.to_string()),
         );
+        drop(current_providers);
+
+        let mut status = self.state.status.write().await;
+        status.current_provider = Some(provider_name.to_string());
+        status.current_provider_id = Some(provider_id.to_string());
     }
 
     fn build_router(&self) -> Router {

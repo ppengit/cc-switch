@@ -2,9 +2,9 @@ use cc_switch_lib::{
     get_default_cost_multiplier_test_hook, get_pricing_model_source_test_hook,
     get_provider_session_occupancy_test_hook, list_session_provider_bindings_test_hook,
     reconcile_session_bindings_for_routing, release_provider_session_bindings_test_hook,
-    set_default_cost_multiplier_test_hook, set_pricing_model_source_test_hook,
-    switch_session_provider_binding_test_hook, update_settings, AppError, AppSettings, AppState,
-    Database, Provider, ProxyService,
+    remove_from_failover_queue_test_hook, set_default_cost_multiplier_test_hook,
+    set_pricing_model_source_test_hook, switch_session_provider_binding_test_hook, update_settings,
+    AppError, AppSettings, AppState, AppType, Database, Provider, ProviderService, ProxyService,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -408,6 +408,108 @@ async fn removing_enabled_provider_from_queue_reassigns_active_session_binding()
         .expect("binding exists");
     assert_eq!(binding.provider_id, "b");
     assert!(binding.pinned);
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn removing_current_provider_from_queue_switches_current_provider_immediately() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let state = create_memory_test_state();
+    state
+        .db
+        .save_provider(
+            "codex",
+            &Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None),
+        )
+        .expect("save provider a");
+    state
+        .db
+        .save_provider(
+            "codex",
+            &Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None),
+        )
+        .expect("save provider b");
+
+    state
+        .db
+        .add_to_failover_queue("codex", "a")
+        .expect("queue provider a");
+    state
+        .db
+        .add_to_failover_queue("codex", "b")
+        .expect("queue provider b");
+
+    state
+        .proxy_service
+        .switch_proxy_target("codex", "a")
+        .await
+        .expect("switch to provider a");
+
+    remove_from_failover_queue_test_hook(&state, "codex", "a")
+        .await
+        .expect("remove current provider from queue");
+
+    let current = state
+        .db
+        .get_current_provider("codex")
+        .expect("read current provider");
+    assert_eq!(current.as_deref(), Some("b"));
+
+    let effective_current =
+        ProviderService::current(&state, AppType::Codex).expect("read effective current");
+    assert_eq!(effective_current.as_str(), "b");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn removing_last_queued_current_provider_falls_back_to_another_provider() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let state = create_memory_test_state();
+    state
+        .db
+        .save_provider(
+            "codex",
+            &Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None),
+        )
+        .expect("save provider a");
+    state
+        .db
+        .save_provider(
+            "codex",
+            &Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None),
+        )
+        .expect("save provider b");
+
+    state
+        .db
+        .add_to_failover_queue("codex", "a")
+        .expect("queue provider a");
+
+    state
+        .proxy_service
+        .switch_proxy_target("codex", "a")
+        .await
+        .expect("switch to provider a");
+
+    remove_from_failover_queue_test_hook(&state, "codex", "a")
+        .await
+        .expect("remove only queued provider");
+
+    let current = state
+        .db
+        .get_current_provider("codex")
+        .expect("read current provider");
+    assert_eq!(current.as_deref(), Some("b"));
+
+    let effective_current =
+        ProviderService::current(&state, AppType::Codex).expect("read effective current");
+    assert_eq!(effective_current.as_str(), "b");
 }
 
 #[allow(clippy::await_holding_lock)]

@@ -74,13 +74,13 @@ fn clamp_main_window_size(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn normalize_saved_main_window_size(width: u32, height: u32) -> (u32, u32) {
-    let upgraded_size =
-        if width == LEGACY_DEFAULT_MAIN_WINDOW_WIDTH && height == LEGACY_DEFAULT_MAIN_WINDOW_HEIGHT
-        {
-            (DEFAULT_MAIN_WINDOW_WIDTH, DEFAULT_MAIN_WINDOW_HEIGHT)
-        } else {
-            (width, height)
-        };
+    let upgraded_size = if width == LEGACY_DEFAULT_MAIN_WINDOW_WIDTH
+        && height == LEGACY_DEFAULT_MAIN_WINDOW_HEIGHT
+    {
+        (DEFAULT_MAIN_WINDOW_WIDTH, DEFAULT_MAIN_WINDOW_HEIGHT)
+    } else {
+        (width, height)
+    };
 
     clamp_main_window_size(upgraded_size.0, upgraded_size.1)
 }

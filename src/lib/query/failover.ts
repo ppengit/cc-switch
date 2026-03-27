@@ -177,6 +177,9 @@ export function useRemoveFromFailoverQueue() {
           variables.appType,
         ],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["proxyStatus"],
+      });
     },
   });
 }

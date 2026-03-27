@@ -8,6 +8,114 @@ use crate::store::AppState;
 use std::str::FromStr;
 use tauri::Emitter;
 
+fn select_fallback_provider_id(
+    state: &AppState,
+    app_type: &str,
+    removed_provider_id: &str,
+) -> Result<Option<String>, String> {
+    if let Some(next_in_queue) = state
+        .db
+        .get_failover_queue(app_type)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|item| item.provider_id != removed_provider_id)
+        .map(|item| item.provider_id)
+    {
+        return Ok(Some(next_in_queue));
+    }
+
+    Ok(state
+        .db
+        .get_all_providers(app_type)
+        .map_err(|e| e.to_string())?
+        .into_keys()
+        .find(|provider_id| provider_id != removed_provider_id))
+}
+
+async fn switch_away_from_disabled_provider_if_needed(
+    app: Option<&tauri::AppHandle>,
+    state: &AppState,
+    app_type: &str,
+    removed_provider_id: &str,
+) -> Result<(), String> {
+    let app_enum = crate::app_config::AppType::from_str(app_type).map_err(|e| e.to_string())?;
+    let current_provider_id = crate::settings::get_effective_current_provider(&state.db, &app_enum)
+        .map_err(|e| e.to_string())?;
+    let proxy_status = state.proxy_service.get_status().await?;
+    let active_provider_id = proxy_status
+        .active_targets
+        .iter()
+        .find(|target| target.app_type == app_type)
+        .map(|target| target.provider_id.clone());
+
+    let should_switch = current_provider_id.as_deref() == Some(removed_provider_id)
+        || active_provider_id.as_deref() == Some(removed_provider_id);
+    if !should_switch {
+        return Ok(());
+    }
+
+    let Some(fallback_provider_id) =
+        select_fallback_provider_id(state, app_type, removed_provider_id)?
+    else {
+        log::warn!(
+            "[Failover] provider {} disabled for {}, but no fallback provider is available",
+            removed_provider_id,
+            app_type
+        );
+        return Ok(());
+    };
+
+    state
+        .proxy_service
+        .switch_proxy_target(app_type, &fallback_provider_id)
+        .await?;
+
+    if let Some(app_handle) = app {
+        let event_data = serde_json::json!({
+            "appType": app_type,
+            "providerId": fallback_provider_id,
+            "source": "failoverQueueDisabled"
+        });
+        let _ = app_handle.emit("provider-switched", event_data);
+
+        if let Ok(new_menu) = crate::tray::create_tray_menu(app_handle, state) {
+            if let Some(tray) = app_handle.tray_by_id("main") {
+                let _ = tray.set_menu(Some(new_menu));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn remove_from_failover_queue_internal(
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+    app_type: &str,
+    provider_id: &str,
+) -> Result<(), String> {
+    state
+        .db
+        .remove_from_failover_queue(app_type, provider_id)
+        .map_err(|e| e.to_string())?;
+
+    let app_config = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    if app_config.session_routing_enabled {
+        crate::commands::proxy::reconcile_session_bindings_for_routing(
+            state,
+            app_type,
+            app_config.session_idle_ttl_minutes.max(1),
+        )
+        .await?;
+    }
+
+    switch_away_from_disabled_provider_if_needed(app, state, app_type, provider_id).await
+}
+
 /// 获取故障转移队列
 #[tauri::command]
 pub async fn get_failover_queue(
@@ -48,30 +156,21 @@ pub async fn add_to_failover_queue(
 /// 从故障转移队列移除供应商
 #[tauri::command]
 pub async fn remove_from_failover_queue(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .remove_from_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())?;
+    remove_from_failover_queue_internal(state.inner(), Some(&app), &app_type, &provider_id).await
+}
 
-    let app_config = state
-        .db
-        .get_proxy_config_for_app(&app_type)
-        .await
-        .map_err(|e| e.to_string())?;
-    if app_config.session_routing_enabled {
-        crate::commands::proxy::reconcile_session_bindings_for_routing(
-            &state,
-            &app_type,
-            app_config.session_idle_ttl_minutes.max(1),
-        )
-        .await?;
-    }
-
-    Ok(())
+#[cfg_attr(not(feature = "test-hooks"), doc(hidden))]
+pub async fn remove_from_failover_queue_test_hook(
+    state: &AppState,
+    app_type: &str,
+    provider_id: &str,
+) -> Result<(), String> {
+    remove_from_failover_queue_internal(state, None, app_type, provider_id).await
 }
 
 /// 获取指定应用的自动故障转移开关状态（从 proxy_config 表读取）

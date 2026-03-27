@@ -912,7 +912,11 @@ fn provider_service_delete_current_provider_switches_to_fallback() {
         .db
         .get_current_provider(AppType::Claude.as_str())
         .expect("get current provider");
-    assert_eq!(db_current.as_deref(), Some("next"), "db current should switch");
+    assert_eq!(
+        db_current.as_deref(),
+        Some("next"),
+        "db current should switch"
+    );
 }
 
 #[test]
@@ -1009,8 +1013,7 @@ fn provider_service_rejects_duplicate_endpoint_and_credentials() {
 
     let message = err.to_string();
     assert!(
-        message.contains("相同请求地址和凭证的供应商已存在")
-            || message.contains("Existing"),
+        message.contains("相同请求地址和凭证的供应商已存在") || message.contains("Existing"),
         "unexpected message: {message}"
     );
 }
