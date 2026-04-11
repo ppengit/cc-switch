@@ -116,6 +116,7 @@ export interface RequestLogCleanupConfig {
   enabled: boolean;
   retentionDays: number;
   lastCleanupAt?: number;
+  clearStatistics: boolean;
 }
 
 export interface RequestLogCleanupResult {

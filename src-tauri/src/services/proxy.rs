@@ -1757,7 +1757,7 @@ impl ProxyService {
 
         let env_path = get_gemini_env_path();
         if !env_path.exists() {
-            return Err("Gemini .env 文件不存在".to_string());
+            return Ok(env_to_json(&std::collections::HashMap::new()));
         }
 
         let env_map = read_gemini_env().map_err(|e| format!("读取 Gemini env 失败: {e}"))?;
@@ -2147,6 +2147,57 @@ model = "gpt-5.1-codex"
         assert!(
             !env.contains_key("ANTHROPIC_AUTH_TOKEN"),
             "should not add ANTHROPIC_AUTH_TOKEN when absent"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_takeover_succeeds_without_existing_env_file() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let settings_path = crate::gemini_config::get_gemini_settings_path();
+        if let Some(parent) = settings_path.parent() {
+            std::fs::create_dir_all(parent).expect("create gemini dir");
+        }
+        std::fs::write(&settings_path, "{}").expect("seed settings.json");
+
+        service
+            .backup_live_config_strict(&AppType::Gemini)
+            .await
+            .expect("backup should succeed without env file");
+        service
+            .takeover_live_config_strict(&AppType::Gemini)
+            .await
+            .expect("takeover should succeed without env file");
+
+        let backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("get live backup")
+            .expect("backup exists");
+        let backup_value: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup json");
+        assert_eq!(
+            backup_value
+                .get("env")
+                .and_then(|v| v.as_object())
+                .map(|env| env.len()),
+            Some(0),
+            "missing Gemini .env should be backed up as an empty env object"
+        );
+
+        let env = crate::gemini_config::read_gemini_env().expect("read gemini env");
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:15721")
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER)
         );
     }
 

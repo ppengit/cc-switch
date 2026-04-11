@@ -276,12 +276,13 @@ impl Database {
                 log::warn!("Periodic stream_check_logs cleanup failed: {e}");
             }
         }
-        match self.rollup_and_prune(30) {
-            Ok(deleted) => {
-                reclaimed_rows += deleted;
+        match self.maybe_cleanup_request_logs_if_due(chrono::Utc::now().timestamp()) {
+            Ok(Some(result)) => {
+                reclaimed_rows += result.deleted_rows;
             }
+            Ok(None) => {}
             Err(e) => {
-                log::warn!("Periodic rollup_and_prune failed: {e}");
+                log::warn!("Periodic request log cleanup failed: {e}");
             }
         }
         if reclaimed_rows > 0 {
@@ -953,6 +954,69 @@ mod tests {
             "old stream check logs should still be pruned when auto backup is disabled"
         );
         assert_eq!(rollups, 1, "old request logs should be rolled up");
+
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn periodic_maintenance_respects_request_log_cleanup_config() -> Result<(), AppError> {
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        let test_home =
+            std::env::temp_dir().join("cc-switch-periodic-maintenance-cleanup-config-test");
+        let _ = std::fs::remove_dir_all(&test_home);
+        std::fs::create_dir_all(&test_home).expect("create test home");
+        std::env::set_var("CC_SWITCH_TEST_HOME", &test_home);
+
+        let mut settings = AppSettings::default();
+        settings.backup_interval_hours = Some(0);
+        update_settings(settings).expect("disable auto backup");
+
+        let db = Database::memory()?;
+        db.set_request_log_cleanup_config(true, 60, false)?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 86400;
+
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES ('old-req', 'p1', 'claude', 'claude-3', 100, 50, '0.01', 100, 200, ?1)",
+                [old_ts],
+            )?;
+        }
+
+        db.periodic_backup_if_needed()?;
+
+        let (remaining_request_logs, rollups): (i64, i64) = {
+            let conn = crate::database::lock_conn!(db.conn);
+            let remaining_request_logs =
+                conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+                    row.get(0)
+                })?;
+            let rollups =
+                conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                    row.get(0)
+                })?;
+            (remaining_request_logs, rollups)
+        };
+
+        assert_eq!(
+            remaining_request_logs, 1,
+            "periodic maintenance should honor configured retention instead of hard-coded 30 days"
+        );
+        assert_eq!(
+            rollups, 0,
+            "logs should not be rolled up before retention is due"
+        );
 
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),

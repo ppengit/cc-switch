@@ -92,23 +92,29 @@ export const usageApi = {
   updateRequestLogCleanupConfig: async (
     enabled: boolean,
     retentionDays: number,
+    clearStatistics: boolean,
   ): Promise<RequestLogCleanupConfig> => {
     return invoke("update_request_log_cleanup_config", {
       enabled,
       retentionDays,
+      clearStatistics,
     });
   },
 
   cleanupRequestLogsNow: async (
     retentionDays?: number,
+    clearStatistics?: boolean,
   ): Promise<RequestLogCleanupResult> => {
     return invoke("cleanup_request_logs_now", {
       retentionDays,
+      clearStatistics,
     });
   },
 
-  clearRequestLogsAll: async (): Promise<RequestLogClearResult> => {
-    return invoke("clear_request_logs_all");
+  clearRequestLogsAll: async (
+    clearStatistics?: boolean,
+  ): Promise<RequestLogClearResult> => {
+    return invoke("clear_request_logs_all", { clearStatistics });
   },
 
   getModelPricing: async (): Promise<ModelPricing[]> => {

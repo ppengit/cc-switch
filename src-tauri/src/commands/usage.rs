@@ -71,10 +71,11 @@ pub fn update_request_log_cleanup_config(
     state: State<'_, AppState>,
     enabled: bool,
     retention_days: u32,
+    clear_statistics: bool,
 ) -> Result<RequestLogCleanupConfig, AppError> {
     state
         .db
-        .set_request_log_cleanup_config(enabled, retention_days)
+        .set_request_log_cleanup_config(enabled, retention_days, clear_statistics)
 }
 
 /// 立即清理请求日志
@@ -82,15 +83,19 @@ pub fn update_request_log_cleanup_config(
 pub fn cleanup_request_logs_now(
     state: State<'_, AppState>,
     retention_days: Option<u32>,
+    clear_statistics: Option<bool>,
 ) -> Result<RequestLogCleanupResult, AppError> {
-    state.db.cleanup_request_logs_now(retention_days)
+    state
+        .db
+        .cleanup_request_logs_now(retention_days, clear_statistics)
 }
 
 #[tauri::command]
 pub fn clear_request_logs_all(
     state: State<'_, AppState>,
+    clear_statistics: Option<bool>,
 ) -> Result<RequestLogClearResult, AppError> {
-    state.db.clear_request_logs_all()
+    state.db.clear_request_logs_all(clear_statistics)
 }
 
 /// 获取模型定价列表

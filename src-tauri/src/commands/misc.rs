@@ -282,17 +282,22 @@ pub async fn get_tool_versions(
     } else {
         VALID_TOOLS.to_vec()
     };
-    let mut results = Vec::new();
+    let tasks = requested.into_iter().map(|tool| {
+        let pref = wsl_shell_by_tool
+            .as_ref()
+            .and_then(|m| m.get(tool))
+            .cloned();
+        async move {
+            get_single_tool_version_impl(
+                tool,
+                pref.as_ref().and_then(|p| p.wsl_shell.as_deref()),
+                pref.as_ref().and_then(|p| p.wsl_shell_flag.as_deref()),
+            )
+            .await
+        }
+    });
 
-    for tool in requested {
-        let pref = wsl_shell_by_tool.as_ref().and_then(|m| m.get(tool));
-        let tool_wsl_shell = pref.and_then(|p| p.wsl_shell.as_deref());
-        let tool_wsl_shell_flag = pref.and_then(|p| p.wsl_shell_flag.as_deref());
-
-        results.push(get_single_tool_version_impl(tool, tool_wsl_shell, tool_wsl_shell_flag).await);
-    }
-
-    Ok(results)
+    Ok(futures::future::join_all(tasks).await)
 }
 
 fn escape_bash_single_quotes(value: &str) -> String {

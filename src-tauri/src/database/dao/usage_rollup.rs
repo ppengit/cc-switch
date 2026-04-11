@@ -11,6 +11,13 @@ impl Database {
     /// Returns the number of deleted detail rows.
     pub fn rollup_and_prune(&self, retain_days: i64) -> Result<u64, AppError> {
         let cutoff = chrono::Utc::now().timestamp() - retain_days * 86400;
+        self.rollup_and_prune_before_timestamp(cutoff)
+    }
+
+    /// Aggregate proxy_request_logs older than `cutoff` into usage_daily_rollups,
+    /// then delete the aggregated detail rows.
+    /// Returns the number of deleted detail rows.
+    pub fn rollup_and_prune_before_timestamp(&self, cutoff: i64) -> Result<u64, AppError> {
         let conn = lock_conn!(self.conn);
 
         // Check if there are any rows to process
@@ -38,7 +45,7 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?;
                 if deleted > 0 {
                     log::info!(
-                        "Rolled up and pruned {deleted} proxy_request_logs (retain={retain_days}d)"
+                        "Rolled up and pruned {deleted} proxy_request_logs before cutoff {cutoff}"
                     );
                 }
                 Ok(deleted)

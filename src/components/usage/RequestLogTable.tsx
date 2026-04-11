@@ -123,6 +123,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
   const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
   const [cleanupEnabledDraft, setCleanupEnabledDraft] = useState(true);
   const [retentionDaysDraft, setRetentionDaysDraft] = useState("30");
+  const [clearStatisticsDraft, setClearStatisticsDraft] = useState(false);
   const { widths: columnWidths, startResize: startColumnResize } =
     useColumnResize<RequestLogColumnKey>({
       initialWidths: {
@@ -151,6 +152,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     if (!cleanupConfig) return;
     setCleanupEnabledDraft(cleanupConfig.enabled);
     setRetentionDaysDraft(String(cleanupConfig.retentionDays));
+    setClearStatisticsDraft(cleanupConfig.clearStatistics);
   }, [cleanupConfig]);
 
   const { data: result, isLoading } = useRequestLogs({
@@ -296,9 +298,11 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
       const updated = await updateCleanupConfig.mutateAsync({
         enabled: cleanupEnabledDraft,
         retentionDays: parsedRetentionDays,
+        clearStatistics: clearStatisticsDraft,
       });
       setCleanupEnabledDraft(updated.enabled);
       setRetentionDaysDraft(String(updated.retentionDays));
+      setClearStatisticsDraft(updated.clearStatistics);
       toast.success(
         t("usage.cleanupConfigSaved", {
           defaultValue: "请求日志清理配置已保存",
@@ -332,6 +336,7 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     try {
       const result = await cleanupLogsNow.mutateAsync({
         retentionDays: parsedRetentionDays,
+        clearStatistics: clearStatisticsDraft,
       });
       if (result.deletedRows === 0) {
         toast.info(
@@ -366,7 +371,9 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     setShowClearAllConfirm(false);
 
     try {
-      const result = await clearAllLogs.mutateAsync();
+      const result = await clearAllLogs.mutateAsync({
+        clearStatistics: clearStatisticsDraft,
+      });
       setSelectedRequest(null);
       setPage(0);
       toast.success(
@@ -796,7 +803,22 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         })}
                       </span>
                     </div>
+                  </div>
 
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={clearStatisticsDraft}
+                      onCheckedChange={setClearStatisticsDraft}
+                      disabled={updateCleanupConfig.isPending}
+                    />
+                    <span className="text-sm">
+                      {t("usage.cleanupClearStatistics", {
+                        defaultValue: "清理时同时删除统计信息",
+                      })}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">
                         {t("usage.cleanupRetentionDays", {
@@ -868,6 +890,12 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                     {t("usage.cleanupHint", {
                       defaultValue:
                         "自动清理开启后，系统会按保留天数后台清理日志（默认每小时最多触发一次）。",
+                    })}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("usage.cleanupClearStatisticsHint", {
+                      defaultValue:
+                        "默认仅清理明细日志，并把历史数据汇总到统计表中；开启后会连同统计信息一起删除。",
                     })}
                   </p>
                   <p className="text-xs text-muted-foreground">
@@ -1266,10 +1294,17 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
         title={t("usage.clearAllLogsTitle", {
           defaultValue: "清空全部日志",
         })}
-        message={t("usage.clearAllLogsConfirm", {
-          defaultValue:
-            "将清空全部请求日志（不限保留天数），该操作不可恢复。是否继续？",
-        })}
+        message={
+          clearStatisticsDraft
+            ? t("usage.clearAllLogsConfirmWithStats", {
+                defaultValue:
+                  "将清空全部请求日志和统计信息，该操作不可恢复。是否继续？",
+              })
+            : t("usage.clearAllLogsConfirmWithoutStats", {
+                defaultValue:
+                  "将清空全部请求日志，统计信息会保留。该操作不可恢复。是否继续？",
+              })
+        }
         confirmText={t("usage.clearAllLogsAction", { defaultValue: "清空" })}
         onConfirm={() => void handleConfirmClearAllLogs()}
         onCancel={() => setShowClearAllConfirm(false)}

@@ -177,10 +177,17 @@ export function useUpdateRequestLogCleanupConfig() {
     mutationFn: ({
       enabled,
       retentionDays,
+      clearStatistics,
     }: {
       enabled: boolean;
       retentionDays: number;
-    }) => usageApi.updateRequestLogCleanupConfig(enabled, retentionDays),
+      clearStatistics: boolean;
+    }) =>
+      usageApi.updateRequestLogCleanupConfig(
+        enabled,
+        retentionDays,
+        clearStatistics,
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: [...usageKeys.all, "request-log-cleanup-config"] as const,
@@ -193,8 +200,13 @@ export function useCleanupRequestLogsNow() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ retentionDays }: { retentionDays?: number } = {}) =>
-      usageApi.cleanupRequestLogsNow(retentionDays),
+    mutationFn: ({
+      retentionDays,
+      clearStatistics,
+    }: {
+      retentionDays?: number;
+      clearStatistics?: boolean;
+    } = {}) => usageApi.cleanupRequestLogsNow(retentionDays, clearStatistics),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: usageKeys.all });
     },
@@ -205,7 +217,8 @@ export function useClearRequestLogsAll() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => usageApi.clearRequestLogsAll(),
+    mutationFn: ({ clearStatistics }: { clearStatistics?: boolean } = {}) =>
+      usageApi.clearRequestLogsAll(clearStatistics),
     onSuccess: async () => {
       queryClient.setQueriesData<PaginatedLogs>(
         { queryKey: [...usageKeys.all, "logs"] as const },

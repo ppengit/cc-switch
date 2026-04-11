@@ -4,7 +4,7 @@
 
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
-use chrono::{Local, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +14,7 @@ use std::str::FromStr;
 const REQUEST_LOG_CLEANUP_ENABLED_KEY: &str = "request_log_cleanup_enabled";
 const REQUEST_LOG_RETENTION_DAYS_KEY: &str = "request_log_retention_days";
 const REQUEST_LOG_LAST_CLEANUP_AT_KEY: &str = "request_log_last_cleanup_at";
+const REQUEST_LOG_CLEAR_STATISTICS_KEY: &str = "request_log_cleanup_clear_statistics";
 const DEFAULT_REQUEST_LOG_RETENTION_DAYS: u32 = 30;
 const MIN_REQUEST_LOG_RETENTION_DAYS: u32 = 1;
 const MAX_REQUEST_LOG_RETENTION_DAYS: u32 = 3650;
@@ -136,6 +137,8 @@ pub struct RequestLogCleanupConfig {
     pub enabled: bool,
     pub retention_days: u32,
     pub last_cleanup_at: Option<i64>,
+    #[serde(default)]
+    pub clear_statistics: bool,
 }
 
 /// 请求日志清理结果
@@ -154,12 +157,94 @@ pub struct RequestLogClearResult {
     pub deleted_rows: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct UsageAggregate {
+    request_count: i64,
+    success_count: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_read_tokens: i64,
+    total_cost: f64,
+}
+
+impl UsageAggregate {
+    fn add_assign(&mut self, other: UsageAggregate) {
+        self.request_count += other.request_count;
+        self.success_count += other.success_count;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.total_cost += other.total_cost;
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProviderStatsAggregate {
+    request_count: i64,
+    success_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    latency_weighted_sum: f64,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ModelStatsAggregate {
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+}
+
 impl Database {
     fn normalize_retention_days(retention_days: u32) -> u32 {
         retention_days.clamp(
             MIN_REQUEST_LOG_RETENTION_DAYS,
             MAX_REQUEST_LOG_RETENTION_DAYS,
         )
+    }
+
+    fn local_date_string(timestamp: i64) -> Option<String> {
+        Local
+            .timestamp_opt(timestamp, 0)
+            .single()
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+    }
+
+    fn cleanup_request_logs_with_options(
+        &self,
+        retention_days: u32,
+        clear_statistics: bool,
+    ) -> Result<RequestLogCleanupResult, AppError> {
+        let normalized_retention_days = Self::normalize_retention_days(retention_days);
+        let cutoff_timestamp =
+            chrono::Utc::now().timestamp() - (normalized_retention_days as i64) * 24 * 60 * 60;
+
+        let deleted_rows = if clear_statistics {
+            let cutoff_date = Self::local_date_string(cutoff_timestamp)
+                .ok_or_else(|| AppError::Database("无法计算日志清理截止日期".to_string()))?;
+            let conn = lock_conn!(self.conn);
+            let deleted_rows = conn
+                .execute(
+                    "DELETE FROM proxy_request_logs WHERE created_at < ?1",
+                    params![cutoff_timestamp],
+                )
+                .map_err(|e| AppError::Database(format!("清理请求日志失败: {e}")))?;
+            conn.execute(
+                "DELETE FROM usage_daily_rollups WHERE date < ?1",
+                params![cutoff_date],
+            )
+            .map_err(|e| AppError::Database(format!("清理使用统计失败: {e}")))?;
+            deleted_rows as u64
+        } else {
+            self.rollup_and_prune_before_timestamp(cutoff_timestamp)?
+        };
+
+        Ok(RequestLogCleanupResult {
+            deleted_rows,
+            cutoff_timestamp,
+            retention_days: normalized_retention_days,
+        })
     }
 
     pub fn get_request_log_cleanup_config(&self) -> Result<RequestLogCleanupConfig, AppError> {
@@ -179,10 +264,16 @@ impl Database {
             .and_then(|value| value.parse::<i64>().ok())
             .filter(|value| *value > 0);
 
+        let clear_statistics = self
+            .get_setting(REQUEST_LOG_CLEAR_STATISTICS_KEY)?
+            .map(|value| value == "true" || value == "1")
+            .unwrap_or(false);
+
         Ok(RequestLogCleanupConfig {
             enabled,
             retention_days,
             last_cleanup_at,
+            clear_statistics,
         })
     }
 
@@ -190,6 +281,7 @@ impl Database {
         &self,
         enabled: bool,
         retention_days: u32,
+        clear_statistics: bool,
     ) -> Result<RequestLogCleanupConfig, AppError> {
         let normalized_retention_days = Self::normalize_retention_days(retention_days);
         self.set_setting(
@@ -200,6 +292,10 @@ impl Database {
             REQUEST_LOG_RETENTION_DAYS_KEY,
             normalized_retention_days.to_string().as_str(),
         )?;
+        self.set_setting(
+            REQUEST_LOG_CLEAR_STATISTICS_KEY,
+            if clear_statistics { "true" } else { "false" },
+        )?;
         self.get_request_log_cleanup_config()
     }
 
@@ -207,34 +303,24 @@ impl Database {
         &self,
         retention_days: u32,
     ) -> Result<RequestLogCleanupResult, AppError> {
-        let normalized_retention_days = Self::normalize_retention_days(retention_days);
-        let cutoff_timestamp =
-            chrono::Utc::now().timestamp() - (normalized_retention_days as i64) * 24 * 60 * 60;
-        let conn = lock_conn!(self.conn);
-
-        let deleted_rows = conn
-            .execute(
-                "DELETE FROM proxy_request_logs WHERE created_at < ?1",
-                params![cutoff_timestamp],
-            )
-            .map_err(|e| AppError::Database(format!("清理请求日志失败: {e}")))?;
-
-        Ok(RequestLogCleanupResult {
-            deleted_rows: deleted_rows as u64,
-            cutoff_timestamp,
-            retention_days: normalized_retention_days,
-        })
+        self.cleanup_request_logs_with_options(retention_days, false)
     }
 
     pub fn cleanup_request_logs_now(
         &self,
         retention_days: Option<u32>,
+        clear_statistics: Option<bool>,
     ) -> Result<RequestLogCleanupResult, AppError> {
+        let config = self.get_request_log_cleanup_config()?;
         let effective_retention_days = retention_days
             .map(Self::normalize_retention_days)
-            .unwrap_or(self.get_request_log_cleanup_config()?.retention_days);
+            .unwrap_or(config.retention_days);
+        let effective_clear_statistics = clear_statistics.unwrap_or(config.clear_statistics);
 
-        let result = self.cleanup_request_logs_with_retention_days(effective_retention_days)?;
+        let result = self.cleanup_request_logs_with_options(
+            effective_retention_days,
+            effective_clear_statistics,
+        )?;
         self.set_setting(
             REQUEST_LOG_LAST_CLEANUP_AT_KEY,
             chrono::Utc::now().timestamp().to_string().as_str(),
@@ -242,19 +328,30 @@ impl Database {
         Ok(result)
     }
 
-    pub fn clear_request_logs_all(&self) -> Result<RequestLogClearResult, AppError> {
-        let conn = lock_conn!(self.conn);
-        let deleted_rows = conn
-            .execute("DELETE FROM proxy_request_logs", [])
-            .map_err(|e| AppError::Database(format!("清空请求日志失败: {e}")))?;
-        drop(conn);
+    pub fn clear_request_logs_all(
+        &self,
+        clear_statistics: Option<bool>,
+    ) -> Result<RequestLogClearResult, AppError> {
+        let effective_clear_statistics =
+            clear_statistics.unwrap_or(self.get_request_log_cleanup_config()?.clear_statistics);
+
+        let deleted_rows = if effective_clear_statistics {
+            let conn = lock_conn!(self.conn);
+            let deleted_rows = conn
+                .execute("DELETE FROM proxy_request_logs", [])
+                .map_err(|e| AppError::Database(format!("清空请求日志失败: {e}")))?;
+            conn.execute("DELETE FROM usage_daily_rollups", [])
+                .map_err(|e| AppError::Database(format!("清空使用统计失败: {e}")))?;
+            deleted_rows as u64
+        } else {
+            self.rollup_and_prune_before_timestamp(chrono::Utc::now().timestamp() + 1)?
+        };
+
         self.set_setting(
             REQUEST_LOG_LAST_CLEANUP_AT_KEY,
             chrono::Utc::now().timestamp().to_string().as_str(),
         )?;
-        Ok(RequestLogClearResult {
-            deleted_rows: deleted_rows as u64,
-        })
+        Ok(RequestLogClearResult { deleted_rows })
     }
 
     pub fn maybe_cleanup_request_logs_if_due(
@@ -273,7 +370,8 @@ impl Database {
             }
         }
 
-        let result = self.cleanup_request_logs_with_retention_days(config.retention_days)?;
+        let result =
+            self.cleanup_request_logs_with_options(config.retention_days, config.clear_statistics)?;
         self.set_setting(
             REQUEST_LOG_LAST_CLEANUP_AT_KEY,
             now_timestamp.to_string().as_str(),
@@ -281,30 +379,37 @@ impl Database {
         Ok(Some(result))
     }
 
-    /// 获取使用量汇总
-    pub fn get_usage_summary(
-        &self,
+    fn build_rollup_date_bounds(
         start_date: Option<i64>,
         end_date: Option<i64>,
-    ) -> Result<UsageSummary, AppError> {
-        let conn = lock_conn!(self.conn);
+    ) -> (Option<String>, Option<String>) {
+        (
+            start_date.and_then(Self::local_date_string),
+            end_date.and_then(Self::local_date_string),
+        )
+    }
 
-        let (where_clause, params_vec) = if start_date.is_some() || end_date.is_some() {
-            let mut conditions = Vec::new();
-            let mut params = Vec::new();
+    fn query_usage_aggregate_from_logs(
+        conn: &Connection,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+    ) -> Result<UsageAggregate, AppError> {
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-            if let Some(start) = start_date {
-                conditions.push("created_at >= ?");
-                params.push(start);
-            }
-            if let Some(end) = end_date {
-                conditions.push("created_at <= ?");
-                params.push(end);
-            }
+        if let Some(start) = start_date {
+            conditions.push("created_at >= ?");
+            params.push(Box::new(start));
+        }
+        if let Some(end) = end_date {
+            conditions.push("created_at <= ?");
+            params.push(Box::new(end));
+        }
 
-            (format!("WHERE {}", conditions.join(" AND ")), params)
+        let where_clause = if conditions.is_empty() {
+            String::new()
         } else {
-            (String::new(), Vec::new())
+            format!("WHERE {}", conditions.join(" AND "))
         };
 
         let sql = format!(
@@ -320,33 +425,122 @@ impl Database {
              {where_clause}"
         );
 
-        let result = conn.query_row(&sql, rusqlite::params_from_iter(params_vec), |row| {
-            let total_requests: i64 = row.get(0)?;
-            let total_cost: f64 = row.get(1)?;
-            let total_input_tokens: i64 = row.get(2)?;
-            let total_output_tokens: i64 = row.get(3)?;
-            let total_cache_creation_tokens: i64 = row.get(4)?;
-            let total_cache_read_tokens: i64 = row.get(5)?;
-            let success_count: i64 = row.get(6)?;
-
-            let success_rate = if total_requests > 0 {
-                (success_count as f32 / total_requests as f32) * 100.0
-            } else {
-                0.0
-            };
-
-            Ok(UsageSummary {
-                total_requests: total_requests as u64,
-                total_cost: format!("{total_cost:.6}"),
-                total_input_tokens: total_input_tokens as u64,
-                total_output_tokens: total_output_tokens as u64,
-                total_cache_creation_tokens: total_cache_creation_tokens as u64,
-                total_cache_read_tokens: total_cache_read_tokens as u64,
-                success_rate,
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.query_row(&sql, params_refs.as_slice(), |row| {
+            Ok(UsageAggregate {
+                request_count: row.get(0)?,
+                total_cost: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                cache_creation_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                success_count: row.get(6)?,
             })
-        })?;
+        })
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
 
-        Ok(result)
+    fn query_usage_aggregate_from_rollups(
+        conn: &Connection,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+    ) -> Result<UsageAggregate, AppError> {
+        let (start_day, end_day) = Self::build_rollup_date_bounds(start_date, end_date);
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(start_day) = start_day {
+            conditions.push("date >= ?");
+            params.push(Box::new(start_day));
+        }
+        if let Some(end_day) = end_day {
+            conditions.push("date <= ?");
+            params.push(Box::new(end_day));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT
+                COALESCE(SUM(request_count), 0) as total_requests,
+                COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
+                COALESCE(SUM(success_count), 0) as success_count
+             FROM usage_daily_rollups
+             {where_clause}"
+        );
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.query_row(&sql, params_refs.as_slice(), |row| {
+            Ok(UsageAggregate {
+                request_count: row.get(0)?,
+                total_cost: row.get(1)?,
+                input_tokens: row.get(2)?,
+                output_tokens: row.get(3)?,
+                cache_creation_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                success_count: row.get(6)?,
+            })
+        })
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    /// 获取使用量汇总
+    pub fn get_usage_summary(
+        &self,
+        start_date: Option<i64>,
+        end_date: Option<i64>,
+    ) -> Result<UsageSummary, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut aggregate = Self::query_usage_aggregate_from_logs(&conn, start_date, end_date)?;
+        aggregate.add_assign(Self::query_usage_aggregate_from_rollups(
+            &conn, start_date, end_date,
+        )?);
+
+        let success_rate = if aggregate.request_count > 0 {
+            (aggregate.success_count as f32 / aggregate.request_count as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(UsageSummary {
+            total_requests: aggregate.request_count as u64,
+            total_cost: format!("{:.6}", aggregate.total_cost),
+            total_input_tokens: aggregate.input_tokens as u64,
+            total_output_tokens: aggregate.output_tokens as u64,
+            total_cache_creation_tokens: aggregate.cache_creation_tokens as u64,
+            total_cache_read_tokens: aggregate.cache_read_tokens as u64,
+            success_rate,
+        })
+    }
+
+    fn accumulate_daily_stat(
+        target: &mut DailyStats,
+        request_count: u64,
+        total_cost: f64,
+        total_tokens: u64,
+        total_input_tokens: u64,
+        total_output_tokens: u64,
+        total_cache_creation_tokens: u64,
+        total_cache_read_tokens: u64,
+    ) {
+        target.request_count += request_count;
+        target.total_cost = format!(
+            "{:.6}",
+            target.total_cost.parse::<f64>().unwrap_or(0.0) + total_cost
+        );
+        target.total_tokens += total_tokens;
+        target.total_input_tokens += total_input_tokens;
+        target.total_output_tokens += total_output_tokens;
+        target.total_cache_creation_tokens += total_cache_creation_tokens;
+        target.total_cache_read_tokens += total_cache_read_tokens;
     }
 
     /// 获取每日趋势（滑动窗口，<=24h 按小时，>24h 按天，窗口与汇总一致）
@@ -426,7 +620,137 @@ impl Database {
             if bucket_idx >= bucket_count {
                 bucket_idx = bucket_count - 1;
             }
-            map.insert(bucket_idx, stat);
+            let entry = map.entry(bucket_idx).or_insert_with(|| DailyStats {
+                date: String::new(),
+                request_count: 0,
+                total_cost: "0.000000".to_string(),
+                total_tokens: 0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cache_creation_tokens: 0,
+                total_cache_read_tokens: 0,
+            });
+            Self::accumulate_daily_stat(
+                entry,
+                stat.request_count,
+                stat.total_cost.parse::<f64>().unwrap_or(0.0),
+                stat.total_tokens,
+                stat.total_input_tokens,
+                stat.total_output_tokens,
+                stat.total_cache_creation_tokens,
+                stat.total_cache_read_tokens,
+            );
+        }
+
+        if bucket_seconds == 24 * 60 * 60 {
+            let (start_day, end_day) = Self::build_rollup_date_bounds(Some(start_ts), Some(end_ts));
+            let mut conditions = Vec::new();
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+            if let Some(start_day) = start_day {
+                conditions.push("date >= ?");
+                params.push(Box::new(start_day));
+            }
+            if let Some(end_day) = end_day {
+                conditions.push("date <= ?");
+                params.push(Box::new(end_day));
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", conditions.join(" AND "))
+            };
+
+            let rollup_sql = format!(
+                "SELECT
+                    date,
+                    COALESCE(SUM(request_count), 0) as request_count,
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens
+                 FROM usage_daily_rollups
+                 {where_clause}
+                 GROUP BY date
+                 ORDER BY date ASC"
+            );
+
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            let mut rollup_stmt = conn.prepare(&rollup_sql)?;
+            let rollup_rows = rollup_stmt.query_map(params_refs.as_slice(), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i64>(6)? as u64,
+                    row.get::<_, i64>(7)? as u64,
+                ))
+            })?;
+
+            for row in rollup_rows {
+                let (
+                    rollup_date,
+                    request_count,
+                    total_cost,
+                    total_tokens,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_creation_tokens,
+                    total_cache_read_tokens,
+                ) = row?;
+
+                let Ok(parsed_date) = NaiveDate::parse_from_str(&rollup_date, "%Y-%m-%d") else {
+                    continue;
+                };
+                let Some(reference_time) = parsed_date.and_hms_opt(12, 0, 0) else {
+                    continue;
+                };
+                let local_reference = Local
+                    .from_local_datetime(&reference_time)
+                    .earliest()
+                    .or_else(|| Local.from_local_datetime(&reference_time).latest());
+                let Some(local_reference) = local_reference else {
+                    continue;
+                };
+
+                let mut bucket_idx = ((local_reference.timestamp() - start_ts) as f64
+                    / bucket_seconds as f64)
+                    .floor() as i64;
+                if bucket_idx < 0 {
+                    continue;
+                }
+                if bucket_idx >= bucket_count {
+                    bucket_idx = bucket_count - 1;
+                }
+
+                let entry = map.entry(bucket_idx).or_insert_with(|| DailyStats {
+                    date: String::new(),
+                    request_count: 0,
+                    total_cost: "0.000000".to_string(),
+                    total_tokens: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cache_creation_tokens: 0,
+                    total_cache_read_tokens: 0,
+                });
+                Self::accumulate_daily_stat(
+                    entry,
+                    request_count,
+                    total_cost,
+                    total_tokens,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_creation_tokens,
+                    total_cache_read_tokens,
+                );
+            }
         }
 
         let mut stats = Vec::with_capacity(bucket_count as usize);
@@ -462,47 +786,137 @@ impl Database {
     /// 获取 Provider 统计
     pub fn get_provider_stats(&self) -> Result<Vec<ProviderStats>, AppError> {
         let conn = lock_conn!(self.conn);
+        let mut aggregates: HashMap<(String, String), ProviderStatsAggregate> = HashMap::new();
+        let mut provider_names: HashMap<(String, String), String> = HashMap::new();
 
-        let sql = "SELECT
-                l.provider_id,
-                p.name as provider_name,
-                COUNT(*) as request_count,
-                COALESCE(SUM(l.input_tokens + l.output_tokens), 0) as total_tokens,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
-                COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
-                COALESCE(AVG(l.latency_ms), 0) as avg_latency
-             FROM proxy_request_logs l
-             LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
-             GROUP BY l.provider_id, l.app_type
-             ORDER BY total_cost DESC";
-
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| {
-            let request_count: i64 = row.get(2)?;
-            let success_count: i64 = row.get(5)?;
-            let success_rate = if request_count > 0 {
-                (success_count as f32 / request_count as f32) * 100.0
-            } else {
-                0.0
-            };
-
-            Ok(ProviderStats {
-                provider_id: row.get(0)?,
-                provider_name: row
-                    .get::<_, Option<String>>(1)?
-                    .unwrap_or_else(|| "Unknown".to_string()),
-                request_count: request_count as u64,
-                total_tokens: row.get::<_, i64>(3)? as u64,
-                total_cost: format!("{:.6}", row.get::<_, f64>(4)?),
-                success_rate,
-                avg_latency_ms: row.get::<_, f64>(6)? as u64,
-            })
-        })?;
-
-        let mut stats = Vec::new();
-        for row in rows {
-            stats.push(row?);
+        {
+            let mut names_stmt = conn.prepare("SELECT id, app_type, name FROM providers")?;
+            let name_rows = names_stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in name_rows {
+                let (provider_id, app_type, name) = row?;
+                provider_names.insert((provider_id, app_type), name);
+            }
         }
+
+        {
+            let sql = "SELECT
+                    provider_id,
+                    app_type,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
+                    COALESCE(SUM(CAST(latency_ms AS REAL)), 0) as latency_weighted_sum
+                 FROM proxy_request_logs
+                 GROUP BY provider_id, app_type";
+
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    ProviderStatsAggregate {
+                        request_count: row.get(2)?,
+                        total_tokens: row.get(3)?,
+                        total_cost: row.get(4)?,
+                        success_count: row.get(5)?,
+                        latency_weighted_sum: row.get(6)?,
+                    },
+                ))
+            })?;
+
+            for row in rows {
+                let (provider_id, app_type, aggregate) = row?;
+                let entry = aggregates.entry((provider_id, app_type)).or_default();
+                entry.request_count += aggregate.request_count;
+                entry.total_tokens += aggregate.total_tokens;
+                entry.total_cost += aggregate.total_cost;
+                entry.success_count += aggregate.success_count;
+                entry.latency_weighted_sum += aggregate.latency_weighted_sum;
+            }
+        }
+
+        {
+            let sql = "SELECT
+                    provider_id,
+                    app_type,
+                    COALESCE(SUM(request_count), 0) as request_count,
+                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(success_count), 0) as success_count,
+                    COALESCE(SUM(avg_latency_ms * request_count), 0) as latency_weighted_sum
+                 FROM usage_daily_rollups
+                 GROUP BY provider_id, app_type";
+
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    ProviderStatsAggregate {
+                        request_count: row.get(2)?,
+                        total_tokens: row.get(3)?,
+                        total_cost: row.get(4)?,
+                        success_count: row.get(5)?,
+                        latency_weighted_sum: row.get(6)?,
+                    },
+                ))
+            })?;
+
+            for row in rows {
+                let (provider_id, app_type, aggregate) = row?;
+                let entry = aggregates.entry((provider_id, app_type)).or_default();
+                entry.request_count += aggregate.request_count;
+                entry.total_tokens += aggregate.total_tokens;
+                entry.total_cost += aggregate.total_cost;
+                entry.success_count += aggregate.success_count;
+                entry.latency_weighted_sum += aggregate.latency_weighted_sum;
+            }
+        }
+
+        let mut stats: Vec<ProviderStats> = aggregates
+            .into_iter()
+            .map(|((provider_id, app_type), aggregate)| {
+                let request_count = aggregate.request_count.max(0) as u64;
+                let success_rate = if aggregate.request_count > 0 {
+                    (aggregate.success_count as f32 / aggregate.request_count as f32) * 100.0
+                } else {
+                    0.0
+                };
+                let avg_latency_ms = if aggregate.request_count > 0 {
+                    (aggregate.latency_weighted_sum / aggregate.request_count as f64) as u64
+                } else {
+                    0
+                };
+
+                ProviderStats {
+                    provider_id: provider_id.clone(),
+                    provider_name: provider_names
+                        .get(&(provider_id, app_type))
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    request_count,
+                    total_tokens: aggregate.total_tokens.max(0) as u64,
+                    total_cost: format!("{:.6}", aggregate.total_cost),
+                    success_rate,
+                    avg_latency_ms,
+                }
+            })
+            .collect();
+
+        stats.sort_by(|left, right| {
+            let left_cost = f64::from_str(&left.total_cost).unwrap_or(0.0);
+            let right_cost = f64::from_str(&right.total_cost).unwrap_or(0.0);
+            right_cost
+                .partial_cmp(&left_cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(stats)
     }
@@ -510,39 +924,94 @@ impl Database {
     /// 获取模型统计
     pub fn get_model_stats(&self) -> Result<Vec<ModelStats>, AppError> {
         let conn = lock_conn!(self.conn);
+        let mut aggregates: HashMap<String, ModelStatsAggregate> = HashMap::new();
 
-        let sql = "SELECT
-                model,
-                COUNT(*) as request_count,
-                COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
-                COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost
-             FROM proxy_request_logs
-             GROUP BY model
-             ORDER BY total_cost DESC";
+        {
+            let sql = "SELECT
+                    model,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost
+                 FROM proxy_request_logs
+                 GROUP BY model";
 
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| {
-            let request_count: i64 = row.get(1)?;
-            let total_cost: f64 = row.get(3)?;
-            let avg_cost = if request_count > 0 {
-                total_cost / request_count as f64
-            } else {
-                0.0
-            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ModelStatsAggregate {
+                        request_count: row.get(1)?,
+                        total_tokens: row.get(2)?,
+                        total_cost: row.get(3)?,
+                    },
+                ))
+            })?;
 
-            Ok(ModelStats {
-                model: row.get(0)?,
-                request_count: request_count as u64,
-                total_tokens: row.get::<_, i64>(2)? as u64,
-                total_cost: format!("{total_cost:.6}"),
-                avg_cost_per_request: format!("{avg_cost:.6}"),
-            })
-        })?;
-
-        let mut stats = Vec::new();
-        for row in rows {
-            stats.push(row?);
+            for row in rows {
+                let (model, aggregate) = row?;
+                let entry = aggregates.entry(model).or_default();
+                entry.request_count += aggregate.request_count;
+                entry.total_tokens += aggregate.total_tokens;
+                entry.total_cost += aggregate.total_cost;
+            }
         }
+
+        {
+            let sql = "SELECT
+                    model,
+                    COALESCE(SUM(request_count), 0) as request_count,
+                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0) as total_cost
+                 FROM usage_daily_rollups
+                 GROUP BY model";
+
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ModelStatsAggregate {
+                        request_count: row.get(1)?,
+                        total_tokens: row.get(2)?,
+                        total_cost: row.get(3)?,
+                    },
+                ))
+            })?;
+
+            for row in rows {
+                let (model, aggregate) = row?;
+                let entry = aggregates.entry(model).or_default();
+                entry.request_count += aggregate.request_count;
+                entry.total_tokens += aggregate.total_tokens;
+                entry.total_cost += aggregate.total_cost;
+            }
+        }
+
+        let mut stats: Vec<ModelStats> = aggregates
+            .into_iter()
+            .map(|(model, aggregate)| {
+                let avg_cost = if aggregate.request_count > 0 {
+                    aggregate.total_cost / aggregate.request_count as f64
+                } else {
+                    0.0
+                };
+
+                ModelStats {
+                    model,
+                    request_count: aggregate.request_count.max(0) as u64,
+                    total_tokens: aggregate.total_tokens.max(0) as u64,
+                    total_cost: format!("{:.6}", aggregate.total_cost),
+                    avg_cost_per_request: format!("{avg_cost:.6}"),
+                }
+            })
+            .collect();
+
+        stats.sort_by(|left, right| {
+            let left_cost = f64::from_str(&left.total_cost).unwrap_or(0.0);
+            let right_cost = f64::from_str(&right.total_cost).unwrap_or(0.0);
+            right_cost
+                .partial_cmp(&left_cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(stats)
     }
@@ -1082,6 +1551,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.retention_days, DEFAULT_REQUEST_LOG_RETENTION_DAYS);
         assert!(config.last_cleanup_at.is_none());
+        assert!(!config.clear_statistics);
         Ok(())
     }
 
@@ -1109,6 +1579,11 @@ mod tests {
                 row.get(0)
             })?;
         assert_eq!(remaining_id, "recent-log");
+        let rollup_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(rollup_count, 1, "old logs should be rolled into statistics");
 
         Ok(())
     }
@@ -1116,7 +1591,7 @@ mod tests {
     #[test]
     fn maybe_cleanup_request_logs_throttles_within_interval() -> Result<(), AppError> {
         let db = Database::memory()?;
-        db.set_request_log_cleanup_config(true, 1)?;
+        db.set_request_log_cleanup_config(true, 1, false)?;
         let now = chrono::Utc::now().timestamp();
         let stale_ts = now - 2 * 24 * 60 * 60;
 
@@ -1148,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_request_logs_all_removes_everything() -> Result<(), AppError> {
+    fn clear_request_logs_all_preserves_statistics_by_default() -> Result<(), AppError> {
         let db = Database::memory()?;
         let now = chrono::Utc::now().timestamp();
 
@@ -1158,13 +1633,118 @@ mod tests {
             insert_usage_log(&conn, "log-2", now - 500)?;
         }
 
-        let clear_result = db.clear_request_logs_all()?;
+        let clear_result = db.clear_request_logs_all(None)?;
         assert_eq!(clear_result.deleted_rows, 2);
         assert_eq!(count_usage_logs(&db)?, 0);
+        let conn = lock_conn!(db.conn);
+        let rollup_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(
+            rollup_count, 1,
+            "clear-all should keep aggregated statistics"
+        );
         assert!(db
             .get_request_log_cleanup_config()?
             .last_cleanup_at
             .is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn clear_request_logs_all_can_remove_statistics() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "log-1", now - 1000)?;
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model,
+                    request_count, success_count,
+                    input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, avg_latency_ms
+                ) VALUES ('2026-01-01', 'codex', 'p1', 'gpt-5.2-codex', 3, 3, 300, 60, 0, 0, '0.03', 120)",
+                [],
+            )?;
+        }
+
+        let clear_result = db.clear_request_logs_all(Some(true))?;
+        assert_eq!(clear_result.deleted_rows, 1);
+        assert_eq!(count_usage_logs(&db)?, 0);
+
+        let conn = lock_conn!(db.conn);
+        let rollup_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(
+            rollup_count, 0,
+            "statistics should also be cleared when requested"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn usage_summary_includes_rollups_after_cleanup() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 24 * 60 * 60;
+        let recent_ts = now - 2 * 24 * 60 * 60;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "old-log", old_ts)?;
+            insert_usage_log(&conn, "recent-log", recent_ts)?;
+        }
+
+        db.cleanup_request_logs_with_retention_days(30)?;
+
+        let summary = db.get_usage_summary(None, None)?;
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.total_input_tokens, 200);
+        assert_eq!(summary.total_output_tokens, 40);
+        assert_eq!(summary.total_cost, "0.020000");
+
+        Ok(())
+    }
+
+    #[test]
+    fn provider_and_model_stats_include_rollups_after_cleanup() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let now = chrono::Utc::now().timestamp();
+        let old_ts = now - 40 * 24 * 60 * 60;
+        db.save_provider(
+            "codex",
+            &crate::provider::Provider::with_id(
+                "p1".to_string(),
+                "Provider 1".to_string(),
+                serde_json::json!({}),
+                None,
+            ),
+        )?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(&conn, "old-log", old_ts)?;
+        }
+
+        db.cleanup_request_logs_with_retention_days(30)?;
+
+        let provider_stats = db.get_provider_stats()?;
+        assert_eq!(provider_stats.len(), 1);
+        assert_eq!(provider_stats[0].provider_id, "p1");
+        assert_eq!(provider_stats[0].request_count, 1);
+
+        let model_stats = db.get_model_stats()?;
+        assert_eq!(model_stats.len(), 1);
+        assert_eq!(model_stats[0].model, "gpt-5.2-codex");
+        assert_eq!(model_stats[0].request_count, 1);
 
         Ok(())
     }

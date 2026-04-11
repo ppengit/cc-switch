@@ -100,6 +100,7 @@ beforeEach(() => {
       enabled: true,
       retentionDays: 30,
       lastCleanupAt: null,
+      clearStatistics: false,
     },
   });
   useUpdateRequestLogCleanupConfigMock.mockReturnValue({
