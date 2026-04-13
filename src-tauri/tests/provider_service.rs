@@ -1008,6 +1008,7 @@ fn provider_service_rejects_duplicate_endpoint_and_credentials() {
             }),
             None,
         ),
+        true,
     )
     .expect_err("duplicate endpoint + key should be rejected");
 

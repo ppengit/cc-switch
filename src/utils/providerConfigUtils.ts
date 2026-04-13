@@ -884,6 +884,11 @@ interface TomlAssignmentMatch {
   value: string;
 }
 
+interface TomlIntAssignmentMatch {
+  index: number;
+  value: number;
+}
+
 const finalizeTomlText = (lines: string[]): string =>
   lines
     .join("\n")
@@ -930,6 +935,27 @@ const getTopLevelEndIndex = (lines: string[]): number => {
     TOML_SECTION_HEADER_PATTERN.test(line),
   );
   return firstSectionIndex === -1 ? lines.length : firstSectionIndex;
+};
+
+const findTopLevelIntMatch = (
+  lines: string[],
+  fieldName: string,
+  endIndex: number,
+): TomlIntAssignmentMatch | undefined => {
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `^\\s*${escaped}\\s*=\\s*(-?\\d+)\\s*(?:#.*)?$`,
+  );
+
+  for (let index = 0; index < endIndex; index += 1) {
+    const match = lines[index].match(pattern);
+    if (!match) continue;
+    const value = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(value)) continue;
+    return { index, value };
+  }
+
+  return undefined;
 };
 
 const getTomlSectionInsertIndex = (
@@ -1411,6 +1437,61 @@ export const setCodexReasoningEffort = (
   }
 
   lines.splice(topLevelEndIndex, 0, replacementLine);
+  return finalizeTomlText(lines);
+};
+
+export const extractCodexTopLevelInt = (
+  configText: string | undefined | null,
+  fieldName: string,
+): number | undefined => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return undefined;
+    const lines = text.split("\n");
+    return findTopLevelIntMatch(lines, fieldName, getTopLevelEndIndex(lines))
+      ?.value;
+  } catch {
+    return undefined;
+  }
+};
+
+export const setCodexTopLevelInt = (
+  configText: string,
+  fieldName: string,
+  value: number,
+): string => {
+  const normalizedText = normalizeTomlText(configText);
+  const lines = normalizedText ? normalizedText.split("\n") : [];
+  const topLevelEndIndex = getTopLevelEndIndex(lines);
+  const existing = findTopLevelIntMatch(lines, fieldName, topLevelEndIndex);
+  const replacementLine = `${fieldName} = ${value}`;
+
+  if (existing) {
+    lines[existing.index] = replacementLine;
+    return finalizeTomlText(lines);
+  }
+
+  if (lines.length === 0) {
+    return `${replacementLine}\n`;
+  }
+
+  lines.splice(topLevelEndIndex, 0, replacementLine);
+  return finalizeTomlText(lines);
+};
+
+export const removeCodexTopLevelField = (
+  configText: string,
+  fieldName: string,
+): string => {
+  const normalizedText = normalizeTomlText(configText);
+  if (!normalizedText) return normalizedText;
+  const lines = normalizedText.split("\n");
+  const topLevelEndIndex = getTopLevelEndIndex(lines);
+  const existing = findTopLevelIntMatch(lines, fieldName, topLevelEndIndex);
+  if (existing) {
+    lines.splice(existing.index, 1);
+  }
   return finalizeTomlText(lines);
 };
 

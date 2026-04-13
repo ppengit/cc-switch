@@ -87,7 +87,9 @@ impl Database {
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
-            installed_at INTEGER NOT NULL DEFAULT 0
+            installed_at INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT,
+            updated_at INTEGER NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -652,6 +654,8 @@ impl Database {
 
         // skills 表
         Self::add_column_if_missing(conn, "skills", "installed_at", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::add_column_if_missing(conn, "skills", "content_hash", "TEXT")?;
+        Self::add_column_if_missing(conn, "skills", "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
 
         // skill_repos 表
         Self::add_column_if_missing(

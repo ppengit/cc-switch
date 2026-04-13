@@ -338,6 +338,16 @@ pub fn create_tray_menu(
         .map_err(|e| AppError::Message(format!("构建菜单失败: {e}")))
 }
 
+pub fn refresh_tray_menu(app: &tauri::AppHandle) {
+    if let Some(app_state) = app.try_state::<AppState>() {
+        if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
+            if let Some(tray) = app.tray_by_id("main") {
+                let _ = tray.set_menu(Some(new_menu));
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn apply_tray_policy(app: &tauri::AppHandle, dock_visible: bool) {
     use tauri::ActivationPolicy;

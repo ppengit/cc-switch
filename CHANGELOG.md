@@ -5,285 +5,132 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.12.3-6] - 2026-03-22
+## [3.13.0] - 2026-04-10
 
-本版本是对 `3.12.3-5` 的编译修复重发版本。
-
-- 修复了 Rust 端两处明确的编译错误：
-  - `src/deeplink/provider.rs` 中 `toml::from_str` 传入 `String` 而非 `&str`
-  - `src/services/provider/live.rs` 中向 `normalize_codex_provider_fragment_for_template` 传入 `String` 而非 `&str`
-- 上述问题会直接导致 GitHub Actions 的 Windows / Linux / macOS 构建同时失败，本版本已修正
-- 其它功能内容与 `3.12.3-5` 保持一致
-
-## [3.12.3-5] - 2026-03-22
-
-本版本是对 `3.12.3-4` 的发布链路加固版本。
-
-- 代码功能内容与 `3.12.3-4` 保持一致
-- 调整 GitHub release workflow：
-  - 关闭 matrix `fail-fast`
-  - 允许 `macOS` job 单独失败而不阻断 `Windows / Linux` 资产产出
-- 目的不是放弃 macOS，而是避免 macOS runner 的偶发失败直接导致本次 Windows 发布也被取消
-- 因此从这一版开始，即便 macOS 构建偶发失败，也能优先保证 Windows 和 Linux 的安装包按时发布
-
-## [3.12.3-4] - 2026-03-22
-
-本版本是对 `3.12.3-3` 的重新发布。
-
-- 代码内容与 `3.12.3-3` 保持一致
-- 继续包含以下稳定性修复：
-  - Codex `config.toml` 重复键自恢复与空占位替换修复
-  - 全局异常处理兜底，避免普通运行时异常直接白屏
-- 本次仅递增版本号并重新触发 GitHub 全平台安装包构建，以获得完整可下载的正式 release 资产
-
-## [3.12.3-3] - 2026-03-22
-
-本版本是在 `3.12.3-2` 基础上继续做的一次“稳定性优先”修复发布，目标只有两个：
-
-- 彻底压住 Codex 供应商配置里最容易反复出现的 `config.toml` 重复键问题
-- 提升整个桌面端的异常处理机制，避免发生局部异常时直接白屏
-
-### Codex 配置稳定性
-
-- 修复了 Codex 默认模板中 `base_url = ""` 这类空占位值在后续编辑时无法被识别为“已有字段”的问题
-- 现在当用户填写新的 API 地址时，会替换原有空占位，而不是在同一个 `[model_providers.custom]` 表里再追加一个新的 `base_url`
-- 前端 `config.toml` 编辑态加入了“已知重复键自动收敛”逻辑，针对以下字段会优先保留最后一次赋值并清理重复项：
-  - `model_provider`
-  - `model`
-  - `model_reasoning_effort`
-  - `base_url`
-- Rust 后端同步加入同样的容错去重逻辑，因此即便历史数据库记录或旧的 live 文件里已经残留重复键，也不会再轻易拖垮：
-  - 最终配置预览
-  - live 配置读取
-  - 代理备份与恢复
-  - deep link / MCP / provider 相关读取链路
-
-### 异常处理与防白屏
-
-- 调整了前端全局错误处理策略，不再把所有运行时异常都直接渲染成“界面加载失败”页
-- 现在区分两类错误：
-  - 启动期 / 根级渲染致命错误：仍然进入致命错误页
-  - 运行中的普通异常、未处理 Promise 拒绝、局部异步错误：改为统一错误提示，不再整页白屏
-- 新增全局运行时错误桥接组件，把运行时异常统一汇总到 toast 提示层，界面主体尽量继续保持可用
-- 致命错误页补充了“重新加载”和“复制错误详情”入口，方便恢复与反馈
-
-### 测试与验证
-
-- 已补充针对 Codex 重复 `base_url` 与空占位替换的测试
-- 已补充针对全局运行时错误提示而非白屏的测试
-- 已通过：
-  - `pnpm typecheck`
-  - `pnpm test:unit`
-
-## [3.12.3-2] - 2026-03-22
-
-本版本是在 `3.12.3-1` 基础上，继续围绕“**供应商配置编辑是否稳定**、**模型获取是否一致**、**Codex / Gemini 模板是否真正按各自配置格式处理**”做的一次收口发布。
-
-这一版的重点不是再新增一套独立机制，而是把最近一轮使用中暴露出来的边角问题逐一压平，确保新增供应商、编辑供应商、提取模板、预览最终配置、自动获取模型这些动作在实际链路里可以稳定串起来。
-
-### 供应商配置编辑与保存链路
-
-- 修复了 Codex 供应商在新增 / 编辑时仍被上层链路误当作纯 JSON 配置校验的问题
-- 对 Codex、Gemini 的保存入口补上了更稳妥的异常拦截：
-  - 当 `auth.json`、`config.json`、`config.toml` 无法正确组装最终配置时，不再出现误导性的保存行为
-  - 错误提示进一步统一为中文
-- 继续收口了 Live 配置写回前的清洗逻辑，减少模板片段和 provider 片段互相污染的概率
-
-### Codex 模板与配置渲染
-
-- 修复默认供应商模板在包含占位符时被直接当作原始 TOML 校验，导致 `{{base_url}}` / `{{model}}` / `{{reasoning_effort}}` 被误判为非法键的问题
-- 现在默认供应商模板会先进行占位符替换再做语法校验，因此 Codex 模板可以继续保持原生 `config.toml` 风格
-- 默认 Codex provider 模板中的 `base_url` 继续保持为空字符串，避免新建供应商时自动写入固定地址
-- 进一步补强了 Codex 应用配置模板渲染前的 provider 片段清洗，避免模板根字段与 provider 片段重复叠加，减少 `duplicate key` 类问题
-
-### Gemini 应用配置模板机制
-
-- Gemini 的应用配置模板现在正式支持 `env` 与 `config` 两部分
-- 旧版仅写顶层环境变量对象的模板仍可兼容读取，但会在保存或迁移时规范化为结构化格式
-- 提取 Gemini 应用配置模板时，除了环境变量公共项，也会一并保留 `config` 里的公共配置
-- 后端公共配置应用、剥离、包含判断三条链路同步升级，避免前端支持 `env/config`、后端却只处理 `env` 的语义错位
-
-### 模型自动获取体验
-
-- 不再把“自动获取模型”局限在单一 app 的单一路径上
-- 新增统一的模型发现逻辑：
-  - 优先请求供应商自身兼容接口的模型列表
-  - 当供应商接口不支持或当前未填写可用于查询的端点 / 密钥时，自动回退到 `models.dev` 官方模型目录
-- Claude、Codex、Gemini 现在都能复用这一套逻辑：
-  - Claude 即使在非 OpenAI 兼容格式下，也可以通过官方模型目录加载可选模型
-  - Gemini 官方场景下也可以直接拉取模型建议，不再因为没有第三方端点而完全缺失此能力
-- 这样做的好处是：
-  - 自动获取模型不再只在少数供应商形态下可用
-  - 即使供应商不提供 `/models`，用户仍能快速得到一份可直接选择或粘贴的模型列表
-
-### 表单与交互细节
-
-- 修复了 Codex 新增 / 编辑供应商界面中，“自动获取模型”按钮挤占模型名称区域，导致“模型名称 / 推理深度”不再处于同一布局行的问题
-- Claude 的模型配置显示也做了拆分：
-  - 模型配置区域可以独立显示
-  - 不会为了让模型列表可用而把 API 格式、认证字段等高级控制项一并强行暴露出来
-
-### 测试与验证
-
-- 已通过：
-  - `pnpm typecheck`
-  - `pnpm test:unit`
-- 本地 `cargo test` / `pnpm tauri build` 仍被当前机器的 Rust / Visual Studio 工具链环境阻塞，具体表现为：
-  - `vswhom-sys` 链接阶段 `LNK1143`
-  - 历史残留的 `CC / CFLAGS` 环境污染会影响 `rquickjs-sys`
-- 已尝试清理环境变量并执行 `cargo clean` 后重新编译，但本机 Windows release 仍未能成功产出，因此本次正式安装包仍以 GitHub Actions 的干净构建环境为准
-
-## [3.12.3-1] - 2026-03-22
-
-本版本是**基于上游 v3.12.2** 持续整合本地定制功能后的首个 GitHub 主仓正式自定义版本。  
-一方面，它继承了上游 3.12.2 的基础架构与能力；另一方面，它完整保留并收口了我们围绕供应商管理、会话路由、配置文件处理、最终配置预览、模型建议与自动发布链路所做的定制化增强。
-
-本次版本的重点，不是单纯增加某一两个按钮，而是把“**配置如何被保存、如何被渲染、如何在代理接管 / 切换供应商 / 切换会话时保持稳定**”这一整条链路重新整理清楚。
-
-### 版本定位
-
-- 版本号采用 `3.12.3-1`
-- 这是一个**基于上游 3.12.2 的自定义版本线**
-- 之所以不继续沿用 `3.12.2+N` 形式，是因为 `+build metadata` 对语义化版本优先级比较不友好，会影响自动更新判断
-- 改为 `3.12.3-1` 后，既能保留“仍然贴近上游 3.12.2 的小版本演进”这一语义，也能保证 GitHub 自动发布、Windows MSI 打包和 Tauri Updater 的版本比较行为更稳定
-
-### 会话路由机制
-
-围绕会话路由，本次版本重点解决的是“**请求该如何在 provider 之间被选择、固定、恢复与回退**”的问题。
-
-- 新增并收口了会话路由相关的应用级配置，使会话路由不再只是一个临时状态，而是有明确持久化配置的正式机制
-- 会话路由支持多种分配策略：
-  - `priority`：按当前 provider 列表顺序分配
-  - `least_active`：优先分配给当前绑定会话数最少的 provider
-  - `round_robin`：轮询分配
-  - `fixed`：优先固定首选 provider，失败时再回退
-- 支持“无会话默认提供商”概念：
-  - 可以显式指定一个 provider 作为默认入口
-  - 也可以留空，此时请求会“跟随当前 provider”
-- 当“无会话默认提供商”留空且自动故障转移开启时：
-  - 请求先跟随当前 provider
-  - 若当前 provider 不可用，再按故障转移队列继续回退
-- 会话绑定与 provider 之间的关系不再只是 UI 展示，而是具备可查询、可切换、可 pin、可解绑的完整链路
-- provider 列表中新增了会话占用与会话默认相关状态展示，方便直接看出某个 provider 当前承担的流量角色
-- 会话管理页面恢复为以“对话记录列表”为主体的结构，避免偏离原本定制版的使用习惯
-
-### 配置文件处理机制
-
-本版本最核心的定制点之一，是对 Claude / Codex / Gemini 的配置写入机制进行了重新分层，重点解决“配置混乱、通用配置污染 provider、自定义片段和最终 live 配置边界不清”等问题。
-
-#### 1. 应用配置模板 与 默认供应商模板 分离
-
-- 原先“通用配置”这个概念被进一步收口为“**应用配置模板**”
-- 应用配置模板的职责是：
-  - 描述最终 live 配置的完整结构
-  - 在写入 live 文件时，注入当前 provider 配置片段
-  - 在需要时注入 MCP 配置片段
-- 默认供应商模板的职责则被限定为：
-  - 在新建 provider 时生成“provider 自身的初始配置片段”
-  - 不再承担完整应用配置的职责
-- 这样做的结果是：
-  - provider 数据库存储更干净
-  - app template 不会再反向污染 provider 片段
-  - 最终配置预览和真实写盘结果更容易保持一致
-
-#### 2. Codex 的模板渲染机制正式收口
-
-- Codex 现在明确支持：
-  - `{{provider.config}}`
-  - `{{mcp.config}}`
-- `{{provider.config}}` 用于把当前供应商的 `config.toml` 片段注入完整应用模板
-- `{{mcp.config}}` 在启用且存在 MCP 配置时注入，否则替换为空
-- 这意味着最终写出的 `config.toml` 不再是“若干逻辑在不同地方拼出来的结果”，而是来源于统一模板渲染
-- 同时加入了对旧版 Codex 错误模板的清洗与回退逻辑，避免历史遗留的 JSON 形式模板或非法占位符继续污染系统
-
-#### 3. Common Config / App Template 不再回写到 Provider
-
-- 之前最容易造成混乱的问题是：应用级模板内容会被误写回 provider 自身配置
-- 本版本把 Claude / Codex / Gemini 的相关 hook 彻底解耦：
-  - 负责读取、保存、提取模板
-  - 但不再把模板内容回写进 provider 的 `settingsConfig`
-- 这一步非常关键，因为它保证了：
-  - provider 数据表示“供应商自己的差异化配置”
-  - 应用模板表示“最终 live 配置框架”
-  - 两者职责不再混淆
-
-#### 4. 最终配置预览 与 实际 live 文件 打通
-
-- “实际配置文件”独立入口被并入“最终配置预览”
-- 最终配置预览现在同时展示：
-  - 预期渲染结果
-  - 当前 live 文件内容
-  - 差异高亮
-- 用户可以直接在预览面板中编辑当前 live 文件并保存
-- 这样做的意义是：
-  - 所有与最终结果相关的操作都集中在一个面板
-  - 不再出现“这里看预期、那里看实际、再去别处修改”的割裂流程
-
-#### 5. 代理接管下的配置行为更清晰
-
-- 当启用代理接管时，最终配置预览中的预期结果会把地址解析为**本地代理地址**
-- 不再错误显示为原始供应商上游地址
-- 这保证了“当前真正生效的配置”和“UI 告诉用户的预期结果”一致
-
-### 供应商与模型能力增强
-
-- 为 Claude / Codex / Gemini / OpenCode 增加了 OpenAI 兼容 `/models` 接口拉取能力
-- 模型输入框增加统一的建议下拉组件，减少手填模型名时的错误
-- provider 列表增加一键置顶功能，解决新加 provider 总是在底部的问题
-- 操作列宽度、按钮样式、图标 + 文本风格、深色模式 hover 等细节统一收口
-
-### 批量健康检查机制
-
-- 健康检查配置中的测试问题现在支持“每行一个”
-- 批量测试或单个 provider 测试时，会随机抽取其中一行作为当前请求提示词
-- 同时补齐了对应的保存与关闭面板时的同步逻辑，使模型与提示词配置不会因关闭面板而丢失
-
-### GitHub 自动发布链路
-
-本版本同时完成了从旧仓库发布方式向新 GitHub 主仓的迁移准备。
-
-- 项目主仓链接、运行时仓库链接、自动更新地址都已切换到新的 GitHub fork
-- GitHub Actions 发布 workflow 已收口为正式发布模式
-- workflow 在构建前会先执行：
-  - `pnpm typecheck`
-  - `pnpm test:unit`
-- `pnpm` 的 build script allowlist 已补齐 `esbuild` 与 `msw`，降低 CI 中依赖安装失败的概率
-- 新的 Tauri updater 公钥已经写入仓库配置，新的签名私钥与密码已写入 GitHub Actions Secrets
-
-### 总结
-
-如果用一句话概括本版本的意义：
-
-> 这不是一次简单的功能堆叠，而是把我们基于上游 3.12.2 所做的自定义开发，从“能用”整理成“配置边界清晰、路由行为稳定、预览与写盘一致、并且可以迁移到 GitHub 自动发布”的一个正式版本。
-
----
-
-## [3.12.2+2] - 2026-03-22
-
-Full integration release based on upstream v3.12.2, preserving the local customization line while reorganizing provider configuration, session routing, and preview workflows.
-
-**Stats**: 57 commits | 256 files changed | +23,386 insertions | -8,046 deletions
+Development since v3.12.3 focuses on quota visibility, provider workflow upgrades, stronger proxy compatibility, and lower-overhead tray / session workflows.
 
 ### Added
 
-- **OpenAI-Compatible Model Fetching**: Added model list fetching and suggestion dropdowns for Claude, Codex, Gemini, and OpenCode forms when the upstream endpoint supports the OpenAI-compatible `/models` API
-- **Live Config Editing in Final Preview**: Final config preview now supports opening, editing, and saving current live files directly in the preview panel
-- **Provider Row Quick Pin**: Added one-click "move to top" action for provider rows to make newly added providers easier to prioritize
+- **Lightweight Mode**: Added a tray-only mode that destroys the main window and keeps CC Switch running from the system tray, with the window recreated when users reopen it.
+- **Provider Model Auto-Fetch**: Added OpenAI-compatible `/v1/models` discovery for Claude, Codex, Gemini, OpenCode, and OpenClaw provider forms, including grouped dropdown selection and failure-specific error messages.
+- **Quota & Balance Visibility**: Added inline quota or balance display for official Claude / Codex / Gemini providers, GitHub Copilot premium interactions, Codex OAuth providers, Token Plan providers (Kimi / Zhipu GLM / MiniMax), and official balance queries for DeepSeek, StepFun, SiliconFlow, OpenRouter, and Novita AI. Copilot / ChatGPT OAuth and CLI subscription quota now only auto-poll for the currently active provider, preventing unnecessary API calls and misleading displays on non-current cards.
+- **Skills Discovery & Batch Updates**: Added SHA-256 based skill update detection, per-skill and batch update actions, a storage-location toggle between CC Switch and `~/.agents/skills`, and public `skills.sh` search integration.
+- **Session Workflow Upgrades**: Added batch delete in Session Manager, a directory picker before launching Claude terminal restore commands, usage import from Claude / Codex / Gemini session logs without requiring proxy interception, and per-app usage filtering for Claude / Codex / Gemini dashboards.
+- **Codex OAuth Reverse Proxy**: Added ChatGPT Plus / Pro based Codex OAuth reverse proxy support for Claude provider cards, including managed OAuth login and inline subscription quota display.
+- **OpenCode / OpenClaw Stream Check Coverage**: Added OpenCode npm package mapping plus support for OpenClaw `openai-completions` and the remaining OpenClaw protocol variants in Stream Check.
+- **Full URL Endpoint Mode**: Added a provider option that treats `base_url` as a complete upstream endpoint so proxy forwarding and stream checks can work with vendors that require nonstandard URL layouts.
+- **OpenCode StepFun Step Plan Preset**: Added a StepFun Step Plan provider preset for OpenCode.
+- **Copilot Interaction Optimizer**: Added request classification and routing logic to reduce unnecessary GitHub Copilot premium interaction consumption.
+- **First-Run Welcome Dialog**: Added a one-time welcome dialog on fresh installs explaining how existing configuration is preserved as a default provider and how the bundled official preset enables one-click revert. Upgrade users are excluded.
+- **Official Provider Seeding**: Added automatic seeding of Claude Official, OpenAI Official, and Google Official provider entries on startup, giving every user a one-click path back to the official endpoint.
+- **OpenCode / OpenClaw Auto-Import**: Added automatic startup import of live OpenCode and OpenClaw provider configurations, matching the auto-import behavior already present for Claude, Codex, and Gemini.
+- **Common Config Editor Guidance**: Added an informational guide and empty-state prompt to the Common Config snippet editor modal for Claude, Codex, and Gemini, with i18n support.
+- **Common Config First-Run Notice**: Added a one-time informational dialog explaining Common Config Snippets when users first open the provider add/edit form.
+- **Claude Session Titles**: Added meaningful title extraction for Claude sessions using a priority chain: custom-title metadata, first real user message, then directory basename fallback.
+- **Session Search Highlighting**: Added keyword highlighting in session titles and messages during Session Manager search.
+- **URL-Based Provider Icons**: Added a dual rendering mode to the icon system supporting Vite URL imports for large SVGs and raster images (PNG, JPG, WebP), keeping small SVGs inlined.
+- **Kaku Terminal Support**: Added Kaku as a selectable terminal for session launch on macOS, reusing the WezTerm-compatible launch path.
+- **OMO Slim Council Support**: Restored first-class council support as a built-in oh-my-opencode-slim agent with updated metadata and UI copy.
+- **TheRouter Provider Preset**: Added TheRouter provider presets across Claude, Codex, Gemini, OpenCode, and OpenClaw.
+- **DDSHub Provider Preset**: Added DDSHub as a third-party partner provider for Claude with icon and partner promotion text.
+- **LionCCAPI Provider Preset**: Added LionCCAPI as a third-party partner provider across all five apps with anthropic-messages protocol for OpenCode and OpenClaw.
+- **Shengsuanyun Provider Preset**: Added Shengsuanyun (胜算云) as an aggregator partner provider across all five apps with URL-based icon and localized display name.
+- **PIPELLM Provider Preset**: Added PIPELLM provider preset across Claude, Codex, OpenCode, and OpenClaw with full model definitions and icon.
+- **E-FlowCode Provider Preset**: Added E-FlowCode provider preset across all five apps with per-app protocol configuration.
 
 ### Changed
 
-- **App Config Template Workflow**: Reframed common config into application-level templates for Claude, Codex, and Gemini, and separated it from default provider templates so provider records only store provider-specific fragments
-- **Codex Config Rendering**: Codex `config.toml` rendering now supports `{{provider.config}}` and optional `{{mcp.config}}`, with proxy takeover preview resolving `base_url` to the local proxy port
-- **Session Routing & Session Management**: Reworked session routing defaults, status text, and session manager structure so the dialog and list behavior match the customized workflow more closely
-- **Model Defaults**: Updated default model values across provider templates and universal provider flows to newer Claude, Codex, and Gemini defaults used by this customized release
-- **Stream Check Prompt Handling**: Global test prompt configuration now supports multiple lines and random prompt selection during provider checks
+- **Tray Menu Organization**: Reworked the tray menu into per-app submenus to prevent overflow and make background provider switching scale better with larger provider lists.
+- **Proxy Forwarding Stack**: Refactored proxy forwarding onto a Hyper-based client with transparent header forwarding, improved endpoint rewriting, and better support for dynamic upstream endpoints.
+- **OAuth Auth Center UI Polish**: Tightened the Auth Center copy, layout, and icon presentation so the Codex OAuth login flow feels cleaner and less cluttered.
+- **Provider Key Lifecycle & Live Sync**: Reworked additive provider create / rename / duplicate flows so live config writes, cleanup, and rollback stay consistent across OpenCode / OpenClaw and takeover scenarios.
+- **Codex OAuth Defaults**: Updated the Codex OAuth preset to the GPT-5.4 model family.
 
 ### Fixed
 
-- **Config Preview Drift**: Fixed cases where expected preview output and actual live file content could diverge because app-level templates were being written back into provider config fragments
-- **Codex Template Sanitization**: Fixed legacy or invalid Codex default provider templates being stored in JSON-like or placeholder-mixed forms; incompatible templates are now normalized back to valid TOML templates
-- **Proxy Takeover Preview Accuracy**: Fixed final preview rendering to show the local proxy address when takeover is active instead of the original upstream provider URL
-- **UI Consistency in Provider Tools**: Fixed provider toolbar and list action inconsistencies, including unified icon+text buttons, widened actions column, dark-mode hover feedback, and restored dialog/list structure
+- **Copilot Authentication & Proxy Compatibility**: Fixed GitHub Copilot authentication regressions, corrected enterprise / dynamic endpoint handling, repaired clipboard verification-code copying on macOS and Linux, and fixed Responses routing when Copilot-backed Claude providers target OpenAI models.
+- **Streaming Parser Compatibility**: Fixed SSE parsing to accept fields with optional spaces, improving compatibility with non-strict streaming implementations.
+- **UTF-8 Stream Chunk Boundaries**: Fixed intermittent garbled output (U+FFFD replacement characters) in Claude Code when multi-byte UTF-8 sequences such as Chinese characters or emoji were split across TCP stream chunks via the Copilot reverse proxy, by preserving incomplete trailing bytes across chunks in all four SSE streaming paths instead of lossy decoding.
+- **Fragmented System Prompt Normalization**: Fixed strict OpenAI-compatible chat backends (Nvidia, Qwen-style) rejecting requests when converted Claude payloads contained multiple system messages, by merging system content into a single leading system message during the Anthropic → OpenAI chat transformation.
+- **Provider Switch State Corruption**: Serialized per-app provider switches to prevent concurrent failover or hot-switch operations from leaving `is_current`, settings state, and live backup state out of sync.
+- **Claude Takeover Live Config Drift**: Fixed provider edits while Claude takeover is active so live settings remain aligned with the latest provider state without breaking takeover restore behavior.
+- **WebDAV Password Retention & Validation**: Fixed the WebDAV password field so saved credentials remain visible after refresh and treated `MKCOL 405` responses correctly during connection validation.
+- **Provider Card Action States**: Fixed additive-mode highlight behavior, aligned usage display layout across provider cards, replaced hard proxy-switch blocking with a warning path, and disabled unsupported test / usage actions for Copilot and Codex OAuth cards.
+- **Usage Accuracy & Pricing**: Fixed MiniMax quota math and 0%→100% progression, corrected CNY→USD pricing plus missing model definitions, improved Gemini session-log syncing, and resolved session-based usage entries being shown as unknown providers.
+- **Usage Editor & Skills UI Regressions**: Fixed usage query fields being reset while editing extractor code, corrected broken `skills.sh` links and empty descriptions, and fixed auto-query defaults plus number-input clearing in usage configuration.
+- **Chinese Skills Terminology**: Unified Skills-related labels across settings panels in the `zh` locale so storage and sync options use consistent wording.
+- **Environment & Preset Compatibility**: Added Bun global bin detection in CLI scan, adapted to the oh-my-openagent rename with backward compatibility, corrected the OpenCode `kimi-for-coding` preset, gated Gemini keychain parsing to macOS, and fixed an OpenClaw serializer panic on empty collections.
+- **Linux UI Unresponsive on Startup**: Fixed a bug where the window UI (including native title bar buttons) couldn't receive clicks on Linux until the user manually maximized and restored the window. Root causes: (1) Tauri webview did not acquire keyboard focus after `show()` on Linux, so the first click was consumed by X11/Wayland click-to-activate (Tauri #10746, wry #637); (2) GTK surface's input region failed to renegotiate on the `visible:false → show()` path under some WebKitGTK/compositor combinations, leaving the entire window unresponsive. Mitigations: set `WEBKIT_DISABLE_COMPOSITING_MODE=1` at startup, and added a new `linux_fix::nudge_main_window` helper that performs `set_focus` + a ±1px no-op resize ~200ms after show, equivalent to a visually invisible "maximize-and-restore". Wired into all window-re-show paths (normal startup, deeplink, single_instance, tray `show_main`, lightweight exit).
+- **Linux Drag Region on Header**: Removed `data-tauri-drag-region` from the top header bar on Linux to avoid triggering `gtk_window_begin_move_drag` paths affected by Tauri #13440 under Wayland. macOS drag behavior is preserved.
+- **OpenCode / OpenClaw Stream Check Edge Cases**: Fixed custom-header passthrough, OpenClaw custom auth-header detection, Bedrock error messaging, and OpenCode default `baseURL` fallback handling in Stream Check.
+- **Duplicate Toast on Provider Switch**: Fixed double toast notifications (proxy-required warning followed by switch-success) when switching to Copilot, ChatGPT, or OpenAI-format providers with the proxy not running.
+- **Session Search Accuracy & Chinese Support**: Fixed session search result truncation across providers and switched FlexSearch tokenizer to full mode for proper Chinese substring matching.
+- **Adaptive Thinking Reasoning Effort**: Fixed `resolve_reasoning_effort()` mapping adaptive thinking to `xhigh` instead of incorrectly using `high` in OpenAI format conversions.
+- **Thinking Model Fallback Display**: Fixed the Claude provider form showing an empty Thinking model field after saving only a main model by applying read-only fallback to ANTHROPIC_MODEL.
+- **Auth Tab Localization**: Fixed missing i18n translation keys for the settings auth tab label across all locale bundles.
+- **Schema Migration Guard**: Fixed database migrations failing when skills or model_pricing tables did not exist by adding table-existence checks before ALTER and UPDATE operations.
+
+### Docs
+
+- **User Manual Refresh**: Updated the EN / ZH / JA manuals for tray submenus, lightweight mode, provider model fetching, session management, workspace files, WebDAV v2 behavior, OpenCode / OpenClaw activation, and other provider workflow improvements.
+- **Community & Contribution Docs**: Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, bilingual issue / PR templates, Dependabot config, and CI quality checks.
+- **Release Notes Risk Notice**: Added a Copilot reverse proxy risk notice and anchored highlight links in the v3.12.3 release notes across all three languages.
+- **Sponsor Partners**: Added Shengsuanyun, LionCC, and DDS as sponsor partners in README across all languages.
+
+---
+
+## [3.12.3] - 2026-03-24
+
+Major release adding GitHub Copilot reverse proxy support, macOS code signing & Apple notarization, intelligent reasoning effort mapping for o-series models, skill backup/restore lifecycle, proxy gzip compression, and critical fixes for WebDAV password safety, tool message parsing, and dark mode.
+
+**Stats**: 36 commits | 107 files changed | +9,124 insertions | -802 deletions
+
+### Added
+
+- **GitHub Copilot Reverse Proxy**: Full GitHub Copilot integration as a Claude Code provider via OAuth Device Code flow; includes multi-account management, automatic token refresh, Anthropic ↔ OpenAI format conversion, real-time model list fetching, and usage statistics (#930)
+- **Copilot Auth Center**: New Auth Center panel in Settings for managing GitHub accounts globally, with per-provider account binding via `meta.authBinding`
+- **Tool Search Toggle**: Added `ENABLE_TOOL_SEARCH` env var support for Claude 2.1.76+; exposed as a checkbox in the provider Common Config editor (#930)
+- **Reasoning Effort Mapping**: Two-tier `resolve_reasoning_effort()` for OpenAI o-series and GPT-5+ models — explicit `output_config.effort` takes priority, falling back to thinking `budget_tokens` thresholds (<4 000→low, 4 000–16 000→medium, ≥16 000→high); covers both Chat Completions and Responses API paths with 17 unit tests
+- **OpenCode SQLite Backend**: Added SQLite session storage support for OpenCode alongside existing JSON backend; dual-backend scan with SQLite priority on ID conflicts, atomic session deletion, and path validation (#1401)
+- **Skill Auto-Backup**: Skill files are automatically backed up to `~/.cc-switch/skill-backups/` before uninstall, with metadata preserved in `meta.json`; old backups pruned to keep at most 20
+- **Skill Backup Restore & Delete**: Added list/restore/delete commands for skill backups; restore copies files back to SSOT, saves the DB record, and syncs to the current app with rollback on failure
+- **macOS Code Signing & Notarization**: CI now imports an Apple Developer ID certificate, signs the universal binary, submits for Apple notarization, and staples the ticket to both `.app` and `.dmg`; a hard-fail verification step (`codesign --verify` + `spctl -a` + `stapler validate`) gates the release for both artifacts
+- **Codex 1M Context Window Toggle**: One-click checkbox in Codex config editor to set `model_context_window = 1000000` with auto-populated `model_auto_compact_token_limit = 900000`; unchecking removes both fields
+- **Disable Auto-Upgrade Toggle**: Added `DISABLE_AUTOUPDATER` env var checkbox in the Claude Common Config editor to prevent Claude Code from auto-upgrading
+
+### Changed
+
+- **Skills Cache Strategy**: Replaced `invalidateQueries` with direct `setQueryData` updates for skill install/uninstall/import operations; added `staleTime: Infinity` with `keepPreviousData` to eliminate loading flicker (#1573)
+- **Proxy Gzip Compression**: Non-streaming proxy requests now auto-negotiate gzip compression instead of forcing `identity`; streaming requests conservatively keep `identity` to avoid SSE decompression errors
+- **o1/o3 Model Compatibility**: Chat Completions proxy forwarding now correctly uses `max_completion_tokens` instead of `max_tokens` for OpenAI o-series models such as o1/o3/o4-mini (#1451)
+- **OpenCode Model Variants**: Placed OpenCode model variants at top level instead of inside options for better discoverability (#1317)
+- **Skills Import Flow**: Replaced implicit filesystem-based app inference with explicit `ImportSkillSelection` to prevent incorrect multi-app activation; added reconciliation to remove disabled/orphaned symlinks and MCP servers from live config
+- **Claude 4.6 Context Window**: Updated Claude Opus 4.6 and Sonnet 4.6 context window from 200K to 1M across OpenClaw and OpenCode presets (GA release)
+- **MiniMax Model Upgrade**: Updated MiniMax presets from M2.5 to M2.7 across Claude, OpenClaw, and OpenCode configurations with updated partner descriptions in all three locales
+- **Xiaomi MiMo Model Upgrade**: Updated MiMo presets from mimo-v2-flash to mimo-v2-pro across all supported applications
+- **AddProviderDialog Simplification**: Removed redundant OAuth tab, reducing dialog from 3 tabs to 2 (app-specific + universal)
+- **Provider Form Advanced Options Collapse**: Model mapping, API format, and other advanced fields in the Claude provider form now auto-collapse when empty; auto-expands when any value is set or when a preset fills them in
+
+### Fixed
+
+- **WebDAV Password Silent Clear**: Fixed WebDAV password being silently wiped when ProviderList or UsageScriptModal saved settings by stripping `webdavSync` from frontend payloads and adding backend backfill logic in `merge_settings_for_save()` to preserve existing passwords
+- **Tool Message Parsing**: Fixed tool_use/tool_result message classification across Claude (tool_result content blocks), Codex (function_call/function_call_output payloads), and Gemini (array content + toolCalls extraction) session providers (#1401)
+- **Dark Mode Selector**: Changed Tailwind `darkMode` from `["selector", "class"]` to `["selector", ".dark"]` to ensure correct dark mode activation (#1596)
+- **Copilot Request Fingerprint**: Unified Copilot request fingerprint headers across all API call sites to prevent User-Agent leakage and stream check mismatches
+- **o-series Responses API Tokens**: Kept Responses API on the correct `max_output_tokens` field for o-series models instead of incorrectly injecting `max_completion_tokens`
+- **Provider Form Double Submit**: Prevented duplicate submissions on rapid button clicks in provider add/edit forms (#1352)
+- **Ghostty Session Restore**: Fixed Claude session restore in Ghostty terminal (#1506)
+- **Skill ZIP Import Extension**: Added `.skill` file extension support in ZIP import dialog (#1240, #1455)
+- **Skill ZIP Install Target App**: ZIP skill installs now use the currently active app instead of always defaulting to Claude
+- **OpenClaw Active Card Highlight**: Fixed active OpenClaw provider card not being highlighted (#1419)
+- **Responsive Layout with TOC**: Improved responsive design when TOC title exists (#1491)
+- **Import Skills Dialog White Screen**: Added missing TooltipProvider in ImportSkillsDialog to prevent runtime crash when opening the dialog
+- **Panel Bottom Blank Area**: Replaced hardcoded `h-[calc(100vh-8rem)]` with `flex-1 min-h-0` across all content panels to eliminate bottom gap caused by mismatched offset values
+
+### Docs
+
+- **Pricing Model ID Normalization**: Added documentation section explaining model ID normalization rules (prefix stripping, suffix trimming, `@`→`-` replacement) in EN/ZH/JA user manuals (#1591)
+- **macOS Signed & Notarized**: Removed all `xattr` workaround instructions and "unidentified developer" warnings from README, README_ZH, installation guides (EN/ZH/JA), and FAQ pages (EN/ZH/JA); replaced with "signed and notarized by Apple" messaging
 
 ---
 

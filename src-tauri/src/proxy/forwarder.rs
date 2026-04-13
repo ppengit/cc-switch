@@ -13,7 +13,7 @@ use super::{
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
     },
-    types::{OptimizerConfig, ProxyStatus, RectifierConfig},
+    types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
 use crate::{app_config::AppType, provider::Provider};
@@ -124,6 +124,7 @@ impl RequestForwarder {
         force_model: Option<String>,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
+        _copilot_optimizer_config: CopilotOptimizerConfig,
     ) -> Self {
         Self {
             router,
@@ -957,7 +958,9 @@ impl RequestForwarder {
 
         // 使用适配器添加认证头
         if let Some(auth) = adapter.extract_auth(provider) {
-            request = adapter.add_auth_headers(request, &auth);
+            for (header_name, header_value) in adapter.get_auth_headers(&auth) {
+                request = request.header(header_name, header_value);
+            }
         }
 
         // anthropic-version 统一处理（仅 Claude）：优先使用客户端的版本号，否则使用默认值

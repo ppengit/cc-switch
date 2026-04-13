@@ -12,6 +12,7 @@ mod error;
 mod gemini_config;
 mod gemini_mcp;
 mod init_status;
+mod lightweight;
 mod mcp;
 mod openclaw_config;
 mod opencode_config;
@@ -28,7 +29,7 @@ mod store;
 mod tray;
 mod usage_script;
 
-pub use app_config::{AppType, McpApps, McpServer, MultiAppConfig};
+pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
 pub use commands::open_provider_terminal;
 pub use commands::*;
@@ -47,6 +48,7 @@ pub use services::{
     ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
     SkillService, SpeedtestService,
 };
+pub use services::skill::{migrate_skills_to_ssot, ImportSkillSelection};
 pub use settings::{update_settings, AppSettings};
 pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -964,6 +966,9 @@ pub fn run() {
             commands::read_live_provider_settings,
             commands::get_settings,
             commands::save_settings,
+            commands::enter_lightweight_mode,
+            commands::exit_lightweight_mode,
+            commands::is_lightweight_mode,
             commands::get_rectifier_config,
             commands::set_rectifier_config,
             commands::get_optimizer_config,

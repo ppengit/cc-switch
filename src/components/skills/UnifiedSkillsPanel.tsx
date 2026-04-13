@@ -12,6 +12,7 @@ import {
   useInstallSkillsFromZip,
   type InstalledSkill,
 } from "@/hooks/useSkills";
+import type { ImportSkillSelection } from "@/lib/api/skills";
 import type { AppId } from "@/lib/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi, skillsApi } from "@/lib/api";
@@ -23,6 +24,7 @@ import { ListItemRow } from "@/components/common/ListItemRow";
 
 interface UnifiedSkillsPanelProps {
   onOpenDiscovery: () => void;
+  currentApp?: AppId;
 }
 
 export interface UnifiedSkillsPanelHandle {
@@ -34,7 +36,7 @@ export interface UnifiedSkillsPanelHandle {
 const UnifiedSkillsPanel = React.forwardRef<
   UnifiedSkillsPanelHandle,
   UnifiedSkillsPanelProps
->(({ onOpenDiscovery }, ref) => {
+>(({ onOpenDiscovery, currentApp = "claude" }, ref) => {
   const { t } = useTranslation();
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
@@ -78,7 +80,10 @@ const UnifiedSkillsPanel = React.forwardRef<
       message: t("skills.uninstallConfirm", { name: skill.name }),
       onConfirm: async () => {
         try {
-          await uninstallMutation.mutateAsync(skill.id);
+          await uninstallMutation.mutateAsync({
+            id: skill.id,
+            skillKey: skill.id,
+          });
           setConfirmDialog(null);
           toast.success(t("skills.uninstallSuccess", { name: skill.name }), {
             closeButton: true,
@@ -103,9 +108,9 @@ const UnifiedSkillsPanel = React.forwardRef<
     }
   };
 
-  const handleImport = async (directories: string[]) => {
+  const handleImport = async (imports: ImportSkillSelection[]) => {
     try {
-      const imported = await importMutation.mutateAsync(directories);
+      const imported = await importMutation.mutateAsync(imports);
       setImportDialogOpen(false);
       toast.success(t("skills.importSuccess", { count: imported.length }), {
         closeButton: true,
@@ -120,7 +125,6 @@ const UnifiedSkillsPanel = React.forwardRef<
       const filePath = await skillsApi.openZipFileDialog();
       if (!filePath) return;
 
-      const currentApp: AppId = "claude";
       const installed = await installFromZipMutation.mutateAsync({
         filePath,
         currentApp,
@@ -310,7 +314,7 @@ interface ImportSkillsDialogProps {
     foundIn: string[];
     path: string;
   }>;
-  onImport: (directories: string[]) => void;
+  onImport: (imports: ImportSkillSelection[]) => void;
   onClose: () => void;
 }
 
@@ -335,7 +339,19 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
   };
 
   const handleImport = () => {
-    onImport(Array.from(selected));
+    const imports = skills
+      .filter((skill) => selected.has(skill.directory))
+      .map<ImportSkillSelection>((skill) => ({
+        directory: skill.directory,
+        apps: {
+          claude: skill.foundIn.includes("claude"),
+          codex: skill.foundIn.includes("codex"),
+          gemini: skill.foundIn.includes("gemini"),
+          opencode: skill.foundIn.includes("opencode"),
+          openclaw: skill.foundIn.includes("openclaw"),
+        },
+      }));
+    onImport(imports);
   };
 
   return (

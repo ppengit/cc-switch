@@ -22,6 +22,7 @@ use super::{
     server::ProxyState,
     types::*,
     usage::parser::TokenUsage,
+    hyper_client::ProxyResponse,
     ProxyError,
 };
 use crate::app_config::AppType;
@@ -108,7 +109,13 @@ pub async fn handle_messages(
     }
 
     // 通用响应处理（透传模式）
-    process_response(response, &ctx, &state, &CLAUDE_PARSER_CONFIG).await
+    process_response(
+        ProxyResponse::Reqwest(response),
+        &ctx,
+        &state,
+        &CLAUDE_PARSER_CONFIG,
+    )
+    .await
 }
 
 /// Claude 格式转换处理（独有逻辑）
@@ -324,7 +331,13 @@ pub async fn handle_chat_completions(
     sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
-    process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
+    process_response(
+        ProxyResponse::Reqwest(response),
+        &ctx,
+        &state,
+        &OPENAI_PARSER_CONFIG,
+    )
+    .await
 }
 
 /// 处理 /v1/responses 请求（OpenAI Responses API - Codex CLI 透传）
@@ -366,7 +379,13 @@ pub async fn handle_responses(
     sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
-    process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
+    process_response(
+        ProxyResponse::Reqwest(response),
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+    )
+    .await
 }
 
 /// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
@@ -407,7 +426,13 @@ pub async fn handle_responses_compact(
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
+    process_response(
+        ProxyResponse::Reqwest(response),
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+    )
+    .await
 }
 
 // ============================================================================
@@ -462,7 +487,13 @@ pub async fn handle_gemini(
     sync_session_routing_binding(&state, &ctx);
     let response = result.response;
 
-    process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await
+    process_response(
+        ProxyResponse::Reqwest(response),
+        &ctx,
+        &state,
+        &GEMINI_PARSER_CONFIG,
+    )
+    .await
 }
 
 fn sync_session_routing_binding(state: &ProxyState, ctx: &RequestContext) {
