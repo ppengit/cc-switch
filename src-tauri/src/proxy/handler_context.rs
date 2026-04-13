@@ -9,7 +9,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    types::{AppProxyConfig, OptimizerConfig, RectifierConfig},
+    types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
 use axum::http::HeaderMap;
@@ -66,6 +66,8 @@ pub struct RequestContext {
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
     pub optimizer_config: OptimizerConfig,
+    /// Copilot 优化器配置
+    pub copilot_optimizer_config: CopilotOptimizerConfig,
 }
 
 impl RequestContext {
@@ -101,6 +103,7 @@ impl RequestContext {
         // 从数据库读取整流器配置
         let rectifier_config = state.db.get_rectifier_config().unwrap_or_default();
         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
+        let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
 
         let current_provider_id =
             crate::settings::get_current_provider(&app_type).unwrap_or_default();
@@ -185,6 +188,7 @@ impl RequestContext {
             suppress_global_failover_switch,
             rectifier_config,
             optimizer_config,
+            copilot_optimizer_config,
         })
     }
 
@@ -535,6 +539,7 @@ impl RequestContext {
             self.app_config.effective_force_model().map(str::to_string),
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
+            self.copilot_optimizer_config.clone(),
         )
     }
 

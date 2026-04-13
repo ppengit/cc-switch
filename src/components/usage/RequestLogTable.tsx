@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/tooltip";
 
 interface RequestLogTableProps {
+  appType?: string;
   refreshIntervalMs: number;
 }
 
@@ -98,7 +99,10 @@ const REQUEST_LOG_COLUMN_MIN_WIDTHS: Record<RequestLogColumnKey, number> = {
   status: 90,
 };
 
-export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
+export function RequestLogTable({
+  appType: dashboardAppType,
+  refreshIntervalMs,
+}: RequestLogTableProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -155,8 +159,14 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
     setClearStatisticsDraft(cleanupConfig.clearStatistics);
   }, [cleanupConfig]);
 
+  // When dashboard-level app filter is active (not "all"), override the local appType filter
+  const dashboardAppTypeActive = dashboardAppType && dashboardAppType !== "all";
+  const effectiveFilters: LogFilters = dashboardAppTypeActive
+    ? { ...appliedFilters, appType: dashboardAppType }
+    : appliedFilters;
+
   const { data: result, isLoading } = useRequestLogs({
-    filters: appliedFilters,
+    filters: effectiveFilters,
     timeMode: appliedTimeMode,
     rollingWindowSeconds: ONE_DAY_SECONDS,
     page,
@@ -576,13 +586,18 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
       <div className="flex flex-col gap-4 rounded-lg border bg-card/50 p-4 backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-3">
           <Select
-            value={draftFilters.appType || "all"}
+            value={
+              dashboardAppTypeActive
+                ? dashboardAppType
+                : draftFilters.appType || "all"
+            }
             onValueChange={(v) =>
               setDraftFilters({
                 ...draftFilters,
                 appType: v === "all" ? undefined : v,
               })
             }
+            disabled={!!dashboardAppTypeActive}
           >
             <SelectTrigger className="w-[130px] bg-background">
               <SelectValue placeholder={t("usage.appType")} />
@@ -1054,6 +1069,9 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                     {t("usage.status")}
                     {renderColumnResizeHandle("status")}
                   </TableHead>
+                  <TableHead className="whitespace-nowrap">
+                    {t("usage.source", { defaultValue: "Source" })}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1205,6 +1223,21 @@ export function RequestLogTable({ refreshIntervalMs }: RequestLogTableProps) {
                         >
                           {log.statusCode}
                         </span>
+                      </TableCell>
+                      <TableCell>
+                        {log.dataSource && log.dataSource !== "proxy" ? (
+                          <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] bg-indigo-100 text-indigo-800">
+                            {t(`usage.dataSource.${log.dataSource}`, {
+                              defaultValue: log.dataSource,
+                            })}
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] bg-gray-100 text-gray-600">
+                            {t("usage.dataSource.proxy", {
+                              defaultValue: "Proxy",
+                            })}
+                          </span>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))

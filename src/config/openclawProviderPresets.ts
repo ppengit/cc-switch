@@ -58,6 +58,52 @@ export const openclawApiProtocols = [
  * OpenClaw provider presets list
  */
 export const openclawProviderPresets: OpenClawProviderPreset[] = [
+  {
+    name: "Shengsuanyun",
+    nameKey: "providerForm.presets.shengsuanyun",
+    websiteUrl: "https://www.shengsuanyun.com",
+    apiKeyUrl: "https://www.shengsuanyun.com/?from=CH_4HHXMRYF",
+    settingsConfig: {
+      baseUrl: "https://router.shengsuanyun.com/api",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          contextWindow: 1000000,
+          cost: { input: 5, output: 25 },
+        },
+        {
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          contextWindow: 1000000,
+          cost: { input: 3, output: 15 },
+        },
+      ],
+    },
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "shengsuanyun",
+    icon: "shengsuanyun",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "shengsuanyun/claude-opus-4-6",
+        fallbacks: ["shengsuanyun/claude-sonnet-4-6"],
+      },
+      modelCatalog: {
+        "shengsuanyun/claude-opus-4-6": { alias: "Opus" },
+        "shengsuanyun/claude-sonnet-4-6": { alias: "Sonnet" },
+      },
+    },
+  },
   // ========== Chinese Officials ==========
   {
     name: "DeepSeek",
@@ -340,8 +386,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "MiniMax-M2.5",
-          name: "MiniMax M2.5",
+          id: "MiniMax-M2.7",
+          name: "MiniMax M2.7",
           contextWindow: 200000,
           cost: { input: 0.001, output: 0.004 },
         },
@@ -364,8 +410,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "minimax/MiniMax-M2.5" },
-      modelCatalog: { "minimax/MiniMax-M2.5": { alias: "MiniMax" } },
+      model: { primary: "minimax/MiniMax-M2.7" },
+      modelCatalog: { "minimax/MiniMax-M2.7": { alias: "MiniMax" } },
     },
   },
   {
@@ -378,8 +424,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "MiniMax-M2.5",
-          name: "MiniMax M2.5",
+          id: "MiniMax-M2.7",
+          name: "MiniMax M2.7",
           contextWindow: 200000,
           cost: { input: 0.001, output: 0.004 },
         },
@@ -402,8 +448,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "minimax-en/MiniMax-M2.5" },
-      modelCatalog: { "minimax-en/MiniMax-M2.5": { alias: "MiniMax" } },
+      model: { primary: "minimax-en/MiniMax-M2.7" },
+      modelCatalog: { "minimax-en/MiniMax-M2.7": { alias: "MiniMax" } },
     },
   },
   {
@@ -563,8 +609,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "mimo-v2-flash",
-          name: "MiMo V2 Flash",
+          id: "mimo-v2-pro",
+          name: "MiMo V2 Pro",
           contextWindow: 128000,
           cost: { input: 0.001, output: 0.004 },
         },
@@ -581,8 +627,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "xiaomimimo/mimo-v2-flash" },
-      modelCatalog: { "xiaomimimo/mimo-v2-flash": { alias: "MiMo" } },
+      model: { primary: "xiaomimimo/mimo-v2-pro" },
+      modelCatalog: { "xiaomimimo/mimo-v2-pro": { alias: "MiMo" } },
     },
   },
 
@@ -599,13 +645,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -643,13 +689,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -687,13 +733,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "anthropic/claude-opus-4.6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "anthropic/claude-sonnet-4.6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -716,6 +762,72 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       modelCatalog: {
         "openrouter/anthropic/claude-opus-4.6": { alias: "Opus" },
         "openrouter/anthropic/claude-sonnet-4.6": { alias: "Sonnet" },
+      },
+    },
+  },
+  {
+    name: "TheRouter",
+    websiteUrl: "https://therouter.ai",
+    apiKeyUrl: "https://dashboard.therouter.ai",
+    settingsConfig: {
+      baseUrl: "https://api.therouter.ai/v1",
+      apiKey: "",
+      api: "openai-completions",
+      models: [
+        {
+          id: "anthropic/claude-sonnet-4.6",
+          name: "Claude Sonnet 4.6",
+          contextWindow: 1000000,
+          cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+        },
+        {
+          id: "openai/gpt-5.3-codex",
+          name: "GPT-5.3 Codex",
+          contextWindow: 400000,
+          cost: { input: 5, output: 40, cacheRead: 0.5 },
+        },
+        {
+          id: "openai/gpt-5.2",
+          name: "GPT-5.2",
+          contextWindow: 400000,
+          cost: { input: 1.75, output: 14, cacheRead: 0.175 },
+        },
+        {
+          id: "google/gemini-3-flash-preview",
+          name: "Gemini 3 Flash Preview",
+          contextWindow: 1000000,
+          cost: { input: 0.5, output: 3, cacheRead: 0.05 },
+        },
+        {
+          id: "qwen/qwen3-coder-480b",
+          name: "Qwen3 Coder 480B",
+          contextWindow: 262144,
+          cost: { input: 0.6, output: 2.35 },
+        },
+      ],
+    },
+    category: "aggregator",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "sk-...",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "therouter/anthropic/claude-sonnet-4.6",
+        fallbacks: [
+          "therouter/openai/gpt-5.2",
+          "therouter/google/gemini-3-flash-preview",
+        ],
+      },
+      modelCatalog: {
+        "therouter/anthropic/claude-sonnet-4.6": { alias: "Sonnet" },
+        "therouter/openai/gpt-5.2": { alias: "GPT-5.2" },
+        "therouter/google/gemini-3-flash-preview": { alias: "Gemini Flash" },
+        "therouter/openai/gpt-5.3-codex": { alias: "Codex" },
+        "therouter/qwen/qwen3-coder-480b": { alias: "Qwen Coder" },
       },
     },
   },
@@ -767,8 +879,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "Pro/MiniMaxAI/MiniMax-M2.5",
-          name: "MiniMax M2.5",
+          id: "Pro/MiniMaxAI/MiniMax-M2.7",
+          name: "MiniMax M2.7",
           contextWindow: 200000,
           cost: { input: 0.001, output: 0.004 },
         },
@@ -787,9 +899,9 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "siliconflow/Pro/MiniMaxAI/MiniMax-M2.5" },
+      model: { primary: "siliconflow/Pro/MiniMaxAI/MiniMax-M2.7" },
       modelCatalog: {
-        "siliconflow/Pro/MiniMaxAI/MiniMax-M2.5": { alias: "MiniMax" },
+        "siliconflow/Pro/MiniMaxAI/MiniMax-M2.7": { alias: "MiniMax" },
       },
     },
   },
@@ -803,8 +915,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "MiniMaxAI/MiniMax-M2.5",
-          name: "MiniMax M2.5",
+          id: "MiniMaxAI/MiniMax-M2.7",
+          name: "MiniMax M2.7",
           contextWindow: 200000,
           cost: { input: 0.001, output: 0.004 },
         },
@@ -823,9 +935,9 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "siliconflow-en/MiniMaxAI/MiniMax-M2.5" },
+      model: { primary: "siliconflow-en/MiniMaxAI/MiniMax-M2.7" },
       modelCatalog: {
-        "siliconflow-en/MiniMaxAI/MiniMax-M2.5": { alias: "MiniMax" },
+        "siliconflow-en/MiniMaxAI/MiniMax-M2.7": { alias: "MiniMax" },
       },
     },
   },
@@ -895,6 +1007,56 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       modelCatalog: { "nvidia/moonshotai/kimi-k2.5": { alias: "Kimi" } },
     },
   },
+  {
+    name: "PIPELLM",
+    websiteUrl: "https://www.pipellm.ai",
+    apiKeyUrl: "https://code.pipellm.ai/login?ref=uvw650za",
+    settingsConfig: {
+      baseUrl: "https://cc-api.pipellm.ai",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-6",
+          name: "claude-opus-4-6",
+          contextWindow: 1000000,
+          cost: { input: 5, output: 25 },
+        },
+        {
+          id: "claude-sonnet-4-6",
+          name: "claude-sonnet-4-6",
+          contextWindow: 1000000,
+          cost: { input: 3, output: 15 },
+        },
+        {
+          id: "claude-haiku-4-5-20251001",
+          name: "claude-haiku-4-5-20251001",
+          contextWindow: 200000,
+          cost: { input: 0.8, output: 4 },
+        },
+      ],
+    },
+    category: "aggregator",
+    icon: "pipellm",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "pipe-...",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "pipellm/claude-opus-4-6",
+        fallbacks: ["pipellm/claude-sonnet-4-6"],
+      },
+      modelCatalog: {
+        "pipellm/claude-opus-4-6": { alias: "Opus" },
+        "pipellm/claude-sonnet-4-6": { alias: "Sonnet" },
+        "pipellm/claude-haiku-4-5-20251001": { alias: "Haiku" },
+      },
+    },
+  },
 
   // ========== Third Party Partners ==========
   {
@@ -909,13 +1071,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -954,13 +1116,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1000,13 +1162,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1046,13 +1208,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1092,13 +1254,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1138,13 +1300,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1184,13 +1346,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1230,13 +1392,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
         {
           id: "claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15 },
         },
       ],
@@ -1278,7 +1440,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
       ],
@@ -1316,7 +1478,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
       ],
@@ -1354,7 +1516,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 5, output: 25 },
         },
       ],
@@ -1380,6 +1542,112 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
   },
+  {
+    name: "LionCCAPI",
+    websiteUrl: "https://vibecodingapi.ai",
+    settingsConfig: {
+      baseUrl: "https://vibecodingapi.ai",
+      apiKey: "",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          contextWindow: 1000000,
+          cost: { input: 5, output: 25 },
+        },
+        {
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          contextWindow: 1000000,
+          cost: { input: 3, output: 15 },
+        },
+      ],
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "lionccapi",
+    icon: "lioncc",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "lionccapi/claude-opus-4-6",
+        fallbacks: ["lionccapi/claude-sonnet-4-6"],
+      },
+      modelCatalog: {
+        "lionccapi/claude-opus-4-6": { alias: "Opus" },
+        "lionccapi/claude-sonnet-4-6": { alias: "Sonnet" },
+      },
+    },
+  },
+  {
+    name: "E-FlowCode",
+    websiteUrl: "https://e-flowcode.cc",
+    apiKeyUrl: "https://e-flowcode.cc",
+    settingsConfig: {
+      api: "openai-responses",
+      apiKey: "",
+      baseUrl: "https://e-flowcode.cc/v1",
+      headers: {
+        "User-Agent":
+          "codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal",
+      },
+      models: [
+        {
+          contextWindow: 200000,
+          cost: {
+            cacheRead: 0,
+            cacheWrite: 0,
+            input: 0,
+            output: 0,
+          },
+          id: "gpt-5.3-codex",
+          maxTokens: 32000,
+          name: "gpt-5.3-codex",
+        },
+        {
+          id: "gpt-5.4",
+          name: "gpt-5.4",
+        },
+        {
+          id: "gpt-5.2-codex",
+          name: "gpt-5.2-codex",
+        },
+        {
+          id: "gpt-5.2",
+          name: "gpt-5.2",
+        },
+      ],
+    },
+    category: "third_party",
+    icon: "eflowcode",
+    iconColor: "#000000",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "sk-...",
+        editorValue: "",
+      },
+    },
+    suggestedDefaults: {
+      model: {
+        primary: "eflowcode/gpt-5.3-codex",
+        fallbacks: ["eflowcode/gpt-5.4", "eflowcode/gpt-5.2-codex"],
+      },
+      modelCatalog: {
+        "eflowcode/gpt-5.3-codex": { alias: "gpt-5.3-codex" },
+        "eflowcode/gpt-5.4": { alias: "gpt-5.4" },
+        "eflowcode/gpt-5.2-codex": { alias: "gpt-5.2-codex" },
+        "eflowcode/gpt-5.2": { alias: "gpt-5.2" },
+      },
+    },
+  },
   // ========== Cloud Providers ==========
   {
     name: "AWS Bedrock",
@@ -1393,13 +1661,13 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
         {
           id: "anthropic.claude-opus-4-6-20250514-v1:0",
           name: "Claude Opus 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
         },
         {
           id: "anthropic.claude-sonnet-4-6",
           name: "Claude Sonnet 4.6",
-          contextWindow: 200000,
+          contextWindow: 1000000,
           cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
         },
         {

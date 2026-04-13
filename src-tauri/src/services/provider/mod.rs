@@ -224,7 +224,12 @@ impl ProviderService {
     }
 
     /// Add a new provider
-    pub fn add(state: &AppState, app_type: AppType, provider: Provider) -> Result<bool, AppError> {
+    pub fn add(
+        state: &AppState,
+        app_type: AppType,
+        provider: Provider,
+        _add_to_live: bool,
+    ) -> Result<bool, AppError> {
         let mut provider = provider;
         // Normalize Claude model keys
         Self::normalize_provider_if_claude(&app_type, &mut provider);
@@ -266,6 +271,7 @@ impl ProviderService {
     pub fn update(
         state: &AppState,
         app_type: AppType,
+        _original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
         let mut provider = provider;

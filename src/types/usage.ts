@@ -34,6 +34,20 @@ export interface RequestLog {
   sessionId?: string;
   sessionRoutingActive?: boolean;
   createdAt: number;
+  dataSource?: string;
+}
+
+export interface SessionSyncResult {
+  imported: number;
+  skipped: number;
+  filesScanned: number;
+  errors: string[];
+}
+
+export interface DataSourceSummary {
+  dataSource: string;
+  requestCount: number;
+  totalCostUsd: string;
 }
 
 export interface PaginatedLogs {
@@ -129,7 +143,21 @@ export interface RequestLogClearResult {
   deletedRows: number;
 }
 
+export interface SessionUsageSyncResult {
+  imported: number;
+  skipped: number;
+  filesScanned: number;
+  errors: string[];
+}
+
+export interface DataSourceSummary {
+  dataSource: string;
+  requestCount: number;
+}
+
 export type TimeRange = "1d" | "7d" | "30d";
+
+export type AppTypeFilter = "all" | "claude" | "codex" | "gemini";
 
 export interface StatsFilters {
   timeRange: TimeRange;
