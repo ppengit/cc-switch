@@ -4,6 +4,7 @@
 
 use super::{
     body_filter::filter_private_params_with_whitelist,
+    copilot_optimizer::{classify_request, deterministic_request_id, merge_tool_results},
     error::*,
     failover_switch::FailoverSwitchManager,
     hyper_client::ProxyResponse,
@@ -101,6 +102,8 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    /// 会话 ID（用于 Copilot 确定性 request id）
+    session_id: String,
     /// 是否抑制全局故障转移切换（仅保留内部路由切换，不改主界面当前 Provider）
     suppress_global_failover_switch: bool,
     /// 按应用强制使用的模型
@@ -109,8 +112,18 @@ pub struct RequestForwarder {
     rectifier_config: RectifierConfig,
     /// 优化器配置
     optimizer_config: OptimizerConfig,
+    /// Copilot 优化器配置
+    copilot_optimizer_config: CopilotOptimizerConfig,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
+}
+
+#[derive(Debug, Clone)]
+struct CopilotPreparedRequest {
+    body: Value,
+    initiator: Option<&'static str>,
+    request_id: Option<String>,
+    downgraded_model: Option<String>,
 }
 
 impl RequestForwarder {
@@ -123,13 +136,14 @@ impl RequestForwarder {
         failover_manager: Arc<FailoverSwitchManager>,
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
+        session_id: String,
         _streaming_first_byte_timeout: u64,
         _streaming_idle_timeout: u64,
         suppress_global_failover_switch: bool,
         force_model: Option<String>,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
-        _copilot_optimizer_config: CopilotOptimizerConfig,
+        copilot_optimizer_config: CopilotOptimizerConfig,
     ) -> Self {
         Self {
             router,
@@ -138,10 +152,12 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            session_id,
             suppress_global_failover_switch,
             force_model,
             rectifier_config,
             optimizer_config,
+            copilot_optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
         }
     }
@@ -871,6 +887,11 @@ impl RequestForwarder {
     ) -> Result<ProxyResponse, ProxyError> {
         // 使用适配器提取 base_url
         let base_url = adapter.extract_base_url(provider)?;
+        let auth = adapter.extract_auth(provider);
+        let is_github_copilot = matches!(
+            auth.as_ref().map(|auth| auth.strategy),
+            Some(AuthStrategy::GitHubCopilot)
+        );
 
         // 检查是否需要格式转换
         let needs_transform = adapter.needs_transform(provider);
@@ -893,9 +914,24 @@ impl RequestForwarder {
         // 使用适配器构建 URL
         let url = adapter.build_url(&base_url, &effective_endpoint);
 
+        let copilot_request = Self::prepare_copilot_request(
+            body,
+            headers,
+            &self.session_id,
+            &self.copilot_optimizer_config,
+            is_github_copilot,
+        );
+        if let Some(ref downgraded_model) = copilot_request.downgraded_model {
+            log::info!(
+                "[{}] Copilot warmup 请求降级到模型: {}",
+                adapter.name(),
+                downgraded_model
+            );
+        }
+
         // 应用模型映射（独立于格式转换）
         let (mapped_body, _original_model, _mapped_model) =
-            super::model_mapper::apply_model_mapping(body.clone(), provider);
+            super::model_mapper::apply_model_mapping(copilot_request.body, provider);
         let mapped_body = Self::apply_forced_model_to_body(mapped_body, force_model);
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
@@ -915,7 +951,7 @@ impl RequestForwarder {
         let force_identity_encoding = needs_transform;
         let mut codex_oauth_account_id: Option<String> = None;
 
-        let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+        let mut auth_headers = if let Some(mut auth) = auth {
             if auth.strategy == AuthStrategy::GitHubCopilot {
                 if let Some(app_handle) = &self.app_handle {
                     let copilot_state = app_handle.state::<CopilotAuthState>();
@@ -986,6 +1022,14 @@ impl RequestForwarder {
         } else {
             Vec::new()
         };
+
+        if let Some(initiator) = copilot_request.initiator {
+            Self::upsert_auth_header(&mut auth_headers, "x-initiator", initiator)?;
+        }
+        if let Some(ref request_id) = copilot_request.request_id {
+            Self::upsert_auth_header(&mut auth_headers, "x-request-id", request_id)?;
+            Self::upsert_auth_header(&mut auth_headers, "x-agent-task-id", request_id)?;
+        }
 
         if let Some(ref account_id) = codex_oauth_account_id {
             if let Ok(hv) = http::HeaderValue::from_str(account_id) {
@@ -1325,6 +1369,103 @@ impl RequestForwarder {
             &endpoint[model_end..]
         )
     }
+
+    fn prepare_copilot_request(
+        body: &Value,
+        headers: &axum::http::HeaderMap,
+        session_id: &str,
+        config: &CopilotOptimizerConfig,
+        is_github_copilot: bool,
+    ) -> CopilotPreparedRequest {
+        let mut prepared_body = body.clone();
+
+        if !is_github_copilot || !config.enabled {
+            return CopilotPreparedRequest {
+                body: prepared_body,
+                initiator: None,
+                request_id: None,
+                downgraded_model: None,
+            };
+        }
+
+        if config.tool_result_merging {
+            prepared_body = merge_tool_results(prepared_body);
+        }
+
+        let classification = if config.request_classification || config.warmup_downgrade {
+            Some(classify_request(
+                &prepared_body,
+                headers.contains_key("anthropic-beta"),
+                config.compact_detection,
+            ))
+        } else {
+            None
+        };
+
+        if let Some(result) = classification.as_ref() {
+            if result.is_compact {
+                log::debug!("[CopilotOptimizer] Detected compact request");
+            }
+        }
+
+        let initiator = if config.request_classification {
+            classification.as_ref().map(|result| result.initiator)
+        } else {
+            None
+        };
+
+        let downgraded_model = if config.warmup_downgrade
+            && classification
+                .as_ref()
+                .is_some_and(|result| result.is_warmup)
+        {
+            if let Some(obj) = prepared_body.as_object_mut() {
+                obj.insert(
+                    "model".to_string(),
+                    Value::String(config.warmup_model.clone()),
+                );
+                Some(config.warmup_model.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let request_id = if config.deterministic_request_id {
+            Some(deterministic_request_id(&prepared_body, session_id))
+        } else {
+            None
+        };
+
+        CopilotPreparedRequest {
+            body: prepared_body,
+            initiator,
+            request_id,
+            downgraded_model,
+        }
+    }
+
+    fn upsert_auth_header(
+        auth_headers: &mut Vec<(http::HeaderName, http::HeaderValue)>,
+        header_name: &'static str,
+        header_value: &str,
+    ) -> Result<(), ProxyError> {
+        let value = http::HeaderValue::from_str(header_value).map_err(|e| {
+            ProxyError::Internal(format!("Invalid header value for {header_name}: {e}"))
+        })?;
+
+        if let Some((_, existing_value)) = auth_headers
+            .iter_mut()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case(header_name))
+        {
+            *existing_value = value;
+        } else {
+            auth_headers.push((http::HeaderName::from_static(header_name), value));
+        }
+
+        Ok(())
+    }
 }
 
 /// 从 ProxyError 中提取错误消息
@@ -1466,6 +1607,7 @@ fn summarize_text_for_log(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderMap;
     use serde_json::json;
 
     #[test]
@@ -1531,5 +1673,101 @@ mod tests {
         let summary = summarize_text_for_log("line1\n\n line2   line3", 12);
 
         assert_eq!(summary, "line1 line2...");
+    }
+
+    #[test]
+    fn prepare_copilot_request_skips_non_copilot_provider() {
+        let body = json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let prepared = RequestForwarder::prepare_copilot_request(
+            &body,
+            &HeaderMap::new(),
+            "session-a",
+            &CopilotOptimizerConfig::default(),
+            false,
+        );
+
+        assert_eq!(prepared.body, body);
+        assert!(prepared.initiator.is_none());
+        assert!(prepared.request_id.is_none());
+    }
+
+    #[test]
+    fn prepare_copilot_request_merges_tool_results_before_classification() {
+        let body = json!({
+            "model": "claude-sonnet-4",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_123", "content": "result"},
+                    {"type": "text", "text": "follow-up generated by tool chain"}
+                ]
+            }]
+        });
+
+        let prepared = RequestForwarder::prepare_copilot_request(
+            &body,
+            &HeaderMap::new(),
+            "session-a",
+            &CopilotOptimizerConfig::default(),
+            true,
+        );
+
+        assert_eq!(prepared.initiator, Some("agent"));
+        let content = prepared.body["messages"][0]["content"]
+            .as_array()
+            .expect("merged content array");
+        assert_eq!(content.len(), 1);
+    }
+
+    #[test]
+    fn prepare_copilot_request_uses_deterministic_request_id() {
+        let body = json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let first = RequestForwarder::prepare_copilot_request(
+            &body,
+            &HeaderMap::new(),
+            "session-a",
+            &CopilotOptimizerConfig::default(),
+            true,
+        );
+        let second = RequestForwarder::prepare_copilot_request(
+            &body,
+            &HeaderMap::new(),
+            "session-a",
+            &CopilotOptimizerConfig::default(),
+            true,
+        );
+
+        assert_eq!(first.request_id, second.request_id);
+        assert!(first.request_id.is_some());
+    }
+
+    #[test]
+    fn prepare_copilot_request_can_downgrade_warmup_model() {
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-beta", http::HeaderValue::from_static("warmup"));
+
+        let body = json!({
+            "model": "claude-sonnet-4",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let config = CopilotOptimizerConfig {
+            warmup_downgrade: true,
+            warmup_model: "gpt-4o-mini".to_string(),
+            ..CopilotOptimizerConfig::default()
+        };
+
+        let prepared =
+            RequestForwarder::prepare_copilot_request(&body, &headers, "session-a", &config, true);
+
+        assert_eq!(prepared.downgraded_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(prepared.body["model"], "gpt-4o-mini");
     }
 }

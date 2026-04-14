@@ -260,6 +260,16 @@ export const settingsApi = {
     return await invoke("set_optimizer_config", { config });
   },
 
+  async getCopilotOptimizerConfig(): Promise<CopilotOptimizerConfig> {
+    return await invoke("get_copilot_optimizer_config");
+  },
+
+  async setCopilotOptimizerConfig(
+    config: CopilotOptimizerConfig,
+  ): Promise<boolean> {
+    return await invoke("set_copilot_optimizer_config", { config });
+  },
+
   async getLogConfig(): Promise<LogConfig> {
     return await invoke("get_log_config");
   },
@@ -280,6 +290,16 @@ export interface OptimizerConfig {
   thinkingOptimizer: boolean;
   cacheInjection: boolean;
   cacheTtl: string;
+}
+
+export interface CopilotOptimizerConfig {
+  enabled: boolean;
+  requestClassification: boolean;
+  toolResultMerging: boolean;
+  compactDetection: boolean;
+  deterministicRequestId: boolean;
+  warmupDowngrade: boolean;
+  warmupModel: string;
 }
 
 export interface LogConfig {

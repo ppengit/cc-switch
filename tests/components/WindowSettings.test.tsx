@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { WindowSettings } from "@/components/settings/WindowSettings";
+import type { SettingsFormState } from "@/hooks/useSettings";
 
 const enterLightweightModeMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -32,7 +33,7 @@ describe("WindowSettings", () => {
     enableClaudePluginIntegration: false,
     skipClaudeOnboarding: false,
     minimizeToTrayOnClose: true,
-  };
+  } as SettingsFormState;
 
   beforeEach(() => {
     enterLightweightModeMock.mockReset();

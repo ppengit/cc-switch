@@ -533,6 +533,7 @@ impl RequestContext {
             state.failover_manager.clone(),
             state.app_handle.clone(),
             self.current_provider_id.clone(),
+            self.session_id.clone(),
             first_byte_timeout,
             idle_timeout,
             self.suppress_global_failover_switch,
