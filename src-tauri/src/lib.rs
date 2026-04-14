@@ -292,6 +292,21 @@ async fn update_tray_menu(
     }
 }
 
+/// 复制文本到系统剪贴板
+#[tauri::command]
+async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|e| format!("初始化剪贴板失败: {e}"))?;
+        clipboard
+            .set_text(text)
+            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("剪贴板任务执行失败: {e}"))?
+}
+
 #[cfg(target_os = "macos")]
 fn macos_tray_icon() -> Option<Image<'static>> {
     const ICON_BYTES: &[u8] = include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
@@ -1074,6 +1089,7 @@ pub fn run() {
             commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
             update_tray_menu,
+            copy_text_to_clipboard,
             // Environment variable management
             commands::check_env_conflicts,
             commands::delete_env_vars,
