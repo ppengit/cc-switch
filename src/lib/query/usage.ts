@@ -55,7 +55,11 @@ export const usageKeys = {
       key.model ?? "",
       key.sessionQuery ?? "",
       key.statusCode ?? -1,
-      key.sessionRoutingActive == null ? "all" : key.sessionRoutingActive ? "on" : "off",
+      key.sessionRoutingActive == null
+        ? "all"
+        : key.sessionRoutingActive
+          ? "on"
+          : "off",
       key.startDate ?? 0,
       key.endDate ?? 0,
       page,

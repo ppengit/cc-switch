@@ -215,6 +215,24 @@ pub struct AppSettings {
     /// User has confirmed the usage query first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_confirmed: Option<bool>,
+    /// User has confirmed the stream check first-run notice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_check_confirmed: Option<bool>,
+    /// Whether to show the failover toggle independently on the main page
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_failover_toggle: Option<bool>,
+    /// User has confirmed the failover toggle first-run notice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failover_confirmed: Option<bool>,
+    /// User has confirmed the first-run welcome notice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_run_notice_confirmed: Option<bool>,
+    /// User has confirmed the auto-sync traffic warning
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sync_confirmed: Option<bool>,
+    /// User has confirmed the common config first-run notice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_config_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,6 +332,12 @@ impl Default for AppSettings {
             enable_local_proxy: false,
             proxy_confirmed: None,
             usage_confirmed: None,
+            stream_check_confirmed: None,
+            enable_failover_toggle: None,
+            failover_confirmed: None,
+            first_run_notice_confirmed: None,
+            auto_sync_confirmed: None,
+            common_config_confirmed: None,
             language: None,
             theme: None,
             main_window_size: None,
@@ -417,6 +441,9 @@ impl AppSettings {
             match serde_json::from_str::<AppSettings>(&content) {
                 Ok(mut settings) => {
                     settings.normalize_paths();
+                    if settings.first_run_notice_confirmed.is_none() {
+                        settings.first_run_notice_confirmed = Some(true);
+                    }
                     settings
                 }
                 Err(err) => {

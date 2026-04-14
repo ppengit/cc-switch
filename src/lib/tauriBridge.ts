@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  listen,
+  type EventCallback,
+  type UnlistenFn,
+} from "@tauri-apps/api/event";
 
 const DEFAULT_RETRY_DELAY_MS = 125;
 const DEFAULT_RETRY_ATTEMPTS = 40;
@@ -26,7 +30,7 @@ export const isBridgeNotReadyError = (error: unknown): boolean => {
   );
 };
 
-export const runWhenBridgeReady = async <T,>(
+export const runWhenBridgeReady = async <T>(
   task: () => Promise<T>,
   options: BridgeRetryOptions = {},
 ): Promise<T | undefined> => {
@@ -50,7 +54,10 @@ export const runWhenBridgeReady = async <T,>(
     }
   }
 
-  console.warn(`[tauri-bridge] Skipping ${label}; bridge never became ready.`, lastError);
+  console.warn(
+    `[tauri-bridge] Skipping ${label}; bridge never became ready.`,
+    lastError,
+  );
   return undefined;
 };
 
@@ -59,13 +66,10 @@ export const listenWhenBridgeReady = async <T>(
   handler: EventCallback<T>,
   options: BridgeRetryOptions = {},
 ): Promise<UnlistenFn | null> => {
-  const result = await runWhenBridgeReady(
-    () => listen<T>(event, handler),
-    {
-      ...options,
-      label: options.label ?? `event listener ${event}`,
-    },
-  );
+  const result = await runWhenBridgeReady(() => listen<T>(event, handler), {
+    ...options,
+    label: options.label ?? `event listener ${event}`,
+  });
 
   return result ?? null;
 };
@@ -75,11 +79,8 @@ export const invokeWhenBridgeReady = async <T>(
   args?: Record<string, unknown>,
   options: BridgeRetryOptions = {},
 ): Promise<T | undefined> => {
-  return runWhenBridgeReady(
-    () => invoke<T>(command, args),
-    {
-      ...options,
-      label: options.label ?? `command ${command}`,
-    },
-  );
+  return runWhenBridgeReady(() => invoke<T>(command, args), {
+    ...options,
+    label: options.label ?? `command ${command}`,
+  });
 };

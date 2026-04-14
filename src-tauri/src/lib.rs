@@ -44,11 +44,11 @@ pub use mcp::{
     sync_single_server_to_codex, sync_single_server_to_gemini,
 };
 pub use provider::{Provider, ProviderMeta};
+pub use services::skill::{migrate_skills_to_ssot, ImportSkillSelection};
 pub use services::{
     ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
     SkillService, SpeedtestService,
 };
-pub use services::skill::{migrate_skills_to_ssot, ImportSkillSelection};
 pub use settings::{update_settings, AppSettings};
 pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -60,6 +60,7 @@ use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
+use tokio::sync::RwLock;
 
 const LEGACY_DEFAULT_MAIN_WINDOW_WIDTH: u32 = 1280;
 const LEGACY_DEFAULT_MAIN_WINDOW_HEIGHT: u32 = 800;
@@ -810,6 +811,18 @@ pub fn run() {
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 
+            let auth_data_dir = crate::config::get_app_config_dir();
+            app.manage(crate::CopilotAuthState(Arc::new(RwLock::new(
+                crate::proxy::providers::copilot_auth::CopilotAuthManager::new(
+                    auth_data_dir.clone(),
+                ),
+            ))));
+            app.manage(crate::CodexOAuthState(Arc::new(RwLock::new(
+                crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                    auth_data_dir,
+                ),
+            ))));
+
             // 初始化全局出站代理 HTTP 客户端
             {
                 let db = &app.state::<AppState>().db;
@@ -969,6 +982,17 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+            commands::auth_start_login,
+            commands::auth_poll_for_account,
+            commands::auth_list_accounts,
+            commands::auth_get_status,
+            commands::auth_remove_account,
+            commands::auth_set_default_account,
+            commands::auth_logout,
+            commands::get_subscription_quota,
+            commands::get_codex_oauth_quota,
+            commands::get_coding_plan_quota,
+            commands::get_balance,
             commands::get_rectifier_config,
             commands::set_rectifier_config,
             commands::get_optimizer_config,
@@ -995,6 +1019,7 @@ pub fn run() {
             commands::queryProviderUsage,
             commands::testUsageScript,
             commands::fetch_provider_models_openai,
+            commands::fetch_models_for_config,
             // New MCP via config.json (SSOT)
             commands::get_mcp_config,
             commands::upsert_mcp_server_in_config,
@@ -1053,12 +1078,19 @@ pub fn run() {
             commands::restore_env_backup,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,
+            commands::get_skill_backups,
+            commands::delete_skill_backup,
             commands::install_skill_unified,
             commands::uninstall_skill_unified,
+            commands::restore_skill_backup,
             commands::toggle_skill_app,
             commands::scan_unmanaged_skills,
             commands::import_skills_from_apps,
             commands::discover_available_skills,
+            commands::check_skill_updates,
+            commands::update_skill,
+            commands::migrate_skill_storage,
+            commands::search_skills_sh,
             // Skill management (legacy API compatibility)
             commands::get_skills,
             commands::get_skills_for_app,
@@ -1120,6 +1152,12 @@ pub fn run() {
             commands::get_model_stats,
             commands::get_request_logs,
             commands::get_request_detail,
+            commands::get_request_log_cleanup_config,
+            commands::update_request_log_cleanup_config,
+            commands::cleanup_request_logs_now,
+            commands::clear_request_logs_all,
+            commands::sync_session_usage,
+            commands::get_usage_data_sources,
             commands::get_model_pricing,
             commands::update_model_pricing,
             commands::delete_model_pricing,
@@ -1133,9 +1171,26 @@ pub fn run() {
             commands::list_sessions,
             commands::get_session_messages,
             commands::delete_session,
+            commands::delete_sessions,
             commands::launch_session_terminal,
             commands::get_tool_versions,
             commands::update_tool,
+            // Copilot legacy/auth helper commands
+            commands::copilot_start_device_flow,
+            commands::copilot_poll_for_auth,
+            commands::copilot_poll_for_account,
+            commands::copilot_list_accounts,
+            commands::copilot_remove_account,
+            commands::copilot_set_default_account,
+            commands::copilot_get_auth_status,
+            commands::copilot_is_authenticated,
+            commands::copilot_logout,
+            commands::copilot_get_token,
+            commands::copilot_get_token_for_account,
+            commands::copilot_get_models,
+            commands::copilot_get_models_for_account,
+            commands::copilot_get_usage,
+            commands::copilot_get_usage_for_account,
             // Provider terminal
             commands::open_provider_terminal,
             commands::open_app_terminal,

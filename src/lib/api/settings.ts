@@ -45,6 +45,18 @@ export const settingsApi = {
     return await invoke("restart_app");
   },
 
+  async enterLightweightMode(): Promise<void> {
+    await invoke("enter_lightweight_mode");
+  },
+
+  async exitLightweightMode(): Promise<void> {
+    await invoke("exit_lightweight_mode");
+  },
+
+  async isLightweightMode(): Promise<boolean> {
+    return await invoke("is_lightweight_mode");
+  },
+
   async checkUpdates(): Promise<void> {
     await invoke("check_for_updates");
   },

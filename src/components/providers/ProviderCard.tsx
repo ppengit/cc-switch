@@ -12,10 +12,14 @@ import { extractCodexModelName } from "@/utils/providerConfigUtils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import UsageFooter from "@/components/UsageFooter";
+import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
+import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
+import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import { PROVIDER_TYPES } from "@/config/constants";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -259,6 +263,16 @@ export function ProviderCard({
   }, [provider.notes, displayUrl, fallbackUrlText]);
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
+  const providerType = provider.meta?.providerType;
+  const showOfficialQuotaFooter =
+    provider.category === "official" &&
+    (appId === "claude" || appId === "codex" || appId === "gemini");
+  const showCopilotQuotaFooter = providerType === PROVIDER_TYPES.GITHUB_COPILOT;
+  const showCodexOauthQuotaFooter = providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  const useSubscriptionFooter =
+    showOfficialQuotaFooter ||
+    showCopilotQuotaFooter ||
+    showCodexOauthQuotaFooter;
 
   // 获取用量数据以判断是否有多套餐
   // 累加模式应用（OpenCode/OpenClaw）：使用 isInConfig 代替 isCurrent
@@ -274,7 +288,10 @@ export function ProviderCard({
   });
 
   const hasMultiplePlans =
-    usage?.success && usage.data && usage.data.length > 1;
+    !useSubscriptionFooter &&
+    usage?.success &&
+    usage.data &&
+    usage.data.length > 1;
 
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -325,6 +342,50 @@ export function ProviderCard({
   const shouldUseBlue =
     (isAnyOmo && isActiveProvider) ||
     (!isAnyOmo && !isProxyTakeover && isActiveProvider);
+
+  const renderFooter = (inline: boolean) => {
+    if (showCopilotQuotaFooter) {
+      return (
+        <CopilotQuotaFooter
+          meta={provider.meta}
+          inline={inline}
+          isCurrent={isCurrent}
+        />
+      );
+    }
+
+    if (showCodexOauthQuotaFooter) {
+      return (
+        <CodexOauthQuotaFooter
+          meta={provider.meta}
+          inline={inline}
+          isCurrent={isCurrent}
+        />
+      );
+    }
+
+    if (showOfficialQuotaFooter) {
+      return (
+        <SubscriptionQuotaFooter
+          appId={appId}
+          inline={inline}
+          isCurrent={isCurrent}
+        />
+      );
+    }
+
+    return (
+      <UsageFooter
+        provider={provider}
+        providerId={provider.id}
+        appId={appId}
+        usageEnabled={usageEnabled}
+        isCurrent={isCurrent}
+        isInConfig={isInConfig}
+        inline={inline}
+      />
+    );
+  };
 
   return (
     <div
@@ -541,15 +602,7 @@ export function ProviderCard({
                   </span>
                 </div>
               ) : (
-                <UsageFooter
-                  provider={provider}
-                  providerId={provider.id}
-                  appId={appId}
-                  usageEnabled={usageEnabled}
-                  isCurrent={isCurrent}
-                  isInConfig={isInConfig}
-                  inline={true}
-                />
+                renderFooter(true)
               )}
               {hasMultiplePlans && (
                 <button
@@ -624,15 +677,7 @@ export function ProviderCard({
 
       {isExpanded && hasMultiplePlans && (
         <div className="mt-4 pt-4 border-t border-border-default">
-          <UsageFooter
-            provider={provider}
-            providerId={provider.id}
-            appId={appId}
-            usageEnabled={usageEnabled}
-            isCurrent={isCurrent}
-            isInConfig={isInConfig}
-            inline={false}
-          />
+          {renderFooter(false)}
         </div>
       )}
     </div>

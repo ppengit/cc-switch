@@ -12,15 +12,29 @@ use crate::store::AppState;
 /// 托盘菜单文本（国际化）
 #[derive(Clone, Copy)]
 pub struct TrayTexts {
+    pub show_main: &'static str,
+    pub lightweight_mode: &'static str,
     pub quit: &'static str,
 }
 
 impl TrayTexts {
     pub fn from_language(language: &str) -> Self {
         match language {
-            "en" => Self { quit: "Quit" },
-            "ja" => Self { quit: "終了" },
-            _ => Self { quit: "退出" },
+            "en" => Self {
+                show_main: "Open main window",
+                lightweight_mode: "Lightweight Mode",
+                quit: "Quit",
+            },
+            "ja" => Self {
+                show_main: "メインウィンドウを開く",
+                lightweight_mode: "軽量モード",
+                quit: "終了",
+            },
+            _ => Self {
+                show_main: "打开主界面",
+                lightweight_mode: "轻量模式",
+                quit: "退出",
+            },
         }
     }
 }
@@ -295,6 +309,11 @@ pub fn create_tray_menu(
     let mut menu_builder = MenuBuilder::new(app);
     let mut has_sections = false;
 
+    let show_main_item =
+        MenuItem::with_id(app, "show_main", tray_texts.show_main, true, None::<&str>)
+            .map_err(|e| AppError::Message(format!("创建打开主界面菜单失败: {e}")))?;
+    menu_builder = menu_builder.item(&show_main_item).separator();
+
     // 右键托盘菜单只显示已配置的应用，并在二级菜单中列出供应商
     for section in TRAY_SECTIONS.iter() {
         // Skip hidden apps
@@ -326,6 +345,18 @@ pub fn create_tray_menu(
     if has_sections {
         menu_builder = menu_builder.separator();
     }
+
+    let lightweight_item = CheckMenuItem::with_id(
+        app,
+        "lightweight_mode",
+        tray_texts.lightweight_mode,
+        true,
+        crate::lightweight::is_lightweight_mode(),
+        None::<&str>,
+    )
+    .map_err(|e| AppError::Message(format!("创建轻量模式菜单失败: {e}")))?;
+
+    menu_builder = menu_builder.item(&lightweight_item).separator();
 
     // 退出菜单
     let quit_item = MenuItem::with_id(app, "quit", tray_texts.quit, true, None::<&str>)
@@ -375,6 +406,15 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
         "show_main" => {
             show_main_window(app);
         }
+        "lightweight_mode" => {
+            if crate::lightweight::is_lightweight_mode() {
+                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+                    log::error!("退出轻量模式失败: {e}");
+                }
+            } else if let Err(e) = crate::lightweight::enter_lightweight_mode(app) {
+                log::error!("进入轻量模式失败: {e}");
+            }
+        }
         "quit" => {
             log::info!("退出应用");
             app.exit(0);
@@ -400,6 +440,10 @@ pub fn show_main_window(app: &tauri::AppHandle) {
         #[cfg(target_os = "macos")]
         {
             apply_tray_policy(app, true);
+        }
+    } else if crate::lightweight::is_lightweight_mode() {
+        if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+            log::error!("退出轻量模式重建窗口失败: {e}");
         }
     }
 }

@@ -368,10 +368,7 @@ export function ClaudeFormFields({
                 id="claudeDefaultSonnetModel"
                 value={defaultSonnetModel}
                 onChange={(value) =>
-                  onModelChange(
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    value,
-                  )
+                  onModelChange("ANTHROPIC_DEFAULT_SONNET_MODEL", value)
                 }
                 suggestions={modelSuggestions}
                 placeholder={t("providerForm.modelPlaceholder", {

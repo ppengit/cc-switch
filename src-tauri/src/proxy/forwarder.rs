@@ -6,9 +6,10 @@ use super::{
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
+    hyper_client::ProxyResponse,
     log_codes::fwd as log_fwd,
     provider_router::ProviderRouter,
-    providers::{get_adapter, ProviderAdapter, ProviderType},
+    providers::{get_adapter, AuthInfo, AuthStrategy, ProviderAdapter, ProviderType},
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
@@ -16,10 +17,14 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
+use crate::commands::{CodexOAuthState, CopilotAuthState};
+use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
-use reqwest::Response;
+use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 /// Headers 黑名单 - 不透传到上游的 Headers
@@ -76,7 +81,7 @@ const HEADER_BLACKLIST: &[&str] = &[
 ];
 
 pub struct ForwardResult {
-    pub response: Response,
+    pub response: ProxyResponse,
     pub provider: Provider,
 }
 
@@ -147,12 +152,21 @@ impl RequestForwarder {
         endpoint: &str,
         body: &Value,
         headers: &axum::http::HeaderMap,
+        extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
         app_type_str: &str,
         force_model: Option<&str>,
-    ) -> Result<Response, ProxyError> {
+    ) -> Result<ProxyResponse, ProxyError> {
         let mut request_result = self
-            .forward(provider, endpoint, body, headers, adapter, force_model)
+            .forward(
+                provider,
+                endpoint,
+                body,
+                headers,
+                extensions,
+                adapter,
+                force_model,
+            )
             .await;
 
         if let Some(force_model) = force_model {
@@ -166,7 +180,7 @@ impl RequestForwarder {
                         force_model
                     );
                     request_result = self
-                        .forward(provider, endpoint, body, headers, adapter, None)
+                        .forward(provider, endpoint, body, headers, extensions, adapter, None)
                         .await;
                 }
             }
@@ -189,6 +203,7 @@ impl RequestForwarder {
         endpoint: &str,
         body: Value,
         headers: axum::http::HeaderMap,
+        extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
         // 获取适配器
@@ -270,6 +285,7 @@ impl RequestForwarder {
                     endpoint,
                     &provider_body,
                     &headers,
+                    &extensions,
                     adapter.as_ref(),
                     app_type_str,
                     provider_force_model,
@@ -401,6 +417,7 @@ impl RequestForwarder {
                                         endpoint,
                                         &provider_body,
                                         &headers,
+                                        &extensions,
                                         adapter.as_ref(),
                                         app_type_str,
                                         provider_force_model,
@@ -606,6 +623,7 @@ impl RequestForwarder {
                                     endpoint,
                                     &provider_body,
                                     &headers,
+                                    &extensions,
                                     adapter.as_ref(),
                                     app_type_str,
                                     provider_force_model,
@@ -847,9 +865,10 @@ impl RequestForwarder {
         endpoint: &str,
         body: &Value,
         headers: &axum::http::HeaderMap,
+        extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
         force_model: Option<&str>,
-    ) -> Result<Response, ProxyError> {
+    ) -> Result<ProxyResponse, ProxyError> {
         // 使用适配器提取 base_url
         let base_url = adapter.extract_base_url(provider)?;
 
@@ -893,87 +912,248 @@ impl RequestForwarder {
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let filtered_body = filter_private_params_with_whitelist(request_body, &[]);
 
-        // 获取 HTTP 客户端：优先使用供应商单独代理配置，否则使用全局客户端
-        let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
-        let client = super::http_client::get_for_provider(proxy_config);
-        let mut request = client.post(&url);
+        let force_identity_encoding = needs_transform;
+        let mut codex_oauth_account_id: Option<String> = None;
 
-        // 只有当 timeout > 0 时才设置请求超时
-        // Duration::ZERO 在 reqwest 中表示"立刻超时"而不是"禁用超时"
-        // 故障转移关闭时会传入 0，此时应该使用 client 的默认超时（600秒）
-        if !self.non_streaming_timeout.is_zero() {
-            request = request.timeout(self.non_streaming_timeout);
-        }
+        let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+            if auth.strategy == AuthStrategy::GitHubCopilot {
+                if let Some(app_handle) = &self.app_handle {
+                    let copilot_state = app_handle.state::<CopilotAuthState>();
+                    let copilot_auth: tokio::sync::RwLockReadGuard<'_, CopilotAuthManager> =
+                        copilot_state.0.read().await;
+                    let account_id = provider
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.managed_account_id_for("github_copilot"));
+                    let token_result = match &account_id {
+                        Some(id) => copilot_auth.get_valid_token_for_account(id).await,
+                        None => copilot_auth.get_valid_token().await,
+                    };
 
-        // 过滤黑名单 Headers，保护隐私并避免冲突
-        for (key, value) in headers {
-            if HEADER_BLACKLIST
-                .iter()
-                .any(|h| key.as_str().eq_ignore_ascii_case(h))
-            {
-                continue;
+                    match token_result {
+                        Ok(token) => {
+                            auth = AuthInfo::new(token, AuthStrategy::GitHubCopilot);
+                        }
+                        Err(e) => {
+                            return Err(ProxyError::AuthError(format!(
+                                "GitHub Copilot 认证失败: {e}"
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(ProxyError::AuthError(
+                        "GitHub Copilot 认证不可用（无 AppHandle）".to_string(),
+                    ));
+                }
             }
-            request = request.header(key, value);
+
+            if auth.strategy == AuthStrategy::CodexOAuth {
+                if let Some(app_handle) = &self.app_handle {
+                    let codex_state = app_handle.state::<CodexOAuthState>();
+                    let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
+                        codex_state.0.read().await;
+                    let account_id = provider
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.managed_account_id_for("codex_oauth"));
+                    let token_result = match &account_id {
+                        Some(id) => codex_auth.get_valid_token_for_account(id).await,
+                        None => codex_auth.get_valid_token().await,
+                    };
+
+                    match token_result {
+                        Ok(token) => {
+                            auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
+                            codex_oauth_account_id = match account_id {
+                                Some(id) => Some(id),
+                                None => codex_auth.default_account_id().await,
+                            };
+                        }
+                        Err(e) => {
+                            return Err(ProxyError::AuthError(format!(
+                                "Codex OAuth 认证失败: {e}"
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(ProxyError::AuthError(
+                        "Codex OAuth 认证不可用（无 AppHandle）".to_string(),
+                    ));
+                }
+            }
+
+            adapter.get_auth_headers(&auth)
+        } else {
+            Vec::new()
+        };
+
+        if let Some(ref account_id) = codex_oauth_account_id {
+            if let Ok(hv) = http::HeaderValue::from_str(account_id) {
+                auth_headers.push((http::HeaderName::from_static("chatgpt-account-id"), hv));
+            }
         }
 
-        // 处理 anthropic-beta Header（仅 Claude）
-        // 关键：确保包含 claude-code-20250219 标记，这是上游服务验证请求来源的依据
-        // 如果客户端发送的 beta 标记中没有包含 claude-code-20250219，需要补充
-        if adapter.name() == "Claude" {
+        let copilot_fingerprint_headers: &[&str] = &[
+            "user-agent",
+            "editor-version",
+            "editor-plugin-version",
+            "copilot-integration-id",
+            "x-github-api-version",
+            "openai-intent",
+            "x-initiator",
+            "x-interaction-type",
+            "x-vscode-user-agent-library-version",
+            "x-request-id",
+            "x-agent-task-id",
+        ];
+
+        let upstream_host = url
+            .parse::<http::Uri>()
+            .ok()
+            .and_then(|u| u.authority().map(|a| a.to_string()));
+
+        let anthropic_beta_value = if adapter.name() == "Claude" {
             const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
-            let beta_value = if let Some(beta) = headers.get("anthropic-beta") {
+            Some(if let Some(beta) = headers.get("anthropic-beta") {
                 if let Ok(beta_str) = beta.to_str() {
-                    // 检查是否已包含 claude-code-20250219
                     if beta_str.contains(CLAUDE_CODE_BETA) {
                         beta_str.to_string()
                     } else {
-                        // 补充 claude-code-20250219
                         format!("{CLAUDE_CODE_BETA},{beta_str}")
                     }
                 } else {
                     CLAUDE_CODE_BETA.to_string()
                 }
             } else {
-                // 如果客户端没有发送，使用默认值
                 CLAUDE_CODE_BETA.to_string()
-            };
-            request = request.header("anthropic-beta", &beta_value);
+            })
+        } else {
+            None
+        };
+
+        let mut ordered_headers = http::HeaderMap::new();
+        let mut saw_auth = false;
+        let mut saw_accept_encoding = false;
+        let mut saw_anthropic_beta = false;
+        let mut saw_anthropic_version = false;
+
+        for (key, value) in headers {
+            let key_str = key.as_str();
+
+            if key_str.eq_ignore_ascii_case("host") {
+                if let Some(ref host_val) = upstream_host {
+                    if let Ok(hv) = http::HeaderValue::from_str(host_val) {
+                        ordered_headers.append(key.clone(), hv);
+                    }
+                }
+                continue;
+            }
+
+            if HEADER_BLACKLIST
+                .iter()
+                .any(|h| key_str.eq_ignore_ascii_case(h))
+            {
+                continue;
+            }
+
+            if key_str.eq_ignore_ascii_case("authorization")
+                || key_str.eq_ignore_ascii_case("x-api-key")
+                || key_str.eq_ignore_ascii_case("x-goog-api-key")
+            {
+                if !saw_auth {
+                    saw_auth = true;
+                    for (ah_name, ah_value) in &auth_headers {
+                        ordered_headers.append(ah_name.clone(), ah_value.clone());
+                    }
+                }
+                continue;
+            }
+
+            if key_str.eq_ignore_ascii_case("accept-encoding") {
+                if !saw_accept_encoding {
+                    saw_accept_encoding = true;
+                    if force_identity_encoding {
+                        ordered_headers.append(
+                            http::header::ACCEPT_ENCODING,
+                            http::HeaderValue::from_static("identity"),
+                        );
+                    } else {
+                        ordered_headers.append(key.clone(), value.clone());
+                    }
+                }
+                continue;
+            }
+
+            if key_str.eq_ignore_ascii_case("anthropic-beta") {
+                if !saw_anthropic_beta {
+                    saw_anthropic_beta = true;
+                    if let Some(ref beta_val) = anthropic_beta_value {
+                        if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
+                            ordered_headers.append("anthropic-beta", hv);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if key_str.eq_ignore_ascii_case("anthropic-version") {
+                saw_anthropic_version = true;
+                ordered_headers.append(key.clone(), value.clone());
+                continue;
+            }
+
+            if auth_headers
+                .iter()
+                .any(|(name, _)| name.as_str().eq_ignore_ascii_case(key_str))
+                || (auth_headers.iter().any(|(_, _)| true)
+                    && copilot_fingerprint_headers
+                        .iter()
+                        .any(|h| key_str.eq_ignore_ascii_case(h)))
+            {
+                continue;
+            }
+
+            ordered_headers.append(key.clone(), value.clone());
         }
 
-        // 客户端 IP 透传（默认开启）
-        if let Some(xff) = headers.get("x-forwarded-for") {
-            if let Ok(xff_str) = xff.to_str() {
-                request = request.header("x-forwarded-for", xff_str);
+        if !saw_auth && !auth_headers.is_empty() {
+            for (ah_name, ah_value) in &auth_headers {
+                ordered_headers.append(ah_name.clone(), ah_value.clone());
             }
         }
-        if let Some(real_ip) = headers.get("x-real-ip") {
-            if let Ok(real_ip_str) = real_ip.to_str() {
-                request = request.header("x-real-ip", real_ip_str);
+
+        if !saw_accept_encoding && force_identity_encoding {
+            ordered_headers.append(
+                http::header::ACCEPT_ENCODING,
+                http::HeaderValue::from_static("identity"),
+            );
+        }
+
+        if !saw_anthropic_beta {
+            if let Some(ref beta_val) = anthropic_beta_value {
+                if let Ok(hv) = http::HeaderValue::from_str(beta_val) {
+                    ordered_headers.append("anthropic-beta", hv);
+                }
             }
         }
 
-        // 禁用压缩，避免 gzip 流式响应解析错误
-        // 参考 CCH: undici 在连接提前关闭时会对不完整的 gzip 流抛出错误
-        request = request.header("accept-encoding", "identity");
-
-        // 使用适配器添加认证头
-        if let Some(auth) = adapter.extract_auth(provider) {
-            for (header_name, header_value) in adapter.get_auth_headers(&auth) {
-                request = request.header(header_name, header_value);
-            }
+        if adapter.name() == "Claude" && !saw_anthropic_version {
+            ordered_headers.append(
+                "anthropic-version",
+                http::HeaderValue::from_static("2023-06-01"),
+            );
         }
 
-        // anthropic-version 统一处理（仅 Claude）：优先使用客户端的版本号，否则使用默认值
-        // 注意：只设置一次，避免重复
-        if adapter.name() == "Claude" {
-            let version_str = headers
-                .get("anthropic-version")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("2023-06-01");
-            request = request.header("anthropic-version", version_str);
+        let body_bytes = serde_json::to_vec(&filtered_body)
+            .map_err(|e| ProxyError::Internal(format!("Failed to serialize request body: {e}")))?;
+
+        if !ordered_headers.contains_key(http::header::CONTENT_TYPE) {
+            ordered_headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            );
         }
 
-        // 输出请求信息日志
         let tag = adapter.name();
         let request_model = filtered_body
             .get("model")
@@ -988,16 +1168,58 @@ impl RequestForwarder {
             );
         }
 
-        // 发送请求
-        let response = request.json(&filtered_body).send().await.map_err(|e| {
-            if e.is_timeout() {
-                ProxyError::Timeout(format!("请求超时: {e}"))
-            } else if e.is_connect() {
-                ProxyError::ForwardFailed(format!("连接失败: {e}"))
-            } else {
-                ProxyError::ForwardFailed(e.to_string())
+        let timeout = if self.non_streaming_timeout.is_zero() {
+            std::time::Duration::from_secs(600)
+        } else {
+            self.non_streaming_timeout
+        };
+
+        let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
+        let upstream_proxy_url: Option<String> = proxy_config
+            .filter(|c| c.enabled)
+            .and_then(super::http_client::build_proxy_url_from_config)
+            .or_else(super::http_client::get_current_proxy_url);
+
+        let is_socks_proxy = upstream_proxy_url
+            .as_deref()
+            .map(|u| u.starts_with("socks5"))
+            .unwrap_or(false);
+
+        let uri: http::Uri = url
+            .parse()
+            .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
+
+        let response = if is_socks_proxy {
+            let client = super::http_client::get_for_provider(proxy_config);
+            let mut request = client.post(&url);
+            if !self.non_streaming_timeout.is_zero() {
+                request = request.timeout(self.non_streaming_timeout);
             }
-        })?;
+            for (key, value) in &ordered_headers {
+                request = request.header(key, value);
+            }
+            let reqwest_resp = request.body(body_bytes).send().await.map_err(|e| {
+                if e.is_timeout() {
+                    ProxyError::Timeout(format!("请求超时: {e}"))
+                } else if e.is_connect() {
+                    ProxyError::ForwardFailed(format!("连接失败: {e}"))
+                } else {
+                    ProxyError::ForwardFailed(e.to_string())
+                }
+            })?;
+            ProxyResponse::Reqwest(reqwest_resp)
+        } else {
+            super::hyper_client::send_request(
+                uri,
+                http::Method::POST,
+                ordered_headers,
+                extensions.clone(),
+                body_bytes,
+                timeout,
+                upstream_proxy_url.as_deref(),
+            )
+            .await?
+        };
 
         // 检查响应状态
         let status = response.status();
@@ -1006,7 +1228,7 @@ impl RequestForwarder {
             Ok(response)
         } else {
             let status_code = status.as_u16();
-            let body_text = response.text().await.ok();
+            let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
 
             Err(ProxyError::UpstreamError {
                 status: status_code,

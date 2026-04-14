@@ -6,6 +6,7 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
+import { DataSourceBar } from "./DataSourceBar";
 import type { AppTypeFilter, TimeRange } from "@/types/usage";
 import { useUsageSummary } from "@/lib/query/usage";
 import { motion } from "framer-motion";
@@ -116,7 +117,9 @@ export function UsageDashboard() {
         </Tabs>
       </div>
 
-      {/* App type filter bar (replaces DataSourceBar) */}
+      <DataSourceBar refreshIntervalMs={refreshIntervalMs} />
+
+      {/* App type filter bar */}
       <div className="rounded-xl border border-border/50 bg-card/40 backdrop-blur-sm p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {APP_FILTER_OPTIONS.map((type) => (

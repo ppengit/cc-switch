@@ -152,6 +152,8 @@ let settingsState: Settings = {
   claudeConfigDir: "/default/claude",
   codexConfigDir: "/default/codex",
   language: "zh",
+  firstRunNoticeConfirmed: true,
+  skillStorageLocation: "cc_switch",
 };
 let appConfigDirOverride: string | null = null;
 let providerDefaultTemplates: ProviderDefaultTemplateState = {
@@ -208,6 +210,8 @@ export const resetProviderState = () => {
     claudeConfigDir: "/default/claude",
     codexConfigDir: "/default/codex",
     language: "zh",
+    firstRunNoticeConfirmed: true,
+    skillStorageLocation: "cc_switch",
   };
   appConfigDirOverride = null;
   providerDefaultTemplates = {

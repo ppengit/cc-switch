@@ -943,9 +943,7 @@ const findTopLevelIntMatch = (
   endIndex: number,
 ): TomlIntAssignmentMatch | undefined => {
   const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `^\\s*${escaped}\\s*=\\s*(-?\\d+)\\s*(?:#.*)?$`,
-  );
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*(-?\\d+)\\s*(?:#.*)?$`);
 
   for (let index = 0; index < endIndex; index += 1) {
     const match = lines[index].match(pattern);

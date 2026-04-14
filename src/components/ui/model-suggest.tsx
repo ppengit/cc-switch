@@ -134,7 +134,10 @@ export function ModelSuggest({
           className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronDown
-            className={cn("h-4 w-4 transition-transform", showDropdown && "rotate-180")}
+            className={cn(
+              "h-4 w-4 transition-transform",
+              showDropdown && "rotate-180",
+            )}
           />
         </button>
       )}

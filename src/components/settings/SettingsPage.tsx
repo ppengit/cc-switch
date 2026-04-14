@@ -31,17 +31,20 @@ import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { WindowSettings } from "@/components/settings/WindowSettings";
 import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
 import { SkillSyncMethodSettings } from "@/components/settings/SkillSyncMethodSettings";
+import { SkillStorageLocationSettings } from "@/components/settings/SkillStorageLocationSettings";
 import { TerminalSettings } from "@/components/settings/TerminalSettings";
 import { DirectorySettings } from "@/components/settings/DirectorySettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
+import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
+import { useInstalledSkills } from "@/hooks/useSkills";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
 
@@ -94,6 +97,7 @@ export function SettingsPage({
 
   const [activeTab, setActiveTab] = useState<string>("general");
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  const { data: installedSkills } = useInstalledSkills();
 
   useEffect(() => {
     if (open) {
@@ -228,6 +232,13 @@ export function SettingsPage({
                         handleAutoSave({ skillSyncMethod: method })
                       }
                     />
+                    <SkillStorageLocationSettings
+                      value={settings.skillStorageLocation ?? "cc_switch"}
+                      installedCount={installedSkills?.length ?? 0}
+                      onMigrated={(target) =>
+                        updateSettings({ skillStorageLocation: target })
+                      }
+                    />
                     <TerminalSettings
                       value={settings.preferredTerminal}
                       onChange={(terminal) =>
@@ -360,6 +371,33 @@ export function SettingsPage({
                               handleAutoSave(updates)
                             }
                           />
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem
+                        value="authCenter"
+                        className="rounded-xl glass-card overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <Cloud className="h-5 w-5 text-violet-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.authCenter.title", {
+                                  defaultValue: "OAuth 认证中心",
+                                })}
+                              </h3>
+                              <p className="text-sm text-muted-foreground font-normal">
+                                {t("settings.authCenter.description", {
+                                  defaultValue:
+                                    "管理 GitHub Copilot 与 ChatGPT(Codex OAuth) 账号认证",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <AuthCenterPanel />
                         </AccordionContent>
                       </AccordionItem>
 

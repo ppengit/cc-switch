@@ -154,7 +154,8 @@ export const getCodexQuickToggleStates = (value: string) => ({
   fullAccess:
     getTomlStringValue(value, "sandbox_mode") === "danger-full-access",
   fastTier: getTomlStringValue(value, "service_tier") === "fast",
-  highReasoning: getTomlStringValue(value, "model_reasoning_effort") === "xhigh",
+  highReasoning:
+    getTomlStringValue(value, "model_reasoning_effort") === "xhigh",
   conciseReasoningSummary:
     getTomlStringValue(value, "model_reasoning_summary") === "concise",
   verboseOutput: getTomlStringValue(value, "model_verbosity") === "high",

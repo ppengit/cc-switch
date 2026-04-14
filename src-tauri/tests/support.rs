@@ -9,7 +9,17 @@ use cc_switch_lib::{
 pub fn ensure_test_home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let base = std::env::temp_dir().join("cc-switch-test-home");
+        let binary_name = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "unknown-binary".to_string());
+        let base = std::env::temp_dir()
+            .join("cc-switch-test-home")
+            .join(format!("{binary_name}-{}", std::process::id()));
         if base.exists() {
             let _ = std::fs::remove_dir_all(&base);
         }

@@ -56,7 +56,13 @@ interface UpstreamReleaseInfo {
   error: string | null;
 }
 
-const TOOL_NAMES = ["claude", "codex", "gemini", "opencode", "openclaw"] as const;
+const TOOL_NAMES = [
+  "claude",
+  "codex",
+  "gemini",
+  "opencode",
+  "openclaw",
+] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 
 type WslShellPreference = {
@@ -632,7 +638,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 ? "OpenCode"
                 : toolName === "openclaw"
                   ? "OpenClaw"
-                : toolName.charAt(0).toUpperCase() + toolName.slice(1);
+                  : toolName.charAt(0).toUpperCase() + toolName.slice(1);
             const title =
               primaryInstallation?.version ||
               tool?.latest_version ||
@@ -646,7 +652,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               (installation) =>
                 !!installation.version &&
                 !!tool?.latest_version &&
-                compareLooseVersion(installation.version, tool.latest_version) < 0,
+                compareLooseVersion(installation.version, tool.latest_version) <
+                  0,
             );
 
             return (
@@ -812,7 +819,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                                 {t("settings.toolLatestVersion", {
                                   defaultValue: "官方",
                                 })}
-                                : <span className="font-mono">{latestVersion}</span>
+                                :{" "}
+                                <span className="font-mono">
+                                  {latestVersion}
+                                </span>
                               </div>
                             </div>
 

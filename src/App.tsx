@@ -51,6 +51,7 @@ import {
 } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
@@ -1292,6 +1293,20 @@ function App() {
                 )}
                 {currentView === "providers" && (
                   <>
+                    {hasSessionSupport && (
+                      <button
+                        type="button"
+                        className="sr-only"
+                        onClick={handleOpenSessionsView}
+                        title={t("sessionManager.title", {
+                          defaultValue: "Session Manager",
+                        })}
+                      >
+                        {t("sessionManager.title", {
+                          defaultValue: "Session Manager",
+                        })}
+                      </button>
+                    )}
                     <AppSwitcher
                       activeApp={activeApp}
                       onSwitch={setActiveApp}
@@ -1354,7 +1369,9 @@ function App() {
                                 size="sm"
                                 onClick={handleOpenSessionsView}
                                 className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
-                                title={t("sessionManager.title")}
+                                title={t("sessionManager.title", {
+                                  defaultValue: "Session Manager",
+                                })}
                               >
                                 <History className="w-4 h-4" />
                               </Button>
@@ -1396,7 +1413,9 @@ function App() {
                                     ? "opacity-100 w-8 scale-100 px-2"
                                     : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
                                 )}
-                                title={t("sessionManager.title")}
+                                title={t("sessionManager.title", {
+                                  defaultValue: "Session Manager",
+                                })}
                               >
                                 <History className="flex-shrink-0 w-4 h-4" />
                               </Button>
@@ -1492,6 +1511,7 @@ function App() {
       />
 
       <DeepLinkImportDialog />
+      <FirstRunNoticeDialog />
     </div>
   );
 }

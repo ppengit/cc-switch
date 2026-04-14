@@ -9,6 +9,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 use tauri::AppHandle;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
@@ -218,6 +219,7 @@ pub struct ToolVersion {
 const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "openclaw"];
 const CLAUDE_INSTALL_SOURCE_NATIVE: &str = "native";
 const CLAUDE_INSTALL_SOURCE_NPM: &str = "npm";
+const REMOTE_VERSION_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn update_command_for_tool(tool: &str, install_source: Option<&str>) -> Option<&'static str> {
     match tool {
@@ -696,42 +698,52 @@ fn collect_claude_installations_wsl(
 /// Helper function to fetch latest version from npm registry
 async fn fetch_npm_latest_version(client: &reqwest::Client, package: &str) -> Option<String> {
     let url = format!("https://registry.npmjs.org/{package}");
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                json.get("dist-tags")
-                    .and_then(|tags| tags.get("latest"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
+    let json = match tokio::time::timeout(REMOTE_VERSION_FETCH_TIMEOUT, async {
+        let resp = client.get(&url).send().await.ok()?;
+        resp.json::<serde_json::Value>().await.ok()
+    })
+    .await
+    {
+        Ok(Some(json)) => json,
+        Ok(None) => return None,
+        Err(_) => {
+            log::warn!("[ToolVersion] fetch npm latest version timed out: {package}");
+            return None;
         }
-        Err(_) => None,
-    }
+    };
+
+    json.get("dist-tags")
+        .and_then(|tags| tags.get("latest"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Helper function to fetch latest version from GitHub releases
 async fn fetch_github_latest_version(client: &reqwest::Client, repo: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
-    match client
-        .get(&url)
-        .header("User-Agent", "cc-switch")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
+    let json = match tokio::time::timeout(REMOTE_VERSION_FETCH_TIMEOUT, async {
+        let resp = client
+            .get(&url)
+            .header("User-Agent", "cc-switch")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .ok()?;
+        resp.json::<serde_json::Value>().await.ok()
+    })
+    .await
     {
-        Ok(resp) => {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                json.get("tag_name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.strip_prefix('v').unwrap_or(s).to_string())
-            } else {
-                None
-            }
+        Ok(Some(json)) => json,
+        Ok(None) => return None,
+        Err(_) => {
+            log::warn!("[ToolVersion] fetch github latest release timed out: {repo}");
+            return None;
         }
-        Err(_) => None,
-    }
+    };
+
+    json.get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.strip_prefix('v').unwrap_or(s).to_string())
 }
 
 /// 预编译的版本号正则表达式

@@ -3,6 +3,9 @@ import type { SettingsFormState } from "@/hooks/useSettings";
 import { AppWindow, MonitorUp, Power, EyeOff } from "lucide-react";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { AnimatePresence, motion } from "framer-motion";
+import { Button } from "@/components/ui/button";
+import { settingsApi } from "@/lib/api";
+import { toast } from "sonner";
 
 interface WindowSettingsProps {
   settings: SettingsFormState;
@@ -11,6 +14,19 @@ interface WindowSettingsProps {
 
 export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
   const { t } = useTranslation();
+
+  const handleEnterLightweightMode = async () => {
+    try {
+      await settingsApi.enterLightweightMode();
+    } catch (error) {
+      toast.error(
+        t("settings.lightweightModeFailed", {
+          defaultValue: "进入轻量模式失败: {{error}}",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
 
   return (
     <section className="space-y-4">
@@ -75,6 +91,36 @@ export function WindowSettings({ settings, onChange }: WindowSettingsProps) {
             onChange({ minimizeToTrayOnClose: value })
           }
         />
+
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/50 p-4 transition-colors hover:bg-muted/50">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background ring-1 ring-border">
+              <EyeOff className="h-4 w-4 text-amber-500" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium leading-none">
+                {t("settings.lightweightModeTitle", {
+                  defaultValue: "进入轻量模式",
+                })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.lightweightModeDescription", {
+                  defaultValue:
+                    "销毁主窗口，仅保留托盘运行；可从托盘重新打开主界面。",
+                })}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleEnterLightweightMode}
+          >
+            {t("settings.lightweightModeAction", {
+              defaultValue: "进入",
+            })}
+          </Button>
+        </div>
       </div>
     </section>
   );

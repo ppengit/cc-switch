@@ -95,7 +95,9 @@ export async function setCommonConfigSnippet(
 export async function getLiveConfigFiles(
   appType: Exclude<AppType, "omo" | "omo_slim">,
 ): Promise<LiveConfigFileEntry[]> {
-  return invoke<LiveConfigFileEntry[]>("get_live_config_files", { app: appType });
+  return invoke<LiveConfigFileEntry[]>("get_live_config_files", {
+    app: appType,
+  });
 }
 
 export async function openLiveConfigFile(path: string): Promise<void> {
@@ -128,7 +130,9 @@ export async function getCurrentLiveConfigSnapshot(
   });
 }
 
-export async function getConfigHealthReport(): Promise<AppConfigHealthReport[]> {
+export async function getConfigHealthReport(): Promise<
+  AppConfigHealthReport[]
+> {
   return invoke<AppConfigHealthReport[]>("get_config_health_report");
 }
 
