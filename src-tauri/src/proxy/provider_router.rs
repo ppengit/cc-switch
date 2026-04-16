@@ -22,6 +22,37 @@ pub struct ProviderRouter {
 }
 
 impl ProviderRouter {
+    fn is_zero_token_anomaly_error(message: &str) -> bool {
+        message.to_ascii_lowercase().contains("zero token usage")
+    }
+
+    async fn should_block_current_provider_without_failover(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> bool {
+        let config = match self.db.get_proxy_config_for_app(app_type).await {
+            Ok(config) => config,
+            Err(_) => return false,
+        };
+
+        if !config.zero_token_anomaly_enabled {
+            return false;
+        }
+
+        match self.db.get_provider_health(provider_id, app_type).await {
+            Ok(health) => {
+                !health.is_healthy
+                    && health
+                        .last_error
+                        .as_deref()
+                        .map(Self::is_zero_token_anomaly_error)
+                        .unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    }
+
     fn prioritize_stable_public_provider_ids(
         ordered_provider_ids: &[String],
         stable_public_provider_ids: &HashSet<String>,
@@ -154,7 +185,18 @@ impl ProviderRouter {
             if let Some(current_id) = current_id {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
                     total_providers = 1;
-                    result.push(current);
+                    if self
+                        .should_block_current_provider_without_failover(&current.id, app_type)
+                        .await
+                    {
+                        circuit_open_count = 1;
+                        log::warn!(
+                            "[{app_type}] 当前供应商 {} 因 0/0 token 异常已被阻断",
+                            current.id
+                        );
+                    } else {
+                        result.push(current);
+                    }
                 }
             }
         }
@@ -741,6 +783,40 @@ mod tests {
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_zero_token_anomaly_blocks_current_provider_even_when_failover_disabled() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.set_current_provider("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = false;
+        config.zero_token_anomaly_enabled = true;
+        config.zero_token_anomaly_threshold = 1;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        router
+            .handle_zero_token_anomaly_threshold_hit(
+                "a",
+                "claude",
+                "upstream returned successful response with zero token usage".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let err = router
+            .select_providers("claude")
+            .await
+            .expect_err("provider should be blocked by zero-token anomaly");
+        assert!(matches!(err, AppError::AllProvidersCircuitOpen));
     }
 
     #[tokio::test]

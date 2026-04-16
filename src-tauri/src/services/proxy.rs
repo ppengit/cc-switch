@@ -898,6 +898,110 @@ impl ProxyService {
         Ok((proxy_url, proxy_codex_base_url))
     }
 
+    fn codex_live_points_to_proxy(config: &Value, proxy_codex_base_url: &str) -> bool {
+        let config_str = config
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let quoted = format!("base_url = \"{proxy_codex_base_url}\"");
+        let single_quoted = format!("base_url = '{proxy_codex_base_url}'");
+        config_str.contains(&quoted) || config_str.contains(&single_quoted)
+    }
+
+    fn live_points_to_proxy(
+        &self,
+        app_type: &AppType,
+        proxy_url: &str,
+        proxy_codex_base_url: &str,
+    ) -> bool {
+        match app_type {
+            AppType::Claude => self
+                .read_claude_live()
+                .ok()
+                .and_then(|config| {
+                    config
+                        .get("env")
+                        .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
+                        .and_then(|v| v.as_str())
+                        .map(|url| url.trim() == proxy_url)
+                })
+                .unwrap_or(false),
+            AppType::Codex => self
+                .read_codex_live()
+                .ok()
+                .map(|config| Self::codex_live_points_to_proxy(&config, proxy_codex_base_url))
+                .unwrap_or(false),
+            AppType::Gemini => self
+                .read_gemini_live()
+                .ok()
+                .and_then(|config| {
+                    config
+                        .get("env")
+                        .and_then(|env| env.get("GOOGLE_GEMINI_BASE_URL"))
+                        .and_then(|v| v.as_str())
+                        .map(|url| url.trim() == proxy_url)
+                })
+                .unwrap_or(false),
+            AppType::OpenCode | AppType::OpenClaw => false,
+        }
+    }
+
+    async fn cleanup_stale_proxy_target_for_app(
+        &self,
+        app_type: &AppType,
+        proxy_url: &str,
+        proxy_codex_base_url: &str,
+    ) -> Result<bool, String> {
+        if !self.live_points_to_proxy(app_type, proxy_url, proxy_codex_base_url) {
+            return Ok(false);
+        }
+
+        match self.restore_live_from_ssot_for_app(app_type) {
+            Ok(true) => {
+                log::warn!(
+                    "{} Live 配置检测到残留代理地址，已从当前供应商快照恢复",
+                    app_type.as_str()
+                );
+                Ok(true)
+            }
+            Ok(false) => {
+                log::warn!(
+                    "{} Live 配置检测到残留代理地址，但无法从当前供应商恢复",
+                    app_type.as_str()
+                );
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn cleanup_stale_proxy_targets_on_startup(&self) -> Result<Vec<String>, String> {
+        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let mut cleaned = Vec::new();
+
+        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            let proxy_enabled = self
+                .db
+                .get_proxy_config_for_app(app_type.as_str())
+                .await
+                .map(|config| config.enabled)
+                .unwrap_or(false);
+
+            if proxy_enabled {
+                continue;
+            }
+
+            if self
+                .cleanup_stale_proxy_target_for_app(&app_type, &proxy_url, &proxy_codex_base_url)
+                .await?
+            {
+                cleaned.push(app_type.as_str().to_string());
+            }
+        }
+
+        Ok(cleaned)
+    }
+
     /// 接管各应用的 Live 配置（写入代理地址）
     ///
     /// 代理服务器的路由已经根据 API 端点自动区分应用类型：
@@ -2855,6 +2959,79 @@ command = "latest-command"
                 .and_then(|v| v.as_str()),
             Some("latest-command"),
             "new MCP entries should remain in the restore backup"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cleanup_stale_proxy_targets_on_startup_restores_codex_live_from_ssot() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let provider = Provider::with_id(
+            "codex-live".to_string(),
+            "Codex Live".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-token"
+                },
+                "config": r#"model_provider = "any"
+model = "gpt-5.1-codex"
+
+[model_providers.any]
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", "codex-live")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("codex-live"))
+            .expect("set local current provider");
+
+        service
+            .write_codex_live(&json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-token"
+                },
+                "config": r#"model_provider = "any"
+model = "gpt-5.1-codex"
+
+[model_providers.any]
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+            }))
+            .expect("seed stale codex live config");
+
+        let cleaned = service
+            .cleanup_stale_proxy_targets_on_startup()
+            .await
+            .expect("cleanup stale proxy targets");
+
+        assert!(
+            cleaned.iter().any(|app| app == "codex"),
+            "codex stale proxy target should be cleaned"
+        );
+
+        let restored = service.read_codex_live().expect("read restored codex live");
+        let restored_config = restored
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            restored_config.contains("https://api.openai.com/v1"),
+            "restored live config should use provider base_url instead of localhost proxy"
+        );
+        assert!(
+            !restored_config.contains("127.0.0.1:15721"),
+            "restored live config should no longer point to local proxy"
         );
     }
 }

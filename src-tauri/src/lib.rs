@@ -894,6 +894,18 @@ pub fn run() {
                     }
                 }
 
+                // 兼容历史异常场景：proxy_config.enabled 已关闭，但 live 文件仍残留指向本地代理。
+                // 这会导致 CLI 请求 localhost:15721，而代理服务实际上并不会自动恢复启动。
+                match state.proxy_service.cleanup_stale_proxy_targets_on_startup().await {
+                    Ok(cleaned) if !cleaned.is_empty() => {
+                        log::warn!("已清理残留代理地址的 Live 配置: {cleaned:?}");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("清理残留代理地址失败: {e}");
+                    }
+                }
+
                 initialize_common_config_snippets(&state);
 
                 // 检查 settings 表中的代理状态，自动恢复代理服务

@@ -54,6 +54,18 @@ const resources = {
   },
 };
 
+const humanizeMissingKey = (key: string): string => {
+  const segments = key.split(".").filter(Boolean);
+  const relevant = segments.slice(-2).join(" ");
+  const source = relevant || key;
+
+  return source
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
 i18n.use(initReactI18next).init({
   resources,
   lng: getInitialLanguage(), // 根据本地存储或系统语言选择默认语言
@@ -62,6 +74,9 @@ i18n.use(initReactI18next).init({
   interpolation: {
     escapeValue: false, // React 已经默认转义
   },
+
+  parseMissingKeyHandler: (key, defaultValue) =>
+    defaultValue || humanizeMissingKey(key),
 
   // 开发模式下显示调试信息
   debug: false,

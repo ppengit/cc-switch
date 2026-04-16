@@ -38,7 +38,22 @@
     "reset": "Reset",
     "actions": "Actions",
     "deleting": "Deleting...",
-    "auto": "Auto"
+    "auto": "Auto",
+    "saved": "已保存",
+    "unknownError": "未知错误",
+    "selectAll": "全选当前筛选结果",
+    "selectedCount": "已选 {{count}} 项",
+    "clearSelection": "清空选择",
+    "selected": "已选",
+    "select": "选择",
+    "disable": "停用",
+    "backToTop": "回到顶部",
+    "enabled": "启用",
+    "disabled": "停用",
+    "checking": "检测中",
+    "check": "检测",
+    "tidyTextSuccess": "整理完成",
+    "tidyText": "整理文本"
   },
   "apiKeyInput": {
     "placeholder": "Enter API Key",
@@ -219,7 +234,63 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    }
+    },
+    "moveToTopFailed": "置顶失败",
+    "commonConfigApplyAll": "应用配置模板",
+    "moveToTop": "置顶",
+    "configPreviewLoadFailed": "加载当前环境配置失败: {{error}}",
+    "disabled": "未启用",
+    "notInConfig": "未加入配置",
+    "moveToTopSuccess": "供应商已置顶",
+    "primaryModel": "主模型",
+    "model": "模型名称",
+    "batchModelRequired": "请填写模型名称",
+    "batchClaudeModelRequired": "请至少填写主模型或推理模型",
+    "batchModelUpdateSuccess": "已批量更新 {{count}} 个提供商",
+    "batchModelUpdatePartialFailed": "部分提供商更新失败（{{count}} 个）",
+    "openLiveConfigFailed": "打开实际配置文件失败: {{error}}",
+    "saveLiveConfigSuccess": "live 配置文件已保存",
+    "saveLiveConfigFailed": "保存 live 配置文件失败: {{error}}",
+    "saveAllLiveConfigSuccess": "已保存 {{count}} 个 live 配置文件",
+    "saveAllLiveConfigFailed": "批量保存 live 配置文件失败: {{error}}",
+    "batchDeleteNone": "当前选中项不可删除",
+    "batchDeleteSuccess": "已删除 {{count}} 个提供商",
+    "batchDeletePartialFailed": "部分提供商删除失败（{{count}} 个）",
+    "providerName": "提供商",
+    "status": "状态",
+    "configPreview": "当前环境配置",
+    "openTerminalGlobal": "打开终端",
+    "batchUpdateModel": "批量修改模型",
+    "batchDelete": "批量删除",
+    "noModelOptions": "暂无模型可选",
+    "defaultOrder": "默认顺序",
+    "dragDisabledForSort": "当前为临时排序，拖拽已禁用",
+    "batchUpdateModelHint": "仅更新当前选中提供商，改动只影响配置展示与后续调用参数。",
+    "modelPlaceholder": "例如 gpt-5-codex",
+    "primaryModelPlaceholder": "例如 claude-sonnet-4",
+    "reasoningModel": "推理模型",
+    "reasoningModelPlaceholder": "例如 claude-opus-4",
+    "batchDeleteHint": "将删除当前选中提供商。该操作仅影响提供商记录，不改变会话路由策略设定。",
+    "batchDeleteSummary": "已选 {{selected}} 项，可删除 {{deletable}} 项。",
+    "batchDeleteBlocked": "{{count}} 项为当前使用中或受限项，将自动跳过。",
+    "batchDisable": "停用供应商",
+    "batchDisableUnavailable": "仅当供应商当前位于故障转移队列中时可停用",
+    "batchDeleteSingle": "删除供应商",
+    "batchDeleteUnavailable": "当前供应商受保护，至少保留一个可切换供应商后才能删除",
+    "defaultTemplate": "默认供应商模板",
+    "defaultTemplatePlaceholders": "可用占位符: {{placeholders}}",
+    "configPreviewTitle": "当前环境配置",
+    "liveConfigChanged": "检测到实际配置文件发生变化。请先刷新当前环境配置，再决定是否保存。",
+    "currentProvider": "当前供应商",
+    "noCurrentProvider": "未设置",
+    "liveConfigDraftDirty": "未保存",
+    "liveConfigDiffersFromExpected": "与预期配置不同",
+    "openLiveConfigFile": "打开文件",
+    "liveConfigExpectedHint": "当前 live 文件内容与系统预期配置不同。编辑和保存前，请确认这是你希望保留的实际运行配置。",
+    "actualConfig": "当前 live 文件",
+    "liveConfigEditHint": "上方直接编辑的是当前环境实际使用的 live 配置文件内容。",
+    "liveConfigTextEditHint": "当前文件不是 JSON，已按纯文本模式编辑，不执行 JSON 校验和格式化。",
+    "configPreviewEmpty": "当前应用暂无可展示的 live 配置文件。"
   },
   "notifications": {
     "providerAdded": "Provider added",
@@ -251,7 +322,12 @@
     "openclawDefaultModelSet": "Set as default model",
     "openclawDefaultModelSetFailed": "Failed to set default model",
     "openclawNoModels": "No models configured",
-    "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider"
+    "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider",
+    "proxyReasonCopilot": "使用 GitHub Copilot 作为 Claude 供应商",
+    "proxyReasonOpenAIChat": "使用 OpenAI Chat 接口格式",
+    "proxyReasonOpenAIResponses": "使用 OpenAI Responses 接口格式",
+    "proxyReasonFullUrl": "开启了完整 URL 连接模式",
+    "proxyRequiredForSwitch": "此供应商{{reason}}，需要代理服务才能正常使用，请先启动代理"
   },
   "confirm": {
     "deleteProvider": "Delete Provider",
@@ -657,7 +733,26 @@
       "pricingLoadFailed": "Failed to load pricing defaults: {{error}}",
       "defaultCostMultiplierRequired": "Default multiplier is required",
       "defaultCostMultiplierInvalid": "Invalid multiplier format"
-    }
+    },
+    "upstreamReleaseCheckFailed": "上游 Release 检测失败",
+    "upstreamReleaseNewer": "有上游新版本",
+    "upstreamReleaseAhead": "当前高于上游",
+    "upstreamReleaseAligned": "已对齐上游",
+    "upstreamRelease": "上游 Release",
+    "upstreamReleasePublishedAt": "发布时间",
+    "toolUpdateCommand": "更新命令",
+    "authCenter": {
+      "title": "OAuth 认证中心",
+      "description": "在 Claude Code 中使用您的其他订阅，请注意合规风险。",
+      "beta": "Beta",
+      "copilotDescription": "管理 GitHub Copilot 账号",
+      "codexOauthDescription": "管理 ChatGPT 账号"
+    },
+    "saveFailedGeneric": "保存失败，请重试",
+    "lightweightModeFailed": "进入轻量模式失败: {{error}}",
+    "lightweightModeTitle": "进入轻量模式",
+    "lightweightModeDescription": "销毁主窗口，仅保留托盘运行；可从托盘重新打开主界面。",
+    "lightweightModeAction": "进入"
   },
   "apps": {
     "claude": "Claude",
@@ -713,7 +808,35 @@
     "bindingModeNone": "Mode: unbound",
     "bindingPinnedHint": "Pinned: prefer the current provider. If that provider is degraded/circuit-open/unavailable, the session will still migrate and release occupancy automatically.",
     "bindingAutoHint": "Auto: the system assigns providers by session routing policy and automatically rebinds on degradation/circuit-open/capacity changes.",
-    "bindingModeHint": "Auto: policy-driven assignment with automatic migration. Pinned: prefer current provider, but still auto-release and migrate when degraded/circuit-open/unavailable."
+    "bindingModeHint": "Auto: policy-driven assignment with automatic migration. Pinned: prefer current provider, but still auto-release and migrate when degraded/circuit-open/unavailable.",
+    "bindingSwitchSuccess": "会话绑定已切换",
+    "bindingSwitchFailed": "切换会话绑定失败",
+    "bindingPinned": "会话绑定已锁定",
+    "bindingAuto": "会话绑定已切回自动",
+    "bindingPinFailed": "更新会话绑定状态失败",
+    "bindingRemoved": "会话绑定已解绑",
+    "bindingRemoveFailed": "解绑会话绑定失败",
+    "deleteSuccess": "会话已删除",
+    "deleteFailed": "删除会话失败",
+    "bindingSectionTitle": "会话路由绑定",
+    "bindingAppStatus": "应用：{{status}}",
+    "bindingLoading": "绑定读取中...",
+    "bindingProvider": "绑定：{{provider}}",
+    "bindingNone": "未分配",
+    "bindingSwitchPlaceholder": "选择提供商",
+    "bindingRemove": "解绑",
+    "bindingDisabled": "当前应用未启用会话路由",
+    "resume": "恢复会话",
+    "resumeTooltip": "在终端中恢复此会话",
+    "noResumeCommand": "此会话暂无恢复命令",
+    "delete": "删除会话",
+    "deleteTooltip": "从本地列表中删除此会话记录",
+    "copyCommand": "复制命令",
+    "conversationHistory": "对话记录",
+    "messageCopied": "消息内容已复制",
+    "deleteConfirmTitle": "删除会话",
+    "copyMessage": "复制内容",
+    "sessionDeleted": "会话已删除"
   },
   "console": {
     "providerSwitchReceived": "Received provider switch event:",
@@ -807,7 +930,22 @@
     "categoryOfficial": "Official",
     "categoryCnOfficial": "Opensource Official",
     "categoryAggregation": "Aggregation",
-    "categoryThirdParty": "Third Party"
+    "categoryThirdParty": "Third Party",
+    "apiFormatOpenAIResponses": "OpenAI Responses API (需转换)",
+    "authField": "认证字段",
+    "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（默认）",
+    "authFieldApiKey": "ANTHROPIC_API_KEY",
+    "authFieldHint": "选择写入配置的认证环境变量名",
+    "modelConfig": "模型配置",
+    "autoFetchModels": "自动获取模型",
+    "fetchedModelCount": "已获取 {{count}} 个模型，可一键导入。",
+    "modelsFetchedFromCatalog": "已从官方模型目录加载 {{count}} 个模型",
+    "modelsFetched": "已获取 {{count}} 个模型",
+    "fetchModelsFallbackToCatalog": "当前供应商未返回可解析的模型列表，已回退到官方模型目录。",
+    "fetchModelsFailedHint": "此功能仅供参考，部分供应商可能不支持模型列表接口，您仍然可以手动输入模型名称。",
+    "fetchModelsCatalogNoEndpoint": "当前未填写可用于模型列表接口的端点或密钥，已直接使用官方模型目录。",
+    "fullUrlHint": "💡 请填写完整请求 URL，并且必须开启代理后使用；代理将直接使用此 URL，不拼接路径",
+    "fullUrlLabel": "完整 URL"
   },
   "endpointTest": {
     "title": "API Endpoint Management",
@@ -900,7 +1038,14 @@
       "detailedReasoningSummary": "Sets model_reasoning_summary to detailed for a more complete reasoning summary when debugging.",
       "verboseOutput": "Raises model_verbosity so Codex gives more detailed explanations, which is useful for debugging and review.",
       "rawAgentReasoning": "Enables show_raw_agent_reasoning to display the agent's raw reasoning output for diagnostics."
-    }
+    },
+    "modelName": "模型名称",
+    "modelNamePlaceholder": "例如: gpt-5.4",
+    "modelNameHint": "指定使用的模型，将自动更新到 config.toml 中",
+    "reasoningEffort": "推理深度",
+    "reasoningEffortPlaceholder": "例如: xhigh",
+    "reasoningEffortHint": "对应 config.toml 中的 model_reasoning_effort 字段",
+    "authJsonError": "请检查 Codex 的 auth.json，必须是合法的 JSON 对象"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -929,7 +1074,8 @@
       "inlineThinking": "Shows more of Gemini CLI's thinking inline in chat. Helpful for debugging, but responses get longer.",
       "showModelInfo": "Displays the actual model being used in chat so you can verify routing and config changes.",
       "enableAgents": "Enables Gemini CLI's experimental Agents mode. Useful for complex workflows, but behavior may change."
-    }
+    },
+    "composeInvalid": "请检查 Gemini 的环境变量与 config 配置内容，当前无法正确组装为最终配置"
   },
   "opencode": {
     "npmPackage": "API Format",
@@ -960,7 +1106,10 @@
     "noExtraOptions": "No extra options configured",
     "noModelOptions": "Model options, click + to add",
     "modelOptionKeyPlaceholder": "provider",
-    "modelOptionValuePlaceholder": "{\"order\": [\"baseten\"]}"
+    "modelOptionValuePlaceholder": "{\"order\": [\"baseten\"]}",
+    "importFetchedModels": "导入已获取模型",
+    "noFetchedModels": "暂无可导入模型，请先自动获取。",
+    "importFetchedModelsResult": "模型导入完成：新增 {{imported}} 个，补全名称 {{updated}} 个。"
   },
   "providerPreset": {
     "label": "Provider Preset",
@@ -1087,7 +1236,22 @@
     "clearAllLogsFailed": "Failed to clear all request logs",
     "cleanupLastRun": "Last cleanup: {{time}}",
     "cleanupNeverRun": "Last cleanup: never",
-    "cleanupHint": "When auto-cleanup is enabled, logs are cleaned in the background by retention days (triggered at most once per hour)."
+    "cleanupHint": "When auto-cleanup is enabled, logs are cleaned in the background by retention days (triggered at most once per hour).",
+    "never": "Never",
+    "sessionSync": {
+      "imported": "Imported {{count}} records from session logs",
+      "upToDate": "Session logs are up to date",
+      "failed": "Session sync failed",
+      "trigger": "Sync session logs",
+      "resync": "Sync",
+      "import": "Import Sessions"
+    },
+    "dataSources": "Data Sources",
+    "searchSessionPlaceholder": "搜索会话路由 / 会话 ID",
+    "source": "Source",
+    "dataSource": {
+      "proxy": "Proxy"
+    }
   },
   "usageScript": {
     "title": "Configure Usage Query",
@@ -1160,7 +1324,8 @@
   "errors": {
     "usage_query_failed": "Usage query failed",
     "configLoadFailedTitle": "Configuration Load Failed",
-    "configLoadFailedMessage": "Unable to read configuration file:\n{{path}}\n\nError details:\n{{detail}}\n\nPlease check if the JSON is valid, or restore from a backup file (e.g., config.json.bak) in the same directory.\n\nThe app will exit so you can fix this."
+    "configLoadFailedMessage": "Unable to read configuration file:\n{{path}}\n\nError details:\n{{detail}}\n\nPlease check if the JSON is valid, or restore from a backup file (e.g., config.json.bak) in the same directory.\n\nThe app will exit so you can fix this.",
+    "runtimeUnhandledTitle": "运行时发生异常"
   },
   "presetSelector": {
     "title": "Select Configuration Type",
@@ -1322,7 +1487,8 @@
         "name": "@upstash/context7-mcp",
         "description": "Context7 documentation search tool providing latest library docs and code examples, with higher limits when configured with a key"
       }
-    }
+    },
+    "refreshStatus": "刷新状态"
   },
   "prompts": {
     "manage": "Prompts",
@@ -1446,7 +1612,11 @@
       "saveSuccess": "Environment variables saved",
       "saveFailed": "Failed to save environment variables",
       "loadFailed": "Failed to load environment variables",
-      "duplicateKey": "Duplicate variable name detected: {{key}}"
+      "duplicateKey": "Duplicate variable name detected: {{key}}",
+      "empty": "OpenClaw env cannot be empty. Use {} for an empty object.",
+      "invalidJson": "OpenClaw env must be valid JSON.",
+      "objectRequired": "OpenClaw env must be a JSON object.",
+      "editorHint": "Edit the full env section as JSON. Nested objects such as env.vars and env.shellEnv are supported."
     },
     "tools": {
       "title": "Tool Permissions",
@@ -1465,7 +1635,15 @@
       "addDeny": "Add Deny",
       "saveSuccess": "Tool permissions saved",
       "saveFailed": "Failed to save tool permissions",
-      "loadFailed": "Failed to load tool permissions"
+      "loadFailed": "Failed to load tool permissions",
+      "profileMinimal": "Minimal",
+      "profileCoding": "Coding",
+      "profileMessaging": "Messaging",
+      "profileFull": "Full",
+      "unsupportedProfileTitle": "Unsupported tools profile",
+      "unsupportedProfileDescription": "The current tools.profile value '{{value}}' is not in the supported OpenClaw list. It will be preserved until you choose a new value.",
+      "profileUnset": "Not set",
+      "unsupportedProfileLabel": "unsupported"
     },
     "agents": {
       "title": "Agents Config",
@@ -1483,8 +1661,26 @@
       "maxConcurrent": "Max Concurrent",
       "saveSuccess": "Agents config saved",
       "saveFailed": "Failed to save agents config",
-      "loadFailed": "Failed to load agents config"
-    }
+      "loadFailed": "Failed to load agents config",
+      "notInList": "{{value}} (not configured)",
+      "legacyTimeoutTitle": "Legacy timeout detected",
+      "legacyTimeoutDescription": "This config still uses agents.defaults.timeout. Saving here will migrate it to timeoutSeconds.",
+      "noModels": "No configured provider models. Please add an OpenClaw provider first.",
+      "addFallback": "Add fallback model"
+    },
+    "health": {
+      "invalidToolsProfile": "tools.profile contains an unsupported value. OpenClaw currently expects minimal, coding, messaging, or full.",
+      "legacyTimeout": "agents.defaults.timeout is deprecated. Save the Agents panel to migrate it to timeoutSeconds.",
+      "stringifiedEnvVars": "env.vars should be an object, but the current value looks stringified or malformed.",
+      "stringifiedShellEnv": "env.shellEnv should be an object, but the current value looks stringified or malformed.",
+      "parseFailed": "openclaw.json could not be parsed as valid JSON5. Fix the file before editing it here.",
+      "title": "OpenClaw config warnings detected"
+    },
+    "userAgent": "发送 User-Agent",
+    "userAgentHint": "部分供应商需要浏览器 User-Agent 才能正常访问。",
+    "primaryModel": "默认模型",
+    "fallbackModel": "回退模型",
+    "inputTypes": "输入类型"
   },
   "env": {
     "warning": {
@@ -1704,7 +1900,14 @@
       "skillsPath": "Skills Path",
       "hint": "This will add the Skill repository to the list.",
       "hintDetail": "After adding, you can install specific Skills from the Skills management page."
-    }
+    },
+    "usageScript": "用量查询",
+    "usageScriptEnabled": "已启用",
+    "usageScriptDisabled": "未启用",
+    "usageApiKey": "用量 API Key",
+    "usageBaseUrl": "用量查询地址",
+    "usageAutoInterval": "自动查询",
+    "usageAutoIntervalValue": "每 {{minutes}} 分钟"
   },
   "iconPicker": {
     "search": "Search Icons",
@@ -1759,7 +1962,12 @@
     "tooltip": {
       "enabled": "{{app}} failover enabled\nRequests follow queue priority (P1→P2→...)",
       "disabled": "Enable {{app}} failover\nSwitches to queue P1 immediately, then falls back on failures"
-    }
+    },
+    "bulkTogglePartialFailed": "部分操作失败：{{failedCount}} / {{totalCount}} 个供应商未更新",
+    "bulkEnableSuccess": "已将 {{count}} 个供应商加入故障转移队列",
+    "bulkDisableSuccess": "已将 {{count}} 个供应商移出故障转移队列",
+    "bulkToggleAll": "启用/禁用故障转移",
+    "bulkToggleAllLabel": "启用"
   },
   "proxy": {
     "panel": {
@@ -1941,8 +2149,32 @@
       "defaultProviderFollowCurrentHintWithFailover": "Leave empty to follow the current provider first; if it fails, continue through the failover queue.",
       "publicPriority": "Prefer Public",
       "publicPriorityHint": "When enabled, session routing and failover prefer healthy public providers first. If all public providers are disabled, degraded, or circuit-open, the original queue order is used.",
-      "publicPrioritySaved": "Public priority setting saved"
-    }
+      "publicPrioritySaved": "Public priority setting saved",
+      "occupiedSessions": "当前会话占用: {{count}}",
+      "validation": {
+        "maxSessions": "每个提供商最大会话数需为 1-99 的整数",
+        "idleTtl": "会话空闲释放时间需为 1-1440 分钟"
+      },
+      "configSaved": "会话路由配置已保存",
+      "title": "会话路由",
+      "dialogHint": "按会话维度固定提供商，提升并发下的缓存命中与稳定性。仅在当前应用生效。",
+      "activeSessions": "活跃会话",
+      "occupiedProviders": "占用提供商",
+      "capacityHint": "建议会话上限与提供商数量匹配，避免频繁共享切换。",
+      "app": "当前应用开关",
+      "appHint": "仅控制当前应用（如 Codex/Claude/Gemini）是否启用会话路由。",
+      "strategy": "分配策略",
+      "maxSessions": "每个提供商最大会话数",
+      "idleTtl": "会话空闲释放时间（分钟）",
+      "share": "资源耗尽时允许共享",
+      "shareHint": "当所有提供商都达到会话上限时，允许新会话临时复用已占用提供商。"
+    },
+    "logging": {
+      "enabled": "日志记录已启用",
+      "disabled": "日志记录已关闭",
+      "failed": "切换日志状态失败"
+    },
+    "stoppedWithRestore": "代理服务已关闭，已恢复所有接管配置"
   },
   "streamCheck": {
     "configSaved": "Health check config saved",
@@ -1960,7 +2192,20 @@
     "testPromptListHint": "Put one question per line. Each test run randomly picks one line and uses it as the global test prompt.",
     "testPromptListPlaceholder": "Who are you?\nWhat can you help me with?\nExplain what an API is in one sentence.\nSummarize the purpose of unit tests in one sentence.\nReply with OK only.",
     "batchCompleted": "Batch test completed ({{count}} providers)",
-    "batchCompletedSummary": "Operational {{operational}}, degraded {{degraded}}, failed {{failed}}"
+    "batchCompletedSummary": "Operational {{operational}}, degraded {{degraded}}, failed {{failed}}",
+    "testAll": "批量测试",
+    "testModel": "测试模型",
+    "testModelPlaceholder": "输入用于测试的模型名称",
+    "testing": "测试中",
+    "status": "状态",
+    "responseTime": "耗时",
+    "modelUsed": "模型",
+    "failureReason": "失败原因",
+    "notTested": "未测试",
+    "failedShort": "失败",
+    "failedNoReason": "请求异常，请查看错误提示",
+    "operationalShort": "正常",
+    "degradedShort": "降级"
   },
   "proxyConfig": {
     "proxyEnabled": "Proxy Enabled",
@@ -2187,7 +2432,8 @@
       "explorer": "Regex search, AST pattern matching, file discovery (read-only)",
       "designer": "Modern responsive design, CSS/Tailwind expertise",
       "fixer": "Code implementation, refactoring, testing, verification"
-    }
+    },
+    "slimOtherFieldsHint": "Use this area for top-level OMO Slim config such as council, fallback, multiplexer, disabled_mcps, and todoContinuation."
   },
   "openclawConfig": {
     "defaultModel": {
@@ -2217,5 +2463,9 @@
     },
     "suggestedDefaults": "Apply Suggested Defaults",
     "suggestedDefaultsHint": "Use this preset's recommended default model configuration"
+  },
+  "subscription": {
+    "copilotPremium": "Premium",
+    "title": "Subscription Quota"
   }
 }
