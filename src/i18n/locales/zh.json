@@ -2135,6 +2135,10 @@
     "stopWithRestoreFailed": "停止失败: {{detail}}"
   },
   "streamCheck": {
+    "testAll": "批量测试",
+    "batchRunning": "测试中…",
+    "batchCompleted": "批量测试完成：共 {{count}} 个（正常 {{operational}}，降级 {{degraded}}，失败 {{failed}}）",
+    "batchFailed": "批量测试失败",
     "configSaved": "健康检查配置已保存",
     "configSaveFailed": "保存失败",
     "testModels": "测试模型",

@@ -2134,6 +2134,10 @@
     "stopWithRestoreFailed": "Stop failed: {{detail}}"
   },
   "streamCheck": {
+    "testAll": "Batch test",
+    "batchRunning": "Testing…",
+    "batchCompleted": "Batch test complete: {{count}} providers ({{operational}} operational, {{degraded}} degraded, {{failed}} failed)",
+    "batchFailed": "Batch test failed",
     "configSaved": "Health check config saved",
     "configSaveFailed": "Save failed",
     "testModels": "Test Models",

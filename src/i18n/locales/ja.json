@@ -2134,6 +2134,10 @@
     "stopWithRestoreFailed": "停止に失敗しました: {{detail}}"
   },
   "streamCheck": {
+    "testAll": "一括テスト",
+    "batchRunning": "テスト中…",
+    "batchCompleted": "一括テスト完了：{{count}} 件（正常 {{operational}}、劣化 {{degraded}}、失敗 {{failed}}）",
+    "batchFailed": "一括テストに失敗しました",
     "configSaved": "ヘルスチェック設定を保存しました",
     "configSaveFailed": "保存に失敗しました",
     "testModels": "テストモデル",

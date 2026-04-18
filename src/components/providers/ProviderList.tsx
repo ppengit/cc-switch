@@ -13,13 +13,19 @@ import {
   type CSSProperties,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Search, X } from "lucide-react";
+import { Search, TestTube2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
+import {
+  streamCheckAllProviders,
+  getStreamCheckConfig,
+  saveStreamCheckConfig,
+} from "@/lib/api/model-test";
+import { pickRandomTestPrompt } from "@/utils/batchTestPrompts";
 import { useDragSort } from "@/hooks/useDragSort";
 import {
   useOpenClawLiveProviderIds,
@@ -90,6 +96,7 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
@@ -179,6 +186,7 @@ export function ProviderList({
 
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isBatchTesting, setIsBatchTesting] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [showStreamCheckConfirm, setShowStreamCheckConfirm] = useState(false);
   const [pendingTestProvider, setPendingTestProvider] =
@@ -202,6 +210,50 @@ export function ProviderList({
     [checkProvider, settings?.streamCheckConfirmed],
   );
 
+  const handleBatchTest = useCallback(async () => {
+    if (isBatchTesting) return;
+    setIsBatchTesting(true);
+    try {
+      try {
+        const cfg = await getStreamCheckConfig();
+        await saveStreamCheckConfig({
+          ...cfg,
+          testPrompt: pickRandomTestPrompt(),
+        });
+      } catch (err) {
+        console.warn("[batchTest] failed to rotate test prompt", err);
+      }
+      const results = await streamCheckAllProviders(appId, false);
+      const operational = results.filter(
+        ([, r]) => r.status === "operational",
+      ).length;
+      const degraded = results.filter(
+        ([, r]) => r.status === "degraded",
+      ).length;
+      const failed = results.filter(([, r]) => r.status === "failed").length;
+      toast.success(
+        t("streamCheck.batchCompleted", {
+          count: results.length,
+          operational,
+          degraded,
+          failed,
+          defaultValue: `批量测试完成：共 ${results.length} 个（正常 ${operational}，降级 ${degraded}，失败 ${failed}）`,
+        }),
+        { closeButton: true, duration: 6000 },
+      );
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+    } catch (error) {
+      console.error("[batchTest] failed", error);
+      toast.error(
+        t("streamCheck.batchFailed", {
+          defaultValue: "批量测试失败",
+        }) + ` (${String(error)})`,
+      );
+    } finally {
+      setIsBatchTesting(false);
+    }
+  }, [appId, isBatchTesting, queryClient, t]);
+
   const handleStreamCheckConfirm = async () => {
     setShowStreamCheckConfirm(false);
     try {
@@ -220,7 +272,6 @@ export function ProviderList({
   };
 
   // Import current live config as default provider
-  const queryClient = useQueryClient();
   const importMutation = useMutation({
     mutationFn: async (): Promise<boolean> => {
       if (appId === "opencode") {
@@ -377,6 +428,23 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
+      {sortedProviders.length > 1 && (
+        <div className="flex items-center justify-end">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleBatchTest}
+            disabled={isBatchTesting}
+            className="gap-2"
+            title={t("streamCheck.testAll", { defaultValue: "批量测试" })}
+          >
+            <TestTube2 className="h-4 w-4" />
+            {isBatchTesting
+              ? t("streamCheck.batchRunning", { defaultValue: "测试中…" })
+              : t("streamCheck.testAll", { defaultValue: "批量测试" })}
+          </Button>
+        </div>
+      )}
       <AnimatePresence>
         {isSearchOpen && (
           <motion.div
