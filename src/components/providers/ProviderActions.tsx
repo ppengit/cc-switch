@@ -1,4 +1,5 @@
 import {
+  ArrowUpToLine,
   BarChart3,
   Check,
   Copy,
@@ -28,6 +29,7 @@ interface ProviderActionsProps {
   onSwitch: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
+  onMoveToTop?: () => void;
   onTest?: () => void;
   onConfigureUsage?: () => void;
   onDelete: () => void;
@@ -53,6 +55,7 @@ export function ProviderActions({
   onSwitch,
   onEdit,
   onDuplicate,
+  onMoveToTop,
   onTest,
   onConfigureUsage,
   onDelete,
@@ -258,6 +261,18 @@ export function ProviderActions({
         >
           <Copy className="h-4 w-4" />
         </Button>
+
+        {onMoveToTop && (
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onMoveToTop}
+            title={t("provider.moveToTop", { defaultValue: "置顶" })}
+            className={iconButtonClass}
+          >
+            <ArrowUpToLine className="h-4 w-4" />
+          </Button>
+        )}
 
         <Button
           size="icon"

@@ -771,6 +771,47 @@ function App() {
     await addProvider(duplicatedProvider);
   };
 
+  const handleMoveProviderToTop = async (provider: Provider) => {
+    const allProviders = Object.values(providers);
+    if (allProviders.length === 0) return;
+
+    const currentIndices = allProviders
+      .map((p) => p.sortIndex)
+      .filter((idx): idx is number => idx !== undefined);
+
+    let nextIndex = 0;
+    if (currentIndices.length === allProviders.length) {
+      const minIndex = Math.min(...currentIndices);
+      if (provider.sortIndex === minIndex) {
+        return;
+      }
+      nextIndex = minIndex - 1;
+    }
+
+    try {
+      await providersApi.updateSortOrder(
+        [{ id: provider.id, sortIndex: nextIndex }],
+        activeApp,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", activeApp],
+      });
+      toast.success(
+        t("provider.pinnedSuccess", {
+          defaultValue: "供应商已置顶",
+        }),
+      );
+    } catch (error) {
+      console.error("[App] Failed to pin provider to top", error);
+      const errorMessage = extractErrorMessage(error);
+      toast.error(
+        t("provider.pinnedFailed", {
+          defaultValue: "置顶失败",
+        }) + (errorMessage ? `: ${errorMessage}` : ""),
+      );
+    }
+  };
+
   const handleOpenTerminal = async (provider: Provider) => {
     try {
       const selectedDir = await settingsApi.pickDirectory();
@@ -965,6 +1006,7 @@ function App() {
                           : undefined
                       }
                       onDuplicate={handleDuplicateProvider}
+                      onMoveToTop={handleMoveProviderToTop}
                       onConfigureUsage={setUsageProvider}
                       onOpenWebsite={handleOpenWebsite}
                       onOpenTerminal={
@@ -1466,7 +1508,12 @@ function App() {
         open={isAddOpen}
         onOpenChange={setIsAddOpen}
         appId={activeApp}
-        onSubmit={addProvider}
+        onSubmit={async (provider, options) => {
+          const created = await addProvider(provider);
+          if (options?.pinToTop && created) {
+            await handleMoveProviderToTop(created);
+          }
+        }}
       />
 
       <EditProviderDialog

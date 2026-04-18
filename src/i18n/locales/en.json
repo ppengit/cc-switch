@@ -138,6 +138,13 @@
     "searchCloseAriaLabel": "Close provider search",
     "noSearchResults": "No providers match your search.",
     "duplicate": "Duplicate",
+    "moveToTop": "Pin to top",
+    "pinnedSuccess": "Provider pinned to top",
+    "pinnedFailed": "Failed to pin provider",
+    "addOptions": {
+      "pinToTop": "Pin to top",
+      "pinToTopHint": "Move this provider to the top of the list after saving"
+    },
     "sortUpdateFailed": "Failed to update sort order",
     "configureUsage": "Configure usage query",
     "officialPartner": "Official Partner",

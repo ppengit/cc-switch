@@ -138,6 +138,13 @@
     "searchCloseAriaLabel": "検索を閉じる",
     "noSearchResults": "一致するプロバイダーがありません。",
     "duplicate": "複製",
+    "moveToTop": "先頭に固定",
+    "pinnedSuccess": "プロバイダーを先頭に固定しました",
+    "pinnedFailed": "先頭への固定に失敗しました",
+    "addOptions": {
+      "pinToTop": "先頭に固定",
+      "pinToTopHint": "保存後にリストの先頭へ移動します"
+    },
     "sortUpdateFailed": "並び順の更新に失敗しました",
     "configureUsage": "利用状況を設定",
     "officialPartner": "公式パートナー",

@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus } from "lucide-react";
+import { ArrowUpToLine, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
@@ -30,6 +31,7 @@ interface AddProviderDialogProps {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
     },
+    options?: { pinToTop: boolean },
   ) => Promise<void> | void;
 }
 
@@ -49,6 +51,13 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [pinToTop, setPinToTop] = useState(true);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveTab("app-specific");
+    setPinToTop(true);
+  }, [open]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -229,15 +238,35 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      await onSubmit(providerData);
+      await onSubmit(providerData, { pinToTop });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, onOpenChange, pinToTop],
   );
 
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
       <>
+        <label className="mr-auto flex min-w-[180px] items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/70 px-3 py-2">
+          <div className="min-w-0">
+            <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <ArrowUpToLine className="h-4 w-4 text-muted-foreground" />
+              {t("provider.addOptions.pinToTop", { defaultValue: "置顶" })}
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              {t("provider.addOptions.pinToTopHint", {
+                defaultValue: "新增后置顶到列表首位",
+              })}
+            </span>
+          </div>
+          <Switch
+            checked={pinToTop}
+            onCheckedChange={setPinToTop}
+            aria-label={t("provider.addOptions.pinToTop", {
+              defaultValue: "置顶",
+            })}
+          />
+        </label>
         <Button
           variant="outline"
           onClick={() => onOpenChange(false)}

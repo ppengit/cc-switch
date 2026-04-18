@@ -72,7 +72,7 @@ export function useProviderActions(
         addToLive?: boolean;
       },
     ) => {
-      await addProviderMutation.mutateAsync(provider);
+      const createdProvider = await addProviderMutation.mutateAsync(provider);
 
       // OpenClaw: register models to allowlist after adding provider
       if (activeApp === "openclaw" && provider.suggestedDefaults) {
@@ -119,6 +119,8 @@ export function useProviderActions(
           );
         }
       }
+
+      return createdProvider;
     },
     [addProviderMutation, activeApp, queryClient, t],
   );

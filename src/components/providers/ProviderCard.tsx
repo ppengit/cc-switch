@@ -43,6 +43,7 @@ interface ProviderCardProps {
   onConfigureUsage: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onDuplicate: (provider: Provider) => void;
+  onMoveToTop?: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
   onOpenTerminal?: (provider: Provider) => void;
   isTesting?: boolean;
@@ -131,6 +132,7 @@ export function ProviderCard({
   onConfigureUsage,
   onOpenWebsite,
   onDuplicate,
+  onMoveToTop,
   onTest,
   onOpenTerminal,
   isTesting,
@@ -431,6 +433,9 @@ export function ProviderCard({
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
+              onMoveToTop={
+                onMoveToTop ? () => onMoveToTop(provider) : undefined
+              }
               onTest={
                 onTest && !isOfficial && !isCopilot && !isCodexOauth
                   ? () => onTest(provider)
