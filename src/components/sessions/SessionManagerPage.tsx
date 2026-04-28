@@ -15,6 +15,7 @@ import {
   FolderOpen,
   X,
   CheckSquare,
+  Pencil,
 } from "lucide-react";
 import {
   useDeleteSessionMutation,
@@ -36,13 +37,19 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Label } from "@/components/ui/label";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { isMac } from "@/lib/platform";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { SessionItem } from "./SessionItem";
 import { SessionMessageItem } from "./SessionMessageItem";
@@ -86,6 +93,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [renameSession, setRenameSession] = useState<SessionMeta | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [isSavingRename, setIsSavingRename] = useState(false);
 
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
@@ -215,14 +225,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const handleResume = async () => {
     if (!selectedSession?.resumeCommand) return;
 
-    if (!isMac()) {
-      await handleCopy(
-        selectedSession.resumeCommand,
-        t("sessionManager.resumeCommandCopied"),
-      );
-      return;
-    }
-
     try {
       await sessionsApi.launchTerminal({
         command: selectedSession.resumeCommand,
@@ -231,10 +233,70 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       toast.success(t("sessionManager.terminalLaunched"));
     } catch (error) {
       const fallback = selectedSession.resumeCommand;
-      await handleCopy(fallback, t("sessionManager.resumeFallbackCopied"));
-      toast.error(extractErrorMessage(error) || t("sessionManager.openFailed"));
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(fallback);
+        copied = true;
+        toast.info(t("sessionManager.resumeFallbackCopied"));
+      } catch (copyError) {
+        console.error("Failed to copy fallback resume command", copyError);
+      }
+
+      if (!copied) {
+        toast.error(
+          extractErrorMessage(error) || t("sessionManager.openFailed"),
+        );
+      }
     }
   };
+
+  const handleOpenRenameDialog = useCallback((session: SessionMeta) => {
+    setRenameSession(session);
+    setRenameValue(formatSessionTitle(session));
+  }, []);
+
+  const handleSaveRename = useCallback(async () => {
+    if (!renameSession || isSavingRename) return;
+
+    const appType = renameSession.providerId;
+    const sessionId = renameSession.sessionId;
+    const sourcePath = renameSession.sourcePath ?? null;
+    const title = renameValue.trim();
+
+    setIsSavingRename(true);
+    try {
+      if (title.length === 0) {
+        await sessionsApi.clearSessionTitleMapping({
+          appType,
+          sessionId,
+          sourcePath,
+        });
+      } else {
+        await sessionsApi.setSessionTitleMapping({
+          appType,
+          sessionId,
+          sourcePath,
+          customTitle: title,
+        });
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      toast.success(
+        t("sessionManager.renameSuccess", { defaultValue: "会话标题已更新" }),
+      );
+      setRenameSession(null);
+      setRenameValue("");
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.renameFailed", {
+            defaultValue: "更新会话标题失败",
+          }),
+      );
+    } finally {
+      setIsSavingRename(false);
+    }
+  }, [isSavingRename, queryClient, renameSession, renameValue, t]);
 
   const handleDeleteConfirm = async () => {
     if (!deleteTargets || deleteTargets.length === 0 || isDeleting) {
@@ -889,34 +951,56 @@ export function SessionManagerPage({ appId }: { appId: string }) {
 
                       {/* 右侧：操作按钮组 */}
                       <div className="flex items-center gap-2 shrink-0">
-                        {isMac() && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="sm"
-                                className="gap-1.5"
-                                onClick={() => void handleResume()}
-                                disabled={!selectedSession.resumeCommand}
-                              >
-                                <Play className="size-3.5" />
-                                <span className="hidden sm:inline">
-                                  {t("sessionManager.resume", {
-                                    defaultValue: "恢复会话",
-                                  })}
-                                </span>
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {selectedSession.resumeCommand
-                                ? t("sessionManager.resumeTooltip", {
-                                    defaultValue: "在终端中恢复此会话",
-                                  })
-                                : t("sessionManager.noResumeCommand", {
-                                    defaultValue: "此会话无法恢复",
-                                  })}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              className="gap-1.5"
+                              onClick={() => void handleResume()}
+                              disabled={!selectedSession.resumeCommand}
+                            >
+                              <Play className="size-3.5" />
+                              <span className="hidden sm:inline">
+                                {t("sessionManager.resume", {
+                                  defaultValue: "恢复会话",
+                                })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {selectedSession.resumeCommand
+                              ? t("sessionManager.resumeTooltip", {
+                                  defaultValue: "在终端中恢复此会话",
+                                })
+                              : t("sessionManager.noResumeCommand", {
+                                  defaultValue: "此会话无法恢复",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5"
+                              onClick={() =>
+                                handleOpenRenameDialog(selectedSession)
+                              }
+                            >
+                              <Pencil className="size-3.5" />
+                              <span className="hidden sm:inline">
+                                {t("sessionManager.rename", {
+                                  defaultValue: "修改标题",
+                                })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("sessionManager.renameTooltip", {
+                              defaultValue: "仅在本应用中映射，不回写原会话",
+                            })}
+                          </TooltipContent>
+                        </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -1119,6 +1203,70 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           }
         }}
       />
+      <Dialog
+        open={Boolean(renameSession)}
+        onOpenChange={(open) => {
+          if (!open && !isSavingRename) {
+            setRenameSession(null);
+            setRenameValue("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("sessionManager.renameDialogTitle", {
+                defaultValue: "修改会话标题",
+              })}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="session-rename-input">
+                {t("sessionManager.renameInputLabel", {
+                  defaultValue: "会话名称/标题",
+                })}
+              </Label>
+              <Input
+                id="session-rename-input"
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                maxLength={120}
+                placeholder={t("sessionManager.renameInputPlaceholder", {
+                  defaultValue: "输入标题，留空则恢复自动标题",
+                })}
+                disabled={isSavingRename}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleSaveRename();
+                  }
+                }}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRenameSession(null);
+                  setRenameValue("");
+                }}
+                disabled={isSavingRename}
+              >
+                {t("common.cancel", { defaultValue: "取消" })}
+              </Button>
+              <Button
+                onClick={() => void handleSaveRename()}
+                disabled={isSavingRename}
+              >
+                {isSavingRename
+                  ? t("common.saving", { defaultValue: "保存中..." })
+                  : t("common.save", { defaultValue: "保存" })}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   );
 }

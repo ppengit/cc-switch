@@ -81,13 +81,31 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     sessions.extend(r5);
     sessions.extend(r6);
 
+    sort_sessions_by_recent(&mut sessions);
+    sessions
+}
+
+pub fn scan_sessions_for_provider(provider_id: &str) -> Vec<SessionMeta> {
+    let mut sessions = match provider_id {
+        "codex" => codex::scan_sessions(),
+        "claude" => claude::scan_sessions(),
+        "opencode" => opencode::scan_sessions(),
+        "openclaw" => openclaw::scan_sessions(),
+        "gemini" => gemini::scan_sessions(),
+        "hermes" => hermes::scan_sessions(),
+        _ => Vec::new(),
+    };
+
+    sort_sessions_by_recent(&mut sessions);
+    sessions
+}
+
+fn sort_sessions_by_recent(sessions: &mut [SessionMeta]) {
     sessions.sort_by(|a, b| {
         let a_ts = a.last_active_at.or(a.created_at).unwrap_or(0);
         let b_ts = b.last_active_at.or(b.created_at).unwrap_or(0);
         b_ts.cmp(&a_ts)
     });
-
-    sessions
 }
 
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {

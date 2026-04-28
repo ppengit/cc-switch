@@ -25,12 +25,17 @@ interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   appId: AppId;
-  onSubmit: (
+  onSubmit: (payload: {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
-    },
-  ) => Promise<void> | void;
+      addToLive?: boolean;
+    };
+    saveOptions?: {
+      pinToTop: boolean;
+      enabled: boolean;
+    };
+  }) => Promise<void> | void;
 }
 
 export function AddProviderDialog({
@@ -94,6 +99,7 @@ export function AddProviderDialog({
       const providerData: Omit<Provider, "id"> & {
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
+        addToLive?: boolean;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -234,7 +240,20 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      await onSubmit(providerData);
+      if (
+        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+        values.enableOnSave === false
+      ) {
+        providerData.addToLive = false;
+      }
+
+      await onSubmit({
+        provider: providerData,
+        saveOptions: {
+          pinToTop: values.pinToTopOnSave ?? true,
+          enabled: values.enableOnSave ?? true,
+        },
+      });
       onOpenChange(false);
     },
     [appId, onSubmit, onOpenChange],

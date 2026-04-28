@@ -127,15 +127,14 @@ command = "say"
         .get("config")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    // 供应商配置应该包含在 live 文件中
-    // 注意：live 文件还会包含 MCP 同步后的内容
-    assert!(
-        config_text.contains("mcp_servers.latest"),
-        "live file should contain provider's original config"
-    );
+    // 供应商存储保留原始 provider 配置，不直接混入由 MCP 管理同步出来的 live 内容
     assert!(
         new_config_text.contains("mcp_servers.latest"),
         "provider snapshot should contain provider's original config"
+    );
+    assert!(
+        config_text.contains("mcp_servers.echo-server"),
+        "live file should contain synced MCP config"
     );
 
     let legacy = providers

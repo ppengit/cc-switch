@@ -73,16 +73,9 @@ pub fn read_mcp_servers_map() -> Result<std::collections::HashMap<String, Value>
 
 /// 将给定的启用 MCP 服务器映射写入到 Gemini settings.json 的 mcpServers 字段
 /// 仅覆盖 mcpServers，其他字段保持不变
-pub fn set_mcp_servers_map(
+pub fn build_mcp_servers_object(
     servers: &std::collections::HashMap<String, Value>,
-) -> Result<(), AppError> {
-    let path = user_config_path();
-    let mut root = if path.exists() {
-        read_json_value(&path)?
-    } else {
-        serde_json::json!({})
-    };
-
+) -> Result<Map<String, Value>, AppError> {
     // 构建 mcpServers 对象：移除 UI 辅助字段（enabled/source），仅保留实际 MCP 规范
     let mut out: Map<String, Value> = Map::new();
     for (id, spec) in servers.iter() {
@@ -154,6 +147,21 @@ pub fn set_mcp_servers_map(
 
         out.insert(id.clone(), Value::Object(obj));
     }
+
+    Ok(out)
+}
+
+pub fn set_mcp_servers_map(
+    servers: &std::collections::HashMap<String, Value>,
+) -> Result<(), AppError> {
+    let path = user_config_path();
+    let mut root = if path.exists() {
+        read_json_value(&path)?
+    } else {
+        serde_json::json!({})
+    };
+
+    let out = build_mcp_servers_object(servers)?;
 
     {
         let obj = root

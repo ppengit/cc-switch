@@ -61,7 +61,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::image::Image;
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
 
@@ -602,49 +602,51 @@ pub fn run() {
                 }
             }
 
-            // 3. 导入 MCP 服务器配置（表空时触发）
+            // 3. 导入 MCP 服务器配置（每次启动均增量回显，确保管理页与实际配置一致）
             if app_state.db.is_mcp_table_empty().unwrap_or(false) {
                 log::info!("MCP table empty, importing from live configurations...");
+            } else {
+                log::debug!("MCP table not empty, running incremental import from live configurations");
+            }
 
-                match crate::services::mcp::McpService::import_from_claude(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from Claude");
-                    }
-                    Ok(_) => log::debug!("○ No Claude MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import Claude MCP: {e}"),
+            match crate::services::mcp::McpService::import_from_claude(&app_state) {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Imported {count} MCP server(s) from Claude");
                 }
+                Ok(_) => log::debug!("○ No Claude MCP servers found to import"),
+                Err(e) => log::warn!("✗ Failed to import Claude MCP: {e}"),
+            }
 
-                match crate::services::mcp::McpService::import_from_codex(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from Codex");
-                    }
-                    Ok(_) => log::debug!("○ No Codex MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import Codex MCP: {e}"),
+            match crate::services::mcp::McpService::import_from_codex(&app_state) {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Imported {count} MCP server(s) from Codex");
                 }
+                Ok(_) => log::debug!("○ No Codex MCP servers found to import"),
+                Err(e) => log::warn!("✗ Failed to import Codex MCP: {e}"),
+            }
 
-                match crate::services::mcp::McpService::import_from_gemini(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from Gemini");
-                    }
-                    Ok(_) => log::debug!("○ No Gemini MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import Gemini MCP: {e}"),
+            match crate::services::mcp::McpService::import_from_gemini(&app_state) {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Imported {count} MCP server(s) from Gemini");
                 }
+                Ok(_) => log::debug!("○ No Gemini MCP servers found to import"),
+                Err(e) => log::warn!("✗ Failed to import Gemini MCP: {e}"),
+            }
 
-                match crate::services::mcp::McpService::import_from_opencode(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from OpenCode");
-                    }
-                    Ok(_) => log::debug!("○ No OpenCode MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import OpenCode MCP: {e}"),
+            match crate::services::mcp::McpService::import_from_opencode(&app_state) {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Imported {count} MCP server(s) from OpenCode");
                 }
+                Ok(_) => log::debug!("○ No OpenCode MCP servers found to import"),
+                Err(e) => log::warn!("✗ Failed to import OpenCode MCP: {e}"),
+            }
 
-                match crate::services::mcp::McpService::import_from_hermes(&app_state) {
-                    Ok(count) if count > 0 => {
-                        log::info!("✓ Imported {count} MCP server(s) from Hermes");
-                    }
-                    Ok(_) => log::debug!("○ No Hermes MCP servers found to import"),
-                    Err(e) => log::warn!("✗ Failed to import Hermes MCP: {e}"),
+            match crate::services::mcp::McpService::import_from_hermes(&app_state) {
+                Ok(count) if count > 0 => {
+                    log::info!("✓ Imported {count} MCP server(s) from Hermes");
                 }
+                Ok(_) => log::debug!("○ No Hermes MCP servers found to import"),
+                Err(e) => log::warn!("✗ Failed to import Hermes MCP: {e}"),
             }
 
             // 4. 导入提示词文件（表空时触发）
@@ -749,6 +751,12 @@ pub fn run() {
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        tray::handle_tray_menu_event(tray.app_handle(), "show_main");
+                    }
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
                     // refresh_all_usage_in_tray 内部有 10 秒防抖。
@@ -764,7 +772,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
@@ -1041,6 +1049,11 @@ pub fn run() {
             commands::get_claude_code_config_path,
             commands::get_config_dir,
             commands::open_config_folder,
+            commands::list_app_config_files,
+            commands::read_app_config_file,
+            commands::write_app_config_file,
+            commands::get_app_config_template,
+            commands::set_app_config_template,
             commands::pick_directory,
             commands::open_external,
             commands::get_init_error,
@@ -1229,9 +1242,12 @@ pub fn run() {
             commands::save_stream_check_config,
             // Session manager
             commands::list_sessions,
+            commands::list_recent_sessions,
             commands::get_session_messages,
             commands::delete_session,
             commands::delete_sessions,
+            commands::set_session_title_mapping,
+            commands::clear_session_title_mapping,
             commands::launch_session_terminal,
             commands::get_tool_versions,
             // Provider terminal

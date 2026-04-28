@@ -17,6 +17,14 @@ export const sessionsApi = {
     return await invoke("list_sessions");
   },
 
+  async listRecent(options: {
+    appType: string;
+    limit?: number;
+  }): Promise<SessionMeta[]> {
+    const { appType, limit } = options;
+    return await invoke("list_recent_sessions", { appType, limit });
+  },
+
   async getMessages(
     providerId: string,
     sourcePath: string,
@@ -37,6 +45,34 @@ export const sessionsApi = {
     items: DeleteSessionOptions[],
   ): Promise<DeleteSessionResult[]> {
     return await invoke("delete_sessions", { items });
+  },
+
+  async setSessionTitleMapping(options: {
+    appType: string;
+    sessionId: string;
+    sourcePath?: string | null;
+    customTitle: string;
+  }): Promise<boolean> {
+    const { appType, sessionId, sourcePath, customTitle } = options;
+    return await invoke("set_session_title_mapping", {
+      appType,
+      sessionId,
+      sourcePath: sourcePath ?? null,
+      customTitle,
+    });
+  },
+
+  async clearSessionTitleMapping(options: {
+    appType: string;
+    sessionId: string;
+    sourcePath?: string | null;
+  }): Promise<boolean> {
+    const { appType, sessionId, sourcePath } = options;
+    return await invoke("clear_session_title_mapping", {
+      appType,
+      sessionId,
+      sourcePath: sourcePath ?? null,
+    });
   },
 
   async launchTerminal(options: {

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
@@ -48,6 +49,7 @@ import type { UniversalProviderPreset } from "@/config/universalProviderPresets"
 import {
   applyTemplateValues,
   hasApiKeyField,
+  setCodexBaseUrl as setCodexBaseUrlInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
@@ -136,6 +138,18 @@ interface ProviderFormProps {
   };
   showButtons?: boolean;
 }
+
+const normalizeUrlForSave = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\/$/i.test(trimmed)) return trimmed;
+  return trimmed.replace(/\/+$/, "");
+};
+
+const normalizeWebsiteFromEndpoint = (endpoint: string): string => {
+  const normalized = normalizeUrlForSave(endpoint);
+  return normalized.replace(/\/v1$/i, "");
+};
 
 export function ProviderForm({
   appId,
@@ -277,6 +291,10 @@ export function ProviderForm({
     mode: "onSubmit",
   });
   const { isSubmitting } = form.formState;
+  const websiteUrlFieldValue = form.watch("websiteUrl") || "";
+  const syncingUrlFieldsRef = useRef(false);
+  const [pinToTopOnSave, setPinToTopOnSave] = useState(true);
+  const [enableOnSave, setEnableOnSave] = useState(true);
 
   const handleSettingsConfigChange = useCallback(
     (config: string) => {
@@ -1012,14 +1030,44 @@ export function ProviderForm({
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
 
+    const currentEndpointByApp =
+      appId === "claude"
+        ? baseUrl
+        : appId === "codex"
+          ? codexBaseUrl
+          : appId === "gemini"
+            ? geminiBaseUrl
+            : appId === "opencode"
+              ? opencodeForm.opencodeBaseUrl
+              : appId === "openclaw"
+                ? openclawForm.openclawBaseUrl
+                : appId === "hermes"
+                  ? hermesForm.hermesBaseUrl
+                  : "";
+
+    const normalizedWebsiteInput = normalizeUrlForSave(values.websiteUrl ?? "");
+    const normalizedEndpointInput = normalizeUrlForSave(currentEndpointByApp);
+    const effectiveWebsiteUrl =
+      normalizedWebsiteInput ||
+      (normalizedEndpointInput
+        ? normalizeWebsiteFromEndpoint(normalizedEndpointInput)
+        : "");
+    const effectiveEndpointUrl =
+      normalizedEndpointInput ||
+      (effectiveWebsiteUrl ? normalizeUrlForSave(effectiveWebsiteUrl) : "");
+
     let settingsConfig: string;
 
     if (appId === "codex") {
       try {
         const authJson = JSON.parse(codexAuth);
+        const finalCodexConfig = setCodexBaseUrlInConfig(
+          codexConfig ?? "",
+          effectiveEndpointUrl,
+        );
         const configObj = {
           auth: authJson,
-          config: codexConfig ?? "",
+          config: finalCodexConfig,
         };
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -1028,6 +1076,7 @@ export function ProviderForm({
     } else if (appId === "gemini") {
       try {
         const envObj = envStringToObj(geminiEnv);
+        envObj.GOOGLE_GEMINI_BASE_URL = effectiveEndpointUrl;
         const configObj = geminiConfig.trim() ? JSON.parse(geminiConfig) : {};
         const combined = {
           env: envObj,
@@ -1063,13 +1112,37 @@ export function ProviderForm({
       settingsConfig = JSON.stringify(omoConfig);
     } else {
       settingsConfig = values.settingsConfig.trim();
+      if (effectiveEndpointUrl) {
+        try {
+          const parsedConfig = JSON.parse(settingsConfig) as Record<
+            string,
+            any
+          >;
+          if (appId === "claude") {
+            parsedConfig.env = parsedConfig.env ?? {};
+            parsedConfig.env.ANTHROPIC_BASE_URL = effectiveEndpointUrl;
+          } else if (appId === "opencode") {
+            parsedConfig.options = parsedConfig.options ?? {};
+            parsedConfig.options.baseURL = effectiveEndpointUrl;
+          } else if (appId === "openclaw") {
+            parsedConfig.baseUrl = effectiveEndpointUrl;
+          } else if (appId === "hermes") {
+            parsedConfig.base_url = effectiveEndpointUrl;
+          }
+          settingsConfig = JSON.stringify(parsedConfig);
+        } catch {
+          // ignore JSON parse failure and keep original payload
+        }
+      }
     }
 
     const payload: ProviderFormValues = {
       ...values,
       name: values.name.trim(),
-      websiteUrl: values.websiteUrl?.trim() ?? "",
+      websiteUrl: effectiveWebsiteUrl,
       settingsConfig,
+      pinToTopOnSave,
+      enableOnSave,
     };
 
     if (appId === "opencode") {
@@ -1239,6 +1312,83 @@ export function ProviderForm({
   const shouldShowSpeedTest =
     category !== "official" && category !== "cloud_provider";
 
+  const endpointUrlFieldValue = useMemo(() => {
+    if (appId === "claude") return baseUrl;
+    if (appId === "codex") return codexBaseUrl;
+    if (appId === "gemini") return geminiBaseUrl;
+    if (appId === "opencode") return opencodeForm.opencodeBaseUrl;
+    if (appId === "openclaw") return openclawForm.openclawBaseUrl;
+    if (appId === "hermes") return hermesForm.hermesBaseUrl;
+    return "";
+  }, [
+    appId,
+    baseUrl,
+    codexBaseUrl,
+    geminiBaseUrl,
+    opencodeForm.opencodeBaseUrl,
+    openclawForm.openclawBaseUrl,
+    hermesForm.hermesBaseUrl,
+  ]);
+
+  const applyEndpointUrlFieldValue = useCallback(
+    (nextUrl: string) => {
+      if (appId === "claude") {
+        handleClaudeBaseUrlChange(nextUrl);
+      } else if (appId === "codex") {
+        handleCodexBaseUrlChange(nextUrl);
+      } else if (appId === "gemini") {
+        handleGeminiBaseUrlChange(nextUrl);
+      } else if (appId === "opencode") {
+        opencodeForm.handleOpencodeBaseUrlChange(nextUrl);
+      } else if (appId === "openclaw") {
+        openclawForm.handleOpenclawBaseUrlChange(nextUrl);
+      } else if (appId === "hermes") {
+        hermesForm.handleHermesBaseUrlChange(nextUrl);
+      }
+    },
+    [
+      appId,
+      handleClaudeBaseUrlChange,
+      handleCodexBaseUrlChange,
+      handleGeminiBaseUrlChange,
+      opencodeForm.handleOpencodeBaseUrlChange,
+      openclawForm.handleOpenclawBaseUrlChange,
+      hermesForm.handleHermesBaseUrlChange,
+    ],
+  );
+
+  useEffect(() => {
+    if (syncingUrlFieldsRef.current) return;
+
+    const normalizedWebsite = normalizeUrlForSave(websiteUrlFieldValue);
+    const normalizedEndpoint = normalizeUrlForSave(endpointUrlFieldValue);
+
+    if (!normalizedWebsite && normalizedEndpoint) {
+      const nextWebsite = normalizeWebsiteFromEndpoint(normalizedEndpoint);
+      if (nextWebsite) {
+        syncingUrlFieldsRef.current = true;
+        form.setValue("websiteUrl", nextWebsite, { shouldDirty: true });
+        setTimeout(() => {
+          syncingUrlFieldsRef.current = false;
+        }, 0);
+      }
+      return;
+    }
+
+    if (!normalizedEndpoint && normalizedWebsite) {
+      syncingUrlFieldsRef.current = true;
+      applyEndpointUrlFieldValue(normalizedWebsite);
+      setTimeout(() => {
+        syncingUrlFieldsRef.current = false;
+      }, 0);
+    }
+  }, [
+    applyEndpointUrlFieldValue,
+    endpointUrlFieldValue,
+    form,
+    websiteUrlFieldValue,
+  ]);
+
   const {
     shouldShowApiKeyLink: shouldShowClaudeApiKeyLink,
     websiteUrl: claudeWebsiteUrl,
@@ -1249,7 +1399,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1262,7 +1412,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1275,7 +1425,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1288,7 +1438,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   // 使用 API Key 链接 hook (OpenClaw)
@@ -1302,7 +1452,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   // 使用 API Key 链接 hook (Hermes)
@@ -1316,7 +1466,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   // 使用端点测速候选 hook
@@ -2110,6 +2260,33 @@ export function ProviderForm({
               />
             )}
 
+          <div className="flex flex-wrap items-center gap-4 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+              <Checkbox
+                checked={pinToTopOnSave}
+                onCheckedChange={(checked) =>
+                  setPinToTopOnSave(Boolean(checked))
+                }
+              />
+              <span>
+                {t("providerForm.pinToTopOnSave", {
+                  defaultValue: "置顶（保存后顺序为 1）",
+                })}
+              </span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+              <Checkbox
+                checked={enableOnSave}
+                onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
+              />
+              <span>
+                {t("providerForm.enableOnSave", {
+                  defaultValue: "启用（保存后立即生效）",
+                })}
+              </span>
+            </label>
+          </div>
+
           {showButtons && (
             <div className="flex justify-end gap-2">
               <Button variant="outline" type="button" onClick={onCancel}>
@@ -2190,4 +2367,6 @@ export type ProviderFormValues = ProviderFormData & {
   meta?: ProviderMeta;
   providerKey?: string; // OpenCode/OpenClaw: user-defined provider key
   suggestedDefaults?: OpenClawSuggestedDefaults; // OpenClaw: suggested default model configuration
+  pinToTopOnSave?: boolean;
+  enableOnSave?: boolean;
 };

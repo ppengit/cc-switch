@@ -13,6 +13,10 @@ impl Database {
         format!("common_config_{app_type}_cleared")
     }
 
+    fn config_template_key(app_type: &str) -> String {
+        format!("config_template_{app_type}")
+    }
+
     /// 获取设置值
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, AppError> {
         let conn = lock_conn!(self.conn);
@@ -128,6 +132,30 @@ impl Database {
             self.set_setting(&key, &value)
         } else {
             // 如果为 None 则删除
+            let conn = lock_conn!(self.conn);
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        }
+    }
+
+    // --- 应用配置模板 (Config Template) ---
+
+    /// 获取应用配置模板
+    pub fn get_config_template(&self, app_type: &str) -> Result<Option<String>, AppError> {
+        self.get_setting(&Self::config_template_key(app_type))
+    }
+
+    /// 设置应用配置模板
+    pub fn set_config_template(
+        &self,
+        app_type: &str,
+        template: Option<String>,
+    ) -> Result<(), AppError> {
+        let key = Self::config_template_key(app_type);
+        if let Some(value) = template {
+            self.set_setting(&key, &value)
+        } else {
             let conn = lock_conn!(self.conn);
             conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
                 .map_err(|e| AppError::Database(e.to_string()))?;

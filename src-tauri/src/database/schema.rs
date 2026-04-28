@@ -286,6 +286,35 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 19. Session Title Mappings 表（会话标题本地映射 + 会话上下文缓存）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_title_mappings (
+                app_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                custom_title TEXT,
+                detected_title TEXT,
+                project_dir TEXT,
+                last_active_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (app_type, session_id, source_path)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_recent
+             ON session_title_mappings(app_type, last_active_at DESC, updated_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_log_lookup
+             ON session_title_mappings(app_type, session_id)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 尝试添加 live_takeover_active 列到 proxy_config 表
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN live_takeover_active INTEGER NOT NULL DEFAULT 0",
@@ -429,6 +458,11 @@ impl Database {
                         log::info!("迁移数据库从 v9 到 v10（添加 Hermes Agent 支持）");
                         Self::migrate_v9_to_v10(conn)?;
                         Self::set_user_version(conn, 10)?;
+                    }
+                    10 => {
+                        log::info!("迁移数据库从 v10 到 v11（会话标题映射与会话上下文缓存）");
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1195,6 +1229,48 @@ impl Database {
         }
 
         log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v10 -> v11 迁移：添加会话标题映射和上下文缓存表
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_title_mappings (
+                app_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                custom_title TEXT,
+                detected_title TEXT,
+                project_dir TEXT,
+                last_active_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (app_type, session_id, source_path)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 session_title_mappings 表失败: {e}")))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_recent
+             ON session_title_mappings(app_type, last_active_at DESC, updated_at DESC)",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!(
+                "创建 idx_session_title_mappings_recent 索引失败: {e}"
+            ))
+        })?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_log_lookup
+             ON session_title_mappings(app_type, session_id)",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!(
+                "创建 idx_session_title_mappings_log_lookup 索引失败: {e}"
+            ))
+        })?;
+
+        log::info!("v10 -> v11 迁移完成：已添加 session_title_mappings 表");
         Ok(())
     }
 

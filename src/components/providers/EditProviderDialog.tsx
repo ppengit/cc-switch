@@ -17,6 +17,10 @@ interface EditProviderDialogProps {
   onSubmit: (payload: {
     provider: Provider;
     originalId?: string;
+    saveOptions?: {
+      pinToTop: boolean;
+      enabled: boolean;
+    };
   }) => Promise<void> | void;
   appId: AppId;
   isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
@@ -191,6 +195,10 @@ export function EditProviderDialog({
       await onSubmit({
         provider: updatedProvider,
         originalId: provider.id,
+        saveOptions: {
+          pinToTop: values.pinToTopOnSave ?? true,
+          enabled: values.enableOnSave ?? true,
+        },
       });
       onOpenChange(false);
     },

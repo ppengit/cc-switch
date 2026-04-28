@@ -237,7 +237,9 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
     } else {
       try {
         const result = parseSmartMcpJson(value);
-        const configJson = JSON.stringify(result.config);
+        const configJson = result.servers
+          ? JSON.stringify({ mcpServers: result.servers })
+          : JSON.stringify(result.config ?? {});
         const validationErr = validateJsonConfig(configJson);
 
         if (validationErr) {
@@ -245,12 +247,22 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
           return;
         }
 
-        if (result.id && !formId.trim() && !isEditing) {
-          const uniqueId = ensureUniqueId(result.id);
-          setFormId(uniqueId);
-
-          if (!formName.trim()) {
-            setFormName(result.id);
+        if (!isEditing && !formId.trim()) {
+          if (result.id) {
+            const uniqueId = ensureUniqueId(result.id);
+            setFormId(uniqueId);
+            if (!formName.trim()) {
+              setFormName(result.id);
+            }
+          } else if (result.servers) {
+            const ids = Object.keys(result.servers);
+            if (ids.length === 1) {
+              const uniqueId = ensureUniqueId(ids[0]);
+              setFormId(uniqueId);
+              if (!formName.trim()) {
+                setFormName(ids[0]);
+              }
+            }
           }
         }
 
@@ -284,19 +296,20 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
 
   const handleSubmit = async () => {
     const trimmedId = formId.trim();
-    if (!trimmedId) {
-      toast.error(t("mcp.error.idRequired"), { duration: 3000 });
-      return;
-    }
-
-    if (!isEditing && existingIds.includes(trimmedId)) {
-      setIdError(t("mcp.error.idExists"));
-      return;
-    }
-
-    let serverSpec: McpServerSpec;
+    let serverSpec: McpServerSpec | null = null;
+    let batchServers: Record<string, McpServerSpec> | null = null;
 
     if (useToml) {
+      if (!trimmedId) {
+        toast.error(t("mcp.error.idRequired"), { duration: 3000 });
+        return;
+      }
+
+      if (!isEditing && existingIds.includes(trimmedId)) {
+        setIdError(t("mcp.error.idExists"));
+        return;
+      }
+
       const tomlError = validateTomlConfig(formConfig);
       setConfigError(tomlError);
       if (tomlError) {
@@ -322,6 +335,14 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       }
     } else {
       if (!formConfig.trim()) {
+        if (!trimmedId) {
+          toast.error(t("mcp.error.idRequired"), { duration: 3000 });
+          return;
+        }
+        if (!isEditing && existingIds.includes(trimmedId)) {
+          setIdError(t("mcp.error.idExists"));
+          return;
+        }
         serverSpec = {
           type: "stdio",
           command: "",
@@ -330,7 +351,17 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       } else {
         try {
           const result = parseSmartMcpJson(formConfig);
-          serverSpec = result.config as McpServerSpec;
+          if (result.servers && Object.keys(result.servers).length > 0) {
+            if (isEditing) {
+              toast.error(t("mcp.error.singleServerObjectRequired"), {
+                duration: 4000,
+              });
+              return;
+            }
+            batchServers = result.servers as Record<string, McpServerSpec>;
+          } else {
+            serverSpec = result.config as McpServerSpec;
+          }
         } catch (e: any) {
           const errorMessage = e?.message || String(e);
           setConfigError(t("mcp.error.jsonInvalid") + ": " + errorMessage);
@@ -340,63 +371,126 @@ const McpFormModal: React.FC<McpFormModalProps> = ({
       }
     }
 
-    if (serverSpec?.type === "stdio" && !serverSpec?.command?.trim()) {
-      toast.error(t("mcp.error.commandRequired"), { duration: 3000 });
-      return;
-    }
-    if (
-      (serverSpec?.type === "http" || serverSpec?.type === "sse") &&
-      !serverSpec?.url?.trim()
-    ) {
-      toast.error(t("mcp.wizard.urlRequired"), { duration: 3000 });
-      return;
+    const validateServerSpec = (spec: McpServerSpec): string | null => {
+      const typ = spec?.type;
+      if (typ === "stdio" && !spec?.command?.trim()) {
+        return t("mcp.error.commandRequired");
+      }
+      if ((typ === "http" || typ === "sse") && !spec?.url?.trim()) {
+        return t("mcp.wizard.urlRequired");
+      }
+      return null;
+    };
+
+    if (batchServers) {
+      const batchIds = Object.keys(batchServers);
+      if (batchIds.length === 0) {
+        toast.error(t("mcp.error.jsonInvalid"), { duration: 3000 });
+        return;
+      }
+
+      if (!isEditing) {
+        const conflictId = batchIds.find((id) => existingIds.includes(id));
+        if (conflictId) {
+          setIdError(t("mcp.error.idExists"));
+          toast.error(`${t("mcp.error.idExists")}: ${conflictId}`, {
+            duration: 4000,
+          });
+          return;
+        }
+      }
+
+      for (const [id, spec] of Object.entries(batchServers)) {
+        const validationError = validateServerSpec(spec);
+        if (validationError) {
+          toast.error(`${validationError}: ${id}`, { duration: 4000 });
+          return;
+        }
+      }
+    } else {
+      if (!serverSpec) {
+        toast.error(t("mcp.error.jsonInvalid"), { duration: 3000 });
+        return;
+      }
+      const validationError = validateServerSpec(serverSpec);
+      if (validationError) {
+        toast.error(validationError, { duration: 3000 });
+        return;
+      }
+      if (!trimmedId) {
+        toast.error(t("mcp.error.idRequired"), { duration: 3000 });
+        return;
+      }
+      if (!isEditing && existingIds.includes(trimmedId)) {
+        setIdError(t("mcp.error.idExists"));
+        return;
+      }
     }
 
     setSaving(true);
     try {
-      const nameTrimmed = (formName || trimmedId).trim();
-      const finalName = nameTrimmed || trimmedId;
-
-      const entry: McpServer = {
-        ...(initialData ? { ...initialData } : {}),
-        id: trimmedId,
-        name: finalName,
-        server: serverSpec,
-        apps: enabledApps,
-      };
-
       const descriptionTrimmed = formDescription.trim();
-      if (descriptionTrimmed) {
-        entry.description = descriptionTrimmed;
-      } else {
-        delete entry.description;
-      }
-
       const homepageTrimmed = formHomepage.trim();
-      if (homepageTrimmed) {
-        entry.homepage = homepageTrimmed;
-      } else {
-        delete entry.homepage;
-      }
-
       const docsTrimmed = formDocs.trim();
-      if (docsTrimmed) {
-        entry.docs = docsTrimmed;
-      } else {
-        delete entry.docs;
-      }
-
       const parsedTags = formTags
         .split(",")
         .map((tag) => tag.trim())
         .filter((tag) => tag.length > 0);
-      if (parsedTags.length > 0) {
-        entry.tags = parsedTags;
-      } else {
-        delete entry.tags;
+
+      const applyCommonMetadata = (entry: McpServer) => {
+        if (descriptionTrimmed) {
+          entry.description = descriptionTrimmed;
+        } else {
+          delete entry.description;
+        }
+
+        if (homepageTrimmed) {
+          entry.homepage = homepageTrimmed;
+        } else {
+          delete entry.homepage;
+        }
+
+        if (docsTrimmed) {
+          entry.docs = docsTrimmed;
+        } else {
+          delete entry.docs;
+        }
+
+        if (parsedTags.length > 0) {
+          entry.tags = parsedTags;
+        } else {
+          delete entry.tags;
+        }
+      };
+
+      if (batchServers) {
+        const entries = Object.entries(batchServers);
+        for (let index = 0; index < entries.length; index += 1) {
+          const [id, spec] = entries[index];
+          const entry: McpServer = {
+            id,
+            name: index === 0 && formName.trim() ? formName.trim() : id,
+            server: spec,
+            apps: enabledApps,
+          };
+          applyCommonMetadata(entry);
+          await upsertMutation.mutateAsync(entry);
+        }
+      } else if (serverSpec) {
+        const nameTrimmed = (formName || trimmedId).trim();
+        const finalName = nameTrimmed || trimmedId;
+
+        const entry: McpServer = {
+          ...(initialData ? { ...initialData } : {}),
+          id: trimmedId,
+          name: finalName,
+          server: serverSpec,
+          apps: enabledApps,
+        };
+        applyCommonMetadata(entry);
+        await upsertMutation.mutateAsync(entry);
       }
 
-      await upsertMutation.mutateAsync(entry);
       toast.success(t("common.success"), { closeButton: true });
       await onSave();
     } catch (error: any) {

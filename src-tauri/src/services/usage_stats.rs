@@ -5,7 +5,7 @@
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -112,6 +112,14 @@ pub struct RequestLogDetail {
     pub duration_ms: Option<u64>,
     pub status_code: u16,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_source: Option<String>,
@@ -912,7 +920,7 @@ impl Database {
                     l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                     l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
                     l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
-                    l.status_code, l.error_message, l.created_at, l.data_source
+                    l.status_code, l.error_message, l.session_id, l.provider_type, l.created_at, l.data_source
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
              {where_clause}
@@ -948,8 +956,12 @@ impl Database {
                 duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
                 status_code: row.get::<_, i64>(20)? as u16,
                 error_message: row.get(21)?,
-                created_at: row.get(22)?,
-                data_source: row.get(23)?,
+                session_id: row.get(22)?,
+                session_title: None,
+                project_path: None,
+                provider_type: row.get(23)?,
+                created_at: row.get(24)?,
+                data_source: row.get(25)?,
             })
         })?;
 
@@ -958,14 +970,18 @@ impl Database {
         let mut pricing_cache = HashMap::new();
 
         for row in rows {
-            let mut log = row?;
+            logs.push(row?);
+        }
+
+        Self::populate_session_context_for_logs(&conn, &mut logs)?;
+
+        for log in &mut logs {
             Self::maybe_backfill_log_costs(
                 &conn,
-                &mut log,
+                log,
                 &mut provider_cache,
                 &mut pricing_cache,
             )?;
-            logs.push(log);
         }
 
         Ok(PaginatedLogs {
@@ -990,7 +1006,7 @@ impl Database {
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                     is_streaming, latency_ms, first_token_ms, duration_ms,
-                    status_code, error_message, created_at, l.data_source
+                    status_code, error_message, l.session_id, l.provider_type, created_at, l.data_source
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
              WHERE l.request_id = ?"
@@ -1021,13 +1037,18 @@ impl Database {
                 duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
                 status_code: row.get::<_, i64>(20)? as u16,
                 error_message: row.get(21)?,
-                created_at: row.get(22)?,
-                data_source: row.get(23)?,
+                session_id: row.get(22)?,
+                session_title: None,
+                project_path: None,
+                provider_type: row.get(23)?,
+                created_at: row.get(24)?,
+                data_source: row.get(25)?,
             })
         });
 
         match result {
             Ok(mut detail) => {
+                Self::populate_session_context_for_log(&conn, &mut detail)?;
                 let mut provider_cache = HashMap::new();
                 let mut pricing_cache = HashMap::new();
                 Self::maybe_backfill_log_costs(
@@ -1041,6 +1062,157 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
+    }
+
+    fn populate_session_context_for_log(
+        conn: &Connection,
+        log: &mut RequestLogDetail,
+    ) -> Result<(), AppError> {
+        let Some(session_id) = log
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+
+        let context = conn
+            .query_row(
+                "SELECT
+                    COALESCE(NULLIF(custom_title, ''), NULLIF(detected_title, '')),
+                    project_dir
+                 FROM session_title_mappings
+                 WHERE app_type = ?1 AND session_id = ?2
+                 ORDER BY COALESCE(last_active_at, 0) DESC, updated_at DESC
+                 LIMIT 1",
+                params![log.app_type, session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取会话上下文失败: {e}")))?;
+
+        if let Some((session_title, project_path)) = context {
+            log.session_title = session_title.filter(|value| !value.trim().is_empty());
+            log.project_path = project_path.filter(|value| !value.trim().is_empty());
+        }
+
+        Ok(())
+    }
+
+    fn populate_session_context_for_logs(
+        conn: &Connection,
+        logs: &mut [RequestLogDetail],
+    ) -> Result<(), AppError> {
+        let mut session_ids_by_app = HashMap::<String, Vec<String>>::new();
+
+        for log in logs.iter() {
+            let Some(session_id) = log
+                .session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            session_ids_by_app
+                .entry(log.app_type.clone())
+                .or_default()
+                .push(session_id.to_string());
+        }
+
+        if session_ids_by_app.is_empty() {
+            return Ok(());
+        }
+
+        let mut context_map = HashMap::<(String, String), (Option<String>, Option<String>)>::new();
+
+        for (app_type, session_ids) in session_ids_by_app {
+            let mut unique_session_ids = session_ids;
+            unique_session_ids.sort();
+            unique_session_ids.dedup();
+
+            if unique_session_ids.is_empty() {
+                continue;
+            }
+
+            let placeholders = vec!["?"; unique_session_ids.len()].join(", ");
+            let sql = format!(
+                "SELECT session_id,
+                        COALESCE(NULLIF(custom_title, ''), NULLIF(detected_title, '')),
+                        project_dir
+                 FROM session_title_mappings
+                 WHERE app_type = ?
+                   AND session_id IN ({placeholders})
+                 ORDER BY COALESCE(last_active_at, 0) DESC, updated_at DESC"
+            );
+
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| AppError::Database(format!("准备批量会话上下文查询失败: {e}")))?;
+
+            let mut sql_params = Vec::<SqlValue>::with_capacity(unique_session_ids.len() + 1);
+            sql_params.push(SqlValue::from(app_type.clone()));
+            for session_id in &unique_session_ids {
+                sql_params.push(SqlValue::from(session_id.clone()));
+            }
+
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(sql_params.iter()))
+                .map_err(|e| AppError::Database(format!("执行批量会话上下文查询失败: {e}")))?;
+
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::Database(format!("读取批量会话上下文失败: {e}")))?
+            {
+                let session_id: String = row
+                    .get(0)
+                    .map_err(|e| AppError::Database(format!("解析会话 ID 失败: {e}")))?;
+                let key = (app_type.clone(), session_id.clone());
+                if context_map.contains_key(&key) {
+                    continue;
+                }
+
+                let session_title = row
+                    .get::<_, Option<String>>(1)
+                    .map_err(|e| AppError::Database(format!("解析会话标题失败: {e}")))?;
+                let project_path = row
+                    .get::<_, Option<String>>(2)
+                    .map_err(|e| AppError::Database(format!("解析项目路径失败: {e}")))?;
+
+                context_map.insert(key, (session_title, project_path));
+            }
+        }
+
+        for log in logs.iter_mut() {
+            let Some(session_id) = log
+                .session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            if let Some((session_title, project_path)) =
+                context_map.get(&(log.app_type.clone(), session_id.to_string()))
+            {
+                log.session_title = session_title
+                    .clone()
+                    .filter(|value| !value.trim().is_empty());
+                log.project_path = project_path
+                    .clone()
+                    .filter(|value| !value.trim().is_empty());
+            }
+        }
+
+        Ok(())
     }
 
     /// 检查 Provider 使用限额

@@ -28,9 +28,10 @@ pub use live::{
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config,
+    build_effective_settings_with_common_config, build_effective_settings_without_template,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config,
 };
 
 // Internal re-exports
@@ -62,6 +63,7 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use std::fs;
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::TempDir;
@@ -111,6 +113,14 @@ mod tests {
                 None => env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    fn reserve_free_tcp_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("read local addr")
+            .port()
     }
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -350,8 +360,10 @@ base_url = "http://localhost:8080"
         crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
             .expect("set local current provider");
 
+        let reserved_port = reserve_free_tcp_port();
         db.update_proxy_config(ProxyConfig {
             live_takeover_active: true,
+            listen_port: reserved_port,
             ..Default::default()
         })
         .await
@@ -371,7 +383,7 @@ base_url = "http://localhost:8080"
             &get_claude_settings_path(),
             &json!({
                 "env": {
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                    "ANTHROPIC_BASE_URL": format!("http://127.0.0.1:{reserved_port}"),
                     "ANTHROPIC_API_KEY": "PROXY_MANAGED",
                     "ANTHROPIC_MODEL": "stale-model"
                 },
@@ -399,6 +411,7 @@ base_url = "http://localhost:8080"
             }),
             None,
         );
+        let expected_proxy_base_url = format!("http://127.0.0.1:{reserved_port}");
 
         ProviderService::update(&state, AppType::Claude, None, updated.clone())
             .expect("update current provider");
@@ -433,7 +446,7 @@ base_url = "http://localhost:8080"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some(expected_proxy_base_url.as_str()),
             "proxy base URL should stay intact"
         );
         assert!(
@@ -1640,7 +1653,7 @@ impl ProviderService {
         app_type: AppType,
         legacy_snippet: &str,
     ) -> Result<(), AppError> {
-        if app_type.is_additive_mode() || legacy_snippet.trim().is_empty() {
+        if legacy_snippet.trim().is_empty() {
             return Ok(());
         }
 
@@ -1693,10 +1706,6 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<(), AppError> {
-        if app_type.is_additive_mode() {
-            return Ok(());
-        }
-
         let Some(snippet) = state.db.get_config_snippet(app_type.as_str())? else {
             return Ok(());
         };
@@ -1733,7 +1742,7 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
-            AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Hermes => Self::extract_hermes_common_config(&provider.settings_config),
         }
     }
 
@@ -1748,7 +1757,7 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
-            AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
+            AppType::Hermes => Self::extract_hermes_common_config(settings_config),
         }
     }
 
@@ -1916,6 +1925,26 @@ impl ProviderService {
             obj.remove("apiKey");
             obj.remove("baseUrl");
             // Keep api and models as they might be common
+        }
+
+        if config.is_null() || (config.is_object() && config.as_object().unwrap().is_empty()) {
+            return Ok("{}".to_string());
+        }
+
+        serde_json::to_string_pretty(&config)
+            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+    }
+
+    /// Extract common config for Hermes (JSON format)
+    fn extract_hermes_common_config(settings: &Value) -> Result<String, AppError> {
+        let mut config = settings.clone();
+
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("name");
+            obj.remove("model");
+            obj.remove("base_url");
+            obj.remove("api_key");
+            obj.remove(crate::hermes_config::PROVIDER_SOURCE_FIELD);
         }
 
         if config.is_null() || (config.is_object() && config.as_object().unwrap().is_empty()) {

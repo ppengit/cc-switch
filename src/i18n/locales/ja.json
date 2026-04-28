@@ -170,7 +170,52 @@
         "oauthHint": "Google 公式は OAuth 個人認証を使用するため API Key は不要です。初回利用時にブラウザが開きます。",
         "apiKeyPlaceholder": "Gemini API Key を入力"
       }
-    }
+    },
+    "bulkDeleteAction": "選択項目を削除",
+    "bulkDeleteFailed": "{{count}} 件のプロバイダーを削除できないか、削除に失敗しました",
+    "bulkDeleteMessage": "選択した {{count}} 件のプロバイダーを削除しますか？\n\nこの操作は元に戻せません。",
+    "bulkDeleteSuccess": "{{count}} 件のプロバイダーを削除しました",
+    "bulkDeleteTitle": "プロバイダーを一括削除",
+    "bulkDisable": "すべて無効化",
+    "bulkEnable": "すべて有効化",
+    "bulkToggleFailed": "{{failed}} 件の操作に失敗しました",
+    "bulkToggleSuccess": "一括操作が完了しました: {{success}} 件成功",
+    "bulkToggleUnsupported": "現在のモードでは一括有効化/無効化をサポートしていません",
+    "configTemplate": "設定テンプレート",
+    "configTemplateHint": "テンプレート内に {providerConfig} と {mcpConfig} を残すと、アプリごとの実設定を注入できます。",
+    "configTemplateHintGemini": "Gemini テンプレートは {providerConfig}（.env）、{settingsConfig}（settings.json の追加項目）、{mcpConfig}（mcpServers）に対応します。",
+    "currentConfig": "現在の設定",
+    "currentConfigPlaceholder": "設定ファイルは空です",
+    "currentConfigSaveFailed": "現在の設定の保存に失敗しました",
+    "currentConfigSaved": "現在の設定を保存しました",
+    "currentProxy": "現在のプロキシ",
+    "disable": "無効化",
+    "disableCurrentUnsupported": "現在のプロバイダーは直接無効化できません。先に別のプロバイダーへ切り替えてください。",
+    "disabled": "無効",
+    "dragDisabledHint": "状態ソートまたは検索フィルター中はドラッグ並び替えを利用できません",
+    "dragToSort": "ドラッグして並び替え",
+    "duplicateLiveIdsLoadFailed": "live 設定内のプロバイダー ID を読み取れませんでした。設定を修正してから再試行してください。",
+    "enabled": "有効",
+    "modelName": "モデル名",
+    "noRecentSessions": "最近のセッションはありません",
+    "pinToTop": "先頭へ移動",
+    "pinToTopFailed": "先頭への移動に失敗しました",
+    "pinnedToTop": "フェイルオーバー優先度 #1 に移動しました",
+    "priority": "優先順",
+    "recentSessions": "最近のセッション",
+    "recentSessionsTitle": "直近 10 件のセッション",
+    "resetTemplate": "既定テンプレートに戻す",
+    "search": "検索",
+    "select": "選択",
+    "selectAll": "すべて選択",
+    "selectConfigFile": "設定ファイルを選択",
+    "status": "状態",
+    "templateCopied": "設定テンプレートをコピーしました",
+    "templateCopyFailed": "テンプレートのコピーに失敗しました",
+    "templateEffectHint": "このテンプレートは live 設定を書き込む際に適用され、保存前にアプリ別プレースホルダーが展開されます。",
+    "templateEffectHintGemini": "現在の Gemini 書き込みでは .env と settings.json の両方をレンダリングし、mcpServers を自動的に置き換えます。",
+    "templateSaveFailed": "設定テンプレートの保存に失敗しました",
+    "templateSaved": "設定テンプレートを保存しました"
   },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
@@ -736,7 +781,14 @@
     "messageCopied": "メッセージがコピーされました",
     "conversationHistory": "会話履歴",
     "expandContent": "全文を表示",
-    "collapseContent": "折りたたむ"
+    "collapseContent": "折りたたむ",
+    "rename": "名前を変更",
+    "renameDialogTitle": "セッション名を変更",
+    "renameFailed": "セッション名の変更に失敗しました: {{error}}",
+    "renameInputLabel": "セッション名",
+    "renameInputPlaceholder": "CC Switch 内だけで表示するセッション名を入力",
+    "renameSuccess": "セッション名を更新しました",
+    "renameTooltip": "CC Switch 内の表示名のみ変更します"
   },
   "console": {
     "providerSwitchReceived": "プロバイダー切り替えイベントを受信:",
@@ -881,7 +933,11 @@
     "fetchModelsAuthFailed": "API Key が無効か、権限がありません",
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
-    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください"
+    "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
+    "applySaveOptionsFailed": "プロバイダーは保存されましたが、先頭固定/有効化オプションの適用に失敗しました",
+    "enableOnSave": "有効化",
+    "pinToTopOnSave": "先頭に固定",
+    "providerKeyStatusLoading": "プロバイダーキーの状態を読み込み中です。しばらくしてから再試行してください。"
   },
   "copilot": {
     "authSection": "GitHub Copilot 認証",
@@ -1008,7 +1064,8 @@
     "modelNamePlaceholder": "例: gpt-5-codex",
     "contextWindow1M": "1M コンテキストウィンドウ",
     "autoCompactLimit": "自動圧縮しきい値",
-    "autoCompactLimitHint": "コンテキストトークン数がこのしきい値に達すると履歴を自動圧縮"
+    "autoCompactLimitHint": "コンテキストトークン数がこのしきい値に達すると履歴を自動圧縮",
+    "noCommonConfigToApply": "共通設定スニペットが空、または適用できる内容がありません"
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -1215,7 +1272,12 @@
     "pricingAdded": "価格設定が追加されました",
     "pricingUpdated": "価格設定が更新されました",
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
-    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）"
+    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）",
+    "projectPath": "プロジェクトパス",
+    "requestMetadata": "リクエストメタデータ",
+    "session": "セッション",
+    "sessionId": "セッション ID",
+    "sessionTitle": "セッションタイトル"
   },
   "usageScript": {
     "title": "利用状況を設定",

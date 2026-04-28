@@ -1,7 +1,21 @@
 // 配置相关 API
 import { invoke } from "@tauri-apps/api/core";
+import type { AppId } from "./types";
 
 export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
+
+export interface AppConfigFileEntry {
+  key: string;
+  label: string;
+  path: string;
+}
+
+export interface AppConfigFileContent {
+  key: string;
+  label: string;
+  path: string;
+  content: string;
+}
 
 /**
  * 获取 Claude 通用配置片段（已废弃，使用 getCommonConfigSnippet）
@@ -74,4 +88,55 @@ export async function extractCommonConfigSnippet(
   }
 
   return invoke<string>("extract_common_config_snippet", args);
+}
+
+export async function listAppConfigFiles(
+  appId: AppId,
+): Promise<AppConfigFileEntry[]> {
+  return invoke<AppConfigFileEntry[]>("list_app_config_files", {
+    app: appId,
+  });
+}
+
+export async function readAppConfigFile(options: {
+  appId: AppId;
+  fileKey: string;
+}): Promise<AppConfigFileContent> {
+  const { appId, fileKey } = options;
+  return invoke<AppConfigFileContent>("read_app_config_file", {
+    app: appId,
+    fileKey,
+  });
+}
+
+export async function writeAppConfigFile(options: {
+  appId: AppId;
+  fileKey: string;
+  content: string;
+}): Promise<boolean> {
+  const { appId, fileKey, content } = options;
+  return invoke<boolean>("write_app_config_file", {
+    app: appId,
+    fileKey,
+    content,
+  });
+}
+
+export async function getAppConfigTemplate(
+  appId: AppId,
+): Promise<string | null> {
+  return invoke<string | null>("get_app_config_template", {
+    app: appId,
+  });
+}
+
+export async function setAppConfigTemplate(options: {
+  appId: AppId;
+  template: string;
+}): Promise<boolean> {
+  const { appId, template } = options;
+  return invoke<boolean>("set_app_config_template", {
+    app: appId,
+    template,
+  });
 }

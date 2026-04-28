@@ -170,7 +170,52 @@
         "oauthHint": "Google official uses OAuth personal authentication, no need to fill in API Key. The browser will automatically open for login on first use.",
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
-    }
+    },
+    "bulkDeleteAction": "Delete Selected",
+    "bulkDeleteFailed": "{{count}} providers failed to delete or cannot be deleted",
+    "bulkDeleteMessage": "Delete the selected {{count}} providers?\n\nThis action cannot be undone.",
+    "bulkDeleteSuccess": "Deleted {{count}} providers",
+    "bulkDeleteTitle": "Delete Providers",
+    "bulkDisable": "Disable All",
+    "bulkEnable": "Enable All",
+    "bulkToggleFailed": "{{failed}} operations failed",
+    "bulkToggleSuccess": "Bulk action complete: {{success}} succeeded",
+    "bulkToggleUnsupported": "Bulk enable/disable is not supported in the current mode",
+    "configTemplate": "Config Template",
+    "configTemplateHint": "Keep {providerConfig} and {mcpConfig} in the template so real values can be injected per app.",
+    "configTemplateHintGemini": "Gemini templates support {providerConfig} (.env), {settingsConfig} (extra settings.json fields), and {mcpConfig} (mcpServers).",
+    "currentConfig": "Current Config",
+    "currentConfigPlaceholder": "Config file is empty",
+    "currentConfigSaveFailed": "Failed to save current config",
+    "currentConfigSaved": "Current config saved",
+    "currentProxy": "Current Proxy",
+    "disable": "Disable",
+    "disableCurrentUnsupported": "The current provider cannot be disabled directly. Switch to another provider first.",
+    "disabled": "Disabled",
+    "dragDisabledHint": "Drag sorting is unavailable while status sorting or search filtering is active",
+    "dragToSort": "Drag to sort",
+    "duplicateLiveIdsLoadFailed": "Failed to read provider IDs from the live config. Fix the config and try again.",
+    "enabled": "Enabled",
+    "modelName": "Model Name",
+    "noRecentSessions": "No recent sessions",
+    "pinToTop": "Pin to Top",
+    "pinToTopFailed": "Failed to pin provider to the top",
+    "pinnedToTop": "Pinned to failover priority #1",
+    "priority": "Priority",
+    "recentSessions": "Recent Sessions",
+    "recentSessionsTitle": "10 most recent sessions",
+    "resetTemplate": "Reset to Default Template",
+    "search": "Search",
+    "select": "Select",
+    "selectAll": "Select all",
+    "selectConfigFile": "Select config file",
+    "status": "Status",
+    "templateCopied": "Config template copied",
+    "templateCopyFailed": "Failed to copy template",
+    "templateEffectHint": "This template is applied when writing the live config, and app-specific placeholders are rendered before save.",
+    "templateEffectHintGemini": "Current Gemini writes render both .env and settings.json and replace mcpServers automatically.",
+    "templateSaveFailed": "Failed to save config template",
+    "templateSaved": "Config template saved"
   },
   "notifications": {
     "providerAdded": "Provider added",
@@ -736,7 +781,14 @@
     "messageCopied": "Message copied",
     "conversationHistory": "Conversation History",
     "expandContent": "Expand full content",
-    "collapseContent": "Collapse"
+    "collapseContent": "Collapse",
+    "rename": "Rename",
+    "renameDialogTitle": "Rename Session",
+    "renameFailed": "Failed to rename session: {{error}}",
+    "renameInputLabel": "Session Title",
+    "renameInputPlaceholder": "Enter a custom session title",
+    "renameSuccess": "Session title updated",
+    "renameTooltip": "Rename this session in CC Switch only"
   },
   "console": {
     "providerSwitchReceived": "Received provider switch event:",
@@ -881,7 +933,11 @@
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
-    "fetchModelsTimeout": "Request timed out, please check network connection"
+    "fetchModelsTimeout": "Request timed out, please check network connection",
+    "applySaveOptionsFailed": "Provider saved, but failed to apply pin/enable options",
+    "enableOnSave": "Enable",
+    "pinToTopOnSave": "Pin to top",
+    "providerKeyStatusLoading": "Loading provider key state. Try again in a moment."
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1008,7 +1064,8 @@
     "modelNamePlaceholder": "e.g., gpt-5-codex",
     "contextWindow1M": "1M Context Window",
     "autoCompactLimit": "Auto Compact Limit",
-    "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit"
+    "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit",
+    "noCommonConfigToApply": "Common config snippet is empty or has nothing to apply"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1215,7 +1272,12 @@
     "pricingAdded": "Pricing added",
     "pricingUpdated": "Pricing updated",
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
-    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)"
+    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
+    "projectPath": "Project Path",
+    "requestMetadata": "Request Metadata",
+    "session": "Session",
+    "sessionId": "Session ID",
+    "sessionTitle": "Session Title"
   },
   "usageScript": {
     "title": "Configure Usage Query",

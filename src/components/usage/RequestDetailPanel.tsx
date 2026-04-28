@@ -50,6 +50,25 @@ export function RequestDetailPanel({
     );
   }
 
+  const metadataPayload = {
+    requestId: request.requestId,
+    appType: request.appType,
+    providerId: request.providerId,
+    providerType: request.providerType ?? null,
+    sessionId: request.sessionId ?? null,
+    sessionTitle: request.sessionTitle ?? null,
+    projectPath: request.projectPath ?? null,
+    requestModel: request.requestModel ?? null,
+    model: request.model,
+    dataSource: request.dataSource ?? "proxy",
+    isStreaming: request.isStreaming,
+    statusCode: request.statusCode,
+    latencyMs: request.latencyMs,
+    firstTokenMs: request.firstTokenMs ?? null,
+    durationMs: request.durationMs ?? null,
+    createdAt: request.createdAt,
+  };
+
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
@@ -104,6 +123,28 @@ export function RequestDetailPanel({
                   {t("usage.model", "模型")}
                 </dt>
                 <dd className="font-mono">{request.model}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {t("usage.sessionId", "会话 ID")}
+                </dt>
+                <dd className="font-mono text-xs">
+                  {request.sessionId || "-"}
+                </dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-muted-foreground">
+                  {t("usage.sessionTitle", "会话标题")}
+                </dt>
+                <dd>{request.sessionTitle || "-"}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-muted-foreground">
+                  {t("usage.projectPath", "项目路径")}
+                </dt>
+                <dd className="font-mono text-xs break-all">
+                  {request.projectPath || "-"}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">
@@ -278,6 +319,15 @@ export function RequestDetailPanel({
               <p className="text-sm text-red-700">{request.errorMessage}</p>
             </div>
           )}
+
+          <div className="rounded-lg border p-4">
+            <h3 className="mb-2 font-semibold">
+              {t("usage.requestMetadata", "请求元数据")}
+            </h3>
+            <pre className="max-h-56 overflow-auto rounded bg-muted p-3 text-xs leading-relaxed">
+              {JSON.stringify(metadataPayload, null, 2)}
+            </pre>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

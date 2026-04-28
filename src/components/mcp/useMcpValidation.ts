@@ -69,7 +69,37 @@ export function useMcpValidation() {
         const obj = JSON.parse(value);
         if (obj && typeof obj === "object") {
           if (Object.prototype.hasOwnProperty.call(obj, "mcpServers")) {
-            return t("mcp.error.singleServerObjectRequired");
+            const servers = (obj as any)?.mcpServers;
+            if (
+              !servers ||
+              typeof servers !== "object" ||
+              Array.isArray(servers)
+            ) {
+              return t("mcp.error.jsonInvalid");
+            }
+
+            const entries = Object.entries(servers as Record<string, any>);
+            if (entries.length === 0) {
+              return t("mcp.error.jsonInvalid");
+            }
+
+            for (const [serverId, spec] of entries) {
+              if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+                return `${t("mcp.error.jsonInvalid")}: mcpServers.${serverId}`;
+              }
+              const typ = (spec as any)?.type;
+              if (typ === "stdio" && !(spec as any)?.command?.trim()) {
+                return t("mcp.error.commandRequired");
+              }
+              if (
+                (typ === "http" || typ === "sse") &&
+                !(spec as any)?.url?.trim()
+              ) {
+                return t("mcp.wizard.urlRequired");
+              }
+            }
+
+            return "";
           }
 
           const typ = (obj as any)?.type;

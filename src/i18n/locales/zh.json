@@ -170,7 +170,52 @@
         "oauthHint": "Google 官方使用 OAuth 个人认证，无需填写 API Key。首次使用时会自动打开浏览器进行登录。",
         "apiKeyPlaceholder": "请输入 Gemini API Key"
       }
-    }
+    },
+    "bulkDeleteAction": "确认删除",
+    "bulkDeleteFailed": "{{count}} 个供应商删除失败或不可删",
+    "bulkDeleteMessage": "将删除已选中的 {{count}} 个供应商。\n\n此操作不可撤销。",
+    "bulkDeleteSuccess": "已删除 {{count}} 个供应商",
+    "bulkDeleteTitle": "批量删除供应商",
+    "bulkDisable": "全部禁用",
+    "bulkEnable": "全部启用",
+    "bulkToggleFailed": "有 {{failed}} 项操作失败",
+    "bulkToggleSuccess": "批量操作完成：成功 {{success}} 项",
+    "bulkToggleUnsupported": "当前模式不支持批量启用/禁用",
+    "configTemplate": "配置模板",
+    "configTemplateHint": "模板中保留 {providerConfig} 与 {mcpConfig} 占位符，便于按应用注入实际配置。",
+    "configTemplateHintGemini": "Gemini 模板支持 {providerConfig}（.env）、{settingsConfig}（settings.json 其他字段）与 {mcpConfig}（mcpServers）。",
+    "currentConfig": "当前配置",
+    "currentConfigPlaceholder": "配置文件内容为空",
+    "currentConfigSaveFailed": "保存当前配置失败",
+    "currentConfigSaved": "当前配置已保存",
+    "currentProxy": "当前代理",
+    "disable": "禁用",
+    "disableCurrentUnsupported": "当前供应商无法直接禁用，请先切换到其他供应商",
+    "disabled": "禁用",
+    "dragDisabledHint": "启用状态排序或搜索过滤时暂不支持拖拽排序",
+    "dragToSort": "拖拽排序",
+    "duplicateLiveIdsLoadFailed": "读取配置中的供应商标识失败，请先修复配置后再试",
+    "enabled": "启用",
+    "modelName": "模型名称",
+    "noRecentSessions": "暂无最近会话",
+    "pinToTop": "置顶",
+    "pinToTopFailed": "置顶失败",
+    "pinnedToTop": "已置顶到故障转移顺序 #1",
+    "priority": "序号",
+    "recentSessions": "最近会话",
+    "recentSessionsTitle": "最近 10 条会话",
+    "resetTemplate": "恢复默认模板",
+    "search": "搜索",
+    "select": "选择",
+    "selectAll": "全选",
+    "selectConfigFile": "选择配置文件",
+    "status": "状态",
+    "templateCopied": "配置模板已复制",
+    "templateCopyFailed": "复制模板失败",
+    "templateEffectHint": "该模板会在写入应用实际配置时生效，保存前会先渲染应用对应的占位符。",
+    "templateEffectHintGemini": "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json，并自动覆盖 mcpServers。",
+    "templateSaveFailed": "保存配置模板失败",
+    "templateSaved": "配置模板已保存"
   },
   "notifications": {
     "providerAdded": "供应商已添加",
@@ -736,7 +781,14 @@
     "messageCopied": "已复制消息内容",
     "conversationHistory": "对话记录",
     "expandContent": "展开完整内容",
-    "collapseContent": "收起"
+    "collapseContent": "收起",
+    "rename": "修改名称",
+    "renameDialogTitle": "修改会话名称",
+    "renameFailed": "修改会话名称失败：{{error}}",
+    "renameInputLabel": "会话名称",
+    "renameInputPlaceholder": "输入仅在 CC Switch 中显示的会话名称",
+    "renameSuccess": "会话名称已更新",
+    "renameTooltip": "仅修改 CC Switch 中显示的名称，不回写到应用"
   },
   "console": {
     "providerSwitchReceived": "收到供应商切换事件:",
@@ -881,7 +933,11 @@
     "fetchModelsAuthFailed": "API Key 无效或无权限",
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
     "fetchModelsEndpointNotFound": "未找到可用的模型列表端点，请检查 Base URL 或确认供应商是否开放该接口",
-    "fetchModelsTimeout": "请求超时，请检查网络连接"
+    "fetchModelsTimeout": "请求超时，请检查网络连接",
+    "applySaveOptionsFailed": "已保存供应商，但应用置顶/启用选项失败",
+    "enableOnSave": "启用",
+    "pinToTopOnSave": "置顶",
+    "providerKeyStatusLoading": "正在加载供应商标识状态，请稍后再试"
   },
   "copilot": {
     "authSection": "GitHub Copilot 认证",
@@ -1008,7 +1064,8 @@
     "modelNamePlaceholder": "例如: gpt-5-codex",
     "contextWindow1M": "1M 上下文窗口",
     "autoCompactLimit": "压缩阈值",
-    "autoCompactLimitHint": "上下文 token 数达到此阈值时自动压缩历史"
+    "autoCompactLimitHint": "上下文 token 数达到此阈值时自动压缩历史",
+    "noCommonConfigToApply": "通用配置片段为空或没有可写入的内容"
   },
   "geminiConfig": {
     "envFile": "环境变量 (.env)",
@@ -1215,7 +1272,12 @@
     "pricingAdded": "定价已添加",
     "pricingUpdated": "定价已更新",
     "cacheReadCostPerMillion": "缓存读取成本 (每百万 tokens, USD)",
-    "cacheCreationCostPerMillion": "缓存写入成本 (每百万 tokens, USD)"
+    "cacheCreationCostPerMillion": "缓存写入成本 (每百万 tokens, USD)",
+    "projectPath": "项目路径",
+    "requestMetadata": "请求元数据",
+    "session": "会话",
+    "sessionId": "会话 ID",
+    "sessionTitle": "会话标题"
   },
   "usageScript": {
     "title": "配置用量查询",

@@ -60,10 +60,16 @@ vi.mock("@/components/providers/AddProviderDialog", () => ({
         <button
           onClick={() =>
             onSubmit({
-              name: `New ${appId} Provider`,
-              settingsConfig: {},
-              category: "custom",
-              sortIndex: 99,
+              provider: {
+                name: `New ${appId} Provider`,
+                settingsConfig: {},
+                category: "custom",
+                sortIndex: 99,
+              },
+              saveOptions: {
+                pinToTop: true,
+                enabled: true,
+              },
             })
           }
         >

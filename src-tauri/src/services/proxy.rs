@@ -3,14 +3,15 @@
 //! 提供代理服务器的启动、停止和配置管理
 
 use crate::app_config::AppType;
-use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
+use crate::config::{delete_file, get_claude_settings_path, read_json_file, write_json_file};
 use crate::database::Database;
 use crate::provider::Provider;
 use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use crate::services::provider::{
-    build_effective_settings_with_common_config, write_live_with_common_config,
+    build_effective_settings_with_common_config, build_effective_settings_without_template,
+    write_live_with_common_config,
 };
 use serde_json::{json, Value};
 use std::str::FromStr;
@@ -1476,6 +1477,14 @@ impl ProxyService {
                 .map_err(|e| format!("构建 {app_type} 有效配置失败: {e}"))?;
 
         if matches!(app_type_enum, AppType::Codex) {
+            let effective_without_template =
+                build_effective_settings_without_template(self.db.as_ref(), &app_type_enum, provider)
+                    .map_err(|e| format!("构建 {app_type} 原始有效配置失败: {e}"))?;
+            Self::overlay_codex_mcp_servers_from_source(
+                &mut effective_settings,
+                &effective_without_template,
+            )?;
+
             let existing_backup = self
                 .db
                 .get_live_backup(app_type)
@@ -1498,13 +1507,7 @@ impl ProxyService {
             AppType::Codex => serde_json::to_string(&effective_settings)
                 .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?,
             AppType::Gemini => {
-                // Gemini takeover 仅修改 .env；settings.json（含 mcpServers）保持原样。
-                let env_backup = if let Some(env) = effective_settings.get("env") {
-                    json!({ "env": env })
-                } else {
-                    json!({ "env": {} })
-                };
-                serde_json::to_string(&env_backup)
+                serde_json::to_string(&effective_settings)
                     .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
             }
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
@@ -1655,6 +1658,63 @@ impl ProxyService {
         Ok(())
     }
 
+    fn overlay_codex_mcp_servers_from_source(
+        target_settings: &mut Value,
+        source_settings: &Value,
+    ) -> Result<(), String> {
+        let target_obj = target_settings
+            .as_object_mut()
+            .ok_or_else(|| "Codex 备份必须是 JSON 对象".to_string())?;
+
+        let target_config = target_obj
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut target_doc = if target_config.trim().is_empty() {
+            toml_edit::DocumentMut::new()
+        } else {
+            target_config
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| format!("解析新的 Codex config.toml 失败: {e}"))?
+        };
+
+        let source_config = source_settings
+            .get("config")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if source_config.trim().is_empty() {
+            return Ok(());
+        }
+
+        let source_doc = source_config
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("解析 Codex 源配置失败: {e}"))?;
+        let Some(source_mcp_servers) = source_doc.get("mcp_servers") else {
+            return Ok(());
+        };
+
+        if target_doc.get("mcp_servers").is_none() {
+            target_doc["mcp_servers"] = toml_edit::table();
+        }
+
+        let target_mcp_servers = target_doc
+            .get_mut("mcp_servers")
+            .expect("mcp_servers should be available");
+        let (Some(target_table), Some(source_table)) = (
+            target_mcp_servers.as_table_like_mut(),
+            source_mcp_servers.as_table_like(),
+        ) else {
+            return Ok(());
+        };
+
+        for (server_id, server_item) in source_table.iter() {
+            target_table.insert(server_id, server_item.clone());
+        }
+
+        target_obj.insert("config".to_string(), json!(target_doc.to_string()));
+        Ok(())
+    }
+
     /// 代理模式下切换供应商（热切换，不写 Live）
     pub async fn switch_proxy_target(
         &self,
@@ -1769,7 +1829,10 @@ impl ProxyService {
     }
 
     fn read_gemini_live(&self) -> Result<Value, String> {
-        use crate::gemini_config::{env_to_json, get_gemini_env_path, read_gemini_env};
+        use crate::gemini_config::{
+            env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+            read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
+        };
 
         let env_path = get_gemini_env_path();
         if !env_path.exists() {
@@ -1777,14 +1840,69 @@ impl ProxyService {
         }
 
         let env_map = read_gemini_env().map_err(|e| format!("读取 Gemini env 失败: {e}"))?;
-        Ok(env_to_json(&env_map))
+        let mut config = env_to_json(&env_map);
+        let settings_path = get_gemini_settings_path();
+        let settings_value = if settings_path.exists() {
+            read_json_file(&settings_path).map_err(|e| format!("读取 Gemini settings 失败: {e}"))?
+        } else {
+            json!({})
+        };
+
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("config".to_string(), settings_value);
+            let env_text = read_gemini_env_text().map_err(|e| format!("读取 Gemini env 文本失败: {e}"))?;
+            if !env_text.is_empty() {
+                obj.insert(
+                    GEMINI_RENDERED_ENV_TEXT_FIELD.to_string(),
+                    Value::String(env_text),
+                );
+            }
+        }
+
+        Ok(config)
     }
 
     fn write_gemini_live(&self, config: &Value) -> Result<(), String> {
-        use crate::gemini_config::{json_to_env, write_gemini_env_atomic};
+        use crate::gemini_config::{
+            env_text_matches_map, get_gemini_settings_path, json_to_env, write_gemini_env_atomic,
+            write_gemini_env_text_atomic, GEMINI_RENDERED_ENV_TEXT_FIELD,
+        };
 
         let env_map = json_to_env(config).map_err(|e| format!("转换 Gemini 配置失败: {e}"))?;
-        write_gemini_env_atomic(&env_map).map_err(|e| format!("写入 Gemini env 失败: {e}"))?;
+        let rendered_env_text = config
+            .get(GEMINI_RENDERED_ENV_TEXT_FIELD)
+            .and_then(|v| v.as_str());
+        let can_write_rendered_env_text = rendered_env_text
+            .map(|content| env_text_matches_map(content, &env_map))
+            .transpose()
+            .map_err(|e| format!("校验 Gemini env 文本失败: {e}"))?
+            .unwrap_or(false);
+
+        if can_write_rendered_env_text {
+            write_gemini_env_text_atomic(rendered_env_text.unwrap_or_default())
+                .map_err(|e| format!("写入 Gemini env 失败: {e}"))?;
+        } else {
+            write_gemini_env_atomic(&env_map).map_err(|e| format!("写入 Gemini env 失败: {e}"))?;
+        }
+
+        let settings_path = get_gemini_settings_path();
+        match config.get("config") {
+            Some(Value::Object(_)) => {
+                write_json_file(&settings_path, &config["config"])
+                    .map_err(|e| format!("写入 Gemini settings 失败: {e}"))?;
+            }
+            Some(Value::Null) => {
+                if settings_path.exists() {
+                    delete_file(&settings_path)
+                        .map_err(|e| format!("删除 Gemini settings 失败: {e}"))?;
+                }
+            }
+            Some(_) => {
+                return Err("Gemini settings.json 配置格式错误：config 必须是对象或 null".to_string());
+            }
+            None => {}
+        }
+
         Ok(())
     }
 

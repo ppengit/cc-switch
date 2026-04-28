@@ -18,14 +18,16 @@ export function formatJSON(value: string): string {
  * 支持两种格式：
  * 1. 纯配置对象：{ "command": "npx", "args": [...], ... }
  * 2. 带键名包装：  "server-name": { "command": "npx", ... }  或  { "server-name": {...} }
+ * 3. 标准多服务器包装：{ "mcpServers": { "server-a": {...}, "server-b": {...} } }
  *
  * @param jsonText - JSON 字符串
- * @returns { id?: string, config: object, formattedConfig: string }
+ * @returns 单服务器时返回 id/config；多服务器时返回 servers
  * @throws 如果 JSON 格式无效
  */
 export function parseSmartMcpJson(jsonText: string): {
   id?: string;
-  config: any;
+  config?: any;
+  servers?: Record<string, any>;
   formattedConfig: string;
 } {
   let trimmed = jsonText.trim();
@@ -39,6 +41,41 @@ export function parseSmartMcpJson(jsonText: string): {
   }
 
   const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("JSON root must be an object");
+  }
+
+  // 标准 mcpServers 包裹结构
+  if (
+    Object.prototype.hasOwnProperty.call(parsed, "mcpServers") &&
+    parsed.mcpServers &&
+    typeof parsed.mcpServers === "object" &&
+    !Array.isArray(parsed.mcpServers)
+  ) {
+    const servers = parsed.mcpServers as Record<string, any>;
+    const ids = Object.keys(servers);
+    if (ids.length === 0) {
+      throw new Error("mcpServers is empty");
+    }
+
+    if (ids.length === 1) {
+      const id = ids[0];
+      const config = servers[id];
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error(`mcpServers.${id} must be an object`);
+      }
+      return {
+        id,
+        config,
+        formattedConfig: JSON.stringify(config, null, 2),
+      };
+    }
+
+    return {
+      servers,
+      formattedConfig: JSON.stringify({ mcpServers: servers }, null, 2),
+    };
+  }
 
   // 如果是单键对象且值是对象，提取键名和配置
   const keys = Object.keys(parsed);

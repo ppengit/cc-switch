@@ -38,6 +38,7 @@ import {
   type AppId,
   type ProviderSwitchEvent,
 } from "@/lib/api";
+import { failoverApi } from "@/lib/api/failover";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
 import { useProviderActions } from "@/hooks/useProviderActions";
 import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
@@ -88,6 +89,7 @@ import ToolsPanel from "@/components/openclaw/ToolsPanel";
 import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
+import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 
 type View =
   | "providers"
@@ -643,14 +645,196 @@ function App() {
     }
   };
 
+  const isAdditiveModeApp =
+    activeApp === "opencode" ||
+    activeApp === "openclaw" ||
+    activeApp === "hermes";
+
+  const invalidateProviderCaches = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["providers", activeApp] });
+    await queryClient.invalidateQueries({
+      queryKey: ["failoverQueue", activeApp],
+    });
+
+    if (activeApp === "opencode") {
+      await queryClient.invalidateQueries({
+        queryKey: ["opencodeLiveProviderIds"],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["omo", "current-provider-id"],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["omo-slim", "current-provider-id"],
+      });
+    } else if (activeApp === "openclaw") {
+      await queryClient.invalidateQueries({
+        queryKey: openclawKeys.liveProviderIds,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: openclawKeys.health,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: openclawKeys.defaultModel,
+      });
+    } else if (activeApp === "hermes") {
+      await queryClient.invalidateQueries({
+        queryKey: hermesKeys.liveProviderIds,
+      });
+    }
+
+    await providersApi.updateTrayMenu().catch(() => undefined);
+  };
+
+  const pinProviderToTop = async (providerId: string) => {
+    const providerMap = await providersApi.getAll(activeApp);
+    const allProviders = Object.values(providerMap);
+    if (allProviders.length <= 1) return;
+
+    const sorted = [...allProviders].sort((a, b) => {
+      const sortDiff =
+        (a.sortIndex ?? Number.MAX_SAFE_INTEGER) -
+        (b.sortIndex ?? Number.MAX_SAFE_INTEGER);
+      if (sortDiff !== 0) return sortDiff;
+      const createdDiff =
+        (a.createdAt ?? Number.MAX_SAFE_INTEGER) -
+        (b.createdAt ?? Number.MAX_SAFE_INTEGER);
+      if (createdDiff !== 0) return createdDiff;
+      return a.id.localeCompare(b.id);
+    });
+
+    const target = sorted.find((item) => item.id === providerId);
+    if (!target) return;
+
+    const reordered = [
+      target,
+      ...sorted.filter((item) => item.id !== providerId),
+    ];
+    const updates = reordered.map((item, index) => ({
+      id: item.id,
+      sortIndex: index,
+    }));
+
+    await providersApi.updateSortOrder(updates, activeApp);
+  };
+
+  const applyProviderSaveOptions = async (payload: {
+    providerId: string;
+    pinToTop: boolean;
+    enabled: boolean;
+    wasCurrentBeforeSave: boolean;
+  }) => {
+    const { providerId, pinToTop, enabled, wasCurrentBeforeSave } = payload;
+
+    if (pinToTop) {
+      await pinProviderToTop(providerId);
+    }
+
+    let isFailoverModeActive = false;
+    if (!isAdditiveModeApp && isProxyRunning && isCurrentAppTakeoverActive) {
+      try {
+        isFailoverModeActive =
+          await failoverApi.getAutoFailoverEnabled(activeApp);
+      } catch (error) {
+        console.error("[App] Failed to read failover mode state", error);
+      }
+    }
+
+    if (isFailoverModeActive) {
+      if (enabled) {
+        await failoverApi.addToFailoverQueue(activeApp, providerId);
+      } else {
+        await failoverApi.removeFromFailoverQueue(activeApp, providerId);
+      }
+    } else if (isAdditiveModeApp) {
+      if (enabled) {
+        await providersApi.switch(providerId, activeApp);
+      } else {
+        await providersApi.removeFromLiveConfig(providerId, activeApp);
+      }
+    } else if (enabled) {
+      await providersApi.switch(providerId, activeApp);
+    } else if (wasCurrentBeforeSave) {
+      toast.info(
+        t("provider.disableCurrentUnsupported", {
+          defaultValue: "当前供应商无法直接禁用，请先切换到其他供应商",
+        }),
+      );
+    }
+
+    await invalidateProviderCaches();
+  };
+
+  const handleAddProvider = async ({
+    provider,
+    saveOptions,
+  }: {
+    provider: Omit<Provider, "id"> & {
+      providerKey?: string;
+      addToLive?: boolean;
+      suggestedDefaults?: OpenClawSuggestedDefaults;
+    };
+    saveOptions?: {
+      pinToTop: boolean;
+      enabled: boolean;
+    };
+  }) => {
+    const createdProvider = await addProvider(provider);
+    if (!createdProvider || !saveOptions) {
+      return;
+    }
+
+    try {
+      await applyProviderSaveOptions({
+        providerId: createdProvider.id,
+        pinToTop: saveOptions.pinToTop,
+        enabled: saveOptions.enabled,
+        wasCurrentBeforeSave: false,
+      });
+    } catch (error) {
+      console.error("[App] Failed to apply save options after add", error);
+      toast.error(
+        t("providerForm.applySaveOptionsFailed", {
+          defaultValue: "已保存供应商，但应用置顶/启用选项失败",
+        }),
+      );
+    }
+  };
+
   const handleEditProvider = async ({
     provider,
     originalId,
+    saveOptions,
   }: {
     provider: Provider;
     originalId?: string;
+    saveOptions?: {
+      pinToTop: boolean;
+      enabled: boolean;
+    };
   }) => {
+    const previousId = (originalId || provider.id).trim();
+    const wasCurrentBeforeSave = previousId === currentProviderId;
+
     await updateProvider(provider, originalId);
+
+    if (saveOptions) {
+      try {
+        await applyProviderSaveOptions({
+          providerId: provider.id,
+          pinToTop: saveOptions.pinToTop,
+          enabled: saveOptions.enabled,
+          wasCurrentBeforeSave,
+        });
+      } catch (error) {
+        console.error("[App] Failed to apply save options after edit", error);
+        toast.error(
+          t("providerForm.applySaveOptionsFailed", {
+            defaultValue: "已保存供应商，但应用置顶/启用选项失败",
+          }),
+        );
+      }
+    }
+
     setEditingProvider(null);
   };
 
@@ -1181,7 +1365,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <div className="relative inline-flex items-center">
                   <a
-                    href="https://github.com/farion1231/cc-switch"
+                    href="https://github.com/ppengit/cc-switch"
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
@@ -1552,7 +1736,7 @@ function App() {
         open={isAddOpen}
         onOpenChange={setIsAddOpen}
         appId={activeApp}
-        onSubmit={addProvider}
+        onSubmit={handleAddProvider}
       />
 
       <EditProviderDialog
