@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+pub const GEMINI_RENDERED_ENV_TEXT_FIELD: &str = "__ccSwitchRenderedEnvText";
+
 /// 获取 Gemini 配置目录路径（支持设置覆盖）
 pub fn get_gemini_dir() -> PathBuf {
     if let Some(custom) = crate::settings::get_gemini_override_dir() {
@@ -152,15 +154,24 @@ pub fn read_gemini_env() -> Result<HashMap<String, String>, AppError> {
     Ok(parse_env_file(&content))
 }
 
-/// 写入 Gemini .env 文件（原子操作）
-pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppError> {
+/// 读取 Gemini .env 文件原始文本
+pub fn read_gemini_env_text() -> Result<String, AppError> {
     let path = get_gemini_env_path();
 
-    // 确保目录存在
+    if !path.exists() {
+        return Ok(String::new());
+    }
+
+    fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))
+}
+
+/// 写入 Gemini .env 原始文本（原子操作）
+pub fn write_gemini_env_text_atomic(content: &str) -> Result<(), AppError> {
+    let path = get_gemini_env_path();
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
 
-        // 设置目录权限为 700（仅所有者可读写执行）
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -172,10 +183,8 @@ pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppE
         }
     }
 
-    let content = serialize_env_file(map);
-    write_text_file(&path, &content)?;
+    write_text_file(&path, content)?;
 
-    // 设置文件权限为 600（仅所有者可读写）
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -187,6 +196,24 @@ pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppE
     }
 
     Ok(())
+}
+
+/// 写入 Gemini .env 文件（原子操作）
+pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppError> {
+    let content = serialize_env_file(map);
+    write_gemini_env_text_atomic(&content)
+}
+
+/// 检查原始 .env 文本解析后是否与目标键值对一致。
+///
+/// 用于判断能否安全地直接回写模板渲染后的原始文本，
+/// 以保留注释、分段和顺序；一旦文本与键值对不一致，则必须回退到序列化写法。
+pub fn env_text_matches_map(content: &str, map: &HashMap<String, String>) -> Result<bool, AppError> {
+    if content.trim().is_empty() {
+        return Ok(map.is_empty());
+    }
+
+    Ok(parse_env_file_strict(content)? == *map)
 }
 
 /// 从 .env 格式转换为 Provider.settings_config (JSON Value)

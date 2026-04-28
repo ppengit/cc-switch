@@ -212,6 +212,8 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_settings`, () => success(getSettings())),
 
+  http.post(`${TAURI_ENDPOINT}/get_installed_skills`, () => success([])),
+
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
 
   http.post(`${TAURI_ENDPOINT}/save_settings`, async ({ request }) => {

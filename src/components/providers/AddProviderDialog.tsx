@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUpToLine, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
@@ -26,13 +25,17 @@ interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   appId: AppId;
-  onSubmit: (
+  onSubmit: (payload: {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
       suggestedDefaults?: OpenClawSuggestedDefaults;
-    },
-    options?: { pinToTop: boolean },
-  ) => Promise<void> | void;
+      addToLive?: boolean;
+    };
+    saveOptions?: {
+      pinToTop: boolean;
+      enabled: boolean;
+    };
+  }) => Promise<void> | void;
 }
 
 export function AddProviderDialog({
@@ -43,7 +46,8 @@ export function AddProviderDialog({
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
   // OpenCode and OpenClaw don't support universal providers
-  const showUniversalTab = appId !== "opencode" && appId !== "openclaw";
+  const showUniversalTab =
+    appId !== "opencode" && appId !== "openclaw" && appId !== "hermes";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
   );
@@ -51,13 +55,6 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
-  const [pinToTop, setPinToTop] = useState(true);
-
-  useEffect(() => {
-    if (!open) return;
-    setActiveTab("app-specific");
-    setPinToTop(true);
-  }, [open]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -102,6 +99,7 @@ export function AddProviderDialog({
       const providerData: Omit<Provider, "id"> & {
         providerKey?: string;
         suggestedDefaults?: OpenClawSuggestedDefaults;
+        addToLive?: boolean;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -115,7 +113,7 @@ export function AddProviderDialog({
 
       // OpenCode/OpenClaw: pass providerKey for ID generation
       if (
-        (appId === "opencode" || appId === "openclaw") &&
+        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
         values.providerKey
       ) {
         providerData.providerKey = values.providerKey;
@@ -212,6 +210,10 @@ export function AddProviderDialog({
           if (parsedConfig.baseUrl) {
             addUrl(parsedConfig.baseUrl as string);
           }
+        } else if (appId === "hermes") {
+          if (parsedConfig.base_url) {
+            addUrl(parsedConfig.base_url as string);
+          }
         }
 
         const urls = Array.from(urlSet);
@@ -238,35 +240,28 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      await onSubmit(providerData, { pinToTop });
+      if (
+        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
+        values.enableOnSave === false
+      ) {
+        providerData.addToLive = false;
+      }
+
+      await onSubmit({
+        provider: providerData,
+        saveOptions: {
+          pinToTop: values.pinToTopOnSave ?? true,
+          enabled: values.enableOnSave ?? true,
+        },
+      });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange, pinToTop],
+    [appId, onSubmit, onOpenChange],
   );
 
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
       <>
-        <label className="mr-auto flex min-w-[180px] items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/70 px-3 py-2">
-          <div className="min-w-0">
-            <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-              <ArrowUpToLine className="h-4 w-4 text-muted-foreground" />
-              {t("provider.addOptions.pinToTop", { defaultValue: "置顶" })}
-            </span>
-            <span className="mt-1 block text-xs text-muted-foreground">
-              {t("provider.addOptions.pinToTopHint", {
-                defaultValue: "新增后置顶到列表首位",
-              })}
-            </span>
-          </div>
-          <Switch
-            checked={pinToTop}
-            onCheckedChange={setPinToTop}
-            aria-label={t("provider.addOptions.pinToTop", {
-              defaultValue: "置顶",
-            })}
-          />
-        </label>
         <Button
           variant="outline"
           onClick={() => onOpenChange(false)}

@@ -21,6 +21,7 @@ import { useRequestLogs } from "@/lib/query/usage";
 import type { LogFilters, UsageRangeSelection } from "@/types/usage";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
+import { RequestDetailPanel } from "./RequestDetailPanel";
 import {
   fmtInt,
   fmtUsd,
@@ -49,6 +50,7 @@ export function RequestLogTable({
   const [draftFilters, setDraftFilters] = useState<LogFilters>({});
   const [page, setPage] = useState(0);
   const [pageInput, setPageInput] = useState("");
+  const [detailRequestId, setDetailRequestId] = useState<string | null>(null);
   const pageSize = 20;
 
   const dashboardAppTypeActive = dashboardAppType && dashboardAppType !== "all";
@@ -253,6 +255,9 @@ export function RequestLogTable({
                     {t("usage.provider")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
+                    {t("usage.session", { defaultValue: "会话" })}
+                  </TableHead>
+                  <TableHead className="text-center whitespace-nowrap">
                     {t("usage.billingModel")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
@@ -279,7 +284,7 @@ export function RequestLogTable({
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="text-center text-muted-foreground"
                     >
                       {t("usage.noData")}
@@ -287,7 +292,11 @@ export function RequestLogTable({
                   </TableRow>
                 ) : (
                   logs.map((log) => (
-                    <TableRow key={log.requestId}>
+                    <TableRow
+                      key={log.requestId}
+                      className="cursor-pointer"
+                      onDoubleClick={() => setDetailRequestId(log.requestId)}
+                    >
                       <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
                         {new Date(log.createdAt * 1000).toLocaleString(locale, {
                           month: "2-digit",
@@ -298,6 +307,30 @@ export function RequestLogTable({
                       </TableCell>
                       <TableCell className="text-center">
                         {log.providerName || t("usage.unknownProvider")}
+                      </TableCell>
+                      <TableCell className="text-center max-w-[220px]">
+                        {log.sessionTitle || log.projectPath ? (
+                          <div className="space-y-0.5">
+                            <div
+                              className="truncate text-xs font-medium"
+                              title={log.sessionTitle || undefined}
+                            >
+                              {log.sessionTitle || "-"}
+                            </div>
+                            {log.projectPath && (
+                              <div
+                                className="truncate text-[11px] text-muted-foreground"
+                                title={log.projectPath}
+                              >
+                                {log.projectPath}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            -
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-center font-mono text-xs max-w-[200px]">
                         <div
@@ -464,6 +497,12 @@ export function RequestLogTable({
             </div>
           </div>
         </>
+      )}
+      {detailRequestId && (
+        <RequestDetailPanel
+          requestId={detailRequestId}
+          onClose={() => setDetailRequestId(null)}
+        />
       )}
     </div>
   );

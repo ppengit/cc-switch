@@ -81,9 +81,10 @@ describe("AddProviderDialog", () => {
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
     const submitted = handleSubmit.mock.calls[0][0];
-    expect(submitted.meta?.custom_endpoints).toEqual(
+    expect(submitted.provider.meta?.custom_endpoints).toEqual(
       mockFormValues.meta?.custom_endpoints,
     );
+    expect(submitted.saveOptions).toEqual({ pinToTop: true, enabled: true });
     expect(handleOpenChange).toHaveBeenCalledWith(false);
   });
 
@@ -117,7 +118,7 @@ describe("AddProviderDialog", () => {
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
     const submitted = handleSubmit.mock.calls[0][0];
-    expect(submitted.meta?.custom_endpoints).toEqual({
+    expect(submitted.provider.meta?.custom_endpoints).toEqual({
       "https://claude.base": {
         url: "https://claude.base",
         addedAt: expect.any(Number),

@@ -65,7 +65,8 @@ impl Database {
             id TEXT PRIMARY KEY, name TEXT NOT NULL, server_config TEXT NOT NULL,
             description TEXT, homepage TEXT, docs TEXT, tags TEXT NOT NULL DEFAULT '[]',
             enabled_claude BOOLEAN NOT NULL DEFAULT 0, enabled_codex BOOLEAN NOT NULL DEFAULT 0,
-            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_opencode BOOLEAN NOT NULL DEFAULT 0
+            enabled_gemini BOOLEAN NOT NULL DEFAULT 0, enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -93,6 +94,7 @@ impl Database {
             enabled_codex BOOLEAN NOT NULL DEFAULT 0,
             enabled_gemini BOOLEAN NOT NULL DEFAULT 0,
             enabled_opencode BOOLEAN NOT NULL DEFAULT 0,
+            enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
             updated_at INTEGER NOT NULL DEFAULT 0
@@ -284,6 +286,35 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 19. Session Title Mappings 表（会话标题本地映射 + 会话上下文缓存）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_title_mappings (
+                app_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                custom_title TEXT,
+                detected_title TEXT,
+                project_dir TEXT,
+                last_active_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (app_type, session_id, source_path)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_recent
+             ON session_title_mappings(app_type, last_active_at DESC, updated_at DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_log_lookup
+             ON session_title_mappings(app_type, session_id)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 尝试添加 live_takeover_active 列到 proxy_config 表
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN live_takeover_active INTEGER NOT NULL DEFAULT 0",
@@ -422,6 +453,16 @@ impl Database {
                         log::info!("迁移数据库从 v8 到 v9（全面补充模型定价）");
                         Self::migrate_v8_to_v9(conn)?;
                         Self::set_user_version(conn, 9)?;
+                    }
+                    9 => {
+                        log::info!("迁移数据库从 v9 到 v10（添加 Hermes Agent 支持）");
+                        Self::migrate_v9_to_v10(conn)?;
+                        Self::set_user_version(conn, 10)?;
+                    }
+                    10 => {
+                        log::info!("迁移数据库从 v10 到 v11（会话标题映射与会话上下文缓存）");
+                        Self::migrate_v10_to_v11(conn)?;
+                        Self::set_user_version(conn, 11)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1168,11 +1209,85 @@ impl Database {
         Ok(())
     }
 
+    /// v9 -> v10 迁移：添加 Hermes Agent 支持
+    fn migrate_v9_to_v10(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(
+            conn,
+            "mcp_servers",
+            "enabled_hermes",
+            "BOOLEAN NOT NULL DEFAULT 0",
+        )?;
+
+        // skills table may not exist in databases migrated from very old versions
+        if Self::table_exists(conn, "skills")? {
+            Self::add_column_if_missing(
+                conn,
+                "skills",
+                "enabled_hermes",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+        }
+
+        log::info!("v9 -> v10 迁移完成：已添加 Hermes Agent 支持");
+        Ok(())
+    }
+
+    /// v10 -> v11 迁移：添加会话标题映射和上下文缓存表
+    fn migrate_v10_to_v11(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_title_mappings (
+                app_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                custom_title TEXT,
+                detected_title TEXT,
+                project_dir TEXT,
+                last_active_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (app_type, session_id, source_path)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 session_title_mappings 表失败: {e}")))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_recent
+             ON session_title_mappings(app_type, last_active_at DESC, updated_at DESC)",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!(
+                "创建 idx_session_title_mappings_recent 索引失败: {e}"
+            ))
+        })?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_title_mappings_log_lookup
+             ON session_title_mappings(app_type, session_id)",
+            [],
+        )
+        .map_err(|e| {
+            AppError::Database(format!(
+                "创建 idx_session_title_mappings_log_lookup 索引失败: {e}"
+            ))
+        })?;
+
+        log::info!("v10 -> v11 迁移完成：已添加 session_title_mappings 表");
+        Ok(())
+    }
+
     /// 插入默认模型定价数据
     /// 格式: (model_id, display_name, input, output, cache_read, cache_creation)
     /// 注意: model_id 使用短横线格式（如 claude-haiku-4-5），与 API 返回的模型名称标准化后一致
     fn seed_model_pricing(conn: &Connection) -> Result<(), AppError> {
         let pricing_data = [
+            // Claude 4.7 系列
+            (
+                "claude-opus-4-7",
+                "Claude Opus 4.7",
+                "5",
+                "25",
+                "0.50",
+                "6.25",
+            ),
             // Claude 4.6 系列
             (
                 "claude-opus-4-6-20260206",
@@ -1581,6 +1696,23 @@ impl Database {
                 "0.14",
                 "0",
             ),
+            // DeepSeek V4 系列（官方 CNY 按 1 USD ≈ 7.14 折算）
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash",
+                "0.14",
+                "0.28",
+                "0.028",
+                "0",
+            ),
+            (
+                "deepseek-v4-pro",
+                "DeepSeek V4 Pro",
+                "1.68",
+                "3.36",
+                "0.14",
+                "0",
+            ),
             // Kimi (月之暗面)
             (
                 "kimi-k2-thinking",
@@ -1600,6 +1732,7 @@ impl Database {
                 "0",
             ),
             ("kimi-k2.5", "Kimi K2.5", "0.60", "2.50", "0.10", "0"),
+            ("kimi-k2.6", "Kimi K2.6", "0.95", "4.00", "0.16", "0"),
             // MiniMax 系列
             ("minimax-m2.1", "MiniMax M2.1", "0.27", "0.95", "0.03", "0"),
             (

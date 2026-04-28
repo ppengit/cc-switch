@@ -30,6 +30,10 @@ export interface RequestLog {
   durationMs?: number;
   statusCode: number;
   errorMessage?: string;
+  sessionId?: string;
+  sessionTitle?: string;
+  projectPath?: string;
+  providerType?: string;
   createdAt: number;
   dataSource?: string;
 }

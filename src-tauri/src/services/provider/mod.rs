@@ -21,21 +21,23 @@ use crate::store::AppState;
 
 // Re-export sub-module functions for external access
 pub use live::{
-    import_default_config, import_openclaw_providers_from_live,
+    import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
     import_opencode_providers_from_live, read_live_settings, sync_current_to_live,
 };
 
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config,
+    build_effective_settings_with_common_config, build_effective_settings_without_template,
+    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config,
 };
 
 // Internal re-exports
 use live::{
-    remove_openclaw_provider_from_live, remove_opencode_provider_from_live, write_gemini_live,
+    remove_hermes_provider_from_live, remove_openclaw_provider_from_live,
+    remove_opencode_provider_from_live, write_gemini_live,
 };
 use usage::validate_usage_script;
 
@@ -61,6 +63,7 @@ mod tests {
     use serial_test::serial;
     use std::env;
     use std::fs;
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::TempDir;
@@ -110,6 +113,14 @@ mod tests {
                 None => env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    fn reserve_free_tcp_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("read local addr")
+            .port()
     }
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -349,8 +360,10 @@ base_url = "http://localhost:8080"
         crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
             .expect("set local current provider");
 
+        let reserved_port = reserve_free_tcp_port();
         db.update_proxy_config(ProxyConfig {
             live_takeover_active: true,
+            listen_port: reserved_port,
             ..Default::default()
         })
         .await
@@ -370,7 +383,7 @@ base_url = "http://localhost:8080"
             &get_claude_settings_path(),
             &json!({
                 "env": {
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                    "ANTHROPIC_BASE_URL": format!("http://127.0.0.1:{reserved_port}"),
                     "ANTHROPIC_API_KEY": "PROXY_MANAGED",
                     "ANTHROPIC_MODEL": "stale-model"
                 },
@@ -398,6 +411,7 @@ base_url = "http://localhost:8080"
             }),
             None,
         );
+        let expected_proxy_base_url = format!("http://127.0.0.1:{reserved_port}");
 
         ProviderService::update(&state, AppType::Claude, None, updated.clone())
             .expect("update current provider");
@@ -432,7 +446,7 @@ base_url = "http://localhost:8080"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some(expected_proxy_base_url.as_str()),
             "proxy base URL should stay intact"
         );
         assert!(
@@ -1282,6 +1296,7 @@ impl ProviderService {
                 match app_type {
                     AppType::OpenCode => remove_opencode_provider_from_live(id)?,
                     AppType::OpenClaw => remove_openclaw_provider_from_live(id)?,
+                    AppType::Hermes => remove_hermes_provider_from_live(id)?,
                     _ => {}
                 }
             }
@@ -1343,6 +1358,9 @@ impl ProviderService {
             }
             AppType::OpenClaw => {
                 remove_openclaw_provider_from_live(id)?;
+            }
+            AppType::Hermes => {
+                remove_hermes_provider_from_live(id)?;
             }
             _ => {
                 return Err(AppError::Message(format!(
@@ -1518,6 +1536,25 @@ impl ProviderService {
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
         write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
 
+        // Hermes is additive, so "switching" doesn't overwrite a live config file
+        // — we instead update the top-level `model:` section to point at this
+        // provider's first declared model. Without this, clicking "switch" would
+        // only shuffle entries in custom_providers[] while Hermes keeps using
+        // whatever `model.provider` was set before.
+        if matches!(app_type, AppType::Hermes) {
+            if let Err(e) =
+                crate::hermes_config::apply_switch_defaults(&provider.id, &provider.settings_config)
+            {
+                log::warn!(
+                    "Failed to update Hermes model defaults after switching to '{}': {e}",
+                    provider.id
+                );
+                result
+                    .warnings
+                    .push(format!("hermes_model_defaults_failed:{}", provider.id));
+            }
+        }
+
         // For additive-mode providers that were DB-only (live_config_managed == Some(false)),
         // flip the flag to true now that the provider has been successfully written to the live
         // file. This ensures sync_all_providers_to_live() will include it on future syncs.
@@ -1532,6 +1569,7 @@ impl ProviderService {
                 let rollback_result = match app_type {
                     AppType::OpenCode => remove_opencode_provider_from_live(&provider.id),
                     AppType::OpenClaw => remove_openclaw_provider_from_live(&provider.id),
+                    AppType::Hermes => remove_hermes_provider_from_live(&provider.id),
                     _ => Ok(()),
                 };
 
@@ -1615,7 +1653,7 @@ impl ProviderService {
         app_type: AppType,
         legacy_snippet: &str,
     ) -> Result<(), AppError> {
-        if app_type.is_additive_mode() || legacy_snippet.trim().is_empty() {
+        if legacy_snippet.trim().is_empty() {
             return Ok(());
         }
 
@@ -1668,10 +1706,6 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<(), AppError> {
-        if app_type.is_additive_mode() {
-            return Ok(());
-        }
-
         let Some(snippet) = state.db.get_config_snippet(app_type.as_str())? else {
             return Ok(());
         };
@@ -1708,6 +1742,7 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
+            AppType::Hermes => Self::extract_hermes_common_config(&provider.settings_config),
         }
     }
 
@@ -1722,6 +1757,7 @@ impl ProviderService {
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
+            AppType::Hermes => Self::extract_hermes_common_config(settings_config),
         }
     }
 
@@ -1734,9 +1770,9 @@ impl ProviderService {
             // Auth
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
-            // Models (5 fields)
+            // Models (4 fields + 1 legacy)
             "ANTHROPIC_MODEL",
-            "ANTHROPIC_REASONING_MODEL",
+            "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -1889,6 +1925,26 @@ impl ProviderService {
             obj.remove("apiKey");
             obj.remove("baseUrl");
             // Keep api and models as they might be common
+        }
+
+        if config.is_null() || (config.is_object() && config.as_object().unwrap().is_empty()) {
+            return Ok("{}".to_string());
+        }
+
+        serde_json::to_string_pretty(&config)
+            .map_err(|e| AppError::Message(format!("Serialization failed: {e}")))
+    }
+
+    /// Extract common config for Hermes (JSON format)
+    fn extract_hermes_common_config(settings: &Value) -> Result<String, AppError> {
+        let mut config = settings.clone();
+
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("name");
+            obj.remove("model");
+            obj.remove("base_url");
+            obj.remove("api_key");
+            obj.remove(crate::hermes_config::PROVIDER_SOURCE_FIELD);
         }
 
         if config.is_null() || (config.is_object() && config.as_object().unwrap().is_empty()) {
@@ -2087,6 +2143,16 @@ impl ProviderService {
                     ));
                 }
             }
+            AppType::Hermes => {
+                // Hermes: accept any JSON object for now
+                if !provider.settings_config.is_object() {
+                    return Err(AppError::localized(
+                        "provider.hermes.settings.not_object",
+                        "Hermes 配置必须是 JSON 对象",
+                        "Hermes configuration must be a JSON object",
+                    ));
+                }
+            }
         }
 
         // Validate and clean UsageScript configuration (common for all app types)
@@ -2258,8 +2324,8 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw => {
-                // OpenClaw uses apiKey and baseUrl directly on the object
+            AppType::OpenClaw | AppType::Hermes => {
+                // OpenClaw/Hermes use apiKey and baseUrl directly on the object
                 let api_key = provider
                     .settings_config
                     .get("apiKey")

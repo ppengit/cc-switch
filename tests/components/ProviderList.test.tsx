@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
@@ -7,65 +7,9 @@ import { ProviderList } from "@/components/providers/ProviderList";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
-const providerCardRenderSpy = vi.fn();
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
-}));
-
-vi.mock("@/components/providers/ProviderCard", () => ({
-  ProviderCard: (props: any) => {
-    providerCardRenderSpy(props);
-    const {
-      provider,
-      onSwitch,
-      onEdit,
-      onDelete,
-      onDuplicate,
-      onConfigureUsage,
-    } = props;
-
-    return (
-      <div data-testid={`provider-card-${provider.id}`}>
-        <button
-          data-testid={`switch-${provider.id}`}
-          onClick={() => onSwitch(provider)}
-        >
-          switch
-        </button>
-        <button
-          data-testid={`edit-${provider.id}`}
-          onClick={() => onEdit(provider)}
-        >
-          edit
-        </button>
-        <button
-          data-testid={`duplicate-${provider.id}`}
-          onClick={() => onDuplicate(provider)}
-        >
-          duplicate
-        </button>
-        <button
-          data-testid={`usage-${provider.id}`}
-          onClick={() => onConfigureUsage(provider)}
-        >
-          usage
-        </button>
-        <button
-          data-testid={`delete-${provider.id}`}
-          onClick={() => onDelete(provider)}
-        >
-          delete
-        </button>
-        <span data-testid={`is-current-${provider.id}`}>
-          {props.isCurrent ? "current" : "inactive"}
-        </span>
-        <span data-testid={`drag-attr-${provider.id}`}>
-          {props.dragHandleProps?.attributes?.["data-dnd-id"] ?? "none"}
-        </span>
-      </div>
-    );
-  },
 }));
 
 vi.mock("@/components/UsageFooter", () => ({
@@ -87,6 +31,12 @@ vi.mock("@/hooks/useStreamCheck", () => ({
     checkProvider: vi.fn(),
     isChecking: () => false,
   }),
+}));
+
+vi.mock("@/lib/api/sessions", () => ({
+  sessionsApi: {
+    listRecent: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 vi.mock("@/lib/query/failover", () => ({
@@ -123,7 +73,6 @@ function renderWithQueryClient(ui: ReactElement) {
 beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
-  providerCardRenderSpy.mockClear();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -213,7 +162,7 @@ describe("ProviderList Component", () => {
     renderWithQueryClient(
       <ProviderList
         providers={{ a: providerA, b: providerB }}
-        currentProviderId="b"
+        currentProviderId="a"
         appId="claude"
         onSwitch={handleSwitch}
         onEdit={handleEdit}
@@ -224,38 +173,32 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    // Verify sort order
-    expect(providerCardRenderSpy).toHaveBeenCalledTimes(2);
-    expect(providerCardRenderSpy.mock.calls[0][0].provider.id).toBe("b");
-    expect(providerCardRenderSpy.mock.calls[1][0].provider.id).toBe("a");
+    const dataRows = screen.getAllByRole("row").slice(1);
+    expect(dataRows[0].textContent).toContain("B");
+    expect(dataRows[1].textContent).toContain("A");
 
-    // Verify current provider marker
-    expect(providerCardRenderSpy.mock.calls[0][0].isCurrent).toBe(true);
+    const rowB = dataRows[0];
+    const rowA = dataRows[1];
 
-    // Drag attributes from useSortable
     expect(
-      providerCardRenderSpy.mock.calls[0][0].dragHandleProps?.attributes[
-      "data-dnd-id"
-      ],
-    ).toBe("b");
+      within(rowB).getByRole("button", { name: "拖拽排序" }),
+    ).toHaveAttribute("data-dnd-id", "b");
     expect(
-      providerCardRenderSpy.mock.calls[1][0].dragHandleProps?.attributes[
-      "data-dnd-id"
-      ],
-    ).toBe("a");
+      within(rowA).getByRole("button", { name: "拖拽排序" }),
+    ).toHaveAttribute("data-dnd-id", "a");
 
-    // Trigger action buttons
-    fireEvent.click(screen.getByTestId("switch-b"));
-    fireEvent.click(screen.getByTestId("edit-b"));
-    fireEvent.click(screen.getByTestId("duplicate-b"));
-    fireEvent.click(screen.getByTestId("usage-b"));
-    fireEvent.click(screen.getByTestId("delete-a"));
+    fireEvent.click(within(rowB).getByRole("button", { name: "启用" }));
+    fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
+    fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
+    fireEvent.click(within(rowB).getByRole("button", { name: "用量" }));
+    expect(within(rowA).getByRole("button", { name: "删除" })).toBeDisabled();
+    fireEvent.click(within(rowB).getByRole("button", { name: "删除" }));
 
     expect(handleSwitch).toHaveBeenCalledWith(providerB);
     expect(handleEdit).toHaveBeenCalledWith(providerB);
     expect(handleDuplicate).toHaveBeenCalledWith(providerB);
     expect(handleUsage).toHaveBeenCalledWith(providerB);
-    expect(handleDelete).toHaveBeenCalledWith(providerA);
+    expect(handleDelete).toHaveBeenCalledWith(providerB);
 
     // Verify useDragSort call parameters
     expect(useDragSortMock).toHaveBeenCalledWith(
@@ -287,21 +230,20 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
     const searchInput = screen.getByPlaceholderText(
       "Search name, notes, or URL...",
     );
-    // Initially both providers are rendered
-    expect(screen.getByTestId("provider-card-alpha")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-card-beta")).toBeInTheDocument();
+    expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
+    expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "beta" } });
-    expect(screen.queryByTestId("provider-card-alpha")).not.toBeInTheDocument();
-    expect(screen.getByTestId("provider-card-beta")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
+    expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "gamma" } });
-    expect(screen.queryByTestId("provider-card-alpha")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("provider-card-beta")).not.toBeInTheDocument();
+    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
+    expect(screen.queryByText("Beta Works")).not.toBeInTheDocument();
     expect(
       screen.getByText("No providers match your search."),
     ).toBeInTheDocument();

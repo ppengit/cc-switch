@@ -1,5 +1,11 @@
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 pub fn launch_terminal(
     target: &str,
     command: &str,
@@ -10,20 +16,35 @@ pub fn launch_terminal(
         return Err("Resume command is empty".to_string());
     }
 
-    if !cfg!(target_os = "macos") {
-        return Err("Terminal resume is only supported on macOS".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        return match target {
+            "terminal" => launch_macos_terminal(command, cwd),
+            "iTerm" | "iterm" => launch_iterm(command, cwd),
+            "ghostty" => launch_ghostty(command, cwd),
+            "kitty" => launch_kitty(command, cwd),
+            "wezterm" => launch_wezterm(command, cwd),
+            "kaku" => launch_kaku(command, cwd),
+            "alacritty" => launch_alacritty(command, cwd),
+            "custom" => launch_custom(command, cwd, custom_config),
+            _ => Err(format!("Unsupported terminal target: {target}")),
+        };
     }
 
-    match target {
-        "terminal" => launch_macos_terminal(command, cwd),
-        "iTerm" | "iterm" => launch_iterm(command, cwd),
-        "ghostty" => launch_ghostty(command, cwd),
-        "kitty" => launch_kitty(command, cwd),
-        "wezterm" => launch_wezterm(command, cwd),
-        "kaku" => launch_kaku(command, cwd),
-        "alacritty" => launch_alacritty(command, cwd),
-        "custom" => launch_custom(command, cwd, custom_config),
-        _ => Err(format!("Unsupported terminal target: {target}")),
+    #[cfg(target_os = "windows")]
+    {
+        return launch_windows_terminal(target, command, cwd, custom_config);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return launch_linux_terminal(target, command, cwd, custom_config);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (target, command, cwd, custom_config);
+        Err("Unsupported operating system for terminal resume".to_string())
     }
 }
 
@@ -275,6 +296,220 @@ fn launch_custom(
     } else {
         Err("Custom terminal execution returned error code".to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn launch_windows_terminal(
+    target: &str,
+    command: &str,
+    cwd: Option<&str>,
+    custom_config: Option<&str>,
+) -> Result<(), String> {
+    if target == "custom" {
+        return launch_custom_windows(command, cwd, custom_config);
+    }
+
+    let command = command.trim();
+    let cmd_chain = if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+        format!(
+            "cd /d \"{}\" && {command}",
+            escape_cmd_double_quotes(cwd_value.trim())
+        )
+    } else {
+        command.to_string()
+    };
+
+    let result = match target {
+        "powershell" => {
+            let escaped = escape_powershell_single_quote(command);
+            if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+                let escaped_cwd = escape_powershell_single_quote(cwd_value.trim());
+                let script =
+                    format!("Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'");
+                run_windows_start(&["powershell", "-NoExit", "-Command", &script], "PowerShell")
+            } else {
+                run_windows_start(
+                    &[
+                        "powershell",
+                        "-NoExit",
+                        "-Command",
+                        &format!("Invoke-Expression '{escaped}'"),
+                    ],
+                    "PowerShell",
+                )
+            }
+        }
+        "wt" => {
+            if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+                run_windows_start(
+                    &["wt", "-d", cwd_value.trim(), "cmd", "/K", command],
+                    "Windows Terminal",
+                )
+            } else {
+                run_windows_start(&["wt", "cmd", "/K", command], "Windows Terminal")
+            }
+        }
+        _ => run_windows_start(&["cmd", "/K", &cmd_chain], "cmd"),
+    };
+
+    if result.is_ok() {
+        return Ok(());
+    }
+
+    if target != "cmd" {
+        run_windows_start(&["cmd", "/K", &cmd_chain], "cmd")
+    } else {
+        result
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn launch_custom_windows(
+    command: &str,
+    cwd: Option<&str>,
+    custom_config: Option<&str>,
+) -> Result<(), String> {
+    let template = custom_config.ok_or("No custom terminal config provided")?;
+    if template.trim().is_empty() {
+        return Err("Custom terminal command template is empty".to_string());
+    }
+
+    let cmd_str = command.trim();
+    let dir_str = cwd.unwrap_or(".");
+    let final_cmd_line = template
+        .replace("{command}", cmd_str)
+        .replace("{cwd}", dir_str);
+
+    let status = Command::new("cmd")
+        .args(["/C", &final_cmd_line])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| format!("Failed to execute custom terminal launcher: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Custom terminal execution returned error code".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_start(args: &[&str], terminal_name: &str) -> Result<(), String> {
+    let mut full_args = vec!["/C", "start", ""];
+    full_args.extend(args);
+
+    let output = Command::new("cmd")
+        .args(&full_args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Failed to launch {terminal_name}: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "{terminal_name} launch failed (exit code: {:?}): {stderr}",
+            output.status.code()
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn escape_cmd_double_quotes(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+#[cfg(target_os = "windows")]
+fn escape_powershell_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "linux")]
+fn launch_linux_terminal(
+    target: &str,
+    command: &str,
+    cwd: Option<&str>,
+    custom_config: Option<&str>,
+) -> Result<(), String> {
+    if target == "custom" {
+        return launch_custom(command, cwd, custom_config);
+    }
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let full_command = build_shell_command(command, cwd);
+
+    let candidates: Vec<(&str, Vec<String>)> = if target == "terminal" {
+        vec![
+            (
+                "x-terminal-emulator",
+                vec![
+                    "-e".to_string(),
+                    shell.clone(),
+                    "-lc".to_string(),
+                    full_command.clone(),
+                ],
+            ),
+            (
+                "gnome-terminal",
+                vec![
+                    "--".to_string(),
+                    shell.clone(),
+                    "-lc".to_string(),
+                    full_command.clone(),
+                ],
+            ),
+            (
+                "konsole",
+                vec![
+                    "-e".to_string(),
+                    shell.clone(),
+                    "-lc".to_string(),
+                    full_command.clone(),
+                ],
+            ),
+            (
+                "kitty",
+                vec![
+                    "-e".to_string(),
+                    shell.clone(),
+                    "-lc".to_string(),
+                    full_command.clone(),
+                ],
+            ),
+            (
+                "wezterm",
+                vec![
+                    "start".to_string(),
+                    "--".to_string(),
+                    shell.clone(),
+                    "-lc".to_string(),
+                    full_command.clone(),
+                ],
+            ),
+        ]
+    } else {
+        vec![(
+            target,
+            vec![
+                "-e".to_string(),
+                shell.clone(),
+                "-lc".to_string(),
+                full_command.clone(),
+            ],
+        )]
+    };
+
+    for (bin, args) in candidates {
+        let status = Command::new(bin).args(args).status();
+        match status {
+            Ok(st) if st.success() => return Ok(()),
+            Ok(_) => continue,
+            Err(_) => continue,
+        }
+    }
+
+    Err("Failed to launch Linux terminal".to_string())
 }
 
 fn build_shell_command(command: &str, cwd: Option<&str>) -> String {

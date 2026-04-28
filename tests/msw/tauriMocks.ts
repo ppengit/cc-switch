@@ -63,3 +63,14 @@ vi.mock("@tauri-apps/api/path", () => ({
   homeDir: async () => "/home/mock",
   join: async (...segments: string[]) => segments.join("/"),
 }));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: async () => false,
+    onResized: async () => () => {},
+    setDecorations: async () => {},
+    minimize: async () => {},
+    toggleMaximize: async () => {},
+    close: async () => {},
+  }),
+}));

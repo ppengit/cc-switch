@@ -125,10 +125,10 @@ describe("useMcpValidation", () => {
       expect(validateJsonConfig("invalid")).toBe("mcp.error.jsonInvalid");
     });
 
-    it("rejects arrays of servers", () => {
+    it("rejects empty mcpServers maps", () => {
       const { validateJsonConfig } = getHookResult();
       expect(validateJsonConfig('{"mcpServers": {}}')).toBe(
-        "mcp.error.singleServerObjectRequired",
+        "mcp.error.jsonInvalid",
       );
     });
 

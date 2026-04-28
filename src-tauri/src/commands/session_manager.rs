@@ -1,13 +1,148 @@
 #![allow(non_snake_case)]
 
 use crate::session_manager;
+use crate::store::AppState;
+use tauri::State;
+
+fn normalize_session_app_type(provider_id: &str) -> &str {
+    // Session manager provider_id already matches app_type for supported apps.
+    provider_id
+}
 
 #[tauri::command]
-pub async fn list_sessions() -> Result<Vec<session_manager::SessionMeta>, String> {
+pub async fn list_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<session_manager::SessionMeta>, String> {
+    let db = state.db.clone();
     let sessions = tauri::async_runtime::spawn_blocking(session_manager::scan_sessions)
         .await
         .map_err(|e| format!("Failed to scan sessions: {e}"))?;
-    Ok(sessions)
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut merged = Vec::with_capacity(sessions.len());
+
+        for mut session in sessions {
+            let app_type = normalize_session_app_type(&session.provider_id);
+            let source_path = session.source_path.clone();
+
+            db.upsert_session_snapshot(
+                app_type,
+                &session.session_id,
+                source_path.as_deref(),
+                session.title.as_deref(),
+                session.project_dir.as_deref(),
+                session.last_active_at.or(session.created_at),
+            )
+            .map_err(|e| format!("Failed to upsert session snapshot: {e}"))?;
+
+            if let Some(custom_title) = db
+                .get_custom_session_title(app_type, &session.session_id, source_path.as_deref())
+                .map_err(|e| format!("Failed to read custom session title: {e}"))?
+            {
+                session.title = Some(custom_title);
+            }
+
+            merged.push(session);
+        }
+
+        Ok::<Vec<session_manager::SessionMeta>, String>(merged)
+    })
+    .await
+    .map_err(|e| format!("Failed to merge session title mappings: {e}"))?
+}
+
+#[tauri::command]
+pub async fn list_recent_sessions(
+    state: State<'_, AppState>,
+    appType: String,
+    limit: Option<usize>,
+) -> Result<Vec<session_manager::SessionMeta>, String> {
+    let db = state.db.clone();
+    let app_type = appType.trim().to_string();
+    let take = limit.unwrap_or(10).clamp(1, 50);
+    let scan_app_type = app_type.clone();
+
+    let sessions =
+        tauri::async_runtime::spawn_blocking(move || session_manager::scan_sessions_for_provider(&scan_app_type))
+            .await
+            .map_err(|e| format!("Failed to scan recent sessions: {e}"))?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut merged = Vec::with_capacity(sessions.len().min(take));
+
+        for mut session in sessions.into_iter().take(take) {
+            let source_path = session.source_path.clone();
+
+            db.upsert_session_snapshot(
+                &app_type,
+                &session.session_id,
+                source_path.as_deref(),
+                session.title.as_deref(),
+                session.project_dir.as_deref(),
+                session.last_active_at.or(session.created_at),
+            )
+            .map_err(|e| format!("Failed to upsert recent session snapshot: {e}"))?;
+
+            if let Some(custom_title) = db
+                .get_custom_session_title(&app_type, &session.session_id, source_path.as_deref())
+                .map_err(|e| format!("Failed to read custom recent session title: {e}"))?
+            {
+                session.title = Some(custom_title);
+            }
+
+            merged.push(session);
+        }
+
+        Ok::<Vec<session_manager::SessionMeta>, String>(merged)
+    })
+    .await
+    .map_err(|e| format!("Failed to merge recent session title mappings: {e}"))?
+}
+
+#[tauri::command]
+pub async fn set_session_title_mapping(
+    state: State<'_, AppState>,
+    appType: String,
+    sessionId: String,
+    sourcePath: Option<String>,
+    customTitle: String,
+) -> Result<bool, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed_title = customTitle.trim().to_string();
+        if trimmed_title.is_empty() {
+            db.clear_custom_session_title(appType.trim(), sessionId.trim(), sourcePath.as_deref())
+                .map_err(|e| format!("Failed to clear custom session title: {e}"))?;
+        } else {
+            db.set_custom_session_title(
+                appType.trim(),
+                sessionId.trim(),
+                sourcePath.as_deref(),
+                &trimmed_title,
+            )
+            .map_err(|e| format!("Failed to save custom session title: {e}"))?;
+        }
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Failed to update session title mapping: {e}"))?
+}
+
+#[tauri::command]
+pub async fn clear_session_title_mapping(
+    state: State<'_, AppState>,
+    appType: String,
+    sessionId: String,
+    sourcePath: Option<String>,
+) -> Result<bool, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.clear_custom_session_title(appType.trim(), sessionId.trim(), sourcePath.as_deref())
+            .map_err(|e| format!("Failed to clear custom session title: {e}"))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Failed to clear session title mapping: {e}"))?
 }
 
 #[tauri::command]

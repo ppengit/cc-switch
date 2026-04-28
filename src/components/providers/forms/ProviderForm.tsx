@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
@@ -37,12 +38,18 @@ import {
   type OpenClawProviderPreset,
   type OpenClawSuggestedDefaults,
 } from "@/config/openclawProviderPresets";
+import {
+  hermesProviderPresets,
+  type HermesProviderPreset,
+} from "@/config/hermesProviderPresets";
 import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { OpenClawFormFields } from "./OpenClawFormFields";
+import { HermesFormFields } from "./HermesFormFields";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import {
   applyTemplateValues,
   hasApiKeyField,
+  setCodexBaseUrl as setCodexBaseUrlInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
@@ -80,6 +87,7 @@ import {
   useOpencodeFormState,
   useOmoDraftState,
   useOpenclawFormState,
+  useHermesFormState,
   useCopilotAuth,
   useCodexOauth,
 } from "./hooks";
@@ -93,8 +101,10 @@ import {
   OPENCLAW_DEFAULT_CONFIG,
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
+import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
+import { useHermesLiveProviderIds } from "@/hooks/useHermes";
 
 type PresetEntry = {
   id: string;
@@ -103,7 +113,8 @@ type PresetEntry = {
     | CodexProviderPreset
     | GeminiProviderPreset
     | OpenCodeProviderPreset
-    | OpenClawProviderPreset;
+    | OpenClawProviderPreset
+    | HermesProviderPreset;
 };
 
 interface ProviderFormProps {
@@ -127,6 +138,18 @@ interface ProviderFormProps {
   };
   showButtons?: boolean;
 }
+
+const normalizeUrlForSave = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\/$/i.test(trimmed)) return trimmed;
+  return trimmed.replace(/\/+$/, "");
+};
+
+const normalizeWebsiteFromEndpoint = (endpoint: string): string => {
+  const normalized = normalizeUrlForSave(endpoint);
+  return normalized.replace(/\/v1$/i, "");
+};
 
 export function ProviderForm({
   appId,
@@ -253,7 +276,9 @@ export function ProviderForm({
               ? OPENCODE_DEFAULT_CONFIG
               : appId === "openclaw"
                 ? OPENCLAW_DEFAULT_CONFIG
-                : CLAUDE_DEFAULT_CONFIG,
+                : appId === "hermes"
+                  ? HERMES_DEFAULT_CONFIG
+                  : CLAUDE_DEFAULT_CONFIG,
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
@@ -266,6 +291,10 @@ export function ProviderForm({
     mode: "onSubmit",
   });
   const { isSubmitting } = form.formState;
+  const websiteUrlFieldValue = form.watch("websiteUrl") || "";
+  const syncingUrlFieldsRef = useRef(false);
+  const [pinToTopOnSave, setPinToTopOnSave] = useState(true);
+  const [enableOnSave, setEnableOnSave] = useState(true);
 
   const handleSettingsConfigChange = useCallback(
     (config: string) => {
@@ -286,9 +315,16 @@ export function ProviderForm({
     },
   );
 
+  // 软校验：收集"业务约束"类问题（空值/缺项），由用户决定是否仍要保存
+  const [softIssues, setSoftIssues] = useState<string[] | null>(null);
+  const [pendingFormValues, setPendingFormValues] =
+    useState<ProviderFormData | null>(null);
+  // 确认框走的提交路径绕过了 react-hook-form 的 isSubmitting，单独追踪
+  const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
+
   useEffect(() => {
-    onSubmittingChange?.(isSubmitting);
-  }, [isSubmitting, onSubmittingChange]);
+    onSubmittingChange?.(isSubmitting || isConfirmSubmitting);
+  }, [isSubmitting, isConfirmSubmitting, onSubmittingChange]);
 
   const {
     apiKey,
@@ -314,7 +350,6 @@ export function ProviderForm({
 
   const {
     claudeModel,
-    reasoningModel,
     defaultHaikuModel,
     defaultSonnetModel,
     defaultOpusModel,
@@ -372,6 +407,9 @@ export function ProviderForm({
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
+  const [codexFastMode, setCodexFastMode] = useState<boolean>(
+    () => initialData?.meta?.codexFastMode ?? false,
+  );
 
   const {
     codexAuth,
@@ -448,6 +486,11 @@ export function ProviderForm({
     } else if (appId === "openclaw") {
       return openclawProviderPresets.map<PresetEntry>((preset, index) => ({
         id: `openclaw-${index}`,
+        preset,
+      }));
+    } else if (appId === "hermes") {
+      return hermesProviderPresets.map<PresetEntry>((preset, index) => ({
+        id: `hermes-${index}`,
         preset,
       }));
     }
@@ -645,6 +688,18 @@ export function ProviderForm({
     isLoading: isOpenclawLiveProviderIdsLoading,
   } = useOpenClawLiveProviderIds(appId === "openclaw");
 
+  const hermesForm = useHermesFormState({
+    initialData,
+    appId,
+    providerId,
+    onSettingsConfigChange: (config) => form.setValue("settingsConfig", config),
+    getSettingsConfig: () => form.getValues("settingsConfig"),
+  });
+  const {
+    data: hermesLiveProviderIds = [],
+    isLoading: isHermesLiveProviderIdsLoading,
+  } = useHermesLiveProviderIds(appId === "hermes");
+
   const additiveExistingProviderKeys = useMemo(() => {
     if (appId === "opencode" && !isAnyOmoCategory) {
       return Array.from(
@@ -667,10 +722,22 @@ export function ProviderForm({
       );
     }
 
+    if (appId === "hermes") {
+      return Array.from(
+        new Set(
+          [...hermesForm.existingHermesKeys, ...hermesLiveProviderIds].filter(
+            (key) => key !== providerId,
+          ),
+        ),
+      );
+    }
+
     return [];
   }, [
     appId,
     existingOpencodeKeys,
+    hermesForm.existingHermesKeys,
+    hermesLiveProviderIds,
     isAnyOmoCategory,
     openclawForm.existingOpenclawKeys,
     openclawLiveProviderIds,
@@ -686,11 +753,15 @@ export function ProviderForm({
     if (appId === "openclaw") {
       return isOpenclawLiveProviderIdsLoading;
     }
+    if (appId === "hermes") {
+      return isHermesLiveProviderIdsLoading;
+    }
     return false;
   }, [
     appId,
     isAnyOmoCategory,
     isEditMode,
+    isHermesLiveProviderIdsLoading,
     isOpenclawLiveProviderIdsLoading,
     isOpencodeLiveProviderIdsLoading,
   ]);
@@ -703,9 +774,13 @@ export function ProviderForm({
     if (appId === "openclaw") {
       return openclawLiveProviderIds.includes(providerId);
     }
+    if (appId === "hermes") {
+      return hermesLiveProviderIds.includes(providerId);
+    }
     return false;
   }, [
     appId,
+    hermesLiveProviderIds,
     isAnyOmoCategory,
     isEditMode,
     openclawLiveProviderIds,
@@ -716,30 +791,38 @@ export function ProviderForm({
   const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
 
   const handleSubmit = async (values: ProviderFormData) => {
+    // 软性问题（业务约束，用户可选择仍要保存）
+    const issues: string[] = [];
+
+    // 模板变量未填：A 类（空值）
     if (appId === "claude" && templateValueEntries.length > 0) {
       const validation = validateTemplateValues();
       if (!validation.isValid && validation.missingField) {
-        toast.error(
+        issues.push(
           t("providerForm.fillParameter", {
             label: validation.missingField.label,
             defaultValue: `请填写 ${validation.missingField.label}`,
           }),
         );
-        return;
       }
     }
 
+    // 供应商名空：A 类
     if (!values.name.trim()) {
-      toast.error(
+      issues.push(
         t("providerForm.fillSupplierName", {
           defaultValue: "请填写供应商名称",
         }),
       );
-      return;
     }
 
+    // opencode / openclaw / hermes: providerKey 相关
+    // A 类（空）归到 issues；B 类（正则不合法 / 重复 / 状态加载中）仍硬拒绝
+    const keyPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
     if (appId === "opencode" && !isAnyOmoCategory) {
-      const keyPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+      // providerKey 是 opencode / openclaw / hermes 的主键 ID，空或格式不合法
+      // 都属于完整性约束，保留硬拒绝（mutations 层也会 throw，软化只会让错误更晦涩）
       if (!opencodeForm.opencodeProviderKey.trim()) {
         toast.error(t("opencode.providerKeyRequired"));
         return;
@@ -764,14 +847,11 @@ export function ProviderForm({
         return;
       }
       if (Object.keys(opencodeForm.opencodeModels).length === 0) {
-        toast.error(t("opencode.modelsRequired"));
-        return;
+        issues.push(t("opencode.modelsRequired"));
       }
     }
 
-    // OpenClaw: validate provider key
     if (appId === "openclaw") {
-      const keyPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
       if (!openclawForm.openclawProviderKey.trim()) {
         toast.error(t("openclaw.providerKeyRequired"));
         return;
@@ -797,9 +877,33 @@ export function ProviderForm({
       }
     }
 
-    // 非官方供应商必填校验：端点和 API Key
-    // cloud_provider（如 Bedrock）通过模板变量处理认证，跳过通用校验
-    // GitHub Copilot 使用 OAuth 认证，不需要 API Key
+    if (appId === "hermes") {
+      if (!hermesForm.hermesProviderKey.trim()) {
+        toast.error(t("hermes.form.providerKeyRequired"));
+        return;
+      }
+      if (!keyPattern.test(hermesForm.hermesProviderKey)) {
+        toast.error(t("hermes.form.providerKeyInvalid"));
+        return;
+      }
+      if (isProviderKeyLockStateLoading) {
+        toast.error(
+          t("providerForm.providerKeyStatusLoading", {
+            defaultValue: "正在加载供应商标识状态，请稍后再试",
+          }),
+        );
+        return;
+      }
+      if (
+        !isProviderKeyLocked &&
+        additiveExistingProviderKeys.includes(hermesForm.hermesProviderKey)
+      ) {
+        toast.error(t("hermes.form.providerKeyDuplicate"));
+        return;
+      }
+    }
+
+    // OAuth 未登录：B 类（token 根本不存在，保存了也没法建立）
     const isCopilotProvider =
       templatePreset?.providerType === "github_copilot" ||
       initialData?.meta?.providerType === "github_copilot" ||
@@ -807,7 +911,6 @@ export function ProviderForm({
     const isCodexOauthProvider =
       templatePreset?.providerType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
-    // GitHub Copilot 必须先登录才能添加
     if (isCopilotProvider && !isCopilotAuthenticated) {
       toast.error(
         t("copilot.loginRequired", {
@@ -816,7 +919,6 @@ export function ProviderForm({
       );
       return;
     }
-    // Codex OAuth 必须先登录才能添加
     if (isCodexOauthProvider && !isCodexOauthAuthenticated) {
       toast.error(
         t("codexOauth.loginRequired", {
@@ -826,69 +928,146 @@ export function ProviderForm({
       return;
     }
 
+    // OMO Other Fields JSON：B 类（格式错了保存下去数据就坏了）
+    if (
+      appId === "opencode" &&
+      isAnyOmoCategory &&
+      omoDraft.omoOtherFieldsStr.trim()
+    ) {
+      try {
+        const otherFields = parseOmoOtherFieldsObject(
+          omoDraft.omoOtherFieldsStr,
+        );
+        if (!otherFields) {
+          toast.error(
+            t("omo.jsonMustBeObject", {
+              field: t("omo.otherFields", {
+                defaultValue: "Other Config",
+              }),
+              defaultValue: "{{field}} must be a JSON object",
+            }),
+          );
+          return;
+        }
+      } catch {
+        toast.error(
+          t("omo.invalidJson", {
+            defaultValue: "Other Fields contains invalid JSON",
+          }),
+        );
+        return;
+      }
+    }
+
+    // 非官方供应商端点 / API Key 空：A 类
+    // cloud_provider（如 Bedrock）通过模板变量处理认证，跳过通用校验
     if (category !== "official" && category !== "cloud_provider") {
       if (appId === "claude") {
         if (!isCodexOauthProvider && !baseUrl.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
             }),
           );
-          return;
         }
         if (!isCopilotProvider && !isCodexOauthProvider && !apiKey.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
             }),
           );
-          return;
         }
       } else if (appId === "codex") {
         if (!codexBaseUrl.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
             }),
           );
-          return;
         }
         if (!codexApiKey.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
             }),
           );
-          return;
         }
       } else if (appId === "gemini") {
         if (!geminiBaseUrl.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.endpointRequired", {
               defaultValue: "非官方供应商请填写 API 端点",
             }),
           );
-          return;
         }
         if (!geminiApiKey.trim()) {
-          toast.error(
+          issues.push(
             t("providerForm.apiKeyRequired", {
               defaultValue: "非官方供应商请填写 API Key",
             }),
           );
-          return;
         }
       }
     }
+
+    if (issues.length > 0) {
+      // 弹确认框让用户决定是否仍要保存
+      setSoftIssues(issues);
+      setPendingFormValues(values);
+      return;
+    }
+
+    await performSubmit(values);
+  };
+
+  const performSubmit = async (values: ProviderFormData) => {
+    // OAuth / 其它身份识别（与 handleSubmit 保持一致）
+    const isCopilotProvider =
+      templatePreset?.providerType === "github_copilot" ||
+      initialData?.meta?.providerType === "github_copilot" ||
+      baseUrl.includes("githubcopilot.com");
+    const isCodexOauthProvider =
+      templatePreset?.providerType === "codex_oauth" ||
+      initialData?.meta?.providerType === "codex_oauth";
+
+    const currentEndpointByApp =
+      appId === "claude"
+        ? baseUrl
+        : appId === "codex"
+          ? codexBaseUrl
+          : appId === "gemini"
+            ? geminiBaseUrl
+            : appId === "opencode"
+              ? opencodeForm.opencodeBaseUrl
+              : appId === "openclaw"
+                ? openclawForm.openclawBaseUrl
+                : appId === "hermes"
+                  ? hermesForm.hermesBaseUrl
+                  : "";
+
+    const normalizedWebsiteInput = normalizeUrlForSave(values.websiteUrl ?? "");
+    const normalizedEndpointInput = normalizeUrlForSave(currentEndpointByApp);
+    const effectiveWebsiteUrl =
+      normalizedWebsiteInput ||
+      (normalizedEndpointInput
+        ? normalizeWebsiteFromEndpoint(normalizedEndpointInput)
+        : "");
+    const effectiveEndpointUrl =
+      normalizedEndpointInput ||
+      (effectiveWebsiteUrl ? normalizeUrlForSave(effectiveWebsiteUrl) : "");
 
     let settingsConfig: string;
 
     if (appId === "codex") {
       try {
         const authJson = JSON.parse(codexAuth);
+        const finalCodexConfig = setCodexBaseUrlInConfig(
+          codexConfig ?? "",
+          effectiveEndpointUrl,
+        );
         const configObj = {
           auth: authJson,
-          config: codexConfig ?? "",
+          config: finalCodexConfig,
         };
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -897,6 +1076,7 @@ export function ProviderForm({
     } else if (appId === "gemini") {
       try {
         const envObj = envStringToObj(geminiEnv);
+        envObj.GOOGLE_GEMINI_BASE_URL = effectiveEndpointUrl;
         const configObj = geminiConfig.trim() ? JSON.parse(geminiConfig) : {};
         const combined = {
           env: envObj,
@@ -921,41 +1101,48 @@ export function ProviderForm({
         omoConfig.categories = omoDraft.omoCategories;
       }
       if (omoDraft.omoOtherFieldsStr.trim()) {
-        try {
-          const otherFields = parseOmoOtherFieldsObject(
-            omoDraft.omoOtherFieldsStr,
-          );
-          if (!otherFields) {
-            toast.error(
-              t("omo.jsonMustBeObject", {
-                field: t("omo.otherFields", {
-                  defaultValue: "Other Config",
-                }),
-                defaultValue: "{{field}} must be a JSON object",
-              }),
-            );
-            return;
-          }
+        // 格式已在 handleSubmit 前置校验中验证过，此处可以安全解析
+        const otherFields = parseOmoOtherFieldsObject(
+          omoDraft.omoOtherFieldsStr,
+        );
+        if (otherFields) {
           omoConfig.otherFields = otherFields;
-        } catch {
-          toast.error(
-            t("omo.invalidJson", {
-              defaultValue: "Other Fields contains invalid JSON",
-            }),
-          );
-          return;
         }
       }
       settingsConfig = JSON.stringify(omoConfig);
     } else {
       settingsConfig = values.settingsConfig.trim();
+      if (effectiveEndpointUrl) {
+        try {
+          const parsedConfig = JSON.parse(settingsConfig) as Record<
+            string,
+            any
+          >;
+          if (appId === "claude") {
+            parsedConfig.env = parsedConfig.env ?? {};
+            parsedConfig.env.ANTHROPIC_BASE_URL = effectiveEndpointUrl;
+          } else if (appId === "opencode") {
+            parsedConfig.options = parsedConfig.options ?? {};
+            parsedConfig.options.baseURL = effectiveEndpointUrl;
+          } else if (appId === "openclaw") {
+            parsedConfig.baseUrl = effectiveEndpointUrl;
+          } else if (appId === "hermes") {
+            parsedConfig.base_url = effectiveEndpointUrl;
+          }
+          settingsConfig = JSON.stringify(parsedConfig);
+        } catch {
+          // ignore JSON parse failure and keep original payload
+        }
+      }
     }
 
     const payload: ProviderFormValues = {
       ...values,
       name: values.name.trim(),
-      websiteUrl: values.websiteUrl?.trim() ?? "",
+      websiteUrl: effectiveWebsiteUrl,
       settingsConfig,
+      pinToTopOnSave,
+      enableOnSave,
     };
 
     if (appId === "opencode") {
@@ -969,6 +1156,8 @@ export function ProviderForm({
       }
     } else if (appId === "openclaw") {
       payload.providerKey = openclawForm.openclawProviderKey;
+    } else if (appId === "hermes") {
+      payload.providerKey = hermesForm.hermesProviderKey;
     }
 
     if (isAnyOmoCategory && !payload.presetCategory) {
@@ -1038,7 +1227,7 @@ export function ProviderForm({
     const providerType =
       templatePreset?.providerType || initialData?.meta?.providerType;
 
-    payload.meta = {
+    const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),
       commonConfigEnabled:
         appId === "claude"
@@ -1069,6 +1258,7 @@ export function ProviderForm({
         isCopilotProvider && selectedGitHubAccountId
           ? selectedGitHubAccountId
           : undefined,
+      codexFastMode: isCodexOauthProvider ? codexFastMode : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
@@ -1093,6 +1283,12 @@ export function ProviderForm({
           : undefined,
     };
 
+    if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {
+      delete nextMeta.codexFastMode;
+    }
+
+    payload.meta = nextMeta;
+
     await onSubmit(payload);
   };
 
@@ -1116,6 +1312,83 @@ export function ProviderForm({
   const shouldShowSpeedTest =
     category !== "official" && category !== "cloud_provider";
 
+  const endpointUrlFieldValue = useMemo(() => {
+    if (appId === "claude") return baseUrl;
+    if (appId === "codex") return codexBaseUrl;
+    if (appId === "gemini") return geminiBaseUrl;
+    if (appId === "opencode") return opencodeForm.opencodeBaseUrl;
+    if (appId === "openclaw") return openclawForm.openclawBaseUrl;
+    if (appId === "hermes") return hermesForm.hermesBaseUrl;
+    return "";
+  }, [
+    appId,
+    baseUrl,
+    codexBaseUrl,
+    geminiBaseUrl,
+    opencodeForm.opencodeBaseUrl,
+    openclawForm.openclawBaseUrl,
+    hermesForm.hermesBaseUrl,
+  ]);
+
+  const applyEndpointUrlFieldValue = useCallback(
+    (nextUrl: string) => {
+      if (appId === "claude") {
+        handleClaudeBaseUrlChange(nextUrl);
+      } else if (appId === "codex") {
+        handleCodexBaseUrlChange(nextUrl);
+      } else if (appId === "gemini") {
+        handleGeminiBaseUrlChange(nextUrl);
+      } else if (appId === "opencode") {
+        opencodeForm.handleOpencodeBaseUrlChange(nextUrl);
+      } else if (appId === "openclaw") {
+        openclawForm.handleOpenclawBaseUrlChange(nextUrl);
+      } else if (appId === "hermes") {
+        hermesForm.handleHermesBaseUrlChange(nextUrl);
+      }
+    },
+    [
+      appId,
+      handleClaudeBaseUrlChange,
+      handleCodexBaseUrlChange,
+      handleGeminiBaseUrlChange,
+      opencodeForm.handleOpencodeBaseUrlChange,
+      openclawForm.handleOpenclawBaseUrlChange,
+      hermesForm.handleHermesBaseUrlChange,
+    ],
+  );
+
+  useEffect(() => {
+    if (syncingUrlFieldsRef.current) return;
+
+    const normalizedWebsite = normalizeUrlForSave(websiteUrlFieldValue);
+    const normalizedEndpoint = normalizeUrlForSave(endpointUrlFieldValue);
+
+    if (!normalizedWebsite && normalizedEndpoint) {
+      const nextWebsite = normalizeWebsiteFromEndpoint(normalizedEndpoint);
+      if (nextWebsite) {
+        syncingUrlFieldsRef.current = true;
+        form.setValue("websiteUrl", nextWebsite, { shouldDirty: true });
+        setTimeout(() => {
+          syncingUrlFieldsRef.current = false;
+        }, 0);
+      }
+      return;
+    }
+
+    if (!normalizedEndpoint && normalizedWebsite) {
+      syncingUrlFieldsRef.current = true;
+      applyEndpointUrlFieldValue(normalizedWebsite);
+      setTimeout(() => {
+        syncingUrlFieldsRef.current = false;
+      }, 0);
+    }
+  }, [
+    applyEndpointUrlFieldValue,
+    endpointUrlFieldValue,
+    form,
+    websiteUrlFieldValue,
+  ]);
+
   const {
     shouldShowApiKeyLink: shouldShowClaudeApiKeyLink,
     websiteUrl: claudeWebsiteUrl,
@@ -1126,7 +1399,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1139,7 +1412,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1152,7 +1425,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   const {
@@ -1165,7 +1438,7 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   // 使用 API Key 链接 hook (OpenClaw)
@@ -1179,7 +1452,21 @@ export function ProviderForm({
     category,
     selectedPresetId,
     presetEntries,
-    formWebsiteUrl: form.watch("websiteUrl") || "",
+    formWebsiteUrl: websiteUrlFieldValue,
+  });
+
+  // 使用 API Key 链接 hook (Hermes)
+  const {
+    shouldShowApiKeyLink: shouldShowHermesApiKeyLink,
+    websiteUrl: hermesWebsiteUrl,
+    isPartner: isHermesPartner,
+    partnerPromotionKey: hermesPartnerPromotionKey,
+  } = useApiKeyLink({
+    appId: "hermes",
+    category,
+    selectedPresetId,
+    presetEntries,
+    formWebsiteUrl: websiteUrlFieldValue,
   });
 
   // 使用端点测速候选 hook
@@ -1212,6 +1499,9 @@ export function ProviderForm({
       // OpenClaw 自定义模式：重置为空配置
       if (appId === "openclaw") {
         openclawForm.resetOpenclawState();
+      }
+      if (appId === "hermes") {
+        hermesForm.resetHermesState();
       }
       return;
     }
@@ -1307,6 +1597,23 @@ export function ProviderForm({
       openclawForm.resetOpenclawState(config);
 
       // Update form fields
+      form.reset({
+        name: preset.nameKey ? t(preset.nameKey) : preset.name,
+        websiteUrl: preset.websiteUrl ?? "",
+        settingsConfig: JSON.stringify(config, null, 2),
+        icon: preset.icon ?? "",
+        iconColor: preset.iconColor ?? "",
+      });
+      return;
+    }
+
+    // Hermes preset handling
+    if (appId === "hermes") {
+      const preset = entry.preset as HermesProviderPreset;
+      const config = preset.settingsConfig;
+
+      hermesForm.resetHermesState(config);
+
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
@@ -1509,6 +1816,79 @@ export function ProviderForm({
                       </p>
                     )}
                 </div>
+              ) : appId === "hermes" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="hermes-key">
+                    {t("hermes.form.providerKey", {
+                      defaultValue: "Provider Key",
+                    })}
+                    <span className="text-destructive ml-1">*</span>
+                  </Label>
+                  <Input
+                    id="hermes-key"
+                    value={hermesForm.hermesProviderKey}
+                    onChange={(e) =>
+                      hermesForm.setHermesProviderKey(
+                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                      )
+                    }
+                    placeholder={t("hermes.form.providerKeyPlaceholder", {
+                      defaultValue: "my-provider",
+                    })}
+                    disabled={
+                      isProviderKeyLocked || isProviderKeyLockStateLoading
+                    }
+                    className={
+                      (additiveExistingProviderKeys.includes(
+                        hermesForm.hermesProviderKey,
+                      ) &&
+                        !isProviderKeyLocked) ||
+                      (hermesForm.hermesProviderKey.trim() !== "" &&
+                        !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(
+                          hermesForm.hermesProviderKey,
+                        ))
+                        ? "border-destructive"
+                        : ""
+                    }
+                  />
+                  {additiveExistingProviderKeys.includes(
+                    hermesForm.hermesProviderKey,
+                  ) &&
+                    !isProviderKeyLocked && (
+                      <p className="text-xs text-destructive">
+                        {t("hermes.form.providerKeyDuplicate")}
+                      </p>
+                    )}
+                  {hermesForm.hermesProviderKey.trim() !== "" &&
+                    !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(
+                      hermesForm.hermesProviderKey,
+                    ) && (
+                      <p className="text-xs text-destructive">
+                        {t("hermes.form.providerKeyInvalid")}
+                      </p>
+                    )}
+                  {!(
+                    additiveExistingProviderKeys.includes(
+                      hermesForm.hermesProviderKey,
+                    ) && !isProviderKeyLocked
+                  ) &&
+                    (hermesForm.hermesProviderKey.trim() === "" ||
+                      /^[a-z0-9]+(-[a-z0-9]+)*$/.test(
+                        hermesForm.hermesProviderKey,
+                      )) && (
+                      <p className="text-xs text-muted-foreground">
+                        {isProviderKeyLocked
+                          ? t("hermes.form.providerKeyLockedHint", {
+                              defaultValue:
+                                "This provider is in Hermes config; key is locked.",
+                            })
+                          : t("hermes.form.providerKeyHint", {
+                              defaultValue:
+                                "Lowercase letters, numbers, and hyphens only. Used as the provider name in config.yaml.",
+                            })}
+                      </p>
+                    )}
+                </div>
               ) : undefined
             }
           />
@@ -1551,6 +1931,8 @@ export function ProviderForm({
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
+              codexFastMode={codexFastMode}
+              onCodexFastModeChange={setCodexFastMode}
               templateValueEntries={templateValueEntries}
               templateValues={templateValues}
               templatePresetName={templatePreset?.name || ""}
@@ -1567,7 +1949,6 @@ export function ProviderForm({
               onAutoSelectChange={setEndpointAutoSelect}
               shouldShowModelSelector={category !== "official"}
               claudeModel={claudeModel}
-              reasoningModel={reasoningModel}
               defaultHaikuModel={defaultHaikuModel}
               defaultSonnetModel={defaultSonnetModel}
               defaultOpusModel={defaultOpusModel}
@@ -1703,6 +2084,29 @@ export function ProviderForm({
             />
           )}
 
+          {/* Hermes 专属字段 */}
+          {appId === "hermes" && (
+            <HermesFormFields
+              baseUrl={hermesForm.hermesBaseUrl}
+              onBaseUrlChange={hermesForm.handleHermesBaseUrlChange}
+              apiKey={hermesForm.hermesApiKey}
+              onApiKeyChange={hermesForm.handleHermesApiKeyChange}
+              category={category}
+              shouldShowApiKeyLink={shouldShowHermesApiKeyLink}
+              websiteUrl={hermesWebsiteUrl}
+              isPartner={isHermesPartner}
+              partnerPromotionKey={hermesPartnerPromotionKey}
+              apiMode={hermesForm.hermesApiMode}
+              onApiModeChange={hermesForm.handleHermesApiModeChange}
+              models={hermesForm.hermesModels}
+              onModelsChange={hermesForm.handleHermesModelsChange}
+              rateLimitDelay={hermesForm.hermesRateLimitDelay}
+              onRateLimitDelayChange={
+                hermesForm.handleHermesRateLimitDelayChange
+              }
+            />
+          )}
+
           {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
           {appId === "codex" ? (
             <>
@@ -1786,7 +2190,7 @@ export function ProviderForm({
               </div>
               {settingsConfigErrorField}
             </>
-          ) : appId === "openclaw" ? (
+          ) : appId === "openclaw" || appId === "hermes" ? (
             <>
               <div className="space-y-2">
                 <Label htmlFor="settingsConfig">
@@ -1795,12 +2199,20 @@ export function ProviderForm({
                 <JsonEditor
                   value={form.getValues("settingsConfig")}
                   onChange={(config) => form.setValue("settingsConfig", config)}
-                  placeholder={`{
+                  placeholder={
+                    appId === "hermes"
+                      ? `{
+  "name": "my-provider",
+  "base_url": "https://api.example.com/v1",
+  "api_key": ""
+}`
+                      : `{
   "baseUrl": "https://api.example.com/v1",
   "apiKey": "your-api-key-here",
   "api": "openai-completions",
   "models": []
-}`}
+}`
+                  }
                   rows={14}
                   showValidation={true}
                   language="json"
@@ -1838,7 +2250,8 @@ export function ProviderForm({
 
           {!isAnyOmoCategory &&
             appId !== "opencode" &&
-            appId !== "openclaw" && (
+            appId !== "openclaw" &&
+            appId !== "hermes" && (
               <ProviderAdvancedConfig
                 testConfig={testConfig}
                 pricingConfig={pricingConfig}
@@ -1847,12 +2260,42 @@ export function ProviderForm({
               />
             )}
 
+          <div className="flex flex-wrap items-center gap-4 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+              <Checkbox
+                checked={pinToTopOnSave}
+                onCheckedChange={(checked) =>
+                  setPinToTopOnSave(Boolean(checked))
+                }
+              />
+              <span>
+                {t("providerForm.pinToTopOnSave", {
+                  defaultValue: "置顶（保存后顺序为 1）",
+                })}
+              </span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+              <Checkbox
+                checked={enableOnSave}
+                onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
+              />
+              <span>
+                {t("providerForm.enableOnSave", {
+                  defaultValue: "启用（保存后立即生效）",
+                })}
+              </span>
+            </label>
+          </div>
+
           {showButtons && (
             <div className="flex justify-end gap-2">
               <Button variant="outline" type="button" onClick={onCancel}>
                 {t("common.cancel")}
               </Button>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                disabled={isSubmitting || isConfirmSubmitting}
+              >
                 {submitLabel}
               </Button>
             </div>
@@ -1869,6 +2312,50 @@ export function ProviderForm({
         onConfirm={() => void handleCommonConfigConfirm()}
         onCancel={() => void handleCommonConfigConfirm()}
       />
+
+      <ConfirmDialog
+        isOpen={softIssues !== null && softIssues.length > 0}
+        variant="info"
+        title={t("providerForm.softValidation.title", {
+          defaultValue: "配置存在以下问题",
+        })}
+        message={
+          (softIssues ?? []).map((issue) => `• ${issue}`).join("\n") +
+          "\n\n" +
+          t("providerForm.softValidation.hint", {
+            defaultValue:
+              "仍要保存吗？保存后切换此供应商时可能失败，可以之后再补全。",
+          })
+        }
+        confirmText={t("providerForm.softValidation.saveAnyway", {
+          defaultValue: "仍要保存",
+        })}
+        cancelText={t("common.cancel")}
+        onConfirm={async () => {
+          if (isConfirmSubmitting) return;
+          const values = pendingFormValues;
+          if (!values) {
+            setSoftIssues(null);
+            return;
+          }
+          setIsConfirmSubmitting(true);
+          try {
+            await performSubmit(values);
+            setSoftIssues(null);
+            setPendingFormValues(null);
+          } catch (error) {
+            console.error("[ProviderForm] soft-confirm submit failed:", error);
+            // 保留确认框和 pending values，让用户可以重试或取消
+          } finally {
+            setIsConfirmSubmitting(false);
+          }
+        }}
+        onCancel={() => {
+          if (isConfirmSubmitting) return;
+          setSoftIssues(null);
+          setPendingFormValues(null);
+        }}
+      />
     </>
   );
 }
@@ -1880,4 +2367,6 @@ export type ProviderFormValues = ProviderFormData & {
   meta?: ProviderMeta;
   providerKey?: string; // OpenCode/OpenClaw: user-defined provider key
   suggestedDefaults?: OpenClawSuggestedDefaults; // OpenClaw: suggested default model configuration
+  pinToTopOnSave?: boolean;
+  enableOnSave?: boolean;
 };

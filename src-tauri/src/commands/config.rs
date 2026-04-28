@@ -6,7 +6,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::app_config::AppType;
 use crate::codex_config;
-use crate::config::{self, get_claude_settings_path, ConfigStatus};
+use crate::config::{self, get_claude_mcp_path, get_claude_settings_path, ConfigStatus};
 use crate::settings;
 
 #[tauri::command]
@@ -15,6 +15,7 @@ pub async fn get_claude_config_status() -> Result<ConfigStatus, String> {
 }
 
 use std::str::FromStr;
+use std::path::PathBuf;
 
 fn invalid_json_format_error(error: serde_json::Error) -> String {
     let lang = settings::get_settings()
@@ -46,7 +47,7 @@ fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), S
     }
 
     match app_type {
-        "claude" | "gemini" | "omo" | "omo-slim" => {
+        "claude" | "gemini" | "opencode" | "openclaw" | "hermes" | "omo" | "omo-slim" => {
             serde_json::from_str::<serde_json::Value>(snippet)
                 .map_err(invalid_json_format_error)?;
         }
@@ -120,6 +121,168 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
     };
 
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigFileEntry {
+    pub key: String,
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigFileContent {
+    pub key: String,
+    pub label: String,
+    pub path: String,
+    pub content: String,
+}
+
+fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
+    match app_type {
+        AppType::Claude => vec![
+            (
+                "settings".to_string(),
+                "settings.json".to_string(),
+                get_claude_settings_path(),
+            ),
+            (
+                "mcp".to_string(),
+                ".claude.json".to_string(),
+                get_claude_mcp_path(),
+            ),
+        ],
+        AppType::Codex => vec![
+            (
+                "auth".to_string(),
+                "auth.json".to_string(),
+                crate::codex_config::get_codex_auth_path(),
+            ),
+            (
+                "config".to_string(),
+                "config.toml".to_string(),
+                crate::codex_config::get_codex_config_path(),
+            ),
+        ],
+        AppType::Gemini => vec![
+            (
+                "env".to_string(),
+                ".env".to_string(),
+                crate::gemini_config::get_gemini_env_path(),
+            ),
+            (
+                "settings".to_string(),
+                "settings.json".to_string(),
+                crate::gemini_config::get_gemini_settings_path(),
+            ),
+        ],
+        AppType::OpenCode => vec![(
+            "config".to_string(),
+            "opencode.json".to_string(),
+            crate::opencode_config::get_opencode_config_path(),
+        )],
+        AppType::OpenClaw => vec![(
+            "config".to_string(),
+            "openclaw.json".to_string(),
+            crate::openclaw_config::get_openclaw_config_path(),
+        )],
+        AppType::Hermes => vec![(
+            "config".to_string(),
+            "config.yaml".to_string(),
+            crate::hermes_config::get_hermes_config_path(),
+        )],
+    }
+}
+
+#[tauri::command]
+pub async fn list_app_config_files(app: String) -> Result<Vec<AppConfigFileEntry>, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    Ok(app_config_files_for(&app_type)
+        .into_iter()
+        .map(|(key, label, path)| AppConfigFileEntry {
+            key,
+            label,
+            path: path.to_string_lossy().to_string(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn read_app_config_file(
+    app: String,
+    #[allow(non_snake_case)] fileKey: String,
+) -> Result<AppConfigFileContent, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let target = app_config_files_for(&app_type)
+        .into_iter()
+        .find(|(key, _, _)| key == fileKey.trim())
+        .ok_or_else(|| format!("Unsupported config file key: {}", fileKey.trim()))?;
+
+    let (key, label, path) = target;
+    let content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| format!("读取配置文件失败: {e}"))?
+    } else {
+        String::new()
+    };
+
+    Ok(AppConfigFileContent {
+        key,
+        label,
+        path: path.to_string_lossy().to_string(),
+        content,
+    })
+}
+
+#[tauri::command]
+pub async fn write_app_config_file(
+    app: String,
+    #[allow(non_snake_case)] fileKey: String,
+    content: String,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let target = app_config_files_for(&app_type)
+        .into_iter()
+        .find(|(key, _, _)| key == fileKey.trim())
+        .ok_or_else(|| format!("Unsupported config file key: {}", fileKey.trim()))?;
+
+    let (_, _, path) = target;
+    crate::config::write_text_file(&path, &content).map_err(|e| format!("写入配置文件失败: {e}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_app_config_template(
+    app: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Option<String>, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    state
+        .db
+        .get_config_template(app_type.as_str())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_app_config_template(
+    app: String,
+    template: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let trimmed = template.trim();
+    let value = if trimmed.is_empty() {
+        None
+    } else {
+        Some(template)
+    };
+
+    state
+        .db
+        .set_config_template(app_type.as_str(), value)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]

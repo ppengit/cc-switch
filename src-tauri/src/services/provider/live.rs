@@ -42,6 +42,8 @@ pub(crate) fn provider_exists_in_live_config(
             .map(|providers| providers.contains_key(provider_id)),
         AppType::OpenClaw => crate::openclaw_config::get_providers()
             .map(|providers| providers.contains_key(provider_id)),
+        AppType::Hermes => crate::hermes_config::get_providers()
+            .map(|providers| providers.contains_key(provider_id)),
         _ => Ok(false),
     }
 }
@@ -228,28 +230,6 @@ fn toml_item_is_subset(target: &Item, source: &Item) -> bool {
     }
 }
 
-fn merge_toml_item(target: &mut Item, source: &Item) {
-    if let Some(source_table) = source.as_table_like() {
-        if let Some(target_table) = target.as_table_like_mut() {
-            merge_toml_table_like(target_table, source_table);
-            return;
-        }
-    }
-
-    *target = source.clone();
-}
-
-fn merge_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
-    for (key, source_item) in source.iter() {
-        match target.get_mut(key) {
-            Some(target_item) => merge_toml_item(target_item, source_item),
-            None => {
-                target.insert(key, source_item.clone());
-            }
-        }
-    }
-}
-
 fn remove_toml_item(target: &mut Item, source: &Item) {
     if let Some(source_table) = source.as_table_like() {
         if let Some(target_table) = target.as_table_like_mut() {
@@ -304,6 +284,583 @@ fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
     }
 }
 
+const CODEX_COMMON_CONFIG_BLOCK_START: &str = "# >>> CC-SWITCH COMMON CONFIG START";
+const CODEX_COMMON_CONFIG_BLOCK_END: &str = "# <<< CC-SWITCH COMMON CONFIG END";
+const CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER: &str = "{providerConfig}";
+const CONFIG_TEMPLATE_MCP_PLACEHOLDER: &str = "{mcpConfig}";
+const CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER: &str = "{settingsConfig}";
+const CODEX_DEFAULT_CONFIG_TEMPLATE: &str = r#"{providerConfig}
+
+{mcpConfig}
+"#;
+const GEMINI_TEMPLATE_ENV_SECTION_HEADER: &str = "# .env";
+const GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER: &str = "# settings.json";
+const GEMINI_DEFAULT_SETTINGS_TEMPLATE: &str = r#"{
+  {settingsConfig}
+  "mcpServers": {mcpConfig}
+}
+"#;
+const GEMINI_DEFAULT_CONFIG_TEMPLATE: &str = r#"# .env
+{providerConfig}
+
+# settings.json
+{
+  {settingsConfig}
+  "mcpServers": {mcpConfig}
+}
+"#;
+
+fn codex_strip_managed_common_config_block(config_toml: &str) -> (String, bool) {
+    let mut output_lines = Vec::new();
+    let mut in_block = false;
+    let mut removed = false;
+
+    for line in config_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == CODEX_COMMON_CONFIG_BLOCK_START {
+            in_block = true;
+            removed = true;
+            continue;
+        }
+        if trimmed == CODEX_COMMON_CONFIG_BLOCK_END {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            output_lines.push(line);
+        }
+    }
+
+    // If start marker exists but end marker is missing, we still treat the
+    // trailing content as managed block to avoid polluting provider config.
+    let mut normalized = output_lines.join("\n");
+    while normalized.ends_with('\n') {
+        normalized.pop();
+    }
+    if !normalized.is_empty() {
+        normalized.push('\n');
+    }
+
+    (normalized, removed)
+}
+
+fn codex_common_config_block_present(config_toml: &str) -> bool {
+    config_toml.contains(CODEX_COMMON_CONFIG_BLOCK_START)
+        && config_toml.contains(CODEX_COMMON_CONFIG_BLOCK_END)
+}
+
+fn get_effective_config_template(db: &Database, app_type: &AppType) -> String {
+    let persisted = db
+        .get_config_template(app_type.as_str())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    if !persisted.trim().is_empty() {
+        return persisted;
+    }
+
+    match app_type {
+        AppType::Codex => CODEX_DEFAULT_CONFIG_TEMPLATE.to_string(),
+        AppType::Gemini => GEMINI_DEFAULT_CONFIG_TEMPLATE.to_string(),
+        _ => CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string(),
+    }
+}
+
+fn json_value_to_toml_item_for_template(value: &Value) -> Option<Item> {
+    match value {
+        Value::String(s) => Some(toml_edit::value(s.clone())),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml_edit::value(i))
+            } else if let Some(u) = n.as_u64() {
+                Some(toml_edit::value(u as i64))
+            } else {
+                n.as_f64().map(toml_edit::value)
+            }
+        }
+        Value::Bool(b) => Some(toml_edit::value(*b)),
+        Value::Array(arr) => {
+            let mut output = toml_edit::Array::default();
+            for item in arr {
+                match item {
+                    Value::String(s) => output.push(s.as_str()),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            output.push(i);
+                        } else if let Some(u) = n.as_u64() {
+                            output.push(u as i64);
+                        } else if let Some(f) = n.as_f64() {
+                            output.push(f);
+                        } else {
+                            return None;
+                        }
+                    }
+                    Value::Bool(b) => output.push(*b),
+                    _ => return None,
+                }
+            }
+            Some(Item::Value(toml_edit::Value::Array(output)))
+        }
+        Value::Object(obj) => {
+            let mut table = toml_edit::InlineTable::default();
+            for (key, value) in obj {
+                let Some(string_value) = value.as_str() else {
+                    return None;
+                };
+                table.insert(key, toml_edit::Value::from(string_value));
+            }
+            Some(Item::Value(toml_edit::Value::InlineTable(table)))
+        }
+        Value::Null => None,
+    }
+}
+
+fn mcp_server_to_codex_table_for_template(spec: &Value) -> Result<toml_edit::Table, AppError> {
+    let mut table = toml_edit::Table::new();
+    let server_obj = spec.as_object().ok_or_else(|| {
+        AppError::Message("MCP server spec must be an object for Codex template".to_string())
+    })?;
+
+    let server_type = server_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("stdio");
+    table["type"] = toml_edit::value(server_type);
+
+    match server_type {
+        "stdio" => {
+            if let Some(command) = server_obj.get("command").and_then(Value::as_str) {
+                table["command"] = toml_edit::value(command);
+            }
+
+            if let Some(args) = server_obj.get("args").and_then(Value::as_array) {
+                let mut output = toml_edit::Array::default();
+                for arg in args.iter().filter_map(Value::as_str) {
+                    output.push(arg);
+                }
+                if !output.is_empty() {
+                    table["args"] = Item::Value(toml_edit::Value::Array(output));
+                }
+            }
+
+            if let Some(cwd) = server_obj.get("cwd").and_then(Value::as_str) {
+                if !cwd.trim().is_empty() {
+                    table["cwd"] = toml_edit::value(cwd);
+                }
+            }
+
+            if let Some(env) = server_obj.get("env").and_then(Value::as_object) {
+                let mut env_table = toml_edit::Table::new();
+                for (key, value) in env {
+                    if let Some(value) = value.as_str() {
+                        env_table[key] = toml_edit::value(value);
+                    }
+                }
+                if !env_table.is_empty() {
+                    table["env"] = Item::Table(env_table);
+                }
+            }
+        }
+        "http" | "sse" => {
+            if let Some(url) = server_obj.get("url").and_then(Value::as_str) {
+                table["url"] = toml_edit::value(url);
+            }
+
+            if let Some(headers) = server_obj.get("headers").and_then(Value::as_object) {
+                let mut headers_table = toml_edit::Table::new();
+                for (key, value) in headers {
+                    if let Some(value) = value.as_str() {
+                        headers_table[key] = toml_edit::value(value);
+                    }
+                }
+                if !headers_table.is_empty() {
+                    table["http_headers"] = Item::Table(headers_table);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for (key, value) in server_obj {
+        if matches!(
+            key.as_str(),
+            "type" | "command" | "args" | "cwd" | "env" | "url" | "headers" | "http_headers"
+        ) {
+            continue;
+        }
+
+        if let Some(item) = json_value_to_toml_item_for_template(value) {
+            table[key] = item;
+        }
+    }
+
+    Ok(table)
+}
+
+fn build_codex_mcp_template_block(db: &Database) -> Result<String, AppError> {
+    let servers = db.get_all_mcp_servers()?;
+    let mut mcp_servers = toml_edit::Table::new();
+    let mut has_any = false;
+
+    for (id, server) in servers.iter() {
+        if !server.apps.codex {
+            continue;
+        }
+
+        match mcp_server_to_codex_table_for_template(&server.server) {
+            Ok(table) => {
+                mcp_servers[id.as_str()] = Item::Table(table);
+                has_any = true;
+            }
+            Err(err) => {
+                log::warn!("Skip invalid Codex MCP server '{id}' while rendering template: {err}");
+            }
+        }
+    }
+
+    if !has_any {
+        return Ok(String::new());
+    }
+
+    let mut doc = DocumentMut::new();
+    doc["mcp_servers"] = Item::Table(mcp_servers);
+    Ok(doc.to_string().trim_end_matches('\n').to_string())
+}
+
+fn strip_codex_mcp_servers_section(config_toml: &str) -> Result<String, AppError> {
+    if config_toml.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut doc = config_toml.parse::<DocumentMut>().map_err(|e| {
+        AppError::Message(format!(
+            "Invalid Codex provider config.toml while stripping mcp_servers: {e}"
+        ))
+    })?;
+    doc.as_table_mut().remove("mcp_servers");
+    Ok(doc.to_string())
+}
+
+fn apply_codex_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
+    let mut result = settings.clone();
+    let template = get_effective_config_template(db, &AppType::Codex);
+    let raw_provider_config = settings.get("config").and_then(Value::as_str).unwrap_or("");
+    let provider_config = match strip_codex_mcp_servers_section(raw_provider_config) {
+        Ok(stripped) => stripped.trim_end_matches('\n').to_string(),
+        Err(err) => {
+            log::warn!(
+                "Failed to strip existing mcp_servers from Codex provider config before template render: {err}"
+            );
+            raw_provider_config.trim_end_matches('\n').to_string()
+        }
+    };
+    let mcp_config = build_codex_mcp_template_block(db)?;
+
+    let rendered = template
+        .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, &provider_config)
+        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, mcp_config.trim());
+
+    let rendered_trimmed = rendered.trim();
+    if !rendered_trimmed.is_empty() {
+        rendered_trimmed.parse::<DocumentMut>().map_err(|e| {
+            AppError::Message(format!(
+                "Invalid rendered Codex template (config.toml): {e}"
+            ))
+        })?;
+    }
+
+    if let Some(obj) = result.as_object_mut() {
+        let mut normalized = rendered.trim_end_matches('\n').to_string();
+        if !normalized.is_empty() {
+            normalized.push('\n');
+        }
+        obj.insert("config".to_string(), Value::String(normalized));
+    }
+
+    Ok(result)
+}
+
+#[derive(Default)]
+struct GeminiTemplateSections {
+    env: String,
+    settings: String,
+}
+
+fn split_gemini_template_sections(template: &str) -> GeminiTemplateSections {
+    #[derive(Clone, Copy)]
+    enum Section {
+        Env,
+        Settings,
+    }
+
+    let mut current: Option<Section> = None;
+    let mut env_lines = Vec::new();
+    let mut settings_lines = Vec::new();
+
+    for line in template.lines() {
+        match line.trim() {
+            GEMINI_TEMPLATE_ENV_SECTION_HEADER => {
+                current = Some(Section::Env);
+                continue;
+            }
+            GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER => {
+                current = Some(Section::Settings);
+                continue;
+            }
+            _ => {}
+        }
+
+        match current {
+            Some(Section::Env) => env_lines.push(line),
+            Some(Section::Settings) => settings_lines.push(line),
+            None => {}
+        }
+    }
+
+    let mut sections = GeminiTemplateSections {
+        env: env_lines.join("\n").trim_matches('\n').to_string(),
+        settings: settings_lines.join("\n").trim_matches('\n').to_string(),
+    };
+
+    if sections.env.is_empty() && sections.settings.is_empty() {
+        let trimmed = template.trim();
+        if trimmed.starts_with('{') {
+            sections.env = CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string();
+            sections.settings = template.trim().to_string();
+        } else {
+            sections.env = template.trim().to_string();
+            sections.settings = GEMINI_DEFAULT_SETTINGS_TEMPLATE.trim().to_string();
+        }
+    } else {
+        if sections.env.trim().is_empty() {
+            sections.env = CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string();
+        }
+        if sections.settings.trim().is_empty() {
+            sections.settings = GEMINI_DEFAULT_SETTINGS_TEMPLATE.trim().to_string();
+        }
+    }
+
+    sections
+}
+
+fn gemini_provider_env_to_template_text(settings: &Value) -> Result<String, AppError> {
+    let env_map = crate::gemini_config::json_to_env(settings)?;
+    Ok(crate::gemini_config::serialize_env_file(&env_map))
+}
+
+fn clear_gemini_rendered_env_text(settings: &mut Value) {
+    if let Some(obj) = settings.as_object_mut() {
+        obj.remove(crate::gemini_config::GEMINI_RENDERED_ENV_TEXT_FIELD);
+    }
+}
+
+fn build_gemini_provider_settings_fragment(settings: &Value) -> Result<Value, AppError> {
+    let Some(config_value) = settings.get("config") else {
+        return Ok(json!({}));
+    };
+
+    if config_value.is_null() {
+        return Ok(json!({}));
+    }
+
+    let mut config = config_value.clone();
+    let Some(obj) = config.as_object_mut() else {
+        return Err(AppError::localized(
+            "gemini.validation.invalid_config",
+            "Gemini 配置格式错误: config 必须是对象或 null",
+            "Gemini config invalid: config must be an object or null",
+        ));
+    };
+    obj.remove("mcpServers");
+    Ok(config)
+}
+
+fn json_object_to_template_members(value: &Value) -> Result<String, AppError> {
+    let Some(obj) = value.as_object() else {
+        return Ok(String::new());
+    };
+
+    if obj.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut keys: Vec<_> = obj.keys().cloned().collect();
+    keys.sort();
+
+    let mut chunks = Vec::new();
+    for key in keys {
+        let rendered_key = serde_json::to_string(&key)
+            .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
+        let rendered_value = serde_json::to_string_pretty(
+            obj.get(&key)
+                .expect("key should exist while rendering Gemini template"),
+        )
+        .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
+
+        let value_lines: Vec<&str> = rendered_value.lines().collect();
+        let mut entry = String::new();
+        entry.push_str("  ");
+        entry.push_str(&rendered_key);
+        entry.push_str(": ");
+        entry.push_str(value_lines.first().copied().unwrap_or("null"));
+
+        for line in value_lines.iter().skip(1) {
+            entry.push('\n');
+            entry.push_str("  ");
+            entry.push_str(line);
+        }
+
+        entry.push(',');
+        chunks.push(entry);
+    }
+
+    Ok(format!("{}\n", chunks.join("\n")))
+}
+
+fn build_gemini_mcp_template_block(db: &Database) -> Result<String, AppError> {
+    let servers = db.get_all_mcp_servers()?;
+    let mut enabled = HashMap::new();
+
+    for (id, server) in servers {
+        if !server.apps.gemini {
+            continue;
+        }
+        enabled.insert(id, server.server);
+    }
+
+    let rendered = serde_json::to_string_pretty(&Value::Object(
+        crate::gemini_mcp::build_mcp_servers_object(&enabled)?,
+    ))
+    .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
+
+    Ok(rendered)
+}
+
+fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
+    let template = get_effective_config_template(db, &AppType::Gemini);
+    let sections = split_gemini_template_sections(&template);
+
+    let provider_env_text = gemini_provider_env_to_template_text(settings)?;
+    let provider_env_value = settings.get("env").cloned().unwrap_or_else(|| json!({}));
+    let provider_settings_fragment = build_gemini_provider_settings_fragment(settings)?;
+    let settings_members = json_object_to_template_members(&provider_settings_fragment)?;
+    let mcp_block = build_gemini_mcp_template_block(db)?;
+
+    let rendered_env = sections
+        .env
+        .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, &provider_env_text)
+        .trim_matches('\n')
+        .to_string();
+    let mut env_map = if rendered_env.is_empty() {
+        HashMap::new()
+    } else {
+        crate::gemini_config::parse_env_file_strict(&rendered_env)?
+    };
+
+    if let Some(provider_env) = provider_env_value.as_object() {
+        for (key, value) in provider_env {
+            if let Some(value) = value.as_str() {
+                env_map.insert(key.clone(), value.to_string());
+            }
+        }
+    }
+
+    let rendered_settings = sections
+        .settings
+        .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, &settings_members)
+        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, &mcp_block)
+        .trim()
+        .to_string();
+
+    let mut config = if rendered_settings.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str::<Value>(&rendered_settings)
+            .map_err(|e| AppError::Message(format!("Invalid rendered Gemini template (settings.json): {e}")))?
+    };
+
+    json_deep_merge(&mut config, &provider_settings_fragment);
+    let mcp_value = serde_json::from_str::<Value>(&mcp_block)
+        .map_err(|e| AppError::Message(format!("Invalid Gemini MCP template block: {e}")))?;
+    let Some(config_obj) = config.as_object_mut() else {
+        return Err(AppError::localized(
+            "gemini.validation.invalid_config",
+            "Gemini 配置模板渲染结果必须是 JSON 对象",
+            "Rendered Gemini template must be a JSON object",
+        ));
+    };
+    config_obj.insert("mcpServers".to_string(), mcp_value);
+
+    let env_value = crate::gemini_config::env_to_json(&env_map)
+        .get("env")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    let mut result = json!({
+        "env": env_value,
+        "config": config
+    });
+
+    if !rendered_env.is_empty() {
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert(
+                crate::gemini_config::GEMINI_RENDERED_ENV_TEXT_FIELD.to_string(),
+                Value::String(rendered_env),
+            );
+        }
+    }
+
+    Ok(result)
+}
+
+fn codex_remove_legacy_common_config_structural(
+    config_toml: &str,
+    snippet: &str,
+) -> Result<String, AppError> {
+    let mut target_doc = if config_toml.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        config_toml.parse::<DocumentMut>().map_err(|e| {
+            AppError::Message(format!(
+                "Invalid Codex config.toml while removing common config: {e}"
+            ))
+        })?
+    };
+    let source_doc = snippet.parse::<DocumentMut>().map_err(|e| {
+        AppError::Message(format!("Invalid Codex common config snippet: {e}"))
+    })?;
+
+    remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+    Ok(target_doc.to_string())
+}
+
+fn codex_apply_common_config_with_block(config_toml: &str, snippet: &str) -> Result<String, AppError> {
+    // Validate snippet first: if invalid, keep old error behavior.
+    snippet
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex common config snippet: {e}")))?;
+
+    let (without_block, _) = codex_strip_managed_common_config_block(config_toml);
+    let legacy_stripped = codex_remove_legacy_common_config_structural(&without_block, snippet)?;
+    let legacy_trimmed = legacy_stripped.trim_end_matches('\n');
+    let snippet_trimmed = snippet.trim_end();
+
+    let mut rendered = String::new();
+    if !legacy_trimmed.is_empty() {
+        rendered.push_str(legacy_trimmed);
+        rendered.push_str("\n\n");
+    }
+    rendered.push_str(CODEX_COMMON_CONFIG_BLOCK_START);
+    rendered.push('\n');
+    rendered.push_str(snippet_trimmed);
+    rendered.push('\n');
+    rendered.push_str(CODEX_COMMON_CONFIG_BLOCK_END);
+    rendered.push('\n');
+
+    Ok(rendered)
+}
+
 fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
     let trimmed = snippet.trim();
     if trimmed.is_empty() {
@@ -319,6 +876,9 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
             if config_toml.trim().is_empty() {
                 return false;
+            }
+            if codex_common_config_block_present(config_toml) {
+                return true;
             }
 
             let target_doc = match config_toml.parse::<DocumentMut>() {
@@ -345,7 +905,12 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
             }
             _ => false,
         },
-        AppType::OpenCode | AppType::OpenClaw => false,
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(source) if source.is_object() => json_is_subset(settings, &source),
+                _ => false,
+            }
+        }
     }
 }
 
@@ -387,22 +952,14 @@ pub(crate) fn remove_common_config_from_settings(
         AppType::Codex => {
             let mut result = settings.clone();
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
-            let mut target_doc = if config_toml.trim().is_empty() {
-                DocumentMut::new()
+            let (without_block, removed_block) = codex_strip_managed_common_config_block(config_toml);
+            let normalized = if removed_block {
+                without_block
             } else {
-                config_toml.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!(
-                        "Invalid Codex config.toml while removing common config: {e}"
-                    ))
-                })?
+                codex_remove_legacy_common_config_structural(config_toml, trimmed)?
             };
-            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
-                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
-            })?;
-
-            remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
             if let Some(obj) = result.as_object_mut() {
-                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+                obj.insert("config".to_string(), Value::String(normalized));
             }
             Ok(result)
         }
@@ -413,9 +970,20 @@ pub(crate) fn remove_common_config_from_settings(
             if let Some(env) = result.get_mut("env") {
                 json_deep_remove(env, &source);
             }
+            clear_gemini_rendered_env_text(&mut result);
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            let source = serde_json::from_str::<Value>(trimmed).map_err(|e| {
+                AppError::Message(format!(
+                    "Invalid {} common config: {e}",
+                    app_type.as_str()
+                ))
+            })?;
+            let mut result = settings.clone();
+            json_deep_remove(&mut result, &source);
+            Ok(result)
+        }
     }
 }
 
@@ -440,22 +1008,9 @@ fn apply_common_config_to_settings(
         AppType::Codex => {
             let mut result = settings.clone();
             let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
-            let mut target_doc = if config_toml.trim().is_empty() {
-                DocumentMut::new()
-            } else {
-                config_toml.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!(
-                        "Invalid Codex config.toml while applying common config: {e}"
-                    ))
-                })?
-            };
-            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
-                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
-            })?;
-
-            merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            let rendered = codex_apply_common_config_with_block(config_toml, trimmed)?;
             if let Some(obj) = result.as_object_mut() {
-                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+                obj.insert("config".to_string(), Value::String(rendered));
             }
             Ok(result)
         }
@@ -468,13 +1023,24 @@ fn apply_common_config_to_settings(
             } else if let Some(obj) = result.as_object_mut() {
                 obj.insert("env".to_string(), source);
             }
+            clear_gemini_rendered_env_text(&mut result);
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw => Ok(settings.clone()),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            let source = serde_json::from_str::<Value>(trimmed).map_err(|e| {
+                AppError::Message(format!(
+                    "Invalid {} common config: {e}",
+                    app_type.as_str()
+                ))
+            })?;
+            let mut result = settings.clone();
+            json_deep_merge(&mut result, &source);
+            Ok(result)
+        }
     }
 }
 
-pub(crate) fn build_effective_settings_with_common_config(
+pub(crate) fn build_effective_settings_without_template(
     db: &Database,
     app_type: &AppType,
     provider: &Provider,
@@ -495,6 +1061,40 @@ pub(crate) fn build_effective_settings_with_common_config(
                 }
             }
         }
+    }
+
+    Ok(effective_settings)
+}
+
+pub(crate) fn build_effective_settings_with_common_config(
+    db: &Database,
+    app_type: &AppType,
+    provider: &Provider,
+) -> Result<Value, AppError> {
+    let mut effective_settings = build_effective_settings_without_template(db, app_type, provider)?;
+
+    match app_type {
+        AppType::Codex => match apply_codex_template_to_settings(db, &effective_settings) {
+            Ok(rendered) => effective_settings = rendered,
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
+        AppType::Gemini => match apply_gemini_template_to_settings(db, &effective_settings) {
+            Ok(rendered) => effective_settings = rendered,
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
+        AppType::Claude | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {}
     }
 
     Ok(effective_settings)
@@ -790,6 +1390,10 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
                 }
             }
         }
+        AppType::Hermes => {
+            crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
+            log::debug!("Hermes provider '{}' written to live config", provider.id);
+        }
     }
     Ok(())
 }
@@ -925,6 +1529,7 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
         AppType::Gemini => {
             use crate::gemini_config::{
                 env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+                read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
             };
 
             // Read .env file (environment variables)
@@ -950,10 +1555,22 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             };
 
             // Return complete structure: { "env": {...}, "config": {...} }
-            Ok(json!({
+            let mut result = json!({
                 "env": env_obj,
                 "config": config_obj
-            }))
+            });
+
+            let env_text = read_gemini_env_text()?;
+            if !env_text.is_empty() {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert(
+                        GEMINI_RENDERED_ENV_TEXT_FIELD.to_string(),
+                        Value::String(env_text),
+                    );
+                }
+            }
+
+            Ok(result)
         }
         AppType::OpenCode => {
             use crate::opencode_config::{get_opencode_config_path, read_opencode_config};
@@ -983,6 +1600,19 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             }
 
             let config = read_openclaw_config()?;
+            Ok(config)
+        }
+        AppType::Hermes => {
+            let config_path = crate::hermes_config::get_hermes_config_path();
+            if !config_path.exists() {
+                return Err(AppError::localized(
+                    "hermes.config.missing",
+                    "Hermes 配置文件不存在",
+                    "Hermes configuration file not found",
+                ));
+            }
+            let yaml_config = crate::hermes_config::read_hermes_config()?;
+            let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
     }
@@ -1037,6 +1667,7 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         AppType::Gemini => {
             use crate::gemini_config::{
                 env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+                read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
             };
 
             // Read .env file (environment variables)
@@ -1062,13 +1693,25 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             };
 
             // Return complete structure: { "env": {...}, "config": {...} }
-            json!({
+            let mut result = json!({
                 "env": env_obj,
                 "config": config_obj
-            })
+            });
+
+            let env_text = read_gemini_env_text()?;
+            if !env_text.is_empty() {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert(
+                        GEMINI_RENDERED_ENV_TEXT_FIELD.to_string(),
+                        Value::String(env_text),
+                    );
+                }
+            }
+
+            result
         }
-        // OpenCode and OpenClaw use additive mode and are handled by early return above
-        AppType::OpenCode | AppType::OpenClaw => {
+        // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
             unreachable!("additive mode apps are handled by early return")
         }
     };
@@ -1092,40 +1735,34 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 /// Write Gemini live configuration with authentication handling
 pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     use crate::gemini_config::{
-        get_gemini_settings_path, json_to_env, validate_gemini_settings_strict,
-        write_gemini_env_atomic,
+        env_text_matches_map, get_gemini_settings_path, json_to_env,
+        validate_gemini_settings_strict, write_gemini_env_atomic, write_gemini_env_text_atomic,
+        GEMINI_RENDERED_ENV_TEXT_FIELD,
     };
 
     // One-time auth type detection to avoid repeated detection
     let auth_type = detect_gemini_auth_type(provider);
 
     let env_map = json_to_env(&provider.settings_config)?;
+    let rendered_env_text = provider
+        .settings_config
+        .get(GEMINI_RENDERED_ENV_TEXT_FIELD)
+        .and_then(Value::as_str);
+    let can_write_rendered_env_text = rendered_env_text
+        .map(|content| env_text_matches_map(content, &env_map))
+        .transpose()?
+        .unwrap_or(false);
 
     // Prepare config to write to ~/.gemini/settings.json
     // Behavior:
-    // - config is object: use it (merge with existing to preserve mcpServers etc.)
+    // - config is object: write it directly, keeping actual config deterministic
     // - config is null or absent: preserve existing file content
     let settings_path = get_gemini_settings_path();
     let mut config_to_write: Option<Value> = None;
 
     if let Some(config_value) = provider.settings_config.get("config") {
         if config_value.is_object() {
-            // Merge with existing settings to preserve mcpServers and other fields
-            let mut merged = if settings_path.exists() {
-                read_json_file::<Value>(&settings_path).unwrap_or_else(|_| json!({}))
-            } else {
-                json!({})
-            };
-
-            // Merge provider config into existing settings
-            if let (Some(merged_obj), Some(config_obj)) =
-                (merged.as_object_mut(), config_value.as_object())
-            {
-                for (k, v) in config_obj {
-                    merged_obj.insert(k.clone(), v.clone());
-                }
-            }
-            config_to_write = Some(merged);
+            config_to_write = Some(config_value.clone());
         } else if !config_value.is_null() {
             return Err(AppError::localized(
                 "gemini.validation.invalid_config",
@@ -1145,12 +1782,20 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         GeminiAuthType::GoogleOfficial => {
             // Google Official uses OAuth, no API key validation needed.
             // Write user's env vars as-is (e.g. GEMINI_MODEL, custom vars).
-            write_gemini_env_atomic(&env_map)?;
+            if can_write_rendered_env_text {
+                write_gemini_env_text_atomic(rendered_env_text.unwrap_or_default())?;
+            } else {
+                write_gemini_env_atomic(&env_map)?;
+            }
         }
         GeminiAuthType::Packycode | GeminiAuthType::Generic => {
             // API Key mode -- require GEMINI_API_KEY
             validate_gemini_settings_strict(&provider.settings_config)?;
-            write_gemini_env_atomic(&env_map)?;
+            if can_write_rendered_env_text {
+                write_gemini_env_text_atomic(rendered_env_text.unwrap_or_default())?;
+            } else {
+                write_gemini_env_atomic(&env_map)?;
+            }
         }
     }
 
@@ -1316,6 +1961,74 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
     Ok(imported)
 }
 
+/// Import all providers from Hermes live config to database
+///
+/// This imports existing providers from ~/.hermes/config.yaml
+/// into the CC Switch database. Each provider found will be added to the
+/// database with is_current set to false.
+pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppError> {
+    use crate::hermes_config;
+
+    let providers = hermes_config::get_providers()?;
+    if providers.is_empty() {
+        return Ok(0);
+    }
+
+    let mut imported = 0;
+    let existing_ids = state.db.get_provider_ids("hermes")?;
+
+    for (name, config) in providers {
+        // Validate: skip entries with empty name
+        if name.trim().is_empty() {
+            log::warn!("Skipping Hermes provider with empty name");
+            continue;
+        }
+
+        // Skip if already exists in database
+        if existing_ids.contains(&name) {
+            log::debug!("Hermes provider '{name}' already exists in database, skipping");
+            continue;
+        }
+
+        // Create provider
+        let mut provider = Provider::with_id(name.clone(), name.clone(), config, None);
+        provider.meta = Some(crate::provider::ProviderMeta {
+            live_config_managed: Some(true),
+            ..Default::default()
+        });
+
+        // Save to database
+        if let Err(e) = state.db.save_provider("hermes", &provider) {
+            log::warn!("Failed to import Hermes provider '{name}': {e}");
+            continue;
+        }
+
+        imported += 1;
+        log::info!("Imported Hermes provider '{name}' from live config");
+    }
+
+    Ok(imported)
+}
+
+/// Remove a Hermes provider from live config
+///
+/// This removes a specific provider from ~/.hermes/config.yaml
+/// without affecting other providers in the file.
+pub fn remove_hermes_provider_from_live(provider_id: &str) -> Result<(), AppError> {
+    use crate::hermes_config;
+
+    // Check if Hermes config directory exists
+    if !hermes_config::get_hermes_dir().exists() {
+        log::debug!("Hermes config directory doesn't exist, skipping removal of '{provider_id}'");
+        return Ok(());
+    }
+
+    hermes_config::remove_provider(provider_id)?;
+    log::info!("Hermes provider '{provider_id}' removed from live config");
+
+    Ok(())
+}
+
 /// Remove an OpenClaw provider from live config
 ///
 /// This removes a specific provider from ~/.openclaw/openclaw.json
@@ -1338,7 +2051,59 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_config::{McpApps, McpServer};
+    use crate::database::Database;
     use serde_json::json;
+    use serial_test::serial;
+    use std::env;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
 
     #[test]
     fn claude_common_config_apply_and_remove_roundtrip_for_non_overlapping_fields() {
@@ -1382,6 +2147,69 @@ mod tests {
         let stripped =
             remove_common_config_from_settings(&AppType::Codex, &applied, snippet).unwrap();
         assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn codex_common_config_apply_uses_managed_block_and_keeps_base_content_order() {
+        let settings = json!({
+            "auth": {},
+            "config": "# user comment\nmodel_provider = \"openai\"\n[general]\nmodel = \"gpt-5\"\n"
+        });
+        let snippet = "[shared]\nreasoning = \"medium\"\n";
+
+        let applied = apply_common_config_to_settings(&AppType::Codex, &settings, snippet).unwrap();
+        let applied_config = applied["config"].as_str().unwrap_or_default();
+
+        assert!(
+            applied_config.contains(CODEX_COMMON_CONFIG_BLOCK_START),
+            "managed block start marker should be inserted"
+        );
+        assert!(
+            applied_config.contains(CODEX_COMMON_CONFIG_BLOCK_END),
+            "managed block end marker should be inserted"
+        );
+        assert!(
+            applied_config.contains("# user comment\nmodel_provider = \"openai\"\n[general]\nmodel = \"gpt-5\""),
+            "existing user content should remain before managed block"
+        );
+        assert!(
+            applied_config.contains("[shared]\nreasoning = \"medium\""),
+            "snippet content should be inside managed block"
+        );
+    }
+
+    #[test]
+    fn codex_common_config_remove_strips_managed_block_only() {
+        let settings = json!({
+            "auth": {},
+            "config": "model = \"gpt-5\"\n\n# >>> CC-SWITCH COMMON CONFIG START\n[shared]\nreasoning = \"medium\"\n# <<< CC-SWITCH COMMON CONFIG END\n"
+        });
+        let snippet = "[shared]\nreasoning = \"medium\"\n";
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Codex, &settings, snippet).unwrap();
+        let stripped_config = stripped["config"].as_str().unwrap_or_default();
+
+        assert_eq!(stripped_config, "model = \"gpt-5\"\n");
+    }
+
+    #[test]
+    fn codex_common_config_apply_rewrites_legacy_structural_merge_into_managed_block() {
+        let settings = json!({
+            "auth": {},
+            "config": "model = \"gpt-5\"\n[shared]\nreasoning = \"medium\"\n"
+        });
+        let snippet = "[shared]\nreasoning = \"medium\"\n";
+
+        let applied = apply_common_config_to_settings(&AppType::Codex, &settings, snippet).unwrap();
+        let applied_config = applied["config"].as_str().unwrap_or_default();
+
+        let shared_count = applied_config.matches("[shared]").count();
+        assert_eq!(
+            shared_count, 1,
+            "legacy merged snippet should be normalized to exactly one managed block copy"
+        );
+        assert!(applied_config.contains(CODEX_COMMON_CONFIG_BLOCK_START));
     }
 
     #[test]
@@ -1461,5 +2289,436 @@ mod tests {
             .map(|value| value.as_str().expect("tool id should be string"))
             .collect();
         assert_eq!(values, vec!["tool2"]);
+    }
+
+    #[test]
+    fn opencode_common_config_apply_and_remove_roundtrip() {
+        let settings = json!({
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {
+                "baseURL": "https://api.example.com/v1",
+                "apiKey": "sk-test"
+            }
+        });
+        let snippet = r#"{
+  "options": {
+    "timeout": 30000
+  },
+  "models": {
+    "gpt-4o": {
+      "name": "GPT-4o"
+    }
+  }
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::OpenCode, &settings, snippet).unwrap();
+        assert_eq!(applied["options"]["timeout"], json!(30000));
+        assert_eq!(applied["models"]["gpt-4o"]["name"], json!("GPT-4o"));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::OpenCode, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn openclaw_common_config_apply_and_remove_roundtrip() {
+        let settings = json!({
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-test"
+        });
+        let snippet = r#"{
+  "api": "openai-responses",
+  "models": [
+    { "id": "gpt-4.1" }
+  ]
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::OpenClaw, &settings, snippet).unwrap();
+        assert_eq!(applied["api"], json!("openai-responses"));
+        assert_eq!(applied["models"][0]["id"], json!("gpt-4.1"));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::OpenClaw, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn hermes_common_config_apply_and_remove_roundtrip() {
+        let settings = json!({
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-test"
+        });
+        let snippet = r#"{
+  "models": [
+    { "id": "anthropic/claude-sonnet-4" }
+  ],
+  "max_tokens": 16384
+}"#;
+
+        let applied =
+            apply_common_config_to_settings(&AppType::Hermes, &settings, snippet).unwrap();
+        assert_eq!(applied["models"][0]["id"], json!("anthropic/claude-sonnet-4"));
+        assert_eq!(applied["max_tokens"], json!(16384));
+
+        let stripped =
+            remove_common_config_from_settings(&AppType::Hermes, &applied, snippet).unwrap();
+        assert_eq!(stripped, settings);
+    }
+
+    #[test]
+    fn codex_template_renders_enabled_mcp_servers() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template(
+            "codex",
+            Some("{providerConfig}\n\n{mcpConfig}\n".to_string()),
+        )
+        .expect("set codex template");
+
+        db.save_mcp_server(&McpServer {
+            id: "server-a".to_string(),
+            name: "Server A".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "config": "model = \"gpt-5\"\n"
+            }),
+            None,
+        );
+
+        let rendered = build_effective_settings_with_common_config(&db, &AppType::Codex, &provider)
+            .expect("render effective settings");
+        let rendered_config = rendered
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should be string");
+
+        assert!(rendered_config.contains("model = \"gpt-5\""));
+        assert!(rendered_config.contains("[mcp_servers.server-a]"));
+        assert!(rendered_config.contains("command = \"npx\""));
+    }
+
+    #[test]
+    fn codex_template_without_mcp_servers_keeps_provider_config_clean() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template(
+            "codex",
+            Some("{providerConfig}\n\n{mcpConfig}\n".to_string()),
+        )
+        .expect("set codex template");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "config": "model = \"gpt-5\"\n"
+            }),
+            None,
+        );
+
+        let rendered = build_effective_settings_with_common_config(&db, &AppType::Codex, &provider)
+            .expect("render effective settings");
+        let rendered_config = rendered
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should be string");
+
+        assert!(rendered_config.contains("model = \"gpt-5\""));
+        assert!(!rendered_config.contains("mcp_servers"));
+    }
+
+    #[test]
+    fn invalid_codex_template_falls_back_to_original_provider_config() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template("codex", Some("[broken".to_string()))
+            .expect("set broken codex template");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "config": "model = \"gpt-5\"\n"
+            }),
+            None,
+        );
+
+        let rendered = build_effective_settings_with_common_config(&db, &AppType::Codex, &provider)
+            .expect("render effective settings");
+        let rendered_config = rendered
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should be string");
+
+        assert_eq!(rendered_config, "model = \"gpt-5\"\n");
+    }
+
+    #[test]
+    fn codex_template_replaces_existing_mcp_servers_section_with_enabled_set() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template(
+            "codex",
+            Some("{providerConfig}\n\n{mcpConfig}\n".to_string()),
+        )
+        .expect("set codex template");
+
+        db.save_mcp_server(&McpServer {
+            id: "new-server".to_string(),
+            name: "New Server".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-test" },
+                "config": "model = \"gpt-5\"\n[mcp_servers.legacy]\ncommand = \"legacy\"\n"
+            }),
+            None,
+        );
+
+        let rendered = build_effective_settings_with_common_config(&db, &AppType::Codex, &provider)
+            .expect("render effective settings");
+        let rendered_config = rendered
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should be string");
+
+        assert!(!rendered_config.contains("[mcp_servers.legacy]"));
+        assert!(rendered_config.contains("[mcp_servers.new-server]"));
+    }
+
+    #[test]
+    fn gemini_template_renders_provider_settings_and_enabled_mcp_servers() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template(
+            "gemini",
+            Some(
+                "# .env\n# managed by cc-switch\n{providerConfig}\n\n# settings.json\n{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n"
+                    .to_string(),
+            ),
+        )
+        .expect("set gemini template");
+
+        db.save_mcp_server(&McpServer {
+            id: "gemini-memory".to_string(),
+            name: "Gemini Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                gemini: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save gemini mcp server");
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "https://api.example.com",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "previewFeatures": true
+                    },
+                    "security": {
+                        "auth": {
+                            "selectedType": "oauth-personal"
+                        }
+                    },
+                    "mcpServers": {
+                        "legacy": {
+                            "command": "legacy"
+                        }
+                    }
+                }
+            }),
+            None,
+        );
+
+        let rendered =
+            build_effective_settings_with_common_config(&db, &AppType::Gemini, &provider)
+                .expect("render gemini effective settings");
+
+        assert_eq!(
+            rendered["env"]["GOOGLE_GEMINI_BASE_URL"],
+            json!("https://api.example.com")
+        );
+        assert_eq!(rendered["env"]["GEMINI_MODEL"], json!("gemini-3.1-pro"));
+        assert_eq!(
+            rendered["config"]["general"]["previewFeatures"],
+            json!(true)
+        );
+        assert_eq!(
+            rendered["config"]["security"]["auth"]["selectedType"],
+            json!("oauth-personal")
+        );
+        assert!(rendered["config"]["mcpServers"].get("legacy").is_none());
+        assert_eq!(
+            rendered["config"]["mcpServers"]["gemini-memory"]["command"],
+            json!("npx")
+        );
+        assert_eq!(
+            rendered[crate::gemini_config::GEMINI_RENDERED_ENV_TEXT_FIELD],
+            json!(
+                "# managed by cc-switch\nGEMINI_MODEL=gemini-3.1-pro\nGOOGLE_GEMINI_BASE_URL=https://api.example.com"
+            )
+        );
+    }
+
+    #[test]
+    fn gemini_template_without_settings_placeholder_still_merges_provider_settings() {
+        let db = Database::memory().expect("create memory db");
+        db.set_config_template(
+            "gemini",
+            Some(
+                "# .env\n{providerConfig}\n\n# settings.json\n{\n  \"general\": {\n    \"previewFeatures\": false\n  }\n}\n"
+                    .to_string(),
+            ),
+        )
+        .expect("set gemini template");
+
+        let provider = Provider::with_id(
+            "gemini-b".to_string(),
+            "Gemini B".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_MODEL": "gemini-3.1-flash"
+                },
+                "config": {
+                    "general": {
+                        "previewFeatures": true,
+                        "sessionRetention": {
+                            "enabled": true
+                        }
+                    },
+                    "security": {
+                        "auth": {
+                            "selectedType": "gemini-api-key"
+                        }
+                    }
+                }
+            }),
+            None,
+        );
+
+        let rendered =
+            build_effective_settings_with_common_config(&db, &AppType::Gemini, &provider)
+                .expect("render gemini effective settings");
+
+        assert_eq!(rendered["env"]["GEMINI_MODEL"], json!("gemini-3.1-flash"));
+        assert_eq!(
+            rendered["config"]["general"]["previewFeatures"],
+            json!(true)
+        );
+        assert_eq!(
+            rendered["config"]["general"]["sessionRetention"]["enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            rendered["config"]["security"]["auth"]["selectedType"],
+            json!("gemini-api-key")
+        );
+        assert_eq!(rendered["config"]["mcpServers"], json!({}));
+    }
+
+    #[test]
+    #[serial]
+    fn write_gemini_live_preserves_rendered_env_text_when_it_matches_env_map() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let provider = Provider::with_id(
+            "gemini-live".to_string(),
+            "Gemini Live".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "sk-test",
+                    "GEMINI_MODEL": "gemini-2.5-pro"
+                },
+                "config": {},
+                "__ccSwitchRenderedEnvText": "# managed by cc-switch\nGEMINI_API_KEY=sk-test\nGEMINI_MODEL=gemini-2.5-pro"
+            }),
+            None,
+        );
+
+        write_gemini_live(&provider).expect("write gemini live");
+
+        let env_text = crate::gemini_config::read_gemini_env_text().expect("read gemini env");
+        assert_eq!(
+            env_text,
+            "# managed by cc-switch\nGEMINI_API_KEY=sk-test\nGEMINI_MODEL=gemini-2.5-pro"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn write_gemini_live_falls_back_when_rendered_env_text_is_stale() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let provider = Provider::with_id(
+            "gemini-live-stale".to_string(),
+            "Gemini Live Stale".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "sk-new",
+                    "GEMINI_MODEL": "gemini-2.5-flash"
+                },
+                "config": {},
+                "__ccSwitchRenderedEnvText": "# stale\nGEMINI_API_KEY=sk-old\nGEMINI_MODEL=gemini-2.5-flash"
+            }),
+            None,
+        );
+
+        write_gemini_live(&provider).expect("write gemini live");
+
+        let env_text = crate::gemini_config::read_gemini_env_text().expect("read gemini env");
+        assert!(env_text.contains("GEMINI_API_KEY=sk-new"));
+        assert!(!env_text.contains("# stale"));
     }
 }
