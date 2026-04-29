@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
-import { openclawApi, providersApi, vscodeApi, type AppId } from "@/lib/api";
+import type { AppId } from "@/lib/api";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -23,7 +23,7 @@ interface EditProviderDialogProps {
     };
   }) => Promise<void> | void;
   appId: AppId;
-  isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
+  isProxyTakeover?: boolean;
 }
 
 export function EditProviderDialog({
@@ -32,115 +32,13 @@ export function EditProviderDialog({
   onOpenChange,
   onSubmit,
   appId,
-  isProxyTakeover = false,
 }: EditProviderDialogProps) {
   const { t } = useTranslation();
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
 
-  // 默认使用传入的 provider.settingsConfig，若当前编辑对象是"当前生效供应商"，则尝试读取实时配置替换初始值
-  const [liveSettings, setLiveSettings] = useState<Record<
-    string,
-    unknown
-  > | null>(null);
-
-  // 使用 ref 标记是否已经加载过，防止重复读取覆盖用户编辑
-  const [hasLoadedLive, setHasLoadedLive] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      if (!open || !provider) {
-        setLiveSettings(null);
-        setHasLoadedLive(false);
-        return;
-      }
-
-      // 关键修复：只在首次打开时加载一次
-      if (hasLoadedLive) {
-        return;
-      }
-
-      // 代理接管模式：Live 配置已被代理改写，读取 live 会导致编辑界面展示代理地址/占位符等内容
-      // 因此直接回退到 SSOT（数据库）配置，避免用户困惑与误保存
-      if (isProxyTakeover) {
-        if (!cancelled) {
-          setLiveSettings(null);
-          setHasLoadedLive(true);
-        }
-        return;
-      }
-
-      // OpenCode uses additive mode - each provider's config is stored independently in DB
-      // Reading live config would return the full opencode.json (with $schema, provider, mcp etc.)
-      // instead of just the provider fragment, causing incorrect nested structure on save
-      if (appId === "opencode") {
-        if (!cancelled) {
-          setLiveSettings(null);
-          setHasLoadedLive(true);
-        }
-        return;
-      }
-
-      if (appId === "openclaw") {
-        try {
-          const live = await openclawApi.getLiveProvider(provider.id);
-          if (!cancelled && live && typeof live === "object") {
-            setLiveSettings(live);
-          } else if (!cancelled) {
-            setLiveSettings(null);
-          }
-        } catch {
-          if (!cancelled) {
-            setLiveSettings(null);
-          }
-        } finally {
-          if (!cancelled) {
-            setHasLoadedLive(true);
-          }
-        }
-        return;
-      }
-
-      try {
-        const currentId = await providersApi.getCurrent(appId);
-        if (currentId && provider.id === currentId) {
-          try {
-            const live = (await vscodeApi.getLiveProviderSettings(
-              appId,
-            )) as Record<string, unknown>;
-            if (!cancelled && live && typeof live === "object") {
-              setLiveSettings(live);
-              setHasLoadedLive(true);
-            }
-          } catch {
-            // 读取实时配置失败则回退到 SSOT（不打断编辑流程）
-            if (!cancelled) {
-              setLiveSettings(null);
-              setHasLoadedLive(true);
-            }
-          }
-        } else {
-          if (!cancelled) {
-            setLiveSettings(null);
-            setHasLoadedLive(true);
-          }
-        }
-      } finally {
-        // no-op
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, provider?.id, appId, hasLoadedLive, isProxyTakeover]); // 只依赖 provider.id，不依赖整个 provider 对象
-
   const initialSettingsConfig = useMemo(() => {
-    return (liveSettings ?? provider?.settingsConfig ?? {}) as Record<
-      string,
-      unknown
-    >;
-  }, [liveSettings, provider?.settingsConfig]); // 只依赖 settingsConfig，不依赖整个 provider
+    return (provider?.settingsConfig ?? {}) as Record<string, unknown>;
+  }, [provider?.settingsConfig]);
 
   // 固定 initialData，防止 provider 对象更新时重置表单
   const initialData = useMemo(() => {
@@ -196,7 +94,7 @@ export function EditProviderDialog({
         provider: updatedProvider,
         originalId: provider.id,
         saveOptions: {
-          pinToTop: values.pinToTopOnSave ?? true,
+          pinToTop: values.pinToTopOnSave ?? false,
           enabled: values.enableOnSave ?? true,
         },
       });

@@ -2,7 +2,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppId } from "./types";
 
-export type AppType = "claude" | "codex" | "gemini" | "omo" | "omo_slim";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "openclaw"
+  | "hermes"
+  | "omo"
+  | "omo_slim";
 
 export interface AppConfigFileEntry {
   key: string;
@@ -14,6 +22,12 @@ export interface AppConfigFileContent {
   key: string;
   label: string;
   path: string;
+  content: string;
+}
+
+export interface AppConfigTemplateFile {
+  key: string;
+  label: string;
   content: string;
 }
 
@@ -124,19 +138,21 @@ export async function writeAppConfigFile(options: {
 
 export async function getAppConfigTemplate(
   appId: AppId,
-): Promise<string | null> {
-  return invoke<string | null>("get_app_config_template", {
+): Promise<AppConfigTemplateFile[]> {
+  return invoke<AppConfigTemplateFile[]>("get_app_config_template", {
     app: appId,
   });
 }
 
 export async function setAppConfigTemplate(options: {
   appId: AppId;
-  template: string;
+  files: AppConfigTemplateFile[];
+  syncToLive?: boolean;
 }): Promise<boolean> {
-  const { appId, template } = options;
+  const { appId, files, syncToLive } = options;
   return invoke<boolean>("set_app_config_template", {
     app: appId,
-    template,
+    files,
+    syncToLive,
   });
 }

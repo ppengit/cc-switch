@@ -1233,13 +1233,15 @@ impl ProviderService {
                 )
                 .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
 
-                if matches!(app_type, AppType::Claude) {
+                if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
                     futures::executor::block_on(
                         state
                             .proxy_service
-                            .sync_claude_live_from_provider_while_proxy_active(&provider),
+                            .sync_live_from_provider_while_proxy_active(&app_type, &provider),
                     )
-                    .map_err(|e| AppError::Message(format!("同步 Claude Live 配置失败: {e}")))?;
+                    .map_err(|e| {
+                        AppError::Message(format!("同步 {} Live 配置失败: {e}", app_type.as_str()))
+                    })?;
                 }
             } else {
                 write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
@@ -1642,6 +1644,16 @@ impl ProviderService {
                     .update_live_backup_from_provider(app_type.as_str(), provider),
             )
             .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+            if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .sync_live_from_provider_while_proxy_active(&app_type, provider),
+                )
+                .map_err(|e| {
+                    AppError::Message(format!("同步 {} Live 配置失败: {e}", app_type.as_str()))
+                })?;
+            }
             return Ok(());
         }
 
@@ -2013,12 +2025,37 @@ impl ProviderService {
         updates: Vec<ProviderSortUpdate>,
     ) -> Result<bool, AppError> {
         let mut providers = state.db.get_all_providers(app_type.as_str())?;
+        let update_map: HashMap<String, usize> = updates
+            .into_iter()
+            .map(|update| (update.id, update.sort_index))
+            .collect();
 
-        for update in updates {
-            if let Some(provider) = providers.get_mut(&update.id) {
-                provider.sort_index = Some(update.sort_index);
-                state.db.save_provider(app_type.as_str(), provider)?;
+        for (id, sort_index) in update_map {
+            if let Some(provider) = providers.get_mut(&id) {
+                provider.sort_index = Some(sort_index);
             }
+        }
+
+        let mut ordered: Vec<Provider> = providers.into_values().collect();
+        ordered.sort_by(|a, b| {
+            let sort_diff = (a.sort_index.unwrap_or(usize::MAX))
+                .cmp(&b.sort_index.unwrap_or(usize::MAX));
+            if sort_diff != std::cmp::Ordering::Equal {
+                return sort_diff;
+            }
+
+            let created_diff = (a.created_at.unwrap_or(i64::MAX))
+                .cmp(&b.created_at.unwrap_or(i64::MAX));
+            if created_diff != std::cmp::Ordering::Equal {
+                return created_diff;
+            }
+
+            a.id.cmp(&b.id)
+        });
+
+        for (index, provider) in ordered.iter_mut().enumerate() {
+            provider.sort_index = Some(index);
+            state.db.save_provider(app_type.as_str(), provider)?;
         }
 
         Ok(true)

@@ -1,17 +1,11 @@
 import React, {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
-import {
-  extractCodexTopLevelInt,
-  setCodexTopLevelInt,
-  removeCodexTopLevelField,
-} from "@/utils/providerConfigUtils";
 
 interface CodexAuthSectionProps {
   value: string;
@@ -94,6 +88,7 @@ interface CodexConfigSectionProps {
   onEditCommonConfig: () => void;
   commonConfigError?: string;
   configError?: string;
+  showCommonConfig?: boolean;
 }
 
 /**
@@ -107,6 +102,7 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
   onEditCommonConfig,
   commonConfigError,
   configError,
+  showCommonConfig = true,
 }) => {
   const { t } = useTranslation();
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -144,74 +140,6 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
     [onChange],
   );
 
-  // Parse toggle states from TOML text
-  const toggleStates = useMemo(() => {
-    const contextWindow = extractCodexTopLevelInt(
-      localValue,
-      "model_context_window",
-    );
-    const compactLimit = extractCodexTopLevelInt(
-      localValue,
-      "model_auto_compact_token_limit",
-    );
-    return {
-      contextWindow1M: contextWindow === 1000000,
-      compactLimit: compactLimit ?? 900000,
-    };
-  }, [localValue]);
-
-  // Debounce timer for compact limit input
-  const compactTimerRef = useRef<ReturnType<typeof setTimeout>>();
-
-  const handleContextWindowToggle = useCallback(
-    (checked: boolean) => {
-      let toml = localValueRef.current || "";
-      if (checked) {
-        toml = setCodexTopLevelInt(toml, "model_context_window", 1000000);
-        // Auto-set compact limit if not already present
-        if (
-          extractCodexTopLevelInt(toml, "model_auto_compact_token_limit") ===
-          undefined
-        ) {
-          toml = setCodexTopLevelInt(
-            toml,
-            "model_auto_compact_token_limit",
-            900000,
-          );
-        }
-      } else {
-        toml = removeCodexTopLevelField(toml, "model_context_window");
-        toml = removeCodexTopLevelField(toml, "model_auto_compact_token_limit");
-      }
-      handleLocalChange(toml);
-    },
-    [handleLocalChange],
-  );
-
-  const handleCompactLimitChange = useCallback(
-    (inputValue: string) => {
-      clearTimeout(compactTimerRef.current);
-      compactTimerRef.current = setTimeout(() => {
-        const num = parseInt(inputValue, 10);
-        if (!Number.isNaN(num) && num > 0) {
-          handleLocalChange(
-            setCodexTopLevelInt(
-              localValueRef.current || "",
-              "model_auto_compact_token_limit",
-              num,
-            ),
-          );
-        }
-      }, 500);
-    },
-    [handleLocalChange],
-  );
-
-  // Cleanup debounce timer
-  useEffect(() => {
-    return () => clearTimeout(compactTimerRef.current);
-  }, []);
-
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -222,57 +150,36 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
           {t("codexConfig.configToml")}
         </label>
 
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={useCommonConfig}
-            onChange={(e) => onCommonConfigToggle(e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default  rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-          />
-          {t("codexConfig.writeCommonConfig")}
-        </label>
+        {showCommonConfig && (
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useCommonConfig}
+              onChange={(e) => onCommonConfigToggle(e.target.checked)}
+              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default  rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+            />
+            {t("codexConfig.writeCommonConfig")}
+          </label>
+        )}
       </div>
 
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onEditCommonConfig}
-          className="text-xs text-blue-500 dark:text-blue-400 hover:underline"
-        >
-          {t("codexConfig.editCommonConfig")}
-        </button>
-      </div>
+      {showCommonConfig && (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={onEditCommonConfig}
+            className="text-xs text-blue-500 dark:text-blue-400 hover:underline"
+          >
+            {t("codexConfig.editCommonConfig")}
+          </button>
+        </div>
+      )}
 
-      {commonConfigError && (
+      {showCommonConfig && commonConfigError && (
         <p className="text-xs text-red-500 dark:text-red-400 text-right">
           {commonConfigError}
         </p>
       )}
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={toggleStates.contextWindow1M}
-            onChange={(e) => handleContextWindowToggle(e.target.checked)}
-            className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
-          />
-          <span>{t("codexConfig.contextWindow1M")}</span>
-        </label>
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-          <span>{t("codexConfig.autoCompactLimit")}:</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            key={toggleStates.compactLimit}
-            defaultValue={toggleStates.compactLimit}
-            disabled={!toggleStates.contextWindow1M}
-            onChange={(e) => handleCompactLimitChange(e.target.value)}
-            className="w-28 h-7 px-2 text-sm rounded border border-border bg-background text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-        </label>
-      </div>
 
       <JsonEditor
         value={localValue}

@@ -143,6 +143,7 @@ export function RequestLogTable({
               <SelectItem value="claude">Claude</SelectItem>
               <SelectItem value="codex">Codex</SelectItem>
               <SelectItem value="gemini">Gemini</SelectItem>
+              <SelectItem value="hermes">Hermes</SelectItem>
             </SelectContent>
           </Select>
 

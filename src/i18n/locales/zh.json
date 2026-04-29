@@ -185,6 +185,7 @@
     "configTemplateHint": "模板中保留 {providerConfig} 与 {mcpConfig} 占位符，便于按应用注入实际配置。",
     "configTemplateHintGemini": "Gemini 模板支持 {providerConfig}（.env）、{settingsConfig}（settings.json 其他字段）与 {mcpConfig}（mcpServers）。",
     "currentConfig": "当前配置",
+    "currentConfigLoadFailed": "加载当前配置失败：{{error}}",
     "currentConfigPlaceholder": "配置文件内容为空",
     "currentConfigSaveFailed": "保存当前配置失败",
     "currentConfigSaved": "当前配置已保存",
@@ -205,17 +206,21 @@
     "recentSessions": "最近会话",
     "recentSessionsTitle": "最近 10 条会话",
     "resetTemplate": "恢复默认模板",
+    "loadLiveConfig": "加载环境配置",
+    "loadLiveTemplateFailed": "加载环境配置失败：{{error}}",
     "search": "搜索",
     "select": "选择",
     "selectAll": "全选",
     "selectConfigFile": "选择配置文件",
     "status": "状态",
+    "syncTemplateToLive": "保存后更新实际配置",
     "templateCopied": "配置模板已复制",
     "templateCopyFailed": "复制模板失败",
     "templateEffectHint": "该模板会在写入应用实际配置时生效，保存前会先渲染应用对应的占位符。",
     "templateEffectHintGemini": "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json，并自动覆盖 mcpServers。",
     "templateSaveFailed": "保存配置模板失败",
-    "templateSaved": "配置模板已保存"
+    "templateSaved": "配置模板已保存",
+    "circuitHalfOpen": "半开"
   },
   "notifications": {
     "providerAdded": "供应商已添加",
@@ -876,6 +881,8 @@
     "fillTemplateValue": "请填写 {{label}}",
     "endpointRequired": "非官方供应商请填写 API 端点",
     "apiKeyRequired": "非官方供应商请填写 API Key",
+    "duplicateProvider": "已存在相同应用、请求地址和 API Key 的供应商：{{name}}",
+    "useConfigTemplateOnSave": "使用配置模板",
     "softValidation": {
       "title": "配置存在以下问题",
       "hint": "仍要保存吗？保存后切换此供应商时可能失败，可以之后再补全。",
@@ -1177,7 +1184,8 @@
       "all": "全部",
       "claude": "Claude Code",
       "codex": "Codex",
-      "gemini": "Gemini"
+      "gemini": "Gemini",
+      "hermes": "Hermes"
     },
     "dataSources": "数据来源",
     "dataSource": {
@@ -1185,7 +1193,8 @@
       "session_log": "会话日志",
       "codex_db": "Codex 数据库",
       "codex_session": "Codex 会话日志",
-      "gemini_session": "Gemini 会话日志"
+      "gemini_session": "Gemini 会话日志",
+      "hermes_session": "Hermes 会话日志"
     },
     "sessionSync": {
       "trigger": "同步会话日志",

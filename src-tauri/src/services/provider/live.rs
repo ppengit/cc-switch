@@ -289,10 +289,6 @@ const CODEX_COMMON_CONFIG_BLOCK_END: &str = "# <<< CC-SWITCH COMMON CONFIG END";
 const CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER: &str = "{providerConfig}";
 const CONFIG_TEMPLATE_MCP_PLACEHOLDER: &str = "{mcpConfig}";
 const CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER: &str = "{settingsConfig}";
-const CODEX_DEFAULT_CONFIG_TEMPLATE: &str = r#"{providerConfig}
-
-{mcpConfig}
-"#;
 const GEMINI_TEMPLATE_ENV_SECTION_HEADER: &str = "# .env";
 const GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER: &str = "# settings.json";
 const GEMINI_DEFAULT_SETTINGS_TEMPLATE: &str = r#"{
@@ -300,15 +296,154 @@ const GEMINI_DEFAULT_SETTINGS_TEMPLATE: &str = r#"{
   "mcpServers": {mcpConfig}
 }
 "#;
-const GEMINI_DEFAULT_CONFIG_TEMPLATE: &str = r#"# .env
-{providerConfig}
 
-# settings.json
-{
-  {settingsConfig}
-  "mcpServers": {mcpConfig}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppConfigTemplateFile {
+    key: String,
+    label: String,
+    content: String,
 }
-"#;
+
+fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFile> {
+    match app_type {
+        AppType::Claude => vec![AppConfigTemplateFile {
+            key: "settings".to_string(),
+            label: "settings.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::Codex => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "config.toml".to_string(),
+            content: "{providerConfig}\n\n{mcpConfig}\n".to_string(),
+        }],
+        AppType::Gemini => vec![
+            AppConfigTemplateFile {
+                key: "env".to_string(),
+                label: ".env".to_string(),
+                content: "{providerConfig}\n".to_string(),
+            },
+            AppConfigTemplateFile {
+                key: "settings".to_string(),
+                label: "settings.json".to_string(),
+                content: "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n"
+                    .to_string(),
+            },
+        ],
+        AppType::OpenCode => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "opencode.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::OpenClaw => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "openclaw.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::Hermes => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "config.yaml".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+    }
+}
+
+fn split_legacy_gemini_template(template: &str) -> Vec<AppConfigTemplateFile> {
+    #[derive(Clone, Copy)]
+    enum Section {
+        Env,
+        Settings,
+    }
+
+    let mut current: Option<Section> = None;
+    let mut env_lines = Vec::new();
+    let mut settings_lines = Vec::new();
+
+    for line in template.lines() {
+        match line.trim() {
+            GEMINI_TEMPLATE_ENV_SECTION_HEADER => {
+                current = Some(Section::Env);
+                continue;
+            }
+            GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER => {
+                current = Some(Section::Settings);
+                continue;
+            }
+            _ => {}
+        }
+
+        match current {
+            Some(Section::Env) => env_lines.push(line),
+            Some(Section::Settings) => settings_lines.push(line),
+            None => {}
+        }
+    }
+
+    if env_lines.is_empty() && settings_lines.is_empty() {
+        return default_template_files_for(&AppType::Gemini);
+    }
+
+    vec![
+        AppConfigTemplateFile {
+            key: "env".to_string(),
+            label: ".env".to_string(),
+            content: format!("{}\n", env_lines.join("\n").trim_matches('\n')),
+        },
+        AppConfigTemplateFile {
+            key: "settings".to_string(),
+            label: "settings.json".to_string(),
+            content: format!("{}\n", settings_lines.join("\n").trim_matches('\n')),
+        },
+    ]
+}
+
+fn parse_stored_template_files(app_type: &AppType, persisted: Option<String>) -> Vec<AppConfigTemplateFile> {
+    let Some(persisted) = persisted else {
+        return default_template_files_for(app_type);
+    };
+
+    let trimmed = persisted.trim();
+    if trimmed.is_empty() {
+        return default_template_files_for(app_type);
+    }
+
+    if let Ok(files) = serde_json::from_str::<Vec<AppConfigTemplateFile>>(trimmed) {
+        return files;
+    }
+
+    match app_type {
+        AppType::Gemini => split_legacy_gemini_template(&persisted),
+        _ => {
+            let mut files = default_template_files_for(app_type);
+            if let Some(first) = files.first_mut() {
+                first.content = persisted;
+            }
+            files
+        }
+    }
+}
+
+fn get_effective_config_template_files(
+    db: &Database,
+    app_type: &AppType,
+) -> Vec<AppConfigTemplateFile> {
+    let persisted = db.get_config_template(app_type.as_str()).ok().flatten();
+    parse_stored_template_files(app_type, persisted)
+}
+
+fn get_template_content_by_key(db: &Database, app_type: &AppType, key: &str) -> String {
+    get_effective_config_template_files(db, app_type)
+        .into_iter()
+        .find(|file| file.key == key)
+        .map(|file| file.content)
+        .unwrap_or_else(|| {
+            default_template_files_for(app_type)
+                .into_iter()
+                .find(|file| file.key == key)
+                .map(|file| file.content)
+                .unwrap_or_else(|| "{providerConfig}\n".to_string())
+        })
+}
 
 fn codex_strip_managed_common_config_block(config_toml: &str) -> (String, bool) {
     let mut output_lines = Vec::new();
@@ -347,24 +482,6 @@ fn codex_strip_managed_common_config_block(config_toml: &str) -> (String, bool) 
 fn codex_common_config_block_present(config_toml: &str) -> bool {
     config_toml.contains(CODEX_COMMON_CONFIG_BLOCK_START)
         && config_toml.contains(CODEX_COMMON_CONFIG_BLOCK_END)
-}
-
-fn get_effective_config_template(db: &Database, app_type: &AppType) -> String {
-    let persisted = db
-        .get_config_template(app_type.as_str())
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-
-    if !persisted.trim().is_empty() {
-        return persisted;
-    }
-
-    match app_type {
-        AppType::Codex => CODEX_DEFAULT_CONFIG_TEMPLATE.to_string(),
-        AppType::Gemini => GEMINI_DEFAULT_CONFIG_TEMPLATE.to_string(),
-        _ => CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string(),
-    }
 }
 
 fn json_value_to_toml_item_for_template(value: &Value) -> Option<Item> {
@@ -544,7 +661,7 @@ fn strip_codex_mcp_servers_section(config_toml: &str) -> Result<String, AppError
 
 fn apply_codex_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
     let mut result = settings.clone();
-    let template = get_effective_config_template(db, &AppType::Codex);
+    let template = get_template_content_by_key(db, &AppType::Codex, "config");
     let raw_provider_config = settings.get("config").and_then(Value::as_str).unwrap_or("");
     let provider_config = match strip_codex_mcp_servers_section(raw_provider_config) {
         Ok(stripped) => stripped.trim_end_matches('\n').to_string(),
@@ -579,69 +696,6 @@ fn apply_codex_template_to_settings(db: &Database, settings: &Value) -> Result<V
     }
 
     Ok(result)
-}
-
-#[derive(Default)]
-struct GeminiTemplateSections {
-    env: String,
-    settings: String,
-}
-
-fn split_gemini_template_sections(template: &str) -> GeminiTemplateSections {
-    #[derive(Clone, Copy)]
-    enum Section {
-        Env,
-        Settings,
-    }
-
-    let mut current: Option<Section> = None;
-    let mut env_lines = Vec::new();
-    let mut settings_lines = Vec::new();
-
-    for line in template.lines() {
-        match line.trim() {
-            GEMINI_TEMPLATE_ENV_SECTION_HEADER => {
-                current = Some(Section::Env);
-                continue;
-            }
-            GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER => {
-                current = Some(Section::Settings);
-                continue;
-            }
-            _ => {}
-        }
-
-        match current {
-            Some(Section::Env) => env_lines.push(line),
-            Some(Section::Settings) => settings_lines.push(line),
-            None => {}
-        }
-    }
-
-    let mut sections = GeminiTemplateSections {
-        env: env_lines.join("\n").trim_matches('\n').to_string(),
-        settings: settings_lines.join("\n").trim_matches('\n').to_string(),
-    };
-
-    if sections.env.is_empty() && sections.settings.is_empty() {
-        let trimmed = template.trim();
-        if trimmed.starts_with('{') {
-            sections.env = CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string();
-            sections.settings = template.trim().to_string();
-        } else {
-            sections.env = template.trim().to_string();
-            sections.settings = GEMINI_DEFAULT_SETTINGS_TEMPLATE.trim().to_string();
-        }
-    } else {
-        if sections.env.trim().is_empty() {
-            sections.env = CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER.to_string();
-        }
-        if sections.settings.trim().is_empty() {
-            sections.settings = GEMINI_DEFAULT_SETTINGS_TEMPLATE.trim().to_string();
-        }
-    }
-
-    sections
 }
 
 fn gemini_provider_env_to_template_text(settings: &Value) -> Result<String, AppError> {
@@ -738,8 +792,8 @@ fn build_gemini_mcp_template_block(db: &Database) -> Result<String, AppError> {
 }
 
 fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
-    let template = get_effective_config_template(db, &AppType::Gemini);
-    let sections = split_gemini_template_sections(&template);
+    let env_template = get_template_content_by_key(db, &AppType::Gemini, "env");
+    let settings_template = get_template_content_by_key(db, &AppType::Gemini, "settings");
 
     let provider_env_text = gemini_provider_env_to_template_text(settings)?;
     let provider_env_value = settings.get("env").cloned().unwrap_or_else(|| json!({}));
@@ -747,8 +801,7 @@ fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<
     let settings_members = json_object_to_template_members(&provider_settings_fragment)?;
     let mcp_block = build_gemini_mcp_template_block(db)?;
 
-    let rendered_env = sections
-        .env
+    let rendered_env = env_template
         .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, &provider_env_text)
         .trim_matches('\n')
         .to_string();
@@ -766,8 +819,7 @@ fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<
         }
     }
 
-    let rendered_settings = sections
-        .settings
+    let rendered_settings = settings_template
         .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, &settings_members)
         .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, &mcp_block)
         .trim()
@@ -915,20 +967,11 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
 }
 
 pub(crate) fn provider_uses_common_config(
-    app_type: &AppType,
-    provider: &Provider,
-    snippet: Option<&str>,
+    _app_type: &AppType,
+    _provider: &Provider,
+    _snippet: Option<&str>,
 ) -> bool {
-    match provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.common_config_enabled)
-    {
-        Some(explicit) => explicit && snippet.is_some_and(|value| !value.trim().is_empty()),
-        None => snippet.is_some_and(|value| {
-            settings_contain_common_config(app_type, &provider.settings_config, value)
-        }),
-    }
+    false
 }
 
 pub(crate) fn remove_common_config_from_settings(
@@ -1040,30 +1083,60 @@ fn apply_common_config_to_settings(
     }
 }
 
-pub(crate) fn build_effective_settings_without_template(
+pub(crate) fn provider_uses_config_template(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.use_config_template)
+        .unwrap_or(true)
+}
+
+fn apply_json_template_to_settings(
     db: &Database,
     app_type: &AppType,
+    settings: &Value,
+    file_key: &str,
+) -> Result<Value, AppError> {
+    let template = get_template_content_by_key(db, app_type, file_key);
+    let provider_config = serde_json::to_string_pretty(settings)
+        .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
+
+    let rendered = template
+        .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, &provider_config)
+        .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, "")
+        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, "{}");
+
+    serde_json::from_str::<Value>(rendered.trim()).map_err(|e| {
+        AppError::Message(format!(
+            "Invalid rendered {} template ({}): {e}",
+            app_type.as_str(),
+            file_key
+        ))
+    })
+}
+
+fn apply_hermes_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
+    let template = get_template_content_by_key(db, &AppType::Hermes, "config");
+    let provider_yaml = serde_yaml::to_string(&crate::hermes_config::json_to_yaml(settings)?)
+        .map_err(|e| AppError::Message(format!("YAML serialization failed: {e}")))?;
+
+    let rendered = template
+        .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, provider_yaml.trim_end_matches('\n'))
+        .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, "")
+        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, "{}");
+
+    let yaml_value = serde_yaml::from_str::<serde_yaml::Value>(rendered.trim())
+        .map_err(|e| AppError::Message(format!("Invalid rendered Hermes template: {e}")))?;
+
+    crate::hermes_config::yaml_to_json(&yaml_value)
+}
+
+pub(crate) fn build_effective_settings_without_template(
+    _db: &Database,
+    _app_type: &AppType,
     provider: &Provider,
 ) -> Result<Value, AppError> {
-    let snippet = db.get_config_snippet(app_type.as_str())?;
-    let mut effective_settings = provider.settings_config.clone();
-
-    if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
-        if let Some(snippet_text) = snippet.as_deref() {
-            match apply_common_config_to_settings(app_type, &effective_settings, snippet_text) {
-                Ok(settings) => effective_settings = settings,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to apply common config for {} provider '{}': {err}",
-                        app_type.as_str(),
-                        provider.id
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(effective_settings)
+    Ok(provider.settings_config.clone())
 }
 
 pub(crate) fn build_effective_settings_with_common_config(
@@ -1073,7 +1146,21 @@ pub(crate) fn build_effective_settings_with_common_config(
 ) -> Result<Value, AppError> {
     let mut effective_settings = build_effective_settings_without_template(db, app_type, provider)?;
 
+    if !provider_uses_config_template(provider) {
+        return Ok(effective_settings);
+    }
+
     match app_type {
+        AppType::Claude => match apply_json_template_to_settings(db, app_type, &effective_settings, "settings") {
+            Ok(rendered) => effective_settings = sanitize_claude_settings_for_live(&rendered),
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
         AppType::Codex => match apply_codex_template_to_settings(db, &effective_settings) {
             Ok(rendered) => effective_settings = rendered,
             Err(err) => {
@@ -1094,7 +1181,36 @@ pub(crate) fn build_effective_settings_with_common_config(
                 );
             }
         },
-        AppType::Claude | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {}
+        AppType::OpenCode => match apply_json_template_to_settings(db, app_type, &effective_settings, "config") {
+            Ok(rendered) => effective_settings = rendered,
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
+        AppType::OpenClaw => match apply_json_template_to_settings(db, app_type, &effective_settings, "config") {
+            Ok(rendered) => effective_settings = rendered,
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
+        AppType::Hermes => match apply_hermes_template_to_settings(db, &effective_settings) {
+            Ok(rendered) => effective_settings = rendered,
+            Err(err) => {
+                log::warn!(
+                    "Failed to apply config template for {} provider '{}': {err}",
+                    app_type.as_str(),
+                    provider.id
+                );
+            }
+        },
     }
 
     Ok(effective_settings)
@@ -1152,39 +1268,10 @@ pub(crate) fn strip_common_config_from_live_settings(
 }
 
 pub(crate) fn normalize_provider_common_config_for_storage(
-    db: &Database,
-    app_type: &AppType,
-    provider: &mut Provider,
+    _db: &Database,
+    _app_type: &AppType,
+    _provider: &mut Provider,
 ) -> Result<(), AppError> {
-    let uses_common_config = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.common_config_enabled)
-        .unwrap_or(false);
-
-    if !uses_common_config {
-        return Ok(());
-    }
-
-    let Some(snippet) = db.get_config_snippet(app_type.as_str())? else {
-        return Ok(());
-    };
-
-    if snippet.trim().is_empty() {
-        return Ok(());
-    }
-
-    match remove_common_config_from_settings(app_type, &provider.settings_config, &snippet) {
-        Ok(settings) => provider.settings_config = settings,
-        Err(err) => {
-            log::warn!(
-                "Failed to normalize common config before saving {} provider '{}': {err}",
-                app_type.as_str(),
-                provider.id
-            );
-        }
-    }
-
     Ok(())
 }
 

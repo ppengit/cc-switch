@@ -18,6 +18,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ArrowUpToLine,
   Check,
   Copy,
   FileText,
@@ -25,8 +26,6 @@ import {
   History,
   Loader2,
   Pencil,
-  Pin,
-  Play,
   Search,
   Terminal,
   TestTube2,
@@ -41,6 +40,7 @@ import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { sessionsApi } from "@/lib/api/sessions";
 import { configApi } from "@/lib/api";
+import type { AppConfigTemplateFile } from "@/lib/api/config";
 import { useDragSort } from "@/hooks/useDragSort";
 import {
   useOpenClawLiveProviderIds,
@@ -59,6 +59,8 @@ import {
   useFailoverQueue,
   useAddToFailoverQueue,
   useRemoveFromFailoverQueue,
+  useProviderHealth,
+  useCircuitBreakerStats,
 } from "@/lib/query/failover";
 import {
   useCurrentOmoProviderId,
@@ -95,14 +97,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -315,62 +311,75 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
   return false;
 }
 
-const buildTemplateByApp = (appId: AppId) => {
+const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
   if (appId === "codex") {
-    return `# Codex config template
-# provider
-{providerConfig}
-
-# MCP
-[mcp_servers]
-{mcpConfig}
-`;
+    return [
+      {
+        key: "config",
+        label: "config.toml",
+        content: "{providerConfig}\n\n{mcpConfig}\n",
+      },
+    ];
   }
 
   if (appId === "gemini") {
-    return `# .env
-{providerConfig}
-
-# settings.json
-{
-  {settingsConfig}
-  "mcpServers": {mcpConfig}
-}
-`;
+    return [
+      {
+        key: "env",
+        label: ".env",
+        content: "{providerConfig}\n",
+      },
+      {
+        key: "settings",
+        label: "settings.json",
+        content: "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n",
+      },
+    ];
   }
 
   if (appId === "opencode") {
-    return `{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {providerConfig},
-  "mcp": {mcpConfig}
-}`;
+    return [
+      {
+        key: "config",
+        label: "opencode.json",
+        content: "{providerConfig}\n",
+      },
+    ];
   }
 
   if (appId === "openclaw") {
-    return `{
-  "models": {
-    "mode": "merge",
-    "providers": {providerConfig}
-  },
-  "mcp": {mcpConfig}
-}`;
+    return [
+      {
+        key: "config",
+        label: "openclaw.json",
+        content: "{providerConfig}\n",
+      },
+    ];
   }
 
   if (appId === "hermes") {
-    return `model:
-  providerConfig: {providerConfig}
-
-mcp_servers:
-  {mcpConfig}
-`;
+    return [
+      {
+        key: "config",
+        label: "config.yaml",
+        content: "{providerConfig}\n",
+      },
+    ];
   }
 
-  return `{
-  "provider": {providerConfig},
-  "mcpServers": {mcpConfig}
-}`;
+  return [
+    {
+      key: "settings",
+      label: "settings.json",
+      content: "{providerConfig}\n",
+    },
+  ];
 };
+
+const serializeTemplateFilesForClipboard = (files: AppConfigTemplateFile[]) =>
+  files
+    .map((file) => `# ${file.label}\n${file.content.trimEnd()}`)
+    .join("\n\n");
 
 export function ProviderList({
   providers,
@@ -483,13 +492,21 @@ export function ProviderList({
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
-  const [templateDraft, setTemplateDraft] = useState("");
+  const [templateDrafts, setTemplateDrafts] = useState<AppConfigTemplateFile[]>(
+    [],
+  );
+  const [syncTemplateToLive, setSyncTemplateToLive] = useState(true);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [currentConfigDialogOpen, setCurrentConfigDialogOpen] = useState(false);
 
-  const [selectedConfigFileKey, setSelectedConfigFileKey] =
-    useState<string>("");
-  const [currentConfigDraft, setCurrentConfigDraft] = useState("");
+  const [currentConfigDrafts, setCurrentConfigDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [currentConfigContents, setCurrentConfigContents] = useState<
+    Record<string, { label: string; path: string }>
+  >({});
+  const [isCurrentConfigContentLoading, setIsCurrentConfigContentLoading] =
+    useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   const { data: settings } = useQuery({
@@ -514,16 +531,8 @@ export function ProviderList({
     enabled: currentConfigDialogOpen,
   });
 
-  const {
-    data: currentConfigContent,
-    isFetching: isCurrentConfigLoading,
-    refetch: refetchCurrentConfig,
-  } = useQuery({
-    queryKey: ["appConfigFileContent", appId, selectedConfigFileKey],
-    queryFn: () =>
-      configApi.readAppConfigFile({ appId, fileKey: selectedConfigFileKey }),
-    enabled: currentConfigDialogOpen && Boolean(selectedConfigFileKey),
-  });
+  const isCurrentConfigLoading =
+    isConfigFilesFetching || isCurrentConfigContentLoading;
 
   const {
     data: persistedTemplate,
@@ -637,8 +646,8 @@ export function ProviderList({
 
   useEffect(() => {
     if (!currentConfigDialogOpen) {
-      setSelectedConfigFileKey("");
-      setCurrentConfigDraft("");
+      setCurrentConfigDrafts({});
+      setCurrentConfigContents({});
       return;
     }
 
@@ -647,24 +656,49 @@ export function ProviderList({
 
   useEffect(() => {
     if (!currentConfigDialogOpen || configFiles.length === 0) return;
-    if (selectedConfigFileKey) {
-      const exists = configFiles.some(
-        (file) => file.key === selectedConfigFileKey,
-      );
-      if (exists) return;
-    }
 
-    setSelectedConfigFileKey(configFiles[0].key);
-  }, [configFiles, currentConfigDialogOpen, selectedConfigFileKey]);
+    let cancelled = false;
+    const loadConfigFiles = async () => {
+      setIsCurrentConfigContentLoading(true);
+      try {
+        const contents = await Promise.all(
+          configFiles.map((file) =>
+            configApi.readAppConfigFile({ appId, fileKey: file.key }),
+          ),
+        );
+        if (cancelled) return;
 
-  useEffect(() => {
-    if (!currentConfigContent) return;
-    setCurrentConfigDraft(currentConfigContent.content || "");
-  }, [currentConfigContent]);
+        const nextDrafts: Record<string, string> = {};
+        const nextMeta: Record<string, { label: string; path: string }> = {};
+        contents.forEach((file) => {
+          nextDrafts[file.key] = file.content || "";
+          nextMeta[file.key] = { label: file.label, path: file.path };
+        });
+        setCurrentConfigDrafts(nextDrafts);
+        setCurrentConfigContents(nextMeta);
+      } catch (error) {
+        console.error("Failed to load current config files", error);
+        toast.error(
+          t("provider.currentConfigLoadFailed", {
+            defaultValue: "加载当前配置失败",
+          }),
+        );
+      } finally {
+        if (!cancelled) {
+          setIsCurrentConfigContentLoading(false);
+        }
+      }
+    };
+
+    void loadConfigFiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [appId, configFiles, currentConfigDialogOpen, t]);
 
   useEffect(() => {
     if (!templateDialogOpen) {
-      setTemplateDraft("");
+      setTemplateDrafts([]);
       return;
     }
 
@@ -676,10 +710,10 @@ export function ProviderList({
 
     const fallbackTemplate = buildTemplateByApp(appId);
     const resolvedTemplate =
-      persistedTemplate && persistedTemplate.trim()
+      Array.isArray(persistedTemplate) && persistedTemplate.length > 0
         ? persistedTemplate
         : fallbackTemplate;
-    setTemplateDraft(resolvedTemplate);
+    setTemplateDrafts(resolvedTemplate);
   }, [appId, persistedTemplate, templateDialogOpen]);
 
   const filteredProviders = useMemo(() => {
@@ -1121,17 +1155,46 @@ export function ProviderList({
     }
   };
 
+  const refreshCurrentConfig = async () => {
+    const result = await refetchConfigFiles();
+    const files = result.data ?? configFiles;
+    if (files.length === 0) return;
+
+    setIsCurrentConfigContentLoading(true);
+    try {
+      const contents = await Promise.all(
+        files.map((file) =>
+          configApi.readAppConfigFile({ appId, fileKey: file.key }),
+        ),
+      );
+      const nextDrafts: Record<string, string> = {};
+      const nextMeta: Record<string, { label: string; path: string }> = {};
+      contents.forEach((file) => {
+        nextDrafts[file.key] = file.content || "";
+        nextMeta[file.key] = { label: file.label, path: file.path };
+      });
+      setCurrentConfigDrafts(nextDrafts);
+      setCurrentConfigContents(nextMeta);
+    } finally {
+      setIsCurrentConfigContentLoading(false);
+    }
+  };
+
   const saveCurrentConfig = async () => {
-    if (!selectedConfigFileKey) return;
+    if (configFiles.length === 0) return;
     setIsSavingConfig(true);
 
     try {
-      await configApi.writeAppConfigFile({
-        appId,
-        fileKey: selectedConfigFileKey,
-        content: currentConfigDraft,
-      });
-      await refetchCurrentConfig();
+      await Promise.all(
+        configFiles.map((file) =>
+          configApi.writeAppConfigFile({
+            appId,
+            fileKey: file.key,
+            content: currentConfigDrafts[file.key] ?? "",
+          }),
+        ),
+      );
+      await refreshCurrentConfig();
       toast.success(
         t("provider.currentConfigSaved", {
           defaultValue: "当前配置已保存",
@@ -1152,7 +1215,9 @@ export function ProviderList({
   const copyTemplate = async () => {
     try {
       await navigator.clipboard.writeText(
-        templateDraft || buildTemplateByApp(appId),
+        serializeTemplateFilesForClipboard(
+          templateDrafts.length > 0 ? templateDrafts : buildTemplateByApp(appId),
+        ),
       );
       toast.success(
         t("provider.templateCopied", {
@@ -1174,11 +1239,15 @@ export function ProviderList({
     try {
       await configApi.setAppConfigTemplate({
         appId,
-        template: templateDraft,
+        files: templateDrafts.length > 0 ? templateDrafts : buildTemplateByApp(appId),
+        syncToLive: syncTemplateToLive,
       });
       await queryClient.invalidateQueries({
         queryKey: ["appConfigTemplate", appId],
       });
+      if (syncTemplateToLive) {
+        await queryClient.invalidateQueries({ queryKey: ["appConfigFiles", appId] });
+      }
       toast.success(
         t("provider.templateSaved", {
           defaultValue: "配置模板已保存",
@@ -1189,6 +1258,35 @@ export function ProviderList({
       toast.error(
         t("provider.templateSaveFailed", {
           defaultValue: "保存配置模板失败",
+        }),
+      );
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  const loadLiveConfigIntoTemplate = async () => {
+    setIsSavingTemplate(true);
+    try {
+      const files = await configApi.listAppConfigFiles(appId);
+      const liveContents = await Promise.all(
+        files.map((file) =>
+          configApi.readAppConfigFile({ appId, fileKey: file.key }),
+        ),
+      );
+      const byKey = new Map(liveContents.map((file) => [file.key, file]));
+      const defaults = buildTemplateByApp(appId);
+      setTemplateDrafts(
+        defaults.map((file) => ({
+          ...file,
+          content: byKey.get(file.key)?.content ?? file.content,
+        })),
+      );
+    } catch (error) {
+      console.error("Failed to load live config into template", error);
+      toast.error(
+        t("provider.loadLiveTemplateFailed", {
+          defaultValue: "加载环境配置失败",
         }),
       );
     } finally {
@@ -1540,7 +1638,7 @@ export function ProviderList({
                     <TableHead className="h-9 min-w-[150px] px-2">
                       {t("provider.modelName", { defaultValue: "模型名称" })}
                     </TableHead>
-                    <TableHead className="h-9 w-[130px] px-2 text-center">
+                    <TableHead className="h-9 w-[150px] px-2 text-center">
                       <button
                         type="button"
                         onClick={cycleStatusSort}
@@ -1556,7 +1654,7 @@ export function ProviderList({
                         )}
                       </button>
                     </TableHead>
-                    <TableHead className="h-9 min-w-[280px] px-2 text-center">
+                    <TableHead className="h-9 min-w-[230px] px-2 text-center">
                       {t("common.actions", { defaultValue: "操作" })}
                     </TableHead>
                   </TableRow>
@@ -1567,6 +1665,7 @@ export function ProviderList({
                     <SortableProviderTableRow
                       key={row.provider.id}
                       row={row}
+                      appId={appId}
                       canDragRows={canDragRows}
                       isSelected={selectedProviderIds.has(row.provider.id)}
                       onSelectedChange={(checked) =>
@@ -1655,13 +1754,13 @@ export function ProviderList({
       />
 
       <Dialog open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-4xl p-6">
           <DialogHeader>
             <DialogTitle>
               {t("provider.configTemplate", { defaultValue: "配置模板" })}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-4">
             <p className="text-xs text-muted-foreground">
               {appId === "gemini"
                 ? t("provider.configTemplateHintGemini", {
@@ -1673,19 +1772,46 @@ export function ProviderList({
                       "模板中保留 {providerConfig} 与 {mcpConfig} 占位符，便于按应用注入实际配置。",
                   })}
             </p>
-            <Textarea
-              value={templateDraft}
-              onChange={(event) => setTemplateDraft(event.target.value)}
-              rows={16}
-              className="font-mono text-xs"
-              placeholder={buildTemplateByApp(appId)}
-              disabled={isTemplateFetching || isSavingTemplate}
-            />
+            <div className="space-y-4">
+              {(templateDrafts.length > 0
+                ? templateDrafts
+                : buildTemplateByApp(appId)
+              ).map((file) => (
+                <div key={file.key} className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-medium">{file.label}</div>
+                    <div className="text-[11px] text-muted-foreground font-mono">
+                      {file.key}
+                    </div>
+                  </div>
+                  <Textarea
+                    value={file.content}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setTemplateDrafts((current) =>
+                        (current.length > 0
+                          ? current
+                          : buildTemplateByApp(appId)
+                        ).map((item) =>
+                          item.key === file.key
+                            ? { ...item, content: value }
+                            : item,
+                        ),
+                      );
+                    }}
+                    rows={file.key === "env" ? 8 : 14}
+                    className="font-mono text-xs"
+                    placeholder={file.content}
+                    disabled={isTemplateFetching || isSavingTemplate}
+                  />
+                </div>
+              ))}
+            </div>
             <div className="flex items-center justify-between gap-2">
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setTemplateDraft(buildTemplateByApp(appId))}
+                onClick={() => setTemplateDrafts(buildTemplateByApp(appId))}
                 disabled={isSavingTemplate}
               >
                 {t("provider.resetTemplate", {
@@ -1696,11 +1822,32 @@ export function ProviderList({
                 <Button
                   size="sm"
                   variant="outline"
+                  onClick={() => void loadLiveConfigIntoTemplate()}
+                  disabled={isSavingTemplate}
+                >
+                  {t("provider.loadLiveConfig", {
+                    defaultValue: "加载环境配置",
+                  })}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => void copyTemplate()}
                 >
                   <Copy className="h-3.5 w-3.5 mr-1" />
                   {t("common.copy", { defaultValue: "复制" })}
                 </Button>
+                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={syncTemplateToLive}
+                    onCheckedChange={(checked) =>
+                      setSyncTemplateToLive(Boolean(checked))
+                    }
+                  />
+                  {t("provider.syncTemplateToLive", {
+                    defaultValue: "保存后更新实际配置",
+                  })}
+                </label>
                 <Button
                   size="sm"
                   onClick={() => void saveTemplate()}
@@ -1731,46 +1878,21 @@ export function ProviderList({
         open={currentConfigDialogOpen}
         onOpenChange={setCurrentConfigDialogOpen}
       >
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-w-5xl p-6">
           <DialogHeader>
             <DialogTitle>
               {t("provider.currentConfig", { defaultValue: "当前配置" })}
             </DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
-              <Select
-                value={selectedConfigFileKey}
-                onValueChange={setSelectedConfigFileKey}
-                disabled={isConfigFilesFetching || configFiles.length === 0}
-              >
-                <SelectTrigger className="w-[320px] h-8 text-xs">
-                  <SelectValue
-                    placeholder={t("provider.selectConfigFile", {
-                      defaultValue: "选择配置文件",
-                    })}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {configFiles.map((file: AppConfigFileEntry) => (
-                    <SelectItem
-                      key={file.key}
-                      value={file.key}
-                      className="text-xs"
-                    >
-                      {file.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
               <Button
                 size="sm"
                 variant="outline"
                 className="h-8 text-xs"
-                onClick={() => void refetchCurrentConfig()}
-                disabled={!selectedConfigFileKey || isCurrentConfigLoading}
+                onClick={() => void refreshCurrentConfig()}
+                disabled={isCurrentConfigLoading}
               >
                 {t("common.refresh", { defaultValue: "刷新" })}
               </Button>
@@ -1780,7 +1902,7 @@ export function ProviderList({
                 className="h-8 text-xs"
                 onClick={() => void saveCurrentConfig()}
                 disabled={
-                  !selectedConfigFileKey ||
+                  configFiles.length === 0 ||
                   isCurrentConfigLoading ||
                   isSavingConfig
                 }
@@ -1788,25 +1910,40 @@ export function ProviderList({
                 {isSavingConfig
                   ? t("common.saving", { defaultValue: "保存中..." })
                   : t("common.save", { defaultValue: "保存" })}
-              </Button>
+                </Button>
             </div>
 
-            {selectedConfigFileKey && currentConfigContent?.path && (
-              <p className="text-[11px] text-muted-foreground font-mono break-all">
-                {currentConfigContent.path}
-              </p>
-            )}
-
-            <Textarea
-              value={currentConfigDraft}
-              onChange={(event) => setCurrentConfigDraft(event.target.value)}
-              rows={20}
-              className="font-mono text-xs"
-              placeholder={t("provider.currentConfigPlaceholder", {
-                defaultValue: "配置文件内容为空",
+            <div className="space-y-4">
+              {configFiles.map((file: AppConfigFileEntry) => {
+                const meta = currentConfigContents[file.key];
+                return (
+                  <div key={file.key} className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-medium">{file.label}</div>
+                      <div className="text-[11px] text-muted-foreground font-mono break-all">
+                        {meta?.path || file.path}
+                      </div>
+                    </div>
+                    <Textarea
+                      value={currentConfigDrafts[file.key] ?? ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setCurrentConfigDrafts((current) => ({
+                          ...current,
+                          [file.key]: value,
+                        }));
+                      }}
+                      rows={file.key === "env" ? 8 : 14}
+                      className="font-mono text-xs"
+                      placeholder={t("provider.currentConfigPlaceholder", {
+                        defaultValue: "配置文件内容为空",
+                      })}
+                      disabled={isCurrentConfigLoading}
+                    />
+                  </div>
+                );
               })}
-              disabled={!selectedConfigFileKey || isCurrentConfigLoading}
-            />
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -1816,6 +1953,7 @@ export function ProviderList({
 
 interface SortableProviderTableRowProps {
   row: ProviderRowView;
+  appId: AppId;
   canDragRows: boolean;
   isSelected: boolean;
   onSelectedChange: (checked: boolean) => void;
@@ -1837,6 +1975,7 @@ interface SortableProviderTableRowProps {
 
 function SortableProviderTableRow({
   row,
+  appId,
   canDragRows,
   isSelected,
   onSelectedChange,
@@ -1855,6 +1994,11 @@ function SortableProviderTableRow({
   onSetAsDefault,
   t,
 }: SortableProviderTableRowProps) {
+  const { data: health } = useProviderHealth(row.provider.id, appId);
+  const { data: circuitStats } = useCircuitBreakerStats(
+    row.provider.id,
+    appId,
+  );
   const {
     setNodeRef,
     attributes,
@@ -1875,6 +2019,12 @@ function SortableProviderTableRow({
   const canOpenNameLink = Boolean(
     row.nameLink && /^https?:\/\//i.test(row.nameLink),
   );
+
+  const isCircuitOpen = circuitStats?.state === "open";
+  const isCircuitHalfOpen = circuitStats?.state === "half_open";
+  const failureCount = health?.consecutive_failures ?? 0;
+  const isDegraded =
+    !isCircuitOpen && !isCircuitHalfOpen && health?.is_healthy !== false && failureCount > 0;
 
   const statusLabel = row.isActiveProxyProvider
     ? t("provider.currentProxy", { defaultValue: "当前代理" })
@@ -2000,19 +2150,28 @@ function SortableProviderTableRow({
           >
             {statusLabel}
           </Badge>
-          {row.failoverPriority ? (
+          {isCircuitOpen ? (
             <Badge
-              variant="outline"
-              className="text-[10px] px-1.5 h-5 font-mono"
+              variant="destructive"
+              className="text-[10px] px-1.5 h-5"
             >
-              P{row.failoverPriority}
+              {t("provider.circuitOpen", { defaultValue: "熔断" })}
+            </Badge>
+          ) : isCircuitHalfOpen ? (
+            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
+              {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
+            </Badge>
+          ) : isDegraded ? (
+            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
+              {t("provider.degraded", { defaultValue: "降级" })}
+              {failureCount > 0 ? ` ${failureCount}` : ""}
             </Badge>
           ) : null}
         </div>
       </TableCell>
 
       <TableCell className="px-2 py-1">
-        <div className="flex items-center justify-center gap-1.5">
+        <div className="flex items-center justify-center gap-1">
           {canSetDefault && onSetAsDefault && (
             <Button
               size="sm"
@@ -2033,22 +2192,16 @@ function SortableProviderTableRow({
             </Button>
           )}
 
-          <Button
-            size="sm"
-            variant={row.isEnabled ? "secondary" : "default"}
-            className="h-7 px-2 text-xs"
-            onClick={onToggleEnabled}
+          <Switch
+            checked={row.isEnabled}
+            onCheckedChange={onToggleEnabled}
+            className="h-5 w-9"
             title={
               row.isEnabled
                 ? t("provider.disable", { defaultValue: "禁用" })
                 : t("provider.enable", { defaultValue: "启用" })
             }
-          >
-            <Play className="h-3.5 w-3.5" />
-            {row.isEnabled
-              ? t("provider.disable", { defaultValue: "禁用" })
-              : t("provider.enable", { defaultValue: "启用" })}
-          </Button>
+          />
 
           <Button
             size="icon"
@@ -2060,7 +2213,7 @@ function SortableProviderTableRow({
             })}
             title={t("provider.pinToTop", { defaultValue: "置顶（顺序 1）" })}
           >
-            <Pin className="h-3.5 w-3.5" />
+            <ArrowUpToLine className="h-3.5 w-3.5" />
           </Button>
 
           {onOpenTerminal && (

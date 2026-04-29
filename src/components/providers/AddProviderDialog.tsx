@@ -20,6 +20,7 @@ import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
+import { useProvidersQuery } from "@/lib/query";
 
 interface AddProviderDialogProps {
   open: boolean;
@@ -38,6 +39,78 @@ interface AddProviderDialogProps {
   }) => Promise<void> | void;
 }
 
+const normalizeEndpointForDuplicateCheck = (value?: unknown) =>
+  typeof value === "string"
+    ? value.trim().replace(/\/+$/, "").replace(/\/v1$/i, "")
+    : "";
+
+const getProviderEndpointAndKey = (
+  appId: AppId,
+  config: Record<string, unknown>,
+) => {
+  if (appId === "claude") {
+    const env = config.env as Record<string, unknown> | undefined;
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(env?.ANTHROPIC_BASE_URL),
+      apiKey:
+        typeof env?.ANTHROPIC_AUTH_TOKEN === "string"
+          ? env.ANTHROPIC_AUTH_TOKEN.trim()
+          : typeof env?.ANTHROPIC_API_KEY === "string"
+            ? env.ANTHROPIC_API_KEY.trim()
+            : "",
+    };
+  }
+
+  if (appId === "codex") {
+    const auth = config.auth as Record<string, unknown> | undefined;
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(
+        extractCodexBaseUrl(typeof config.config === "string" ? config.config : ""),
+      ),
+      apiKey:
+        typeof auth?.OPENAI_API_KEY === "string"
+          ? auth.OPENAI_API_KEY.trim()
+          : "",
+    };
+  }
+
+  if (appId === "gemini") {
+    const env = config.env as Record<string, unknown> | undefined;
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(env?.GOOGLE_GEMINI_BASE_URL),
+      apiKey:
+        typeof env?.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY.trim() : "",
+    };
+  }
+
+  if (appId === "opencode") {
+    const options = config.options as Record<string, unknown> | undefined;
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(options?.baseURL),
+      apiKey:
+        typeof options?.apiKey === "string" ? options.apiKey.trim() : "",
+    };
+  }
+
+  if (appId === "openclaw") {
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(config.baseUrl),
+      apiKey:
+        typeof config.apiKey === "string" ? config.apiKey.trim() : "",
+    };
+  }
+
+  if (appId === "hermes") {
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(config.base_url),
+      apiKey:
+        typeof config.api_key === "string" ? config.api_key.trim() : "",
+    };
+  }
+
+  return { endpoint: "", apiKey: "" };
+};
+
 export function AddProviderDialog({
   open,
   onOpenChange,
@@ -55,6 +128,7 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const { data: providersData } = useProvidersQuery(appId);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -94,6 +168,31 @@ export function AddProviderDialog({
         string,
         unknown
       >;
+      const nextCredential = getProviderEndpointAndKey(appId, parsedConfig);
+      if (nextCredential.endpoint && nextCredential.apiKey) {
+        const duplicated = Object.values(providersData?.providers ?? {}).find(
+          (provider) => {
+            const existing = getProviderEndpointAndKey(
+              appId,
+              provider.settingsConfig,
+            );
+            return (
+              existing.endpoint === nextCredential.endpoint &&
+              existing.apiKey === nextCredential.apiKey
+            );
+          },
+        );
+        if (duplicated) {
+          toast.error(
+            t("providerForm.duplicateProvider", {
+              defaultValue:
+                "该应用下已存在相同 API 请求地址和 API Key 的供应商：{{name}}",
+              name: duplicated.name,
+            }),
+          );
+          return;
+        }
+      }
 
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {
@@ -256,7 +355,7 @@ export function AddProviderDialog({
       });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, onOpenChange, providersData?.providers, t],
   );
 
   const footer =

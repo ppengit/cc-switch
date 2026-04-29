@@ -45,6 +45,8 @@ vi.mock("@/lib/query/failover", () => ({
   useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
   useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
+  useProviderHealth: () => ({ data: undefined }),
+  useCircuitBreakerStats: () => ({ data: undefined }),
 }));
 
 function createProvider(overrides: Partial<Provider> = {}): Provider {
@@ -187,7 +189,7 @@ describe("ProviderList Component", () => {
       within(rowA).getByRole("button", { name: "拖拽排序" }),
     ).toHaveAttribute("data-dnd-id", "a");
 
-    fireEvent.click(within(rowB).getByRole("button", { name: "启用" }));
+    fireEvent.click(within(rowB).getByRole("switch", { name: "启用" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "用量" }));

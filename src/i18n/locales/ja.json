@@ -185,6 +185,7 @@
     "configTemplateHint": "テンプレート内に {providerConfig} と {mcpConfig} を残すと、アプリごとの実設定を注入できます。",
     "configTemplateHintGemini": "Gemini テンプレートは {providerConfig}（.env）、{settingsConfig}（settings.json の追加項目）、{mcpConfig}（mcpServers）に対応します。",
     "currentConfig": "現在の設定",
+    "currentConfigLoadFailed": "現在の設定の読み込みに失敗しました: {{error}}",
     "currentConfigPlaceholder": "設定ファイルは空です",
     "currentConfigSaveFailed": "現在の設定の保存に失敗しました",
     "currentConfigSaved": "現在の設定を保存しました",
@@ -205,17 +206,21 @@
     "recentSessions": "最近のセッション",
     "recentSessionsTitle": "直近 10 件のセッション",
     "resetTemplate": "既定テンプレートに戻す",
+    "loadLiveConfig": "環境設定を読み込む",
+    "loadLiveTemplateFailed": "環境設定の読み込みに失敗しました: {{error}}",
     "search": "検索",
     "select": "選択",
     "selectAll": "すべて選択",
     "selectConfigFile": "設定ファイルを選択",
     "status": "状態",
+    "syncTemplateToLive": "保存後に実設定へ反映",
     "templateCopied": "設定テンプレートをコピーしました",
     "templateCopyFailed": "テンプレートのコピーに失敗しました",
     "templateEffectHint": "このテンプレートは live 設定を書き込む際に適用され、保存前にアプリ別プレースホルダーが展開されます。",
     "templateEffectHintGemini": "現在の Gemini 書き込みでは .env と settings.json の両方をレンダリングし、mcpServers を自動的に置き換えます。",
     "templateSaveFailed": "設定テンプレートの保存に失敗しました",
-    "templateSaved": "設定テンプレートを保存しました"
+    "templateSaved": "設定テンプレートを保存しました",
+    "circuitHalfOpen": "半開"
   },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
@@ -876,6 +881,8 @@
     "fillTemplateValue": "{{label}} を入力してください",
     "endpointRequired": "公式以外は API エンドポイントが必須です",
     "apiKeyRequired": "公式以外は API Key が必須です",
+    "duplicateProvider": "同じアプリ、エンドポイント、API Key のプロバイダーが既に存在します: {{name}}",
+    "useConfigTemplateOnSave": "設定テンプレートを使用",
     "softValidation": {
       "title": "設定に以下の問題があります",
       "hint": "それでも保存しますか？保存後、このプロバイダーへの切り替えが失敗する可能性がありますが、後から補完できます。",
@@ -1177,7 +1184,8 @@
       "all": "すべて",
       "claude": "Claude Code",
       "codex": "Codex",
-      "gemini": "Gemini"
+      "gemini": "Gemini",
+      "hermes": "Hermes"
     },
     "dataSources": "データソース",
     "dataSource": {
@@ -1185,7 +1193,8 @@
       "session_log": "セッションログ",
       "codex_db": "Codex DB",
       "codex_session": "Codex セッション",
-      "gemini_session": "Gemini セッション"
+      "gemini_session": "Gemini セッション",
+      "hermes_session": "Hermes セッション"
     },
     "sessionSync": {
       "trigger": "セッションログを同期",

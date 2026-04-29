@@ -135,6 +135,8 @@ export interface AuthBinding {
 export interface ProviderMeta {
   // 自定义端点：以 URL 为键，值为端点信息
   custom_endpoints?: Record<string, CustomEndpoint>;
+  // 是否使用应用配置模板渲染实际环境配置；false 时直接写入供应商原始配置
+  useConfigTemplate?: boolean;
   // 是否在切换/同步到 live 时应用通用配置片段
   commonConfigEnabled?: boolean;
   // 用量查询脚本配置

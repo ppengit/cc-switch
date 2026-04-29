@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import type { ProviderFormValues } from "@/components/providers/forms/ProviderForm";
 
+const toastErrorMock = vi.fn();
+let mockProvidersData: { providers: Record<string, any> };
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: vi.fn(),
+  },
+}));
+
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
@@ -42,8 +52,14 @@ vi.mock("@/components/providers/forms/ProviderForm", () => ({
   ),
 }));
 
+vi.mock("@/lib/query", () => ({
+  useProvidersQuery: () => ({ data: mockProvidersData }),
+}));
+
 describe("AddProviderDialog", () => {
   beforeEach(() => {
+    toastErrorMock.mockReset();
+    mockProvidersData = { providers: {} };
     mockFormValues = {
       name: "Test Provider",
       websiteUrl: "https://provider.example.com",
@@ -125,5 +141,55 @@ describe("AddProviderDialog", () => {
         lastUsed: undefined,
       },
     });
+  });
+
+  it("阻止同一应用下请求地址和 API Key 重复的供应商", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    const handleOpenChange = vi.fn();
+
+    mockProvidersData = {
+      providers: {
+        existing: {
+          id: "existing",
+          name: "Existing Provider",
+          settingsConfig: {
+            env: {
+              ANTHROPIC_BASE_URL: "https://api.example.com/v1/",
+              ANTHROPIC_AUTH_TOKEN: "sk-same",
+            },
+          },
+        },
+      },
+    };
+    mockFormValues = {
+      name: "Duplicate Provider",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          ANTHROPIC_AUTH_TOKEN: "sk-same",
+        },
+        config: {},
+      }),
+    };
+
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={handleOpenChange}
+        appId="claude"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "common.add",
+      }),
+    );
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+    expect(handleSubmit).not.toHaveBeenCalled();
+    expect(handleOpenChange).not.toHaveBeenCalledWith(false);
   });
 });

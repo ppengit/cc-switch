@@ -150,6 +150,14 @@ pub struct AppConfigFileContent {
     pub content: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigTemplateFile {
+    pub key: String,
+    pub label: String,
+    pub content: String,
+}
+
 fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
     match app_type {
         AppType::Claude => vec![
@@ -204,6 +212,125 @@ fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
             crate::hermes_config::get_hermes_config_path(),
         )],
     }
+}
+
+fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFile> {
+    match app_type {
+        AppType::Claude => vec![AppConfigTemplateFile {
+            key: "settings".to_string(),
+            label: "settings.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::Codex => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "config.toml".to_string(),
+            content: "{providerConfig}\n\n{mcpConfig}\n".to_string(),
+        }],
+        AppType::Gemini => vec![
+            AppConfigTemplateFile {
+                key: "env".to_string(),
+                label: ".env".to_string(),
+                content: "{providerConfig}\n".to_string(),
+            },
+            AppConfigTemplateFile {
+                key: "settings".to_string(),
+                label: "settings.json".to_string(),
+                content: "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n".to_string(),
+            },
+        ],
+        AppType::OpenCode => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "opencode.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::OpenClaw => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "openclaw.json".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+        AppType::Hermes => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "config.yaml".to_string(),
+            content: "{providerConfig}\n".to_string(),
+        }],
+    }
+}
+
+fn split_legacy_gemini_template(template: &str) -> Vec<AppConfigTemplateFile> {
+    let mut env_lines = Vec::new();
+    let mut settings_lines = Vec::new();
+    let mut in_env = false;
+    let mut in_settings = false;
+
+    for line in template.lines() {
+        match line.trim() {
+            "# .env" => {
+                in_env = true;
+                in_settings = false;
+                continue;
+            }
+            "# settings.json" => {
+                in_env = false;
+                in_settings = true;
+                continue;
+            }
+            _ => {}
+        }
+
+        if in_env {
+            env_lines.push(line);
+        } else if in_settings {
+            settings_lines.push(line);
+        }
+    }
+
+    if env_lines.is_empty() && settings_lines.is_empty() {
+        return default_template_files_for(&AppType::Gemini);
+    }
+
+    vec![
+        AppConfigTemplateFile {
+            key: "env".to_string(),
+            label: ".env".to_string(),
+            content: format!("{}\n", env_lines.join("\n").trim_matches('\n')),
+        },
+        AppConfigTemplateFile {
+            key: "settings".to_string(),
+            label: "settings.json".to_string(),
+            content: format!("{}\n", settings_lines.join("\n").trim_matches('\n')),
+        },
+    ]
+}
+
+fn parse_stored_template_files(
+    app_type: &AppType,
+    raw: Option<String>,
+) -> Result<Vec<AppConfigTemplateFile>, String> {
+    let Some(raw) = raw else {
+        return Ok(default_template_files_for(app_type));
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(default_template_files_for(app_type));
+    }
+
+    if let Ok(files) = serde_json::from_str::<Vec<AppConfigTemplateFile>>(trimmed) {
+        return Ok(files);
+    }
+
+    let files = match app_type {
+        AppType::Gemini => split_legacy_gemini_template(&raw),
+        _ => {
+            let mut defaults = default_template_files_for(app_type);
+            if let Some(first) = defaults.first_mut() {
+                first.content = raw;
+            }
+            defaults
+        }
+    };
+
+    Ok(files)
 }
 
 #[tauri::command]
@@ -266,32 +393,51 @@ pub async fn write_app_config_file(
 pub async fn get_app_config_template(
     app: String,
     state: tauri::State<'_, crate::store::AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Vec<AppConfigTemplateFile>, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    state
+    let stored = state
         .db
         .get_config_template(app_type.as_str())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    parse_stored_template_files(&app_type, stored)
 }
 
 #[tauri::command]
 pub async fn set_app_config_template(
     app: String,
-    template: String,
+    files: Vec<AppConfigTemplateFile>,
+    #[allow(non_snake_case)] syncToLive: Option<bool>,
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let trimmed = template.trim();
-    let value = if trimmed.is_empty() {
+    let normalized_files: Vec<AppConfigTemplateFile> = files
+        .into_iter()
+        .map(|file| AppConfigTemplateFile {
+            key: file.key.trim().to_string(),
+            label: file.label.trim().to_string(),
+            content: file.content,
+        })
+        .filter(|file| !file.key.is_empty())
+        .collect();
+
+    let value = if normalized_files.is_empty() {
         None
     } else {
-        Some(template)
+        Some(
+            serde_json::to_string(&normalized_files)
+                .map_err(|e| format!("配置模板序列化失败: {e}"))?,
+        )
     };
 
     state
         .db
         .set_config_template(app_type.as_str(), value)
         .map_err(|e| e.to_string())?;
+
+    if syncToLive.unwrap_or(true) {
+        crate::services::ProviderService::sync_current_provider_for_app(state.inner(), app_type)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(true)
 }
 
