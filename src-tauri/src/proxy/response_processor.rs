@@ -3,6 +3,7 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
+    activity::finish_request,
     handler_config::UsageParserConfig,
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
@@ -314,6 +315,15 @@ pub async fn handle_non_streaming(
         );
     }
 
+    finish_request(
+        &state.proxy_activity,
+        state.app_handle.as_ref(),
+        &ctx.request_id,
+        Some(status.as_u16()),
+        None,
+    )
+    .await;
+
     // 构建响应
     let mut builder = axum::response::Response::builder().status(status);
     for (key, value) in response_headers.iter() {
@@ -339,7 +349,20 @@ pub async fn process_response(
     if is_sse_response(&response) {
         Ok(handle_streaming(response, ctx, state, parser_config).await)
     } else {
-        handle_non_streaming(response, ctx, state, parser_config).await
+        match handle_non_streaming(response, ctx, state, parser_config).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                finish_request(
+                    &state.proxy_activity,
+                    state.app_handle.as_ref(),
+                    &ctx.request_id,
+                    None,
+                    Some(err.to_string()),
+                )
+                .await;
+                Err(err)
+            }
+        }
     }
 }
 
@@ -439,62 +462,67 @@ fn create_usage_collector(
     let stream_parser = parser_config.stream_parser;
     let model_extractor = parser_config.model_extractor;
     let session_id = ctx.session_id.clone();
+    let request_id = ctx.request_id.clone();
+    let app_handle = state.app_handle.clone();
+    let proxy_activity = state.proxy_activity.clone();
 
     SseUsageCollector::new(start_time, move |events, first_token_ms| {
-        if !logging_enabled {
-            return;
-        }
-        if let Some(usage) = stream_parser(&events) {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
+        let model = model_extractor(&events, &request_model);
+        let latency_ms = start_time.elapsed().as_millis() as u64;
+        let maybe_usage = stream_parser(&events);
+        let state = state.clone();
+        let provider_id = provider_id.clone();
+        let session_id = session_id.clone();
+        let request_model = request_model.clone();
+        let request_id = request_id.clone();
+        let app_handle = app_handle.clone();
+        let proxy_activity = proxy_activity.clone();
 
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
+        tokio::spawn(async move {
+            if logging_enabled {
+                if let Some(usage) = maybe_usage {
+                    log_usage_internal(
+                        &state,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        usage,
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id),
+                    )
+                    .await;
+                } else {
+                    log_usage_internal(
+                        &state,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        TokenUsage::default(),
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id),
+                    )
+                    .await;
+                    log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+                }
+            }
 
-            tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    usage,
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
-            });
-        } else {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
-
-            tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    TokenUsage::default(),
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
-            });
-            log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
-        }
+            finish_request(
+                &proxy_activity,
+                app_handle.as_ref(),
+                &request_id,
+                Some(status_code),
+                None,
+            )
+            .await;
+        });
     })
 }
 
@@ -847,6 +875,7 @@ mod tests {
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            proxy_activity: Arc::new(RwLock::new(crate::proxy::activity::ProxyActivityState::default())),
         }
     }
 

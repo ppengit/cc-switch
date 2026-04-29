@@ -8,6 +8,7 @@
 //! - Claude 的格式转换逻辑保留在此文件（用于 OpenRouter 旧接口回退）
 
 use super::{
+    activity::finish_request,
     error_mapper::{get_error_message, map_proxy_error_to_status},
     handler_config::{
         CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
@@ -53,7 +54,20 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
 
 /// 获取服务状态
 pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxyStatus>, ProxyError> {
-    let status = state.status.read().await.clone();
+    let mut status = state.status.read().await.clone();
+    let current_providers = state.current_providers.read().await;
+    status.active_targets = current_providers
+        .iter()
+        .map(|(app_type, (provider_id, provider_name))| ActiveTarget {
+            app_type: app_type.clone(),
+            provider_id: provider_id.clone(),
+            provider_name: provider_name.clone(),
+        })
+        .collect();
+    let (active_request_count, active_request_targets) =
+        super::activity::snapshot(&state.proxy_activity).await;
+    status.active_request_count = active_request_count;
+    status.active_request_targets = active_request_targets;
     Ok(Json(status))
 }
 
@@ -204,15 +218,22 @@ async fn handle_claude_transform(
             let model = ctx.request_model.clone();
             let status_code = status.as_u16();
             let start_time = ctx.start_time;
+            let request_id = ctx.request_id.clone();
+            let proxy_activity = state.proxy_activity.clone();
+            let app_handle = state.app_handle.clone();
 
             SseUsageCollector::new(start_time, move |events, first_token_ms| {
-                if let Some(usage) = TokenUsage::from_claude_stream_events(&events) {
-                    let latency_ms = start_time.elapsed().as_millis() as u64;
-                    let state = state.clone();
-                    let provider_id = provider_id.clone();
-                    let model = model.clone();
+                let usage = TokenUsage::from_claude_stream_events(&events);
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let model = model.clone();
+                let request_id = request_id.clone();
+                let proxy_activity = proxy_activity.clone();
+                let app_handle = app_handle.clone();
 
-                    tokio::spawn(async move {
+                tokio::spawn(async move {
+                    if let Some(usage) = usage {
                         log_usage(
                             &state,
                             &provider_id,
@@ -226,10 +247,19 @@ async fn handle_claude_transform(
                             status_code,
                         )
                         .await;
-                    });
-                } else {
-                    log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
-                }
+                    } else {
+                        log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
+                    }
+
+                    finish_request(
+                        &proxy_activity,
+                        app_handle.as_ref(),
+                        &request_id,
+                        Some(status_code),
+                        None,
+                    )
+                    .await;
+                });
             })
         };
 
@@ -265,17 +295,57 @@ async fn handle_claude_transform(
             std::time::Duration::ZERO
         };
     let (mut response_headers, _status, body_bytes) =
-        read_decoded_body(response, ctx.tag, body_timeout).await?;
+        match read_decoded_body(response, ctx.tag, body_timeout).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                finish_request(
+                    &state.proxy_activity,
+                    state.app_handle.as_ref(),
+                    &ctx.request_id,
+                    None,
+                    Some(err.to_string()),
+                )
+                .await;
+                return Err(err);
+            }
+        };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
 
     let upstream_response: Value = if aggregate_codex_oauth_responses_sse {
-        responses_sse_to_response_value(&body_str)?
+        match responses_sse_to_response_value(&body_str) {
+            Ok(value) => value,
+            Err(err) => {
+                finish_request(
+                    &state.proxy_activity,
+                    state.app_handle.as_ref(),
+                    &ctx.request_id,
+                    None,
+                    Some(err.to_string()),
+                )
+                .await;
+                return Err(err);
+            }
+        }
     } else {
-        serde_json::from_slice(&body_bytes).map_err(|e| {
-            log::error!("[Claude] 解析上游响应失败: {e}, body: {body_str}");
-            ProxyError::TransformError(format!("Failed to parse upstream response: {e}"))
-        })?
+        match serde_json::from_slice(&body_bytes) {
+            Ok(value) => value,
+            Err(e) => {
+                log::error!("[Claude] 解析上游响应失败: {e}, body: {body_str}");
+                let err = ProxyError::TransformError(format!(
+                    "Failed to parse upstream response: {e}"
+                ));
+                finish_request(
+                    &state.proxy_activity,
+                    state.app_handle.as_ref(),
+                    &ctx.request_id,
+                    None,
+                    Some(err.to_string()),
+                )
+                .await;
+                return Err(err);
+            }
+        }
     };
 
     // 根据 api_format 选择非流式转换器
@@ -295,7 +365,21 @@ async fn handle_claude_transform(
     .map_err(|e| {
         log::error!("[Claude] 转换响应失败: {e}");
         e
-    })?;
+    });
+    let anthropic_response = match anthropic_response {
+        Ok(value) => value,
+        Err(err) => {
+            finish_request(
+                &state.proxy_activity,
+                state.app_handle.as_ref(),
+                &ctx.request_id,
+                None,
+                Some(err.to_string()),
+            )
+            .await;
+            return Err(err);
+        }
+    };
 
     // 记录使用量
     if let Some(usage) = TokenUsage::from_claude_response(&anthropic_response) {
@@ -327,6 +411,15 @@ async fn handle_claude_transform(
             }
         });
     }
+
+    finish_request(
+        &state.proxy_activity,
+        state.app_handle.as_ref(),
+        &ctx.request_id,
+        Some(status.as_u16()),
+        None,
+    )
+    .await;
 
     // 构建响应
     let mut builder = axum::response::Response::builder().status(status);
@@ -701,6 +794,22 @@ fn log_forward_error(
     ) {
         log::warn!("记录失败请求日志失败: {e}");
     }
+
+    let proxy_activity = state.proxy_activity.clone();
+    let app_handle = state.app_handle.clone();
+    let request_id = ctx.request_id.clone();
+    let status_code = map_proxy_error_to_status(error);
+    let error_message = get_error_message(error);
+    tokio::spawn(async move {
+        finish_request(
+            &proxy_activity,
+            app_handle.as_ref(),
+            &request_id,
+            Some(status_code),
+            Some(error_message),
+        )
+        .await;
+    });
 }
 
 /// 记录请求使用量

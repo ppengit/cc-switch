@@ -4,6 +4,7 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
+    activity::{route_request, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -46,6 +47,7 @@ pub struct RequestForwarder {
     router: Arc<ProviderRouter>,
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
+    proxy_activity: Arc<RwLock<ProxyActivityState>>,
     gemini_shadow: Arc<GeminiShadowStore>,
     /// 故障转移切换管理器
     failover_manager: Arc<FailoverSwitchManager>,
@@ -53,6 +55,10 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    /// 代理内部请求 ID（用于实时活动跟踪）
+    request_id: String,
+    /// 请求中的模型名称
+    request_model: String,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
@@ -74,10 +80,13 @@ impl RequestForwarder {
         non_streaming_timeout: u64,
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
+        proxy_activity: Arc<RwLock<ProxyActivityState>>,
         gemini_shadow: Arc<GeminiShadowStore>,
         failover_manager: Arc<FailoverSwitchManager>,
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
+        request_id: String,
+        request_model: String,
         session_id: String,
         session_client_provided: bool,
         _streaming_first_byte_timeout: u64,
@@ -90,10 +99,13 @@ impl RequestForwarder {
             router,
             status,
             current_providers,
+            proxy_activity,
             gemini_shadow,
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            request_id,
+            request_model,
             session_id,
             session_client_provided,
             rectifier_config,
@@ -177,6 +189,17 @@ impl RequestForwarder {
                 };
 
             attempted_providers += 1;
+
+            route_request(
+                &self.proxy_activity,
+                self.app_handle.as_ref(),
+                &self.request_id,
+                app_type_str,
+                &provider.id,
+                &provider.name,
+                Some(self.request_model.clone()),
+            )
+            .await;
 
             // 更新状态中的当前Provider信息
             {

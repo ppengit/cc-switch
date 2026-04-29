@@ -9,6 +9,7 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
+    activity::ProxyActivityState,
     failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
     provider_router::ProviderRouter, providers::gemini_shadow::GeminiShadowStore, types::*,
     ProxyError,
@@ -42,6 +43,8 @@ pub struct ProxyState {
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
+    /// 实时代理活动（仅内存态，不落库）
+    pub proxy_activity: Arc<RwLock<ProxyActivityState>>,
 }
 
 /// 代理HTTP服务器
@@ -74,6 +77,7 @@ impl ProxyServer {
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             app_handle,
             failover_manager,
+            proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
         };
 
         Self {
@@ -261,6 +265,11 @@ impl ProxyServer {
                 provider_name: provider_name.clone(),
             })
             .collect();
+
+        let (active_request_count, active_request_targets) =
+            super::activity::snapshot(&self.state.proxy_activity).await;
+        status.active_request_count = active_request_count;
+        status.active_request_targets = active_request_targets;
 
         status
     }

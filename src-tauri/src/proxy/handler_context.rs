@@ -13,6 +13,7 @@ use crate::proxy::{
 };
 use axum::http::HeaderMap;
 use std::time::Instant;
+use uuid::Uuid;
 
 /// 流式超时配置
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +58,8 @@ pub struct RequestContext {
     pub app_type: AppType,
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
+    /// 代理内部请求 ID（仅用于实时活动跟踪）
+    pub request_id: String,
     /// Session ID 是否由客户端提供。生成的 UUID 不能作为上游缓存 key，否则每个请求都会换 key。
     pub session_client_provided: bool,
     /// 整流器配置
@@ -163,6 +166,7 @@ impl RequestContext {
             app_type_str,
             app_type,
             session_id,
+            request_id: Uuid::new_v4().to_string(),
             session_client_provided: session_result.client_provided,
             rectifier_config,
             optimizer_config,
@@ -221,10 +225,13 @@ impl RequestContext {
             non_streaming_timeout,
             state.status.clone(),
             state.current_providers.clone(),
+            state.proxy_activity.clone(),
             state.gemini_shadow.clone(),
             state.failover_manager.clone(),
             state.app_handle.clone(),
             self.current_provider_id.clone(),
+            self.request_id.clone(),
+            self.request_model.clone(),
             self.session_id.clone(),
             self.session_client_provided,
             first_byte_timeout,

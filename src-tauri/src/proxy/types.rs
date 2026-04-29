@@ -89,6 +89,12 @@ pub struct ProxyStatus {
     /// 当前活跃的代理目标列表
     #[serde(default)]
     pub active_targets: Vec<ActiveTarget>,
+    /// 当前正在处理的请求数量
+    #[serde(default)]
+    pub active_request_count: usize,
+    /// 当前正在处理请求的目标列表
+    #[serde(default)]
+    pub active_request_targets: Vec<ActiveRequestTarget>,
 }
 
 /// 活跃的代理目标信息
@@ -97,6 +103,32 @@ pub struct ActiveTarget {
     pub app_type: String, // "Claude" | "Codex" | "Gemini"
     pub provider_name: String,
     pub provider_id: String,
+}
+
+/// 当前正在处理请求的目标信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveRequestTarget {
+    pub app_type: String,
+    pub provider_name: String,
+    pub provider_id: String,
+    pub inflight_requests: usize,
+    pub last_request_model: Option<String>,
+    pub last_request_at: String,
+}
+
+/// 实时代理活动事件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyActivityEvent {
+    pub request_id: String,
+    pub event: String,
+    pub app_type: String,
+    pub provider_name: String,
+    pub provider_id: String,
+    pub request_model: Option<String>,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+    pub active_request_count: usize,
+    pub active_request_targets: Vec<ActiveRequestTarget>,
 }
 
 /// 代理服务器信息

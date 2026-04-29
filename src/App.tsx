@@ -46,6 +46,7 @@ import { hermesKeys, useOpenHermesWebUI } from "@/hooks/useHermes";
 import { hermesApi } from "@/lib/api/hermes";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoCompact } from "@/hooks/useAutoCompact";
+import { useProxyActivityBridge } from "@/hooks/useProxyActivityBridge";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -235,6 +236,7 @@ function App() {
   const isToolbarCompact = useAutoCompact(toolbarRef);
 
   useUsageCacheBridge();
+  useProxyActivityBridge();
 
   const promptPanelRef = useRef<any>(null);
   const mcpPanelRef = useRef<any>(null);
@@ -255,6 +257,22 @@ function App() {
     );
     return target?.provider_id;
   }, [proxyStatus?.active_targets, activeApp]);
+  const activeRequestProviders = useMemo(() => {
+    const targets =
+      proxyStatus?.active_request_targets?.filter(
+        (target) => target.app_type === activeApp,
+      ) ?? [];
+
+    return Object.fromEntries(
+      targets.map((target) => [
+        target.provider_id,
+        {
+          count: target.inflight_requests,
+          model: target.last_request_model ?? undefined,
+        },
+      ]),
+    );
+  }, [activeApp, proxyStatus?.active_request_targets]);
 
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
     isProxyRunning,
@@ -1162,6 +1180,7 @@ function App() {
                         isProxyRunning && isCurrentAppTakeoverActive
                       }
                       activeProviderId={activeProviderId}
+                      activeRequestProviders={activeRequestProviders}
                       onSwitch={switchProvider}
                       onEdit={(provider) => {
                         setEditingProvider(provider);

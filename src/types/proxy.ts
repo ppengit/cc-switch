@@ -27,12 +27,36 @@ export interface ProxyStatus {
   last_error: string | null;
   failover_count: number;
   active_targets?: ActiveTarget[];
+  active_request_count?: number;
+  active_request_targets?: ActiveRequestTarget[];
 }
 
 export interface ActiveTarget {
   app_type: string;
   provider_name: string;
   provider_id: string;
+}
+
+export interface ActiveRequestTarget {
+  app_type: string;
+  provider_name: string;
+  provider_id: string;
+  inflight_requests: number;
+  last_request_model?: string | null;
+  last_request_at: string;
+}
+
+export interface ProxyActivityEvent {
+  request_id: string;
+  event: string;
+  app_type: string;
+  provider_name: string;
+  provider_id: string;
+  request_model?: string | null;
+  status_code?: number | null;
+  error?: string | null;
+  active_request_count: number;
+  active_request_targets: ActiveRequestTarget[];
 }
 
 export interface ProxyServerInfo {

@@ -368,6 +368,64 @@ export function ProxyPanel({
                 )}
               </div>
 
+              <div className="pt-3 border-t border-border space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  {t("proxy.panel.liveActivity", {
+                    defaultValue: "实时活动",
+                  })}
+                </p>
+                {(status.active_request_count ?? 0) > 0 &&
+                status.active_request_targets &&
+                status.active_request_targets.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <p className="text-sm text-foreground">
+                      {t("proxy.panel.activeRequestCount", {
+                        count: status.active_request_count ?? 0,
+                        defaultValue:
+                          "当前共有 {{count}} 个代理请求正在处理中",
+                      })}
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {status.active_request_targets.map((target) => (
+                        <div
+                          key={`${target.app_type}:${target.provider_id}`}
+                          className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">
+                              {target.app_type}
+                            </span>
+                            <span className="font-medium text-foreground">
+                              {target.inflight_requests}x
+                            </span>
+                          </div>
+                          <div
+                            className="truncate font-medium text-foreground"
+                            title={target.provider_name}
+                          >
+                            {target.provider_name}
+                          </div>
+                          {target.last_request_model ? (
+                            <div
+                              className="truncate text-muted-foreground font-mono"
+                              title={target.last_request_model}
+                            >
+                              {target.last_request_model}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {t("proxy.panel.noLiveActivity", {
+                      defaultValue: "当前没有正在处理的代理请求",
+                    })}
+                  </p>
+                )}
+              </div>
+
               {/* [5] Logging toggle */}
               <div className="pt-3 border-t border-border">
                 <div className="flex items-center justify-between rounded-md border border-border bg-background/60 px-3 py-2">
@@ -446,10 +504,10 @@ export function ProxyPanel({
             <div className="grid gap-3 md:grid-cols-4">
               <StatCard
                 icon={<Activity className="h-4 w-4" />}
-                label={t("proxy.panel.stats.activeConnections", {
-                  defaultValue: "活跃连接",
+                label={t("proxy.panel.stats.activeRequests", {
+                  defaultValue: "处理中请求",
                 })}
-                value={status.active_connections}
+                value={status.active_request_count ?? 0}
               />
               <StatCard
                 icon={<TrendingUp className="h-4 w-4" />}

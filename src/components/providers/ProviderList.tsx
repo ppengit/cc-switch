@@ -119,6 +119,13 @@ interface ProviderListProps {
   isProxyRunning?: boolean;
   isProxyTakeover?: boolean;
   activeProviderId?: string;
+  activeRequestProviders?: Record<
+    string,
+    {
+      count: number;
+      model?: string;
+    }
+  >;
   onSetAsDefault?: (provider: Provider) => void;
 }
 
@@ -134,6 +141,8 @@ interface ProviderRowView {
   isReadOnly: boolean;
   isEnabled: boolean;
   isActiveProxyProvider: boolean;
+  activeRequestCount: number;
+  activeRequestModel?: string;
   failoverPriority?: number;
   orderNumber: number;
   statusRank: number;
@@ -396,6 +405,7 @@ export function ProviderList({
   isLoading = false,
   isProxyTakeover = false,
   activeProviderId,
+  activeRequestProviders,
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
@@ -777,6 +787,8 @@ export function ProviderList({
         : isAdditiveMode
           ? isInConfig
           : isCurrent;
+      const activeRequest = activeRequestProviders?.[provider.id];
+      const activeRequestCount = activeRequest?.count ?? 0;
 
       const isActiveProxyProvider =
         isFailoverModeActive && activeProviderId === provider.id;
@@ -802,7 +814,8 @@ export function ProviderList({
       const canDelete =
         !isReadOnly && (isAnyOmo || isAdditiveMode ? true : !isCurrent);
 
-      const statusRank = isActiveProxyProvider ? 3 : isEnabled ? 2 : 1;
+      const statusRank =
+        activeRequestCount > 0 ? 4 : isActiveProxyProvider ? 3 : isEnabled ? 2 : 1;
 
       return {
         provider,
@@ -814,6 +827,8 @@ export function ProviderList({
         isReadOnly,
         isEnabled,
         isActiveProxyProvider,
+        activeRequestCount,
+        activeRequestModel: activeRequest?.model,
         failoverPriority,
         orderNumber,
         statusRank,
@@ -826,6 +841,7 @@ export function ProviderList({
     });
   }, [
     activeProviderId,
+    activeRequestProviders,
     appId,
     filteredProviders,
     getFailoverPriority,
@@ -2031,6 +2047,7 @@ function SortableProviderTableRow({
     : row.isEnabled
       ? t("provider.enabled", { defaultValue: "启用" })
       : t("provider.disabled", { defaultValue: "禁用" });
+  const isProcessing = row.activeRequestCount > 0;
 
   return (
     <TableRow
@@ -2150,6 +2167,27 @@ function SortableProviderTableRow({
           >
             {statusLabel}
           </Badge>
+          {isProcessing ? (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 h-5 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+              title={
+                row.activeRequestModel
+                  ? t("provider.processingWithModel", {
+                      defaultValue: "正在处理 {{model}}",
+                      model: row.activeRequestModel,
+                    })
+                  : t("provider.processing", {
+                      defaultValue: "正在处理请求",
+                    })
+              }
+            >
+              {t("provider.processing", {
+                defaultValue: "处理中",
+              })}
+              {row.activeRequestCount > 1 ? ` ${row.activeRequestCount}` : ""}
+            </Badge>
+          ) : null}
           {isCircuitOpen ? (
             <Badge
               variant="destructive"
