@@ -339,10 +339,7 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      if (
-        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
-        values.enableOnSave === false
-      ) {
+      if (values.enableOnSave === false) {
         providerData.addToLive = false;
       }
 

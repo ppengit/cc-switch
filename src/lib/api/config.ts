@@ -10,7 +10,7 @@ export type AppType =
   | "openclaw"
   | "hermes"
   | "omo"
-  | "omo_slim";
+  | "omo-slim";
 
 export interface AppConfigFileEntry {
   key: string;

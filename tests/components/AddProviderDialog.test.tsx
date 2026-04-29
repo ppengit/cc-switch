@@ -192,4 +192,43 @@ describe("AddProviderDialog", () => {
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(handleOpenChange).not.toHaveBeenCalledWith(false);
   });
+
+  it("在未勾选启用时向上层传递 addToLive=false", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    mockFormValues = {
+      name: "Disabled Provider",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://disabled.example.com",
+          ANTHROPIC_AUTH_TOKEN: "sk-disabled",
+        },
+        config: {},
+      }),
+      enableOnSave: false,
+      pinToTopOnSave: false,
+    };
+
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="claude"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "common.add",
+      }),
+    );
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+
+    const submitted = handleSubmit.mock.calls[0][0];
+    expect(submitted.provider.addToLive).toBe(false);
+    expect(submitted.saveOptions).toEqual({ pinToTop: false, enabled: false });
+  });
 });

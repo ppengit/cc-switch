@@ -576,6 +576,47 @@ base_url = "http://localhost:8080"
 
     #[test]
     #[serial]
+    fn add_switch_mode_provider_can_remain_disabled_when_requested() {
+        with_test_home(|state, _| {
+            let provider = Provider::with_id(
+                "claude-disabled".into(),
+                "Claude Disabled".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-disabled",
+                        "ANTHROPIC_BASE_URL": "https://claude.disabled.example"
+                    }
+                }),
+                Some("https://claude.disabled.example".into()),
+            );
+
+            ProviderService::add(state, AppType::Claude, provider.clone(), false)
+                .expect("add disabled switch-mode provider");
+
+            let stored = state
+                .db
+                .get_provider_by_id("claude-disabled", AppType::Claude.as_str())
+                .expect("query stored provider");
+            assert!(stored.is_some(), "provider should still be saved to database");
+
+            let current = state
+                .db
+                .get_current_provider(AppType::Claude.as_str())
+                .expect("query current provider");
+            assert!(
+                current.is_none(),
+                "disabled provider should not become current automatically"
+            );
+
+            assert!(
+                !get_claude_settings_path().exists(),
+                "disabled provider should not write Claude live settings"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
     fn sync_current_provider_for_app_preserves_legacy_live_opencode_provider() {
         with_test_home(|state, _| {
             let provider = opencode_provider("legacy-opencode");
@@ -1038,6 +1079,10 @@ impl ProviderService {
                 return Ok(true);
             }
             write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
+            return Ok(true);
+        }
+
+        if !add_to_live {
             return Ok(true);
         }
 
