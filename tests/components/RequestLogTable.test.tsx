@@ -158,4 +158,52 @@ describe("RequestLogTable", () => {
       );
     });
   });
+
+  it("keeps the session suffix in provider names for session-imported logs", () => {
+    useRequestLogsMock.mockReturnValue({
+      data: {
+        data: [
+          {
+            requestId: "req-1",
+            providerId: "_codex_session",
+            providerName: "Codex (Session)",
+            appType: "codex",
+            model: "gpt-5",
+            requestModel: "gpt-5",
+            costMultiplier: "1.0",
+            inputTokens: 10,
+            outputTokens: 20,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            inputCostUsd: "0",
+            outputCostUsd: "0",
+            cacheReadCostUsd: "0",
+            cacheCreationCostUsd: "0",
+            totalCostUsd: "0",
+            isStreaming: true,
+            latencyMs: 0,
+            statusCode: 200,
+            createdAt: 1_710_000_000,
+            dataSource: "codex_session",
+          },
+        ],
+        total: 1,
+        page: 0,
+        pageSize: 20,
+      },
+      isLoading: false,
+    });
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    expect(screen.getByText("Codex (Session)")).toBeInTheDocument();
+    expect(screen.getByText("codex_session")).toBeInTheDocument();
+  });
 });
