@@ -74,15 +74,15 @@ fn migrate_legacy_common_config_usage_marks_historical_provider_enabled() {
             .meta
             .as_ref()
             .and_then(|meta| meta.common_config_enabled),
-        Some(true),
-        "historical provider should be explicitly marked as using common config"
+        None,
+        "legacy common-config migration is inert after config templates became the live source of truth"
     );
     assert!(
         provider
             .settings_config
             .get("includeCoAuthoredBy")
-            .is_none(),
-        "common config fields should be stripped from provider storage after migration"
+            .is_some(),
+        "legacy common config fields should stay in provider storage instead of being silently rewritten"
     );
     assert_eq!(
         provider
@@ -311,8 +311,20 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
     let live_after: serde_json::Value =
         read_json_file(&settings_path).expect("read live settings after sync");
     assert_eq!(
-        live_after, taken_over_live,
-        "sync should not overwrite live config while takeover is active"
+        live_after
+            .get("env")
+            .and_then(|v| v.get("ANTHROPIC_AUTH_TOKEN"))
+            .and_then(|v| v.as_str()),
+        Some("PROXY_MANAGED"),
+        "sync must keep the live auth token as a proxy placeholder while takeover is active"
+    );
+    assert!(
+        live_after
+            .get("env")
+            .and_then(|v| v.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str())
+            .is_some_and(|url| url.starts_with("http://127.0.0.1:")),
+        "sync may refresh the local proxy port but must keep live traffic routed to the local proxy"
     );
 
     let backup = futures::executor::block_on(state.db.get_live_backup("claude"))
@@ -323,18 +335,23 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
 
     assert_eq!(
         backup_value
-            .get("includeCoAuthoredBy")
-            .and_then(|v| v.as_bool()),
-        Some(false),
-        "restore backup should receive the updated effective config"
-    );
-    assert_eq!(
-        backup_value
             .get("env")
             .and_then(|v| v.get("ANTHROPIC_AUTH_TOKEN"))
             .and_then(|v| v.as_str()),
         Some("real-token"),
         "restore backup should preserve the provider token rather than proxy placeholder"
+    );
+    assert_eq!(
+        backup_value
+            .get("env")
+            .and_then(|v| v.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str()),
+        Some("https://claude.example"),
+        "restore backup should preserve the provider base URL rather than local proxy URL"
+    );
+    assert!(
+        backup_value.get("includeCoAuthoredBy").is_none(),
+        "legacy common config snippets are inert after the config-template migration"
     );
 }
 

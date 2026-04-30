@@ -158,6 +158,13 @@ pub struct AppConfigTemplateFile {
     pub content: String,
 }
 
+#[derive(serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigFileWrite {
+    pub file_key: String,
+    pub content: String,
+}
+
 fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
     match app_type {
         AppType::Claude => vec![
@@ -212,6 +219,113 @@ fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
             crate::hermes_config::get_hermes_config_path(),
         )],
     }
+}
+
+fn parse_json_object(content: &str, label: &str) -> Result<(), String> {
+    let value = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|e| format!("{label} JSON 格式错误: {e}"))?;
+    if !value.is_object() {
+        return Err(format!("{label} 根节点必须是 JSON 对象"));
+    }
+    Ok(())
+}
+
+fn parse_json5_object(content: &str, label: &str) -> Result<(), String> {
+    let value = json5::from_str::<serde_json::Value>(content)
+        .map_err(|e| format!("{label} JSON5 格式错误: {e}"))?;
+    if !value.is_object() {
+        return Err(format!("{label} 根节点必须是对象"));
+    }
+    Ok(())
+}
+
+fn parse_yaml_mapping(content: &str, label: &str) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let value = serde_yaml::from_str::<serde_yaml::Value>(content)
+        .map_err(|e| format!("{label} YAML 格式错误: {e}"))?;
+    if !value.is_mapping() {
+        return Err(format!("{label} 根节点必须是 YAML 对象"));
+    }
+    Ok(())
+}
+
+fn validate_app_config_file_content(
+    app_type: &AppType,
+    file_key: &str,
+    label: &str,
+    content: &str,
+) -> Result<(), String> {
+    let trimmed = content.trim();
+
+    match (app_type, file_key) {
+        (AppType::Claude, "settings") | (AppType::Claude, "mcp") => {
+            if trimmed.is_empty() {
+                return Err(format!("{label} 不能为空；如不需要该文件，请保持文件不存在"));
+            }
+            parse_json_object(content, label)
+        }
+        (AppType::Codex, "auth") => {
+            if trimmed.is_empty() {
+                return Err("auth.json 不能为空；Codex 鉴权文件必须是 JSON 对象".to_string());
+            }
+            parse_json_object(content, label)
+        }
+        (AppType::Codex, "config") => crate::codex_config::validate_config_toml(content)
+            .map_err(|e| format!("{label} TOML 格式错误: {e}")),
+        (AppType::Gemini, "env") => crate::gemini_config::parse_env_file_strict(content)
+            .map(|_| ())
+            .map_err(|e| format!("{label} 格式错误: {e}")),
+        (AppType::Gemini, "settings") => {
+            if trimmed.is_empty() {
+                return Err("settings.json 不能为空；如不需要该文件，请保持文件不存在".to_string());
+            }
+            parse_json_object(content, label)
+        }
+        (AppType::OpenCode, "config") => {
+            if trimmed.is_empty() {
+                return Err("opencode.json 不能为空；如不需要该文件，请保持文件不存在".to_string());
+            }
+            parse_json5_object(content, label)
+        }
+        (AppType::OpenClaw, "config") => {
+            if trimmed.is_empty() {
+                return Err("openclaw.json 不能为空；如不需要该文件，请保持文件不存在".to_string());
+            }
+            parse_json5_object(content, label)
+        }
+        (AppType::Hermes, "config") => parse_yaml_mapping(content, label),
+        _ => Ok(()),
+    }
+}
+
+fn resolve_app_config_file(
+    app_type: &AppType,
+    file_key: &str,
+) -> Result<(String, String, PathBuf), String> {
+    app_config_files_for(app_type)
+        .into_iter()
+        .find(|(key, _, _)| key == file_key.trim())
+        .ok_or_else(|| format!("Unsupported config file key: {}", file_key.trim()))
+}
+
+fn should_skip_missing_empty_file(path: &PathBuf, content: &str) -> bool {
+    !path.exists() && content.trim().is_empty()
+}
+
+fn validate_app_config_writes(
+    app_type: &AppType,
+    writes: &[(String, String, PathBuf, String)],
+) -> Result<(), String> {
+    for (key, label, path, content) in writes {
+        if should_skip_missing_empty_file(path, content) {
+            continue;
+        }
+        validate_app_config_file_content(app_type, key, label, content)?;
+    }
+    Ok(())
 }
 
 fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFile> {
@@ -379,13 +493,40 @@ pub async fn write_app_config_file(
     content: String,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let target = app_config_files_for(&app_type)
-        .into_iter()
-        .find(|(key, _, _)| key == fileKey.trim())
-        .ok_or_else(|| format!("Unsupported config file key: {}", fileKey.trim()))?;
+    let target = resolve_app_config_file(&app_type, &fileKey)?;
 
-    let (_, _, path) = target;
+    let (key, label, path) = target;
+    if should_skip_missing_empty_file(&path, &content) {
+        return Ok(true);
+    }
+    validate_app_config_file_content(&app_type, &key, &label, &content)?;
     crate::config::write_text_file(&path, &content).map_err(|e| format!("写入配置文件失败: {e}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn write_app_config_files(
+    app: String,
+    files: Vec<AppConfigFileWrite>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut writes = Vec::with_capacity(files.len());
+
+    for file in files {
+        let (key, label, path) = resolve_app_config_file(&app_type, &file.file_key)?;
+        writes.push((key, label, path, file.content));
+    }
+
+    validate_app_config_writes(&app_type, &writes)?;
+
+    for (_, _, path, content) in writes {
+        if should_skip_missing_empty_file(&path, &content) {
+            continue;
+        }
+        crate::config::write_text_file(&path, &content)
+            .map_err(|e| format!("写入配置文件失败: {e}"))?;
+    }
+
     Ok(true)
 }
 

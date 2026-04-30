@@ -1054,6 +1054,7 @@ pub fn run() {
             commands::list_app_config_files,
             commands::read_app_config_file,
             commands::write_app_config_file,
+            commands::write_app_config_files,
             commands::get_app_config_template,
             commands::set_app_config_template,
             commands::pick_directory,

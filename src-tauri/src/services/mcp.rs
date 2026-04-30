@@ -24,28 +24,22 @@ impl McpService {
             .get(&server.id)
             .map(|s| s.apps.clone())
             .unwrap_or_default();
+        let next_apps = server.apps.clone();
+        let affected_apps = Self::affected_apps_for_change(&prev_apps, &next_apps);
 
         state.db.save_mcp_server(&server)?;
 
-        // 处理禁用：若旧版本启用但新版本取消，则需要从该应用的 live 配置移除
-        if prev_apps.claude && !server.apps.claude {
-            Self::remove_server_from_app(state, &server.id, &AppType::Claude)?;
-        }
-        if prev_apps.codex && !server.apps.codex {
-            Self::remove_server_from_app(state, &server.id, &AppType::Codex)?;
-        }
-        if prev_apps.gemini && !server.apps.gemini {
-            Self::remove_server_from_app(state, &server.id, &AppType::Gemini)?;
-        }
-        if prev_apps.opencode && !server.apps.opencode {
-            Self::remove_server_from_app(state, &server.id, &AppType::OpenCode)?;
-        }
-        if prev_apps.hermes && !server.apps.hermes {
-            Self::remove_server_from_app(state, &server.id, &AppType::Hermes)?;
+        // 处理禁用：若旧版本启用但新版本取消，必须按服务器 ID 直接清理。
+        // 随后的 app 级重建会刷新当前供应商模板和代理接管备份。
+        for app in &affected_apps {
+            if prev_apps.is_enabled_for(app) && !next_apps.is_enabled_for(app) {
+                Self::remove_server_from_app(state, &server.id, app)?;
+            }
         }
 
-        // 同步到各个启用的应用
-        Self::sync_server_to_apps(state, &server)?;
+        for app in affected_apps {
+            Self::reconcile_app_after_mcp_change(state, &app)?;
+        }
 
         Ok(())
     }
@@ -59,6 +53,9 @@ impl McpService {
 
             // 从所有应用的 live 配置中移除
             Self::remove_server_from_all_apps(state, id, &server)?;
+            for app in server.apps.enabled_apps() {
+                Self::reconcile_app_after_mcp_change(state, &app)?;
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -78,12 +75,88 @@ impl McpService {
             server.apps.set_enabled_for(&app, enabled);
             state.db.save_mcp_server(server)?;
 
-            // 同步到对应应用
-            if enabled {
-                Self::sync_server_to_app(state, server, &app)?;
-            } else {
+            // 禁用时需要按 ID 直接清理；启用时由 app 级重建写入。
+            if !enabled {
                 Self::remove_server_from_app(state, server_id, &app)?;
             }
+            Self::reconcile_app_after_mcp_change(state, &app)?;
+        }
+
+        Ok(())
+    }
+
+    fn affected_apps_for_change(
+        prev: &crate::app_config::McpApps,
+        next: &crate::app_config::McpApps,
+    ) -> Vec<AppType> {
+        AppType::all()
+            .filter(|app| {
+                !matches!(app, AppType::OpenClaw)
+                    && (prev.is_enabled_for(app) || next.is_enabled_for(app))
+            })
+            .collect()
+    }
+
+    fn has_syncable_provider(state: &AppState, app: &AppType) -> Result<bool, AppError> {
+        if app.is_additive_mode() {
+            return Ok(!matches!(app, AppType::OpenClaw));
+        }
+
+        let Some(current_id) =
+            crate::settings::get_effective_current_provider(&state.db, app)?
+        else {
+            return Ok(false);
+        };
+
+        Ok(state
+            .db
+            .get_provider_by_id(&current_id, app.as_str())?
+            .is_some())
+    }
+
+    fn sync_all_for_app_from_db(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        let servers = state.db.get_all_mcp_servers()?;
+
+        for server in servers.values() {
+            if server.apps.is_enabled_for(app) {
+                Self::sync_server_to_app(state, server, app)?;
+            } else {
+                Self::remove_server_from_app(state, &server.id, app)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn reconcile_app_after_mcp_change(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        if matches!(app, AppType::OpenClaw) {
+            return Ok(());
+        }
+
+        let provider_synced = if Self::has_syncable_provider(state, app)? {
+            match crate::services::provider::ProviderService::sync_current_provider_for_app(
+                state,
+                app.clone(),
+            ) {
+                Ok(()) => true,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to rebuild {} live config after MCP change: {err}",
+                        app.as_str()
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        // Provider sync already performs a full MCP reconciliation in ordinary live mode.
+        // For proxy-capable apps we still run the MCP-only path afterwards: Claude MCP is a
+        // separate file, and Codex/Gemini need direct live reconciliation when proxy takeover
+        // short-circuits the normal provider sync flow.
+        if !provider_synced || matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            Self::sync_all_for_app_from_db(state, app)?;
         }
 
         Ok(())

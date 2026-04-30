@@ -1309,15 +1309,13 @@ export function ProviderList({
     setIsSavingConfig(true);
 
     try {
-      await Promise.all(
-        configFiles.map((file) =>
-          configApi.writeAppConfigFile({
-            appId,
-            fileKey: file.key,
-            content: currentConfigDrafts[file.key] ?? "",
-          }),
-        ),
-      );
+      await configApi.writeAppConfigFiles({
+        appId,
+        files: configFiles.map((file) => ({
+          fileKey: file.key,
+          content: currentConfigDrafts[file.key] ?? "",
+        })),
+      });
       await refreshCurrentConfig();
       toast.success(
         t("provider.currentConfigSaved", {
@@ -1328,7 +1326,8 @@ export function ProviderList({
       console.error("Failed to save current config", error);
       toast.error(
         t("provider.currentConfigSaveFailed", {
-          defaultValue: "保存当前配置失败",
+          defaultValue: "保存当前配置失败：{{error}}",
+          error: error instanceof Error ? error.message : String(error),
         }),
       );
     } finally {
@@ -1418,6 +1417,7 @@ export function ProviderList({
       toast.error(
         t("provider.loadLiveTemplateFailed", {
           defaultValue: "加载环境配置失败",
+          error: error instanceof Error ? error.message : String(error),
         }),
       );
     } finally {
@@ -2107,9 +2107,9 @@ export function ProviderList({
             <p className="text-[11px] text-muted-foreground">
               {appId === "gemini"
                 ? t("provider.templateEffectHintGemini", {
-                    defaultValue:
-                      "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json，并自动覆盖 mcpServers。",
-                  })
+                  defaultValue:
+                      "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json；启用 MCP 时写入 mcpServers，未启用时不写空 mcpServers。",
+                })
                 : t("provider.templateEffectHint", {
                     defaultValue:
                       "当前版本会在 Codex 实际写入时应用该模板；其他应用先按现有稳定逻辑写入。",

@@ -4,8 +4,9 @@ use std::fs;
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_claude_mcp_path, get_claude_settings_path, import_default_config_test_hook, AppError,
-    AppType, McpApps, McpServer, McpService, MultiAppConfig,
+    get_claude_mcp_path, get_claude_settings_path, get_codex_auth_path, get_codex_config_path,
+    import_default_config_test_hook, AppError, AppType, McpApps, McpServer, McpService,
+    MultiAppConfig, Provider,
 };
 
 #[path = "support.rs"]
@@ -100,6 +101,120 @@ fn import_default_config_without_live_file_returns_error() {
     assert!(
         providers.is_empty(),
         "failed import should not create any providers in database"
+    );
+}
+
+#[test]
+fn mcp_upsert_during_codex_takeover_updates_backup_and_live_without_leaking_real_key() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "codex-current".to_string();
+        manager.providers.insert(
+            "codex-current".to_string(),
+            Provider::with_id(
+                "codex-current".to_string(),
+                "Codex Current".to_string(),
+                json!({
+                    "auth": {
+                        "OPENAI_API_KEY": "real-codex-key"
+                    },
+                    "config": "model = \"gpt-5\"\n[model_providers.current]\nname = \"Current\"\nbase_url = \"https://codex.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = create_test_state_with_config(&config).expect("create test state");
+    futures::executor::block_on(
+        state
+            .db
+            .save_live_backup("codex", "{\"auth\":{},\"config\":\"\"}"),
+    )
+    .expect("seed codex live backup");
+
+    let mut proxy_config = futures::executor::block_on(state.db.get_proxy_config_for_app("codex"))
+        .expect("get codex proxy config");
+    proxy_config.enabled = true;
+    futures::executor::block_on(state.db.update_proxy_config_for_app(proxy_config))
+        .expect("enable codex takeover");
+
+    McpService::upsert_server(
+        &state,
+        McpServer {
+            id: "codex-memory".to_string(),
+            name: "Codex Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    )
+    .expect("upsert mcp server while takeover is active");
+
+    let backup = futures::executor::block_on(state.db.get_live_backup("codex"))
+        .expect("read codex live backup")
+        .expect("backup should exist");
+    let backup_value: serde_json::Value =
+        serde_json::from_str(&backup.original_config).expect("parse backup json");
+    let backup_config = backup_value
+        .get("config")
+        .and_then(|v| v.as_str())
+        .expect("backup codex config should be text");
+    assert!(
+        backup_config.contains("[mcp_servers.codex-memory]"),
+        "backup must include MCP changes made during takeover"
+    );
+    assert!(
+        backup_config.contains("https://codex.example/v1"),
+        "backup must keep the real provider base URL for restore"
+    );
+    assert_eq!(
+        backup_value
+            .get("auth")
+            .and_then(|v| v.get("OPENAI_API_KEY"))
+            .and_then(|v| v.as_str()),
+        Some("real-codex-key"),
+        "backup must keep the real key for restore"
+    );
+
+    let live_auth_text = fs::read_to_string(get_codex_auth_path()).expect("read auth.json");
+    let live_auth: serde_json::Value =
+        serde_json::from_str(&live_auth_text).expect("parse live auth");
+    assert_eq!(
+        live_auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+        Some("PROXY_MANAGED"),
+        "live auth must keep the proxy placeholder while takeover is active"
+    );
+
+    let live_config = fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        live_config.contains("[mcp_servers.codex-memory]"),
+        "live config must include the new MCP server"
+    );
+    assert!(
+        !live_config.contains("https://codex.example/v1"),
+        "live config must not leak the real provider base URL while takeover is active"
+    );
+    assert!(
+        live_config.contains("127.0.0.1") || live_config.contains("localhost"),
+        "live config should keep routing Codex through the local proxy"
     );
 }
 

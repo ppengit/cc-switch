@@ -136,6 +136,17 @@ export async function writeAppConfigFile(options: {
   });
 }
 
+export async function writeAppConfigFiles(options: {
+  appId: AppId;
+  files: Array<{ fileKey: string; content: string }>;
+}): Promise<boolean> {
+  const { appId, files } = options;
+  return invoke<boolean>("write_app_config_files", {
+    app: appId,
+    files,
+  });
+}
+
 export async function getAppConfigTemplate(
   appId: AppId,
 ): Promise<AppConfigTemplateFile[]> {

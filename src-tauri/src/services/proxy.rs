@@ -147,8 +147,68 @@ impl ProxyService {
             .insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
 
         let config_str = root.get("config").and_then(|v| v.as_str()).unwrap_or("");
-        let updated_config = Self::update_toml_base_url(config_str, proxy_codex_base_url);
+        let updated_config =
+            Self::rewrite_codex_base_urls_for_takeover(config_str, proxy_codex_base_url);
         root.insert("config".to_string(), json!(updated_config));
+    }
+
+    fn rewrite_codex_base_urls_for_takeover(toml_str: &str, proxy_codex_base_url: &str) -> String {
+        let mut doc = match toml_str.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => doc,
+            Err(_) => return Self::update_toml_base_url(toml_str, proxy_codex_base_url),
+        };
+
+        if let Some(model_providers) = doc
+            .get_mut("model_providers")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            let provider_ids: Vec<String> = model_providers
+                .iter()
+                .map(|(provider_id, _)| provider_id.to_string())
+                .collect();
+
+            for provider_id in provider_ids {
+                if let Some(provider_table) = model_providers
+                    .get_mut(&provider_id)
+                    .and_then(|item| item.as_table_like_mut())
+                {
+                    provider_table.remove("base_url");
+                }
+            }
+        }
+
+        doc.as_table_mut().remove("base_url");
+
+        let active_provider = doc
+            .get("model_provider")
+            .and_then(|item| item.as_str())
+            .map(str::to_string);
+
+        if let Some(provider_id) = active_provider {
+            if doc.get("model_providers").is_none() {
+                doc["model_providers"] = toml_edit::table();
+            }
+
+            if let Some(model_providers) = doc
+                .get_mut("model_providers")
+                .and_then(|item| item.as_table_like_mut())
+            {
+                if model_providers.get(&provider_id).is_none() {
+                    model_providers.insert(&provider_id, toml_edit::table());
+                }
+
+                if let Some(provider_table) = model_providers
+                    .get_mut(&provider_id)
+                    .and_then(|item| item.as_table_like_mut())
+                {
+                    provider_table.insert("base_url", toml_edit::value(proxy_codex_base_url));
+                    return doc.to_string();
+                }
+            }
+        }
+
+        doc["base_url"] = toml_edit::value(proxy_codex_base_url);
+        doc.to_string()
     }
 
     fn apply_gemini_takeover_fields(config: &mut Value, proxy_url: &str) {

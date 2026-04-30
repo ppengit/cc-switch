@@ -291,11 +291,6 @@ const CONFIG_TEMPLATE_MCP_PLACEHOLDER: &str = "{mcpConfig}";
 const CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER: &str = "{settingsConfig}";
 const GEMINI_TEMPLATE_ENV_SECTION_HEADER: &str = "# .env";
 const GEMINI_TEMPLATE_SETTINGS_SECTION_HEADER: &str = "# settings.json";
-const GEMINI_DEFAULT_SETTINGS_TEMPLATE: &str = r#"{
-  {settingsConfig}
-  "mcpServers": {mcpConfig}
-}
-"#;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -730,7 +725,10 @@ fn build_gemini_provider_settings_fragment(settings: &Value) -> Result<Value, Ap
     Ok(config)
 }
 
-fn json_object_to_template_members(value: &Value) -> Result<String, AppError> {
+fn json_object_to_template_members(
+    value: &Value,
+    include_trailing_comma: bool,
+) -> Result<String, AppError> {
     let Some(obj) = value.as_object() else {
         return Ok(String::new());
     };
@@ -765,7 +763,9 @@ fn json_object_to_template_members(value: &Value) -> Result<String, AppError> {
             entry.push_str(line);
         }
 
-        entry.push(',');
+        if include_trailing_comma {
+            entry.push(',');
+        }
         chunks.push(entry);
     }
 
@@ -783,12 +783,38 @@ fn build_gemini_mcp_template_block(db: &Database) -> Result<String, AppError> {
         enabled.insert(id, server.server);
     }
 
+    if enabled.is_empty() {
+        return Ok(String::new());
+    }
+
     let rendered = serde_json::to_string_pretty(&Value::Object(
         crate::gemini_mcp::build_mcp_servers_object(&enabled)?,
     ))
     .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
 
     Ok(rendered)
+}
+
+fn render_gemini_settings_template(
+    template: &str,
+    settings_members: &str,
+    mcp_block: &str,
+) -> String {
+    let template = if mcp_block.trim().is_empty() {
+        template
+            .lines()
+            .filter(|line| !line.contains(CONFIG_TEMPLATE_MCP_PLACEHOLDER))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        template.to_string()
+    };
+
+    template
+        .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, settings_members)
+        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, mcp_block)
+        .trim()
+        .to_string()
 }
 
 fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<Value, AppError> {
@@ -798,8 +824,9 @@ fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<
     let provider_env_text = gemini_provider_env_to_template_text(settings)?;
     let provider_env_value = settings.get("env").cloned().unwrap_or_else(|| json!({}));
     let provider_settings_fragment = build_gemini_provider_settings_fragment(settings)?;
-    let settings_members = json_object_to_template_members(&provider_settings_fragment)?;
     let mcp_block = build_gemini_mcp_template_block(db)?;
+    let has_mcp = !mcp_block.trim().is_empty();
+    let settings_members = json_object_to_template_members(&provider_settings_fragment, has_mcp)?;
 
     let rendered_env = env_template
         .replace(CONFIG_TEMPLATE_PROVIDER_PLACEHOLDER, &provider_env_text)
@@ -819,22 +846,20 @@ fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<
         }
     }
 
-    let rendered_settings = settings_template
-        .replace(CONFIG_TEMPLATE_SETTINGS_PLACEHOLDER, &settings_members)
-        .replace(CONFIG_TEMPLATE_MCP_PLACEHOLDER, &mcp_block)
-        .trim()
-        .to_string();
+    let rendered_settings =
+        render_gemini_settings_template(&settings_template, &settings_members, &mcp_block);
 
     let mut config = if rendered_settings.is_empty() {
         json!({})
     } else {
-        serde_json::from_str::<Value>(&rendered_settings)
-            .map_err(|e| AppError::Message(format!("Invalid rendered Gemini template (settings.json): {e}")))?
+        serde_json::from_str::<Value>(&rendered_settings).map_err(|e| {
+            AppError::Message(format!(
+                "Invalid rendered Gemini template (settings.json): {e}"
+            ))
+        })?
     };
 
     json_deep_merge(&mut config, &provider_settings_fragment);
-    let mcp_value = serde_json::from_str::<Value>(&mcp_block)
-        .map_err(|e| AppError::Message(format!("Invalid Gemini MCP template block: {e}")))?;
     let Some(config_obj) = config.as_object_mut() else {
         return Err(AppError::localized(
             "gemini.validation.invalid_config",
@@ -842,7 +867,13 @@ fn apply_gemini_template_to_settings(db: &Database, settings: &Value) -> Result<
             "Rendered Gemini template must be a JSON object",
         ));
     };
-    config_obj.insert("mcpServers".to_string(), mcp_value);
+    if has_mcp {
+        let mcp_value = serde_json::from_str::<Value>(&mcp_block)
+            .map_err(|e| AppError::Message(format!("Invalid Gemini MCP template block: {e}")))?;
+        config_obj.insert("mcpServers".to_string(), mcp_value);
+    } else {
+        config_obj.remove("mcpServers");
+    }
 
     let env_value = crate::gemini_config::env_to_json(&env_map)
         .get("env")
@@ -2750,7 +2781,10 @@ mod tests {
             rendered["config"]["security"]["auth"]["selectedType"],
             json!("gemini-api-key")
         );
-        assert_eq!(rendered["config"]["mcpServers"], json!({}));
+        assert!(
+            rendered["config"].get("mcpServers").is_none(),
+            "Gemini should not write an empty mcpServers object when no MCP server is enabled"
+        );
     }
 
     #[test]
