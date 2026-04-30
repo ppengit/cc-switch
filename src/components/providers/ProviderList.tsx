@@ -7,19 +7,24 @@ import {
 } from "@dnd-kit/sortable";
 import {
   useEffect,
+  useDeferredValue,
   useMemo,
   useRef,
   useState,
   useCallback,
   type CSSProperties,
 } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   ArrowUpToLine,
+  BarChart2,
   Check,
+  ChevronDown,
+  ChevronUp,
+  ChevronsDown,
+  ChevronsUp,
   Copy,
   FileText,
   GripVertical,
@@ -30,7 +35,6 @@ import {
   Terminal,
   TestTube2,
   Trash2,
-  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -151,6 +155,11 @@ interface ProviderRowView {
   nameLink?: string;
   canDelete: boolean;
   canTest: boolean;
+}
+
+interface SearchMatchInfo {
+  providerId: string;
+  rowIndex: number;
 }
 
 interface AppConfigFileEntry {
@@ -341,7 +350,7 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "settings",
         label: "settings.json",
-        content: "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n",
+        content: '{\n  {settingsConfig}\n  "mcpServers": {mcpConfig}\n}\n',
       },
     ];
   }
@@ -487,8 +496,11 @@ export function ProviderList({
   );
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const deferredSearchTerm = useDeferredValue(searchTerm.trim().toLowerCase());
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
   const [showStreamCheckConfirm, setShowStreamCheckConfirm] = useState(false);
   const [pendingTestProvider, setPendingTestProvider] =
     useState<Provider | null>(null);
@@ -618,28 +630,22 @@ export function ProviderList({
       const key = event.key.toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
         event.preventDefault();
-        setIsSearchOpen(true);
+        const input = searchInputRef.current;
+        input?.focus();
+        input?.select();
         return;
       }
 
       if (key === "escape") {
-        setIsSearchOpen(false);
+        setSearchTerm("");
+        setActiveSearchMatchIndex(0);
+        searchInputRef.current?.blur();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  useEffect(() => {
-    if (isSearchOpen) {
-      const frame = requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-      return () => cancelAnimationFrame(frame);
-    }
-  }, [isSearchOpen]);
 
   useEffect(() => {
     const allIds = new Set(sortedProviders.map((item) => item.id));
@@ -726,17 +732,6 @@ export function ProviderList({
     setTemplateDrafts(resolvedTemplate);
   }, [appId, persistedTemplate, templateDialogOpen]);
 
-  const filteredProviders = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
-    if (!keyword) return sortedProviders;
-    return sortedProviders.filter((provider) => {
-      const fields = [provider.name, provider.notes, provider.websiteUrl];
-      return fields.some((field) =>
-        field?.toString().toLowerCase().includes(keyword),
-      );
-    });
-  }, [searchTerm, sortedProviders]);
-
   const getProviderCurrentState = useCallback(
     (provider: Provider) => {
       const isOmo = provider.category === "omo";
@@ -774,7 +769,7 @@ export function ProviderList({
       sortedProviders.map((provider, index) => [provider.id, index]),
     );
 
-    return filteredProviders.map((provider) => {
+    return sortedProviders.map((provider) => {
       const { isOmo, isOmoSlim, isAnyOmo, isCurrent } =
         getProviderCurrentState(provider);
       const isInConfig = isProviderInConfig(provider.id);
@@ -815,7 +810,13 @@ export function ProviderList({
         !isReadOnly && (isAnyOmo || isAdditiveMode ? true : !isCurrent);
 
       const statusRank =
-        activeRequestCount > 0 ? 4 : isActiveProxyProvider ? 3 : isEnabled ? 2 : 1;
+        activeRequestCount > 0
+          ? 4
+          : isActiveProxyProvider
+            ? 3
+            : isEnabled
+              ? 2
+              : 1;
 
       return {
         provider,
@@ -843,7 +844,6 @@ export function ProviderList({
     activeProviderId,
     activeRequestProviders,
     appId,
-    filteredProviders,
     getFailoverPriority,
     getProviderCurrentState,
     isAdditiveMode,
@@ -874,9 +874,93 @@ export function ProviderList({
     });
   }, [providerRowViews, statusSortDirection]);
 
+  const searchMatches = useMemo<SearchMatchInfo[]>(() => {
+    if (!deferredSearchTerm) return [];
+
+    return displayRows.flatMap((row, rowIndex) => {
+      const fields = [
+        row.provider.name,
+        row.provider.notes,
+        row.provider.websiteUrl,
+        row.endpointDisplay,
+        row.modelDisplay,
+      ];
+      const matches = fields.some((field) =>
+        field?.toString().toLowerCase().includes(deferredSearchTerm),
+      );
+      return matches
+        ? [
+            {
+              providerId: row.provider.id,
+              rowIndex,
+            },
+          ]
+        : [];
+    });
+  }, [deferredSearchTerm, displayRows]);
+
+  const searchMatchIdSet = useMemo(
+    () => new Set(searchMatches.map((match) => match.providerId)),
+    [searchMatches],
+  );
+
+  const activeSearchMatch = searchMatches[activeSearchMatchIndex] ?? null;
+
   const recentSessionsForApp = useMemo(
     () => recentSessions.slice(0, 10),
     [recentSessions],
+  );
+
+  const registerRowRef = useCallback(
+    (providerId: string, node: HTMLTableRowElement | null) => {
+      rowRefs.current[providerId] = node;
+    },
+    [],
+  );
+
+  const scrollToProviderRow = useCallback(
+    (providerId: string, behavior: ScrollBehavior = "smooth") => {
+      const node = rowRefs.current[providerId];
+      if (!node) return;
+      if (typeof node.scrollIntoView !== "function") return;
+      node.scrollIntoView({
+        behavior,
+        block: "center",
+      });
+    },
+    [],
+  );
+
+  const scrollByPage = useCallback((direction: -1 | 1) => {
+    const container = listScrollRef.current;
+    if (!container) return;
+    if (typeof container.scrollBy !== "function") return;
+    container.scrollBy({
+      top: direction * Math.max(container.clientHeight * 0.82, 280),
+      behavior: "smooth",
+    });
+  }, []);
+
+  const scrollToEdge = useCallback((edge: "start" | "end") => {
+    const container = listScrollRef.current;
+    if (!container) return;
+    if (typeof container.scrollTo !== "function") return;
+    container.scrollTo({
+      top: edge === "start" ? 0 : container.scrollHeight,
+      behavior: "smooth",
+    });
+  }, []);
+
+  const jumpToSearchMatch = useCallback(
+    (nextIndex: number) => {
+      if (searchMatches.length === 0) return;
+      const normalizedIndex =
+        ((nextIndex % searchMatches.length) + searchMatches.length) %
+        searchMatches.length;
+      setActiveSearchMatchIndex(normalizedIndex);
+      scrollToProviderRow(searchMatches[normalizedIndex].providerId);
+    },
+    [scrollToProviderRow, searchMatches],
   );
 
   const selectedRows = useMemo(() => {
@@ -904,7 +988,31 @@ export function ProviderList({
     selectedProviderIds.has(row.provider.id),
   );
 
-  const canDragRows = statusSortDirection === null && !searchTerm.trim();
+  const canDragRows = statusSortDirection === null;
+
+  useEffect(() => {
+    if (!deferredSearchTerm || searchMatches.length === 0) {
+      setActiveSearchMatchIndex(0);
+      return;
+    }
+
+    setActiveSearchMatchIndex((current) =>
+      Math.min(current, searchMatches.length - 1),
+    );
+  }, [deferredSearchTerm, searchMatches.length]);
+
+  useEffect(() => {
+    if (!deferredSearchTerm || searchMatches.length === 0) return;
+    const activeMatch =
+      searchMatches[activeSearchMatchIndex] ?? searchMatches[0];
+    if (!activeMatch) return;
+    scrollToProviderRow(activeMatch.providerId, "smooth");
+  }, [
+    activeSearchMatchIndex,
+    deferredSearchTerm,
+    scrollToProviderRow,
+    searchMatches,
+  ]);
 
   const toggleSelectAllDisplayed = (checked: boolean) => {
     setSelectedProviderIds((current) => {
@@ -1232,7 +1340,9 @@ export function ProviderList({
     try {
       await navigator.clipboard.writeText(
         serializeTemplateFilesForClipboard(
-          templateDrafts.length > 0 ? templateDrafts : buildTemplateByApp(appId),
+          templateDrafts.length > 0
+            ? templateDrafts
+            : buildTemplateByApp(appId),
         ),
       );
       toast.success(
@@ -1255,14 +1365,19 @@ export function ProviderList({
     try {
       await configApi.setAppConfigTemplate({
         appId,
-        files: templateDrafts.length > 0 ? templateDrafts : buildTemplateByApp(appId),
+        files:
+          templateDrafts.length > 0
+            ? templateDrafts
+            : buildTemplateByApp(appId),
         syncToLive: syncTemplateToLive,
       });
       await queryClient.invalidateQueries({
         queryKey: ["appConfigTemplate", appId],
       });
       if (syncTemplateToLive) {
-        await queryClient.invalidateQueries({ queryKey: ["appConfigFiles", appId] });
+        await queryClient.invalidateQueries({
+          queryKey: ["appConfigFiles", appId],
+        });
       }
       toast.success(
         t("provider.templateSaved", {
@@ -1397,70 +1512,6 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-3">
-      <AnimatePresence>
-        {isSearchOpen && (
-          <motion.div
-            key="provider-search"
-            initial={{ opacity: 0, y: -8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.98 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
-            className="fixed left-1/2 top-[6.5rem] z-40 w-[min(90vw,26rem)] -translate-x-1/2 sm:right-6 sm:left-auto sm:translate-x-0"
-          >
-            <div className="p-4 space-y-3 border shadow-md rounded-2xl border-white/10 bg-background/95 shadow-black/20 backdrop-blur-md">
-              <div className="relative flex items-center gap-2">
-                <Search className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none left-3 top-1/2 text-muted-foreground" />
-                <Input
-                  ref={searchInputRef}
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder={t("provider.searchPlaceholder", {
-                    defaultValue: "Search name, notes, or URL...",
-                  })}
-                  aria-label={t("provider.searchAriaLabel", {
-                    defaultValue: "Search providers",
-                  })}
-                  className="pr-16 pl-9"
-                />
-                {searchTerm && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="absolute text-xs -translate-y-1/2 right-11 top-1/2"
-                    onClick={() => setSearchTerm("")}
-                  >
-                    {t("common.clear", { defaultValue: "Clear" })}
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="ml-auto"
-                  onClick={() => setIsSearchOpen(false)}
-                  aria-label={t("provider.searchCloseAriaLabel", {
-                    defaultValue: "Close provider search",
-                  })}
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                <span>
-                  {t("provider.searchScopeHint", {
-                    defaultValue: "Matches provider name, notes, and URL.",
-                  })}
-                </span>
-                <span>
-                  {t("provider.searchCloseHint", {
-                    defaultValue: "Press Esc to close",
-                  })}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-default bg-card/60 px-3 py-2">
         <Button
           size="sm"
@@ -1594,145 +1645,323 @@ export function ProviderList({
           {t("provider.currentConfig", { defaultValue: "当前配置" })}
         </Button>
 
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 text-xs ml-auto"
-          onClick={() => setIsSearchOpen((value) => !value)}
-        >
-          <Search className="h-3.5 w-3.5 mr-1" />
-          {t("provider.search", { defaultValue: "搜索" })}
-        </Button>
+        <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
+          <div className="relative w-full max-w-[28rem]">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              value={searchTerm}
+              onChange={(event) => {
+                setSearchTerm(event.target.value);
+                setActiveSearchMatchIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  jumpToSearchMatch(
+                    event.shiftKey
+                      ? activeSearchMatchIndex - 1
+                      : activeSearchMatchIndex + 1,
+                  );
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSearchTerm("");
+                  setActiveSearchMatchIndex(0);
+                }
+              }}
+              placeholder={t("provider.searchPlaceholder", {
+                defaultValue: "按名称、备注、网址或模型定位...",
+              })}
+              aria-label={t("provider.searchAriaLabel", {
+                defaultValue: "Search providers",
+              })}
+              className="h-8 pr-28 pl-9 text-xs"
+            />
+            {searchTerm ? (
+              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+                <span className="min-w-[3.25rem] text-center font-mono text-[11px] text-muted-foreground">
+                  {searchMatches.length === 0
+                    ? "0/0"
+                    : `${activeSearchMatchIndex + 1}/${searchMatches.length}`}
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  onClick={() => jumpToSearchMatch(activeSearchMatchIndex - 1)}
+                  disabled={searchMatches.length === 0}
+                  title={t("provider.searchPrev", {
+                    defaultValue: "上一个结果",
+                  })}
+                >
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  onClick={() => jumpToSearchMatch(activeSearchMatchIndex + 1)}
+                  disabled={searchMatches.length === 0}
+                  title={t("provider.searchNext", {
+                    defaultValue: "下一个结果",
+                  })}
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
 
-      {displayRows.length === 0 ? (
-        <div className="px-6 py-8 text-sm text-center border border-dashed rounded-lg border-border text-muted-foreground">
-          {t("provider.noSearchResults", {
-            defaultValue: "No providers match your search.",
-          })}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-border-default overflow-hidden">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={safeHandleDragEnd}
-          >
-            <SortableContext
-              items={displayRows.map((row) => row.provider.id)}
-              strategy={verticalListSortingStrategy}
+      <div className="relative rounded-xl border border-border-default bg-card/40">
+        <div className="flex items-center justify-between gap-2 border-b border-border-default px-3 py-2 text-[11px] text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-2">
+            <span>
+              {t("provider.searchScopeHint", {
+                defaultValue:
+                  "搜索只负责定位，不会过滤列表或改变故障转移顺序。",
+              })}
+            </span>
+            {searchTerm && searchMatches.length === 0 ? (
+              <span className="text-amber-600 dark:text-amber-400">
+                {t("provider.noSearchResults", {
+                  defaultValue: "没有找到匹配结果",
+                })}
+              </span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => scrollToEdge("start")}
+              title={t("provider.scrollToTop", {
+                defaultValue: "滚动到顶部",
+              })}
             >
-              <Table className="text-xs">
-                <TableHeader>
-                  <TableRow className="bg-muted/40 hover:bg-muted/40">
-                    <TableHead className="h-9 w-[34px] px-2">
-                      <Checkbox
-                        checked={
-                          allDisplayedSelected
-                            ? true
-                            : hasDisplayedSelection
-                              ? "indeterminate"
-                              : false
-                        }
-                        onCheckedChange={(checked) =>
-                          toggleSelectAllDisplayed(Boolean(checked))
-                        }
-                        aria-label={t("provider.selectAll", {
-                          defaultValue: "全选",
-                        })}
-                      />
-                    </TableHead>
-                    <TableHead className="h-9 w-[86px] px-2 text-center">
-                      {t("provider.priority", { defaultValue: "序号" })}
-                    </TableHead>
-                    <TableHead className="h-9 min-w-[180px] px-2">
-                      {t("provider.name", { defaultValue: "供应商名称" })}
-                    </TableHead>
-                    <TableHead className="h-9 min-w-[120px] px-2">
-                      {t("provider.notes", { defaultValue: "备注" })}
-                    </TableHead>
-                    <TableHead className="h-9 min-w-[150px] px-2">
-                      {t("provider.modelName", { defaultValue: "模型名称" })}
-                    </TableHead>
-                    <TableHead className="h-9 w-[150px] px-2 text-center">
-                      <button
-                        type="button"
-                        onClick={cycleStatusSort}
-                        className="inline-flex items-center justify-center gap-1 text-muted-foreground hover:text-foreground"
-                      >
-                        {t("provider.status", { defaultValue: "状态" })}
-                        {statusSortDirection === null ? (
-                          <ArrowUpDown className="h-3.5 w-3.5" />
-                        ) : statusSortDirection === "desc" ? (
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        ) : (
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        )}
-                      </button>
-                    </TableHead>
-                    <TableHead className="h-9 min-w-[230px] px-2 text-center">
-                      {t("common.actions", { defaultValue: "操作" })}
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-
-                <TableBody>
-                  {displayRows.map((row) => (
-                    <SortableProviderTableRow
-                      key={row.provider.id}
-                      row={row}
-                      appId={appId}
-                      canDragRows={canDragRows}
-                      isSelected={selectedProviderIds.has(row.provider.id)}
-                      onSelectedChange={(checked) =>
-                        toggleSelectRow(row.provider.id, checked)
-                      }
-                      onOpenWebsite={onOpenWebsite}
-                      onToggleEnabled={() => void handleRowEnableToggle(row)}
-                      onPinToTop={() => void handlePinToTop(row.provider.id)}
-                      onOpenTerminal={
-                        onOpenTerminal
-                          ? () => onOpenTerminal(row.provider)
-                          : undefined
-                      }
-                      onEdit={() => onEdit(row.provider)}
-                      onDuplicate={() => onDuplicate(row.provider)}
-                      onTest={
-                        row.canTest ? () => handleTest(row.provider) : undefined
-                      }
-                      isTesting={isChecking(row.provider.id)}
-                      onDelete={
-                        row.canDelete ? () => onDelete(row.provider) : undefined
-                      }
-                      onConfigureUsage={
-                        onConfigureUsage
-                          ? () => onConfigureUsage(row.provider)
-                          : undefined
-                      }
-                      canSetDefault={
-                        (appId === "openclaw" || appId === "hermes") &&
-                        row.isInConfig &&
-                        Boolean(onSetAsDefault)
-                      }
-                      isDefaultModel={
-                        appId === "hermes"
-                          ? row.isCurrent
-                          : isProviderDefaultModel(row.provider.id)
-                      }
-                      onSetAsDefault={
-                        onSetAsDefault
-                          ? () => onSetAsDefault(row.provider)
-                          : undefined
-                      }
-                      t={t}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
-            </SortableContext>
-          </DndContext>
+              <ChevronsUp className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => scrollByPage(-1)}
+              title={t("provider.scrollPrevPage", {
+                defaultValue: "上一页",
+              })}
+            >
+              <ChevronUp className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => scrollByPage(1)}
+              title={t("provider.scrollNextPage", {
+                defaultValue: "下一页",
+              })}
+            >
+              <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={() => scrollToEdge("end")}
+              title={t("provider.scrollToBottom", {
+                defaultValue: "滚动到底部",
+              })}
+            >
+              <ChevronsDown className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-      )}
+
+        <div className="relative">
+          <div
+            ref={listScrollRef}
+            className="max-h-[min(70vh,calc(100vh-18rem))] overflow-auto"
+          >
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={safeHandleDragEnd}
+            >
+              <SortableContext
+                items={displayRows.map((row) => row.provider.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <Table className="min-w-[1360px] table-fixed text-xs">
+                  <colgroup>
+                    <col className="w-[44px]" />
+                    <col className="w-[76px]" />
+                    <col />
+                    <col className="w-[200px]" />
+                    <col className="w-[292px]" />
+                    <col className="w-[206px]" />
+                    <col className="w-[272px]" />
+                  </colgroup>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2">
+                        <Checkbox
+                          checked={
+                            allDisplayedSelected
+                              ? true
+                              : hasDisplayedSelection
+                                ? "indeterminate"
+                                : false
+                          }
+                          onCheckedChange={(checked) =>
+                            toggleSelectAllDisplayed(Boolean(checked))
+                          }
+                          aria-label={t("provider.selectAll", {
+                            defaultValue: "全选",
+                          })}
+                        />
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                        {t("provider.priority", { defaultValue: "序号" })}
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                        {t("provider.name", { defaultValue: "供应商名称" })}
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                        {t("provider.notes", { defaultValue: "备注" })}
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                        {t("provider.modelName", { defaultValue: "模型名称" })}
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={cycleStatusSort}
+                          className="inline-flex items-center justify-center gap-1 text-muted-foreground hover:text-foreground"
+                        >
+                          {t("provider.status", { defaultValue: "状态" })}
+                          {statusSortDirection === null ? (
+                            <ArrowUpDown className="h-3.5 w-3.5" />
+                          ) : statusSortDirection === "desc" ? (
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          ) : (
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </TableHead>
+                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                        {t("common.actions", { defaultValue: "操作" })}
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody>
+                    {displayRows.map((row) => (
+                      <SortableProviderTableRow
+                        key={row.provider.id}
+                        row={row}
+                        appId={appId}
+                        canDragRows={canDragRows}
+                        rowRef={(node) => registerRowRef(row.provider.id, node)}
+                        isSearchMatch={searchMatchIdSet.has(row.provider.id)}
+                        isActiveSearchMatch={
+                          activeSearchMatch?.providerId === row.provider.id
+                        }
+                        isSelected={selectedProviderIds.has(row.provider.id)}
+                        onSelectedChange={(checked) =>
+                          toggleSelectRow(row.provider.id, checked)
+                        }
+                        onOpenWebsite={onOpenWebsite}
+                        onToggleEnabled={() => void handleRowEnableToggle(row)}
+                        onPinToTop={() => void handlePinToTop(row.provider.id)}
+                        onOpenTerminal={
+                          onOpenTerminal
+                            ? () => onOpenTerminal(row.provider)
+                            : undefined
+                        }
+                        onEdit={() => onEdit(row.provider)}
+                        onDuplicate={() => onDuplicate(row.provider)}
+                        onTest={
+                          row.canTest
+                            ? () => handleTest(row.provider)
+                            : undefined
+                        }
+                        isTesting={isChecking(row.provider.id)}
+                        onDelete={
+                          row.canDelete
+                            ? () => onDelete(row.provider)
+                            : undefined
+                        }
+                        onConfigureUsage={
+                          onConfigureUsage
+                            ? () => onConfigureUsage(row.provider)
+                            : undefined
+                        }
+                        canSetDefault={
+                          (appId === "openclaw" || appId === "hermes") &&
+                          row.isInConfig &&
+                          Boolean(onSetAsDefault)
+                        }
+                        isDefaultModel={
+                          appId === "hermes"
+                            ? row.isCurrent
+                            : isProviderDefaultModel(row.provider.id)
+                        }
+                        onSetAsDefault={
+                          onSetAsDefault
+                            ? () => onSetAsDefault(row.provider)
+                            : undefined
+                        }
+                        t={t}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </SortableContext>
+            </DndContext>
+          </div>
+
+          {searchTerm && searchMatches.length > 0 ? (
+            <div className="pointer-events-none absolute bottom-3 right-3 top-3 hidden w-4 rounded-full border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur md:block">
+              <div className="relative h-full w-full rounded-full bg-muted/70">
+                {searchMatches.map((match, index) => {
+                  const topPercent =
+                    displayRows.length <= 1
+                      ? 0
+                      : (match.rowIndex / (displayRows.length - 1)) * 100;
+                  const isActive = index === activeSearchMatchIndex;
+                  return (
+                    <button
+                      key={`${match.providerId}:${index}`}
+                      type="button"
+                      className={cn(
+                        "pointer-events-auto absolute left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full border transition-all",
+                        isActive
+                          ? "border-amber-600 bg-amber-500 shadow-[0_0_0_2px_rgba(251,191,36,0.25)]"
+                          : "border-sky-500/50 bg-sky-500/80",
+                      )}
+                      style={{ top: `calc(${topPercent}% - 5px)` }}
+                      onClick={() => jumpToSearchMatch(index)}
+                      title={t("provider.searchMinimapJump", {
+                        defaultValue: "定位到第 {{index}} 个结果",
+                        index: index + 1,
+                      })}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       <ConfirmDialog
         isOpen={showStreamCheckConfirm}
@@ -1926,7 +2155,7 @@ export function ProviderList({
                 {isSavingConfig
                   ? t("common.saving", { defaultValue: "保存中..." })
                   : t("common.save", { defaultValue: "保存" })}
-                </Button>
+              </Button>
             </div>
 
             <div className="space-y-4">
@@ -1971,6 +2200,9 @@ interface SortableProviderTableRowProps {
   row: ProviderRowView;
   appId: AppId;
   canDragRows: boolean;
+  rowRef: (node: HTMLTableRowElement | null) => void;
+  isSearchMatch: boolean;
+  isActiveSearchMatch: boolean;
   isSelected: boolean;
   onSelectedChange: (checked: boolean) => void;
   onOpenWebsite: (url: string) => void;
@@ -1993,6 +2225,9 @@ function SortableProviderTableRow({
   row,
   appId,
   canDragRows,
+  rowRef,
+  isSearchMatch,
+  isActiveSearchMatch,
   isSelected,
   onSelectedChange,
   onOpenWebsite,
@@ -2011,10 +2246,7 @@ function SortableProviderTableRow({
   t,
 }: SortableProviderTableRowProps) {
   const { data: health } = useProviderHealth(row.provider.id, appId);
-  const { data: circuitStats } = useCircuitBreakerStats(
-    row.provider.id,
-    appId,
-  );
+  const { data: circuitStats } = useCircuitBreakerStats(row.provider.id, appId);
   const {
     setNodeRef,
     attributes,
@@ -2040,7 +2272,10 @@ function SortableProviderTableRow({
   const isCircuitHalfOpen = circuitStats?.state === "half_open";
   const failureCount = health?.consecutive_failures ?? 0;
   const isDegraded =
-    !isCircuitOpen && !isCircuitHalfOpen && health?.is_healthy !== false && failureCount > 0;
+    !isCircuitOpen &&
+    !isCircuitHalfOpen &&
+    health?.is_healthy !== false &&
+    failureCount > 0;
 
   const statusLabel = row.isActiveProxyProvider
     ? t("provider.currentProxy", { defaultValue: "当前代理" })
@@ -2051,15 +2286,21 @@ function SortableProviderTableRow({
 
   return (
     <TableRow
-      ref={setNodeRef}
+      ref={(node) => {
+        setNodeRef(node);
+        rowRef(node);
+      }}
       style={style}
       className={cn(
-        "h-12",
+        "h-12 scroll-mt-24",
         isDragging && "bg-muted/70",
         row.isActiveProxyProvider && "bg-emerald-500/5",
+        isSearchMatch && "bg-sky-500/5",
+        isActiveSearchMatch &&
+          "ring-1 ring-amber-400/70 ring-inset bg-amber-500/10",
       )}
     >
-      <TableCell className="px-2 py-1">
+      <TableCell className="px-2 py-1 whitespace-nowrap">
         <Checkbox
           checked={isSelected}
           onCheckedChange={(checked) => onSelectedChange(Boolean(checked))}
@@ -2067,7 +2308,7 @@ function SortableProviderTableRow({
         />
       </TableCell>
 
-      <TableCell className="px-2 py-1">
+      <TableCell className="px-2 py-1 whitespace-nowrap">
         <div className="flex items-center justify-center gap-1 font-mono text-[11px]">
           <button
             type="button"
@@ -2079,14 +2320,14 @@ function SortableProviderTableRow({
               canDragRows
                 ? t("provider.dragToSort", { defaultValue: "拖拽排序" })
                 : t("provider.dragDisabledHint", {
-                    defaultValue: "请清空搜索并关闭状态排序后再拖拽",
+                    defaultValue: "请关闭状态排序后再拖拽",
                   })
             }
             title={
               canDragRows
                 ? t("provider.dragToSort", { defaultValue: "拖拽排序" })
                 : t("provider.dragDisabledHint", {
-                    defaultValue: "请清空搜索并关闭状态排序后再拖拽",
+                    defaultValue: "请关闭状态排序后再拖拽",
                   })
             }
             disabled={!canDragRows}
@@ -2099,27 +2340,27 @@ function SortableProviderTableRow({
         </div>
       </TableCell>
 
-      <TableCell className="px-2 py-1">
-        <div className="flex items-center gap-2 min-w-0">
+      <TableCell className="px-2 py-1 whitespace-nowrap">
+        <div className="flex w-full min-w-0 items-center gap-2">
           <ProviderIcon
             icon={row.provider.icon}
             name={row.provider.name}
             color={row.provider.iconColor}
             size={16}
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             {canOpenNameLink && row.nameLink ? (
               <button
                 type="button"
                 onClick={() => onOpenWebsite(row.nameLink!)}
-                className="text-left font-medium text-blue-600 hover:underline dark:text-blue-400 truncate max-w-[280px]"
+                className="block w-full truncate text-left font-medium text-blue-600 hover:underline dark:text-blue-400"
                 title={row.nameLink}
               >
                 {row.provider.name}
               </button>
             ) : (
               <div
-                className="font-medium truncate max-w-[280px]"
+                className="w-full truncate font-medium"
                 title={row.provider.name}
               >
                 {row.provider.name}
@@ -2127,7 +2368,7 @@ function SortableProviderTableRow({
             )}
             {!row.provider.websiteUrl && row.endpointDisplay !== "-" && (
               <div
-                className="text-[11px] text-muted-foreground truncate max-w-[280px]"
+                className="w-full truncate text-[11px] text-muted-foreground"
                 title={row.endpointDisplay}
               >
                 {row.endpointDisplay}
@@ -2137,30 +2378,27 @@ function SortableProviderTableRow({
         </div>
       </TableCell>
 
-      <TableCell className="px-2 py-1">
-        <div
-          className="truncate max-w-[220px]"
-          title={row.provider.notes || ""}
-        >
+      <TableCell className="px-2 py-1 whitespace-nowrap">
+        <div className="w-full truncate" title={row.provider.notes || ""}>
           {row.provider.notes || "-"}
         </div>
       </TableCell>
 
       <TableCell className="px-2 py-1">
         <div
-          className="truncate max-w-[260px] font-mono text-[11px]"
+          className="w-full truncate font-mono text-[11px]"
           title={row.modelDisplay}
         >
           {row.modelDisplay}
         </div>
       </TableCell>
 
-      <TableCell className="px-2 py-1 text-center">
-        <div className="inline-flex items-center gap-1 flex-wrap justify-center">
+      <TableCell className="px-2 py-1 text-center whitespace-nowrap">
+        <div className="inline-flex max-w-full items-center justify-center gap-0.5 whitespace-nowrap">
           <Badge
             variant={row.isEnabled ? "default" : "secondary"}
             className={cn(
-              "text-[10px] px-1.5 h-5",
+              "h-5 px-1 text-[10px]",
               row.isActiveProxyProvider &&
                 "bg-emerald-600 hover:bg-emerald-600",
             )}
@@ -2170,7 +2408,7 @@ function SortableProviderTableRow({
           {isProcessing ? (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 h-5 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+              className="h-5 border-emerald-500/40 px-1 text-[10px] text-emerald-700 dark:text-emerald-300"
               title={
                 row.activeRequestModel
                   ? t("provider.processingWithModel", {
@@ -2189,18 +2427,15 @@ function SortableProviderTableRow({
             </Badge>
           ) : null}
           {isCircuitOpen ? (
-            <Badge
-              variant="destructive"
-              className="text-[10px] px-1.5 h-5"
-            >
+            <Badge variant="destructive" className="h-5 px-1 text-[10px]">
               {t("provider.circuitOpen", { defaultValue: "熔断" })}
             </Badge>
           ) : isCircuitHalfOpen ? (
-            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
+            <Badge variant="outline" className="h-5 px-1 text-[10px]">
               {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
             </Badge>
           ) : isDegraded ? (
-            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
+            <Badge variant="outline" className="h-5 px-1 text-[10px]">
               {t("provider.degraded", { defaultValue: "降级" })}
               {failureCount > 0 ? ` ${failureCount}` : ""}
             </Badge>
@@ -2208,14 +2443,14 @@ function SortableProviderTableRow({
         </div>
       </TableCell>
 
-      <TableCell className="px-2 py-1">
-        <div className="flex items-center justify-center gap-1">
+      <TableCell className="px-2 py-1 whitespace-nowrap">
+        <div className="flex w-full items-center justify-center gap-0.5">
           {canSetDefault && onSetAsDefault && (
             <Button
-              size="sm"
+              size="icon"
               variant={isDefaultModel ? "secondary" : "outline"}
               className={cn(
-                "h-7 px-2 text-xs",
+                "h-7 w-7",
                 isDefaultModel && "opacity-70 cursor-not-allowed",
               )}
               onClick={isDefaultModel ? undefined : onSetAsDefault}
@@ -2322,17 +2557,18 @@ function SortableProviderTableRow({
 
           {onConfigureUsage && (
             <Button
-              size="sm"
+              size="icon"
               variant="ghost"
-              className="h-7 px-2 text-xs"
+              className="h-7 w-7"
               onClick={onConfigureUsage}
+              aria-label={t("provider.configureUsage", {
+                defaultValue: "用量配置",
+              })}
               title={t("provider.configureUsage", {
                 defaultValue: "用量配置",
               })}
             >
-              {t("provider.configureUsage", {
-                defaultValue: "用量",
-              })}
+              <BarChart2 className="h-3.5 w-3.5" />
             </Button>
           )}
         </div>

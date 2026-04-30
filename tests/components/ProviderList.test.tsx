@@ -192,7 +192,7 @@ describe("ProviderList Component", () => {
     fireEvent.click(within(rowB).getByRole("switch", { name: "启用" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
-    fireEvent.click(within(rowB).getByRole("button", { name: "用量" }));
+    fireEvent.click(within(rowB).getByRole("button", { name: "用量配置" }));
     expect(within(rowA).getByRole("button", { name: "删除" })).toBeDisabled();
     fireEvent.click(within(rowB).getByRole("button", { name: "删除" }));
 
@@ -209,7 +209,7 @@ describe("ProviderList Component", () => {
     );
   });
 
-  it("filters providers with the search input", () => {
+  it("locates providers with the search input without filtering rows", () => {
     const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
     const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
 
@@ -232,22 +232,20 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
-    const searchInput = screen.getByPlaceholderText(
-      "Search name, notes, or URL...",
-    );
+    const searchInput =
+      screen.getByPlaceholderText("按名称、备注、网址或模型定位...");
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
     expect(screen.getByText("Beta Works")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "beta" } });
-    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
+    expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
     expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getByText("1/1")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "gamma" } });
-    expect(screen.queryByText("Alpha Labs")).not.toBeInTheDocument();
-    expect(screen.queryByText("Beta Works")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("No providers match your search."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
+    expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getByText("0/0")).toBeInTheDocument();
+    expect(screen.getByText("没有找到匹配结果")).toBeInTheDocument();
   });
 });

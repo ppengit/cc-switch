@@ -131,12 +131,19 @@
     "removeFromClaudePlugin": "从 Claude 插件移除",
     "dragToReorder": "拖拽以重新排序",
     "dragHandle": "拖拽排序",
-    "searchPlaceholder": "按名称/备注/网址搜索供应商...",
+    "searchPlaceholder": "按名称、备注、网址或模型定位...",
     "searchAriaLabel": "搜索供应商",
-    "searchScopeHint": "根据名称、备注和官网链接匹配结果。",
+    "searchScopeHint": "搜索只负责定位，不会过滤列表或改变故障转移顺序。",
     "searchCloseHint": "按 Esc 关闭",
     "searchCloseAriaLabel": "关闭供应商搜索",
-    "noSearchResults": "没有符合搜索条件的供应商。",
+    "noSearchResults": "没有找到匹配结果",
+    "searchPrev": "上一个结果",
+    "searchNext": "下一个结果",
+    "searchMinimapJump": "定位到第 {{index}} 个结果",
+    "scrollToTop": "滚动到顶部",
+    "scrollPrevPage": "上一页",
+    "scrollNextPage": "下一页",
+    "scrollToBottom": "滚动到底部",
     "duplicate": "复制",
     "sortUpdateFailed": "排序更新失败",
     "configureUsage": "配置用量查询",
@@ -193,7 +200,7 @@
     "disable": "禁用",
     "disableCurrentUnsupported": "当前供应商无法直接禁用，请先切换到其他供应商",
     "disabled": "禁用",
-    "dragDisabledHint": "启用状态排序或搜索过滤时暂不支持拖拽排序",
+    "dragDisabledHint": "请关闭状态排序后再拖拽",
     "dragToSort": "拖拽排序",
     "duplicateLiveIdsLoadFailed": "读取配置中的供应商标识失败，请先修复配置后再试",
     "enabled": "启用",
@@ -220,6 +227,10 @@
     "templateEffectHintGemini": "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json，并自动覆盖 mcpServers。",
     "templateSaveFailed": "保存配置模板失败",
     "templateSaved": "配置模板已保存",
+    "processing": "处理中",
+    "processingWithModel": "正在处理 {{model}}",
+    "degraded": "降级",
+    "circuitOpen": "熔断",
     "circuitHalfOpen": "半开"
   },
   "notifications": {
@@ -2124,6 +2135,9 @@
         "successRate": "成功率",
         "uptime": "运行时间"
       }
+    },
+    "activityStrip": {
+      "title": "{{count}} 个请求处理中"
     },
     "settings": {
       "title": "路由服务设置",

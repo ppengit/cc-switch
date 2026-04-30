@@ -131,12 +131,19 @@
     "removeFromClaudePlugin": "Claude プラグインから解除",
     "dragToReorder": "ドラッグで並べ替え",
     "dragHandle": "ドラッグで並べ替え",
-    "searchPlaceholder": "名前・メモ・URLで検索...",
+    "searchPlaceholder": "名前・メモ・URL・モデルで位置を検索...",
     "searchAriaLabel": "プロバイダーを検索",
-    "searchScopeHint": "名前・メモ・URL を対象に検索します。",
+    "searchScopeHint": "検索は行の位置を示すだけで、一覧の絞り込みやフェイルオーバー順の変更は行いません。",
     "searchCloseHint": "Esc で閉じる",
     "searchCloseAriaLabel": "検索を閉じる",
-    "noSearchResults": "一致するプロバイダーがありません。",
+    "noSearchResults": "一致する結果がありません",
+    "searchPrev": "前の結果",
+    "searchNext": "次の結果",
+    "searchMinimapJump": "{{index}} 件目の結果へ移動",
+    "scrollToTop": "先頭へスクロール",
+    "scrollPrevPage": "前のページ",
+    "scrollNextPage": "次のページ",
+    "scrollToBottom": "末尾へスクロール",
     "duplicate": "複製",
     "sortUpdateFailed": "並び順の更新に失敗しました",
     "configureUsage": "利用状況を設定",
@@ -193,7 +200,7 @@
     "disable": "無効化",
     "disableCurrentUnsupported": "現在のプロバイダーは直接無効化できません。先に別のプロバイダーへ切り替えてください。",
     "disabled": "無効",
-    "dragDisabledHint": "状態ソートまたは検索フィルター中はドラッグ並び替えを利用できません",
+    "dragDisabledHint": "ドラッグする前に状態ソートを解除してください",
     "dragToSort": "ドラッグして並び替え",
     "duplicateLiveIdsLoadFailed": "live 設定内のプロバイダー ID を読み取れませんでした。設定を修正してから再試行してください。",
     "enabled": "有効",
@@ -220,6 +227,10 @@
     "templateEffectHintGemini": "現在の Gemini 書き込みでは .env と settings.json の両方をレンダリングし、mcpServers を自動的に置き換えます。",
     "templateSaveFailed": "設定テンプレートの保存に失敗しました",
     "templateSaved": "設定テンプレートを保存しました",
+    "processing": "処理中",
+    "processingWithModel": "{{model}} を処理中",
+    "degraded": "低下",
+    "circuitOpen": "サーキットオープン",
     "circuitHalfOpen": "半開"
   },
   "notifications": {
@@ -2124,6 +2135,9 @@
         "successRate": "成功率",
         "uptime": "稼働時間"
       }
+    },
+    "activityStrip": {
+      "title": "{{count}} 件のリクエストを処理中"
     },
     "settings": {
       "title": "ルーティングサービス設定",

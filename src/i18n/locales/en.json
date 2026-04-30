@@ -131,12 +131,19 @@
     "removeFromClaudePlugin": "Remove from Claude plugin",
     "dragToReorder": "Drag to reorder",
     "dragHandle": "Drag to reorder",
-    "searchPlaceholder": "Search name, notes, or URL...",
+    "searchPlaceholder": "Locate by name, notes, URL, or model...",
     "searchAriaLabel": "Search providers",
-    "searchScopeHint": "Matches provider name, notes, and URL.",
+    "searchScopeHint": "Search locates rows without filtering the list or changing failover order.",
     "searchCloseHint": "Press Esc to close",
     "searchCloseAriaLabel": "Close provider search",
-    "noSearchResults": "No providers match your search.",
+    "noSearchResults": "No matching results",
+    "searchPrev": "Previous result",
+    "searchNext": "Next result",
+    "searchMinimapJump": "Jump to result {{index}}",
+    "scrollToTop": "Scroll to top",
+    "scrollPrevPage": "Previous page",
+    "scrollNextPage": "Next page",
+    "scrollToBottom": "Scroll to bottom",
     "duplicate": "Duplicate",
     "sortUpdateFailed": "Failed to update sort order",
     "configureUsage": "Configure usage query",
@@ -193,7 +200,7 @@
     "disable": "Disable",
     "disableCurrentUnsupported": "The current provider cannot be disabled directly. Switch to another provider first.",
     "disabled": "Disabled",
-    "dragDisabledHint": "Drag sorting is unavailable while status sorting or search filtering is active",
+    "dragDisabledHint": "Turn off status sorting before dragging",
     "dragToSort": "Drag to sort",
     "duplicateLiveIdsLoadFailed": "Failed to read provider IDs from the live config. Fix the config and try again.",
     "enabled": "Enabled",
@@ -220,6 +227,10 @@
     "templateEffectHintGemini": "Current Gemini writes render both .env and settings.json and replace mcpServers automatically.",
     "templateSaveFailed": "Failed to save config template",
     "templateSaved": "Config template saved",
+    "processing": "Processing",
+    "processingWithModel": "Processing {{model}}",
+    "degraded": "Degraded",
+    "circuitOpen": "Circuit Open",
     "circuitHalfOpen": "Half-open"
   },
   "notifications": {
@@ -2124,6 +2135,9 @@
         "successRate": "Success Rate",
         "uptime": "Uptime"
       }
+    },
+    "activityStrip": {
+      "title": "{{count}} requests processing"
     },
     "settings": {
       "title": "Routing Service Settings",
