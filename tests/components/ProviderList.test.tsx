@@ -33,6 +33,19 @@ vi.mock("@/hooks/useStreamCheck", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useProxyStatus", () => ({
+  useProxyStatus: () => ({
+    takeoverStatus: {
+      claude: false,
+      codex: false,
+      gemini: false,
+      opencode: false,
+      openclaw: false,
+      hermes: false,
+    },
+  }),
+}));
+
 vi.mock("@/lib/api/sessions", () => ({
   sessionsApi: {
     listRecent: vi.fn().mockResolvedValue([]),

@@ -147,6 +147,23 @@ export async function writeAppConfigFiles(options: {
   });
 }
 
+export async function syncCurrentProviderFromAppConfigFiles(options: {
+  appId: AppId;
+  files: Array<{ fileKey: string; content: string }>;
+}): Promise<boolean> {
+  const { appId, files } = options;
+  return invoke<boolean>("sync_current_provider_from_app_config_files", {
+    app: appId,
+    files,
+  });
+}
+
+export async function importMcpFromAppLive(appId: AppId): Promise<number> {
+  return invoke<number>("import_mcp_from_app_live", {
+    app: appId,
+  });
+}
+
 export async function getAppConfigTemplate(
   appId: AppId,
 ): Promise<AppConfigTemplateFile[]> {

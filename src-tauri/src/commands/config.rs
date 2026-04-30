@@ -328,6 +328,63 @@ fn validate_app_config_writes(
     Ok(())
 }
 
+fn app_config_write_content<'a>(
+    writes: &'a [(String, String, PathBuf, String)],
+    file_key: &str,
+) -> Result<&'a str, String> {
+    writes
+        .iter()
+        .find(|(key, _, _, _)| key == file_key)
+        .map(|(_, _, _, content)| content.as_str())
+        .ok_or_else(|| format!("Missing config file payload: {file_key}"))
+}
+
+fn parse_json_object_value(content: &str, label: &str) -> Result<serde_json::Value, String> {
+    let value = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|e| format!("{label} JSON 格式错误: {e}"))?;
+    if !value.is_object() {
+        return Err(format!("{label} 根节点必须是 JSON 对象"));
+    }
+    Ok(value)
+}
+
+fn build_switch_mode_provider_settings_from_config_writes(
+    app_type: &AppType,
+    writes: &[(String, String, PathBuf, String)],
+) -> Result<serde_json::Value, String> {
+    match app_type {
+        AppType::Claude => {
+            let settings_text = app_config_write_content(writes, "settings")?;
+            parse_json_object_value(settings_text, "settings.json")
+        }
+        AppType::Codex => {
+            let auth_text = app_config_write_content(writes, "auth")?;
+            let config_text = app_config_write_content(writes, "config")?;
+            let auth_value = parse_json_object_value(auth_text, "auth.json")?;
+            Ok(serde_json::json!({
+                "auth": auth_value,
+                "config": config_text,
+            }))
+        }
+        AppType::Gemini => {
+            let env_text = app_config_write_content(writes, "env")?;
+            let settings_text = app_config_write_content(writes, "settings")?;
+            let env_map = crate::gemini_config::parse_env_file_strict(env_text)
+                .map_err(|e| format!(".env 格式错误: {e}"))?;
+            let env_value = crate::gemini_config::env_to_json(&env_map)
+                .get("env")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let settings_value = parse_json_object_value(settings_text, "settings.json")?;
+            Ok(serde_json::json!({
+                "env": env_value,
+                "config": settings_value,
+            }))
+        }
+        _ => Err("当前仅支持 Claude / Codex / Gemini 导回当前供应商".to_string()),
+    }
+}
+
 fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFile> {
     match app_type {
         AppType::Claude => vec![AppConfigTemplateFile {
@@ -528,6 +585,87 @@ pub async fn write_app_config_files(
     }
 
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn sync_current_provider_from_app_config_files(
+    app: String,
+    files: Vec<AppConfigFileWrite>,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if app_type.is_additive_mode() {
+        return Err("当前仅支持 Claude / Codex / Gemini 导回当前供应商".to_string());
+    }
+
+    let mut writes = Vec::with_capacity(files.len());
+    for file in files {
+        let (key, label, path) = resolve_app_config_file(&app_type, &file.file_key)?;
+        writes.push((key, label, path, file.content));
+    }
+
+    validate_app_config_writes(&app_type, &writes)?;
+
+    let current_provider_id =
+        crate::settings::get_effective_current_provider(&state.db, &app_type)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "当前应用没有已选中的供应商".to_string())?;
+
+    let mut provider = state
+        .db
+        .get_provider_by_id(&current_provider_id, app_type.as_str())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "当前供应商不存在".to_string())?;
+
+    let use_config_template = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.use_config_template)
+        .unwrap_or(true);
+    if use_config_template {
+        return Err(
+            "当前供应商启用了配置模板，无法安全地把当前配置反向导回供应商；请修改模板，或关闭模板后再试".to_string(),
+        );
+    }
+
+    provider.settings_config =
+        build_switch_mode_provider_settings_from_config_writes(&app_type, &writes)?;
+    if matches!(app_type, AppType::Claude) {
+        provider.settings_config =
+            crate::services::provider::sanitize_claude_settings_for_live(
+                &provider.settings_config,
+            );
+    }
+
+    state
+        .db
+        .save_provider(app_type.as_str(), &provider)
+        .map_err(|e| e.to_string())?;
+
+    crate::services::ProviderService::sync_current_provider_for_app(state.inner(), app_type)
+        .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn import_mcp_from_app_live(
+    app: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<usize, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+
+    match app_type {
+        AppType::Claude => crate::services::McpService::import_from_claude(state.inner()),
+        AppType::Codex => crate::services::McpService::import_from_codex(state.inner()),
+        AppType::Gemini => crate::services::McpService::import_from_gemini(state.inner()),
+        AppType::OpenCode => crate::services::McpService::import_from_opencode(state.inner()),
+        AppType::Hermes => crate::services::McpService::import_from_hermes(state.inner()),
+        AppType::OpenClaw => {
+            return Err("OpenClaw 当前不支持 MCP 回显导入".to_string());
+        }
+    }
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -783,7 +921,11 @@ pub async fn set_common_config_snippet(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_common_config_snippet;
+    use super::{
+        build_switch_mode_provider_settings_from_config_writes, validate_common_config_snippet,
+    };
+    use crate::app_config::AppType;
+    use std::path::PathBuf;
 
     #[test]
     fn validate_common_config_snippet_accepts_comment_only_codex_snippet() {
@@ -798,6 +940,71 @@ mod tests {
         assert!(
             err.contains("TOML") || err.contains("toml") || err.contains("格式"),
             "expected TOML validation error, got {err}"
+        );
+    }
+
+    #[test]
+    fn build_switch_mode_provider_settings_from_config_writes_builds_codex_payload() {
+        let writes = vec![
+            (
+                "auth".to_string(),
+                "auth.json".to_string(),
+                PathBuf::from("auth.json"),
+                "{\n  \"OPENAI_API_KEY\": \"sk-test\"\n}".to_string(),
+            ),
+            (
+                "config".to_string(),
+                "config.toml".to_string(),
+                PathBuf::from("config.toml"),
+                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://example.com/v1\"\n".to_string(),
+            ),
+        ];
+
+        let result =
+            build_switch_mode_provider_settings_from_config_writes(&AppType::Codex, &writes)
+                .expect("build codex payload");
+
+        assert_eq!(
+            result["auth"]["OPENAI_API_KEY"].as_str(),
+            Some("sk-test")
+        );
+        assert!(
+            result["config"]
+                .as_str()
+                .is_some_and(|text| text.contains("model_provider = \"custom\""))
+        );
+    }
+
+    #[test]
+    fn build_switch_mode_provider_settings_from_config_writes_builds_gemini_payload() {
+        let writes = vec![
+            (
+                "env".to_string(),
+                ".env".to_string(),
+                PathBuf::from(".env"),
+                "GEMINI_API_KEY=sk-test\nGOOGLE_GEMINI_BASE_URL=https://example.com\n"
+                    .to_string(),
+            ),
+            (
+                "settings".to_string(),
+                "settings.json".to_string(),
+                PathBuf::from("settings.json"),
+                "{\n  \"general\": {\n    \"previewFeatures\": true\n  }\n}".to_string(),
+            ),
+        ];
+
+        let result =
+            build_switch_mode_provider_settings_from_config_writes(&AppType::Gemini, &writes)
+                .expect("build gemini payload");
+
+        assert_eq!(result["env"]["GEMINI_API_KEY"].as_str(), Some("sk-test"));
+        assert_eq!(
+            result["env"]["GOOGLE_GEMINI_BASE_URL"].as_str(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            result["config"]["general"]["previewFeatures"].as_bool(),
+            Some(true)
         );
     }
 }

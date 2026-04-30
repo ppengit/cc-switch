@@ -74,6 +74,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
+import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
@@ -530,11 +531,16 @@ export function ProviderList({
   const [isCurrentConfigContentLoading, setIsCurrentConfigContentLoading] =
     useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isSyncingCurrentProviderConfig, setIsSyncingCurrentProviderConfig] =
+    useState(false);
+  const [isImportingCurrentConfigMcp, setIsImportingCurrentConfigMcp] =
+    useState(false);
 
   const { data: settings } = useQuery({
     queryKey: ["settings"],
     queryFn: () => settingsApi.get(),
   });
+  const { takeoverStatus } = useProxyStatus();
 
   const { data: recentSessions = [], isFetching: isRecentSessionsLoading } =
     useQuery({
@@ -555,6 +561,19 @@ export function ProviderList({
 
   const isCurrentConfigLoading =
     isConfigFilesFetching || isCurrentConfigContentLoading;
+  const currentProvider = providers[currentProviderId];
+  const isSwitchModeApp = !isAdditiveMode;
+  const isCurrentAppTakeoverActive =
+    isSwitchModeApp &&
+    Boolean(takeoverStatus?.[appId as keyof typeof takeoverStatus]);
+  const currentProviderUsesConfigTemplate =
+    currentProvider?.meta?.useConfigTemplate ?? true;
+  const canSyncCurrentConfigToProvider =
+    isSwitchModeApp &&
+    Boolean(currentProviderId) &&
+    Boolean(currentProvider) &&
+    !currentProviderUsesConfigTemplate;
+  const canImportCurrentConfigMcp = appId !== "openclaw";
 
   const {
     data: persistedTemplate,
@@ -1306,6 +1325,15 @@ export function ProviderList({
 
   const saveCurrentConfig = async () => {
     if (configFiles.length === 0) return;
+    if (isCurrentAppTakeoverActive) {
+      toast.error(
+        t("provider.currentConfigSaveBlockedByTakeover", {
+          defaultValue:
+            "当前应用已开启代理接管，不能直接保存到实际配置；请关闭接管，或使用“导回当前供应商”入口。",
+        }),
+      );
+      return;
+    }
     setIsSavingConfig(true);
 
     try {
@@ -1332,6 +1360,81 @@ export function ProviderList({
       );
     } finally {
       setIsSavingConfig(false);
+    }
+  };
+
+  const syncCurrentConfigToProvider = async () => {
+    if (configFiles.length === 0) return;
+    setIsSyncingCurrentProviderConfig(true);
+
+    try {
+      await configApi.syncCurrentProviderFromAppConfigFiles({
+        appId,
+        files: configFiles.map((file) => ({
+          fileKey: file.key,
+          content: currentConfigDrafts[file.key] ?? "",
+        })),
+      });
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await refreshCurrentConfig();
+      toast.success(
+        t("provider.currentConfigSyncedToProvider", {
+          defaultValue: "当前配置已导回当前供应商，并按安全链路同步。",
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to sync current config to provider", error);
+      toast.error(
+        t("provider.currentConfigSyncToProviderFailed", {
+          defaultValue: "导回当前供应商失败：{{error}}",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setIsSyncingCurrentProviderConfig(false);
+    }
+  };
+
+  const importCurrentConfigMcp = async () => {
+    if (configFiles.length === 0) return;
+    if (isCurrentAppTakeoverActive) {
+      toast.error(
+        t("provider.currentConfigMcpImportBlockedByTakeover", {
+          defaultValue:
+            "当前应用已开启代理接管，不能直接从当前配置回显 MCP；请先关闭接管后再试。",
+        }),
+      );
+      return;
+    }
+
+    setIsImportingCurrentConfigMcp(true);
+    try {
+      await configApi.writeAppConfigFiles({
+        appId,
+        files: configFiles.map((file) => ({
+          fileKey: file.key,
+          content: currentConfigDrafts[file.key] ?? "",
+        })),
+      });
+      const imported = await configApi.importMcpFromAppLive(appId);
+      await queryClient.invalidateQueries({ queryKey: ["mcpServers"] });
+      await refreshCurrentConfig();
+      toast.success(
+        t("provider.currentConfigImportedToMcp", {
+          defaultValue: "已从当前配置回显 MCP 管理：{{count}} 项",
+          count: imported,
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to import MCP from current config", error);
+      toast.error(
+        t("provider.currentConfigImportMcpFailed", {
+          defaultValue: "回显 MCP 管理失败：{{error}}",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setIsImportingCurrentConfigMcp(false);
     }
   };
 
@@ -2131,6 +2234,27 @@ export function ProviderList({
           </DialogHeader>
 
           <div className="space-y-4">
+            {isSwitchModeApp && (
+              <div
+                className={cn(
+                  "rounded-md border px-3 py-2 text-xs",
+                  isCurrentAppTakeoverActive
+                    ? "border-amber-300 bg-amber-50 text-amber-900"
+                    : "border-border/60 bg-muted/40 text-muted-foreground",
+                )}
+              >
+                {isCurrentAppTakeoverActive
+                  ? t("provider.currentConfigTakeoverHint", {
+                      defaultValue:
+                        "当前应用已开启代理接管。这里的“保存”不会再直接写实际配置；如需把当前草稿纳入安全链路，请使用“导回当前供应商”。",
+                    })
+                  : t("provider.currentConfigSsotHint", {
+                      defaultValue:
+                        "“保存”只会直接写实际配置文件，不会自动回写当前供应商或 MCP 管理。若希望这些修改成为后续恢复/切换的事实源，请使用下方显式入口。",
+                    })}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
@@ -2142,6 +2266,52 @@ export function ProviderList({
                 {t("common.refresh", { defaultValue: "刷新" })}
               </Button>
 
+              {canImportCurrentConfigMcp && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => void importCurrentConfigMcp()}
+                  disabled={
+                    configFiles.length === 0 ||
+                    isCurrentConfigLoading ||
+                    isSavingConfig ||
+                    isImportingCurrentConfigMcp
+                  }
+                >
+                  {isImportingCurrentConfigMcp
+                    ? t("provider.currentConfigImportingMcp", {
+                        defaultValue: "回显 MCP 中...",
+                      })
+                    : t("provider.currentConfigImportMcp", {
+                        defaultValue: "回显到 MCP 管理",
+                      })}
+                </Button>
+              )}
+
+              {isSwitchModeApp && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => void syncCurrentConfigToProvider()}
+                  disabled={
+                    !canSyncCurrentConfigToProvider ||
+                    configFiles.length === 0 ||
+                    isCurrentConfigLoading ||
+                    isSyncingCurrentProviderConfig
+                  }
+                >
+                  {isSyncingCurrentProviderConfig
+                    ? t("provider.currentConfigSyncingToProvider", {
+                        defaultValue: "导回供应商中...",
+                      })
+                    : t("provider.currentConfigSyncToProvider", {
+                        defaultValue: "导回当前供应商",
+                      })}
+                </Button>
+              )}
+
               <Button
                 size="sm"
                 className="h-8 text-xs"
@@ -2149,7 +2319,8 @@ export function ProviderList({
                 disabled={
                   configFiles.length === 0 ||
                   isCurrentConfigLoading ||
-                  isSavingConfig
+                  isSavingConfig ||
+                  isCurrentAppTakeoverActive
                 }
               >
                 {isSavingConfig
@@ -2157,6 +2328,15 @@ export function ProviderList({
                   : t("common.save", { defaultValue: "保存" })}
               </Button>
             </div>
+
+            {isSwitchModeApp && currentProvider && currentProviderUsesConfigTemplate && (
+              <p className="text-[11px] text-muted-foreground">
+                {t("provider.currentConfigSyncBlockedByTemplate", {
+                  defaultValue:
+                    "当前供应商启用了配置模板，不能把这里的渲染结果直接反向导回供应商；请改模板，或先关闭模板再导回。",
+                })}
+              </p>
+            )}
 
             <div className="space-y-4">
               {configFiles.map((file: AppConfigFileEntry) => {
