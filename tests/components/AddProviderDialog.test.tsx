@@ -1,10 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import type { ProviderFormValues } from "@/components/providers/forms/ProviderForm";
 
 const toastErrorMock = vi.fn();
+const getProviderDefaultTemplateMock = vi.fn();
+const upsertUniversalProviderMock = vi.fn();
 let mockProvidersData: { providers: Record<string, any> };
+let mockFormValues: ProviderFormValues;
 
 vi.mock("sonner", () => ({
   toast: {
@@ -13,28 +17,23 @@ vi.mock("sonner", () => ({
   },
 }));
 
-vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogContent: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogHeader: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  DialogTitle: ({ children }: { children: React.ReactNode }) => (
-    <h1>{children}</h1>
-  ),
-  DialogDescription: ({ children }: { children: React.ReactNode }) => (
-    <p>{children}</p>
-  ),
-  DialogFooter: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+vi.mock("@/components/common/FullScreenPanel", () => ({
+  FullScreenPanel: ({
+    isOpen,
+    children,
+    footer,
+  }: {
+    isOpen: boolean;
+    children: React.ReactNode;
+    footer?: React.ReactNode;
+  }) =>
+    isOpen ? (
+      <div>
+        {children}
+        {footer}
+      </div>
+    ) : null,
 }));
-
-let mockFormValues: ProviderFormValues;
 
 vi.mock("@/components/providers/forms/ProviderForm", () => ({
   ProviderForm: ({
@@ -56,9 +55,52 @@ vi.mock("@/lib/query", () => ({
   useProvidersQuery: () => ({ data: mockProvidersData }),
 }));
 
+vi.mock("@/lib/api", () => ({
+  configApi: {
+    getProviderDefaultTemplate: (...args: unknown[]) =>
+      getProviderDefaultTemplateMock(...args),
+  },
+  universalProvidersApi: {
+    upsert: (...args: unknown[]) => upsertUniversalProviderMock(...args),
+  },
+}));
+
 describe("AddProviderDialog", () => {
+  const renderWithQueryClient = (ui: React.ReactElement) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    return render(
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    );
+  };
+
+  const renderDialog = async (onSubmit = vi.fn().mockResolvedValue(undefined)) => {
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="claude"
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("加载供应商模板中..."),
+      ).not.toBeInTheDocument(),
+    );
+
+    return { onSubmit };
+  };
+
   beforeEach(() => {
     toastErrorMock.mockReset();
+    getProviderDefaultTemplateMock.mockReset();
+    upsertUniversalProviderMock.mockReset();
+    getProviderDefaultTemplateMock.mockResolvedValue(null);
+    upsertUniversalProviderMock.mockResolvedValue(true);
     mockProvidersData = { providers: {} };
     mockFormValues = {
       name: "Test Provider",
@@ -79,7 +121,7 @@ describe("AddProviderDialog", () => {
     const handleSubmit = vi.fn().mockResolvedValue(undefined);
     const handleOpenChange = vi.fn();
 
-    render(
+    renderWithQueryClient(
       <AddProviderDialog
         open
         onOpenChange={handleOpenChange}
@@ -88,11 +130,13 @@ describe("AddProviderDialog", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
+    await waitFor(() =>
+      expect(
+        screen.queryByText("加载供应商模板中..."),
+      ).not.toBeInTheDocument(),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
@@ -116,20 +160,9 @@ describe("AddProviderDialog", () => {
       }),
     };
 
-    render(
-      <AddProviderDialog
-        open
-        onOpenChange={vi.fn()}
-        appId="claude"
-        onSubmit={handleSubmit}
-      />,
-    );
+    await renderDialog(handleSubmit);
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
@@ -173,7 +206,7 @@ describe("AddProviderDialog", () => {
       }),
     };
 
-    render(
+    renderWithQueryClient(
       <AddProviderDialog
         open
         onOpenChange={handleOpenChange}
@@ -182,11 +215,13 @@ describe("AddProviderDialog", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
+    await waitFor(() =>
+      expect(
+        screen.queryByText("加载供应商模板中..."),
+      ).not.toBeInTheDocument(),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
     expect(handleSubmit).not.toHaveBeenCalled();
@@ -206,24 +241,13 @@ describe("AddProviderDialog", () => {
         },
         config: {},
       }),
-      enableOnSave: false,
-      pinToTopOnSave: false,
     };
 
-    render(
-      <AddProviderDialog
-        open
-        onOpenChange={vi.fn()}
-        appId="claude"
-        onSubmit={handleSubmit}
-      />,
-    );
+    await renderDialog(handleSubmit);
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
-    );
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 

@@ -25,6 +25,7 @@ import {
   ChevronUp,
   ChevronsDown,
   ChevronsUp,
+  CircleArrowRight,
   Copy,
   FileText,
   GripVertical,
@@ -86,31 +87,32 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { ProviderIcon } from "@/components/ProviderIcon";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
   currentProviderId: string;
   appId: AppId;
   onSwitch: (provider: Provider) => void;
-  onEdit: (provider: Provider) => void;
+  onEdit: (provider: Provider, options?: { isEnabled: boolean }) => void;
   onDelete: (provider: Provider) => void;
   onRemoveFromConfig?: (provider: Provider) => void;
   onDisableOmo?: () => void;
@@ -129,15 +131,19 @@ interface ProviderListProps {
     {
       count: number;
       model?: string;
+      requestModel?: string;
+      upstreamModel?: string;
     }
   >;
   onSetAsDefault?: (provider: Provider) => void;
 }
 
 type StatusSortDirection = "asc" | "desc" | null;
+type ProviderInteractionMode = "direct" | "takeover" | "failover" | "additive";
 
 interface ProviderRowView {
   provider: Provider;
+  modeState: "live_current" | "proxy_target" | "failover_enabled" | "inactive";
   isOmo: boolean;
   isOmoSlim: boolean;
   isAnyOmo: boolean;
@@ -146,8 +152,11 @@ interface ProviderRowView {
   isReadOnly: boolean;
   isEnabled: boolean;
   isActiveProxyProvider: boolean;
+  isProcessingProvider: boolean;
   activeRequestCount: number;
   activeRequestModel?: string;
+  activeRequestRequestModel?: string;
+  activeRequestUpstreamModel?: string;
   failoverPriority?: number;
   orderNumber: number;
   statusRank: number;
@@ -170,12 +179,21 @@ interface AppConfigFileEntry {
 }
 
 const URL_WITHOUT_TRAILING_SLASH = /\/+$/;
-const URL_V1_SUFFIX = /\/v1$/i;
+const URL_V1_SUFFIX = /\/v1(?:\/.*)?$/i;
+const URL_V1_SEGMENT = /(\/v1)(?=\/|$|[?#])/i;
 
 const stripTrailingSlash = (value?: string | null) =>
   (value || "").trim().replace(URL_WITHOUT_TRAILING_SLASH, "");
 
 const stripV1Suffix = (value: string) => value.replace(URL_V1_SUFFIX, "");
+
+const stripFromV1Segment = (value: string) => {
+  const normalized = stripTrailingSlash(value);
+  if (!normalized) return "";
+  const match = normalized.match(URL_V1_SEGMENT);
+  if (!match || typeof match.index !== "number") return normalized;
+  return normalized.slice(0, match.index) || normalized;
+};
 
 const normalizeOptionalUrl = (value?: string | null) => {
   const normalized = stripTrailingSlash(value);
@@ -196,6 +214,391 @@ const getCodexModelFromToml = (configText?: string) => {
   if (!configText) return "";
   const match = configText.match(/^\s*model\s*=\s*['"]([^'"]+)['"]/m);
   return match?.[1] || "";
+};
+
+const getProviderTemplateBindings = (provider: Provider, appId: AppId) => {
+  const cfg =
+    provider.settingsConfig && typeof provider.settingsConfig === "object"
+      ? (provider.settingsConfig as Record<string, any>)
+      : {};
+
+  if (appId === "claude") {
+    const env = (cfg.env || {}) as Record<string, any>;
+    return {
+      baseUrl: firstNonEmpty(env.ANTHROPIC_BASE_URL),
+      apiKey: firstNonEmpty(
+        env.ANTHROPIC_AUTH_TOKEN,
+        env.ANTHROPIC_API_KEY,
+        env.OPENAI_API_KEY,
+      ),
+      model: firstNonEmpty(
+        env.ANTHROPIC_MODEL,
+        env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+        env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+      ),
+    };
+  }
+
+  if (appId === "codex") {
+    const auth = (cfg.auth || {}) as Record<string, any>;
+    return {
+      baseUrl: firstNonEmpty(
+        extractCodexBaseUrl(typeof cfg.config === "string" ? cfg.config : ""),
+      ),
+      apiKey: firstNonEmpty(auth.OPENAI_API_KEY),
+      model: firstNonEmpty(
+        getCodexModelFromToml(typeof cfg.config === "string" ? cfg.config : ""),
+      ),
+    };
+  }
+
+  if (appId === "gemini") {
+    const env = (cfg.env || {}) as Record<string, any>;
+    return {
+      baseUrl: firstNonEmpty(env.GOOGLE_GEMINI_BASE_URL),
+      apiKey: firstNonEmpty(env.GEMINI_API_KEY),
+      model: firstNonEmpty(env.GEMINI_MODEL),
+    };
+  }
+
+  if (appId === "opencode") {
+    const options = (cfg.options || {}) as Record<string, any>;
+    const models = (cfg.models || {}) as Record<string, any>;
+    return {
+      baseUrl: firstNonEmpty(options.baseURL),
+      apiKey: firstNonEmpty(options.apiKey),
+      model: firstNonEmpty(Object.keys(models)[0]),
+    };
+  }
+
+  if (appId === "openclaw") {
+    const models = Array.isArray(cfg.models) ? cfg.models : [];
+    return {
+      baseUrl: firstNonEmpty(cfg.baseUrl),
+      apiKey: firstNonEmpty(cfg.apiKey),
+      model: firstNonEmpty(models[0]?.id),
+    };
+  }
+
+  if (appId === "hermes") {
+    const models = Array.isArray(cfg.models) ? cfg.models : [];
+    return {
+      baseUrl: firstNonEmpty(cfg.base_url),
+      apiKey: firstNonEmpty(cfg.api_key),
+      model: firstNonEmpty(models[0]?.id, cfg.model),
+    };
+  }
+
+  return { baseUrl: "", apiKey: "", model: "" };
+};
+
+const replaceTemplatePlaceholders = (
+  value: unknown,
+  bindings: Record<string, string>,
+): unknown => {
+  if (typeof value === "string") {
+    return value
+      .replace(/\{baseUrl\}/g, bindings.baseUrl || "")
+      .replace(/\{apiKey\}/g, bindings.apiKey || "")
+      .replace(/\{model\}/g, bindings.model || "");
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceTemplatePlaceholders(item, bindings));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        replaceTemplatePlaceholders(entry, bindings),
+      ]),
+    );
+  }
+
+  return value;
+};
+
+const DEFAULT_PROVIDER_TEMPLATE_BY_APP: Record<string, string> = {
+  claude: JSON.stringify(
+    {
+      env: {
+        ANTHROPIC_BASE_URL: "{baseUrl}",
+        ANTHROPIC_AUTH_TOKEN: "{apiKey}",
+        ANTHROPIC_MODEL: "{model}",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "{model}",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      },
+    },
+    null,
+    2,
+  ),
+  codex: JSON.stringify(
+    {
+      auth: {
+        OPENAI_API_KEY: "{apiKey}",
+      },
+      config: `model_provider = "custom"
+model = "{model}"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+base_url = "{baseUrl}"
+wire_api = "responses"
+requires_openai_auth = true`,
+    },
+    null,
+    2,
+  ),
+  gemini: JSON.stringify(
+    {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "{baseUrl}",
+        GEMINI_API_KEY: "{apiKey}",
+        GEMINI_MODEL: "{model}",
+      },
+      config: {
+        model: {
+          name: "{model}",
+        },
+        security: {
+          auth: {
+            selectedType: "gemini-api-key",
+          },
+        },
+      },
+    },
+    null,
+    2,
+  ),
+  opencode: JSON.stringify(
+    {
+      npm: "@ai-sdk/openai-compatible",
+      options: {
+        baseURL: "{baseUrl}",
+        apiKey: "{apiKey}",
+        setCacheKey: true,
+      },
+      models: {
+        "gpt-5.5": { name: "GPT-5.5" },
+        "gpt-5.4-mini": { name: "GPT-5.4 Mini" },
+      },
+    },
+    null,
+    2,
+  ),
+  openclaw: JSON.stringify(
+    {
+      baseUrl: "{baseUrl}",
+      apiKey: "{apiKey}",
+      api: "openai-responses",
+      models: [
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          reasoning: true,
+          input: ["text", "image"],
+        },
+        {
+          id: "gpt-5.4-mini",
+          name: "GPT-5.4 Mini",
+          reasoning: true,
+          input: ["text", "image"],
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+  hermes: JSON.stringify(
+    {
+      name: "my-provider",
+      base_url: "{baseUrl}",
+      api_key: "{apiKey}",
+      api_mode: "codex_responses",
+      models: [
+        {
+          id: "openai/gpt-5.5",
+          name: "GPT-5.5",
+          context_length: 400000,
+        },
+        {
+          id: "openai/gpt-5.4-mini",
+          name: "GPT-5.4 Mini",
+          context_length: 400000,
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+};
+
+const tryParseProviderTemplate = (template: string) => {
+  try {
+    const parsed = JSON.parse(template || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+
+const formatProviderTemplateForApp = (appId: AppId, template: string) => {
+  const parsed = tryParseProviderTemplate(template);
+
+  if (appId === "codex") {
+    return JSON.stringify(
+      {
+        auth:
+          parsed.auth && typeof parsed.auth === "object" && !Array.isArray(parsed.auth)
+            ? parsed.auth
+            : {},
+        config: typeof parsed.config === "string" ? parsed.config : "",
+      },
+      null,
+      2,
+    );
+  }
+
+  if (appId === "gemini") {
+    return JSON.stringify(
+      {
+        env:
+          parsed.env && typeof parsed.env === "object" && !Array.isArray(parsed.env)
+            ? parsed.env
+            : {},
+        config:
+          parsed.config &&
+          typeof parsed.config === "object" &&
+          !Array.isArray(parsed.config)
+            ? parsed.config
+            : {},
+      },
+      null,
+      2,
+    );
+  }
+
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return template;
+  }
+};
+
+const getProviderTemplateSections = (appId: AppId, template: string) => {
+  const parsed = tryParseProviderTemplate(template);
+
+  if (appId === "codex") {
+    return [
+      {
+        key: "auth",
+        label: "auth.json",
+        language: "json" as const,
+        rows: 6,
+        value: JSON.stringify(
+          parsed.auth && typeof parsed.auth === "object" && !Array.isArray(parsed.auth)
+            ? parsed.auth
+            : {},
+          null,
+          2,
+        ),
+      },
+      {
+        key: "config",
+        label: "config.toml",
+        language: "text" as const,
+        rows: 14,
+        value: typeof parsed.config === "string" ? parsed.config : "",
+      },
+    ];
+  }
+
+  if (appId === "gemini") {
+    return [
+      {
+        key: "env",
+        label: ".env",
+        language: "text" as const,
+        rows: 6,
+        value:
+          parsed.env && typeof parsed.env === "object" && !Array.isArray(parsed.env)
+            ? Object.entries(parsed.env as Record<string, unknown>)
+                .map(([key, value]) => `${key}=${typeof value === "string" ? value : ""}`)
+                .join("\n")
+            : "",
+      },
+      {
+        key: "config",
+        label: "settings.json",
+        language: "json" as const,
+        rows: 14,
+        value: JSON.stringify(
+          parsed.config &&
+            typeof parsed.config === "object" &&
+            !Array.isArray(parsed.config)
+            ? parsed.config
+            : {},
+          null,
+          2,
+        ),
+      },
+    ];
+  }
+
+  return [];
+};
+
+const updateProviderTemplateSection = (
+  appId: AppId,
+  template: string,
+  key: string,
+  value: string,
+) => {
+  const parsed = tryParseProviderTemplate(template);
+
+  if (appId === "codex") {
+    if (key === "auth") {
+      try {
+        parsed.auth = value.trim() ? JSON.parse(value) : {};
+      } catch {
+        parsed.auth = value;
+      }
+    } else if (key === "config") {
+      parsed.config = value;
+    }
+    return JSON.stringify(parsed, null, 2);
+  }
+
+  if (appId === "gemini") {
+    if (key === "env") {
+      const env: Record<string, string> = {};
+      for (const line of value.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const index = trimmed.indexOf("=");
+        if (index <= 0) continue;
+        env[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+      }
+      parsed.env = env;
+    } else if (key === "config") {
+      try {
+        parsed.config = value.trim() ? JSON.parse(value) : {};
+      } catch {
+        parsed.config = value;
+      }
+    }
+    return JSON.stringify(parsed, null, 2);
+  }
+
+  return template;
 };
 
 const getEndpointFromProvider = (provider: Provider, appId: AppId) => {
@@ -334,9 +737,15 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
   if (appId === "codex") {
     return [
       {
+        key: "auth",
+        label: "auth.json",
+        content: '{\n  "OPENAI_API_KEY": "{proxyToken}"\n}\n',
+      },
+      {
         key: "config",
         label: "config.toml",
-        content: "{providerConfig}\n\n{mcpConfig}\n",
+        content:
+          'model_provider = "cc-switch"\nmodel = "gpt-5.5"\nmodel_reasoning_effort = "high"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = "cc-switch"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "{proxyCodexBaseUrl}"\n\n{mcpConfig}\n',
       },
     ];
   }
@@ -346,12 +755,14 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "env",
         label: ".env",
-        content: "{providerConfig}\n",
+        content:
+          "GOOGLE_GEMINI_BASE_URL={proxyBaseUrl}\nGEMINI_API_KEY={proxyToken}\nGEMINI_MODEL=gemini-3.1-pro-preview\n",
       },
       {
         key: "settings",
         label: "settings.json",
-        content: '{\n  {settingsConfig}\n  "mcpServers": {mcpConfig}\n}\n',
+        content:
+          '{\n  "mcpServers": {mcpConfig},\n  "model": {\n    "name": "gemini-3.1-pro-preview"\n  },\n  "security": {\n    "auth": {\n      "selectedType": "gemini-api-key"\n    }\n  }\n}\n',
       },
     ];
   }
@@ -361,7 +772,8 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "config",
         label: "opencode.json",
-        content: "{providerConfig}\n",
+        content:
+          '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "openai": {\n      "npm": "@ai-sdk/openai",\n      "name": "OpenAI Responses",\n      "options": {\n        "baseURL": "https://api.openai.com/v1",\n        "apiKey": "{env:OPENAI_API_KEY}",\n        "setCacheKey": true\n      },\n      "models": {\n        "gpt-5.5": {\n          "name": "GPT-5.5"\n        }\n      }\n    }\n  },\n  "model": "openai/gpt-5.5",\n  "small_model": "openai/gpt-5.5",\n  "mcp": {}\n}\n',
       },
     ];
   }
@@ -371,7 +783,8 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "config",
         label: "openclaw.json",
-        content: "{providerConfig}\n",
+        content:
+          '{\n  models: {\n    mode: "merge",\n    providers: {\n      openai: {\n        baseUrl: "https://api.openai.com/v1",\n        apiKey: "",\n        api: "openai-responses",\n        models: [\n          {\n            id: "gpt-5.5",\n            name: "GPT-5.5",\n            contextWindow: 400000,\n            maxTokens: 128000\n          }\n        ]\n      }\n    }\n  },\n  agents: {\n    defaults: {\n      model: {\n        primary: "openai/gpt-5.5"\n      },\n      models: {\n        "openai/gpt-5.5": { alias: "GPT-5.5" }\n      }\n    }\n  }\n}\n',
       },
     ];
   }
@@ -381,7 +794,8 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "config",
         label: "config.yaml",
-        content: "{providerConfig}\n",
+        content:
+          'model:\n  default: "gpt-5.5"\n  provider: "openai"\n  base_url: "https://api.openai.com/v1"\n  context_length: 400000\n  max_tokens: 128000\nagent:\n  reasoning_effort: "high"\ncustom_providers:\n  - name: "openai"\n    base_url: "https://api.openai.com/v1"\n    api_key: ""\n    api_mode: "codex_responses"\n    model: "gpt-5.5"\n    models:\n      gpt-5.5:\n        context_length: 400000\nmcp_servers: {}\n',
       },
     ];
   }
@@ -390,7 +804,8 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
     {
       key: "settings",
       label: "settings.json",
-      content: "{providerConfig}\n",
+      content:
+        '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "{proxyBaseUrl}",\n    "ANTHROPIC_AUTH_TOKEN": "{proxyToken}",\n    "ANTHROPIC_MODEL": "claude-sonnet-4-6",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7",\n    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"\n  }\n}\n',
     },
   ];
 };
@@ -477,9 +892,36 @@ export function ProviderList({
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
+  const isTakeoverModeActive =
+    isProxyTakeover === true && isAutoFailoverEnabled !== true;
 
   const isAdditiveMode =
     appId === "opencode" || appId === "openclaw" || appId === "hermes";
+  const interactionMode: ProviderInteractionMode = isAdditiveMode
+    ? "additive"
+    : isFailoverModeActive
+      ? "failover"
+      : isTakeoverModeActive
+        ? "takeover"
+        : "direct";
+  const showBulkMembershipActions =
+    interactionMode === "failover" || interactionMode === "additive";
+  const interactionModeLabel =
+    interactionMode === "failover"
+      ? t("provider.modeFailover", {
+          defaultValue: "接管代理 + 故障转移",
+        })
+      : interactionMode === "takeover"
+        ? t("provider.modeTakeover", {
+            defaultValue: "接管代理（单供应商）",
+          })
+        : interactionMode === "additive"
+          ? t("provider.modeAdditive", {
+              defaultValue: "多供应商写入配置",
+            })
+          : t("provider.modeDirect", {
+              defaultValue: "直连配置（未接管代理）",
+            });
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -500,6 +942,7 @@ export function ProviderList({
   const deferredSearchTerm = useDeferredValue(searchTerm.trim().toLowerCase());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listScrollRef = useRef<HTMLDivElement>(null);
+  const providerTableRef = useRef<HTMLTableElement>(null);
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
   const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
   const [showStreamCheckConfirm, setShowStreamCheckConfirm] = useState(false);
@@ -518,6 +961,15 @@ export function ProviderList({
   const [templateDrafts, setTemplateDrafts] = useState<AppConfigTemplateFile[]>(
     [],
   );
+  const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] =
+    useState(false);
+  const [providerTemplateDraft, setProviderTemplateDraft] = useState("");
+  const providerTemplateSections = useMemo(
+    () => getProviderTemplateSections(appId, providerTemplateDraft),
+    [appId, providerTemplateDraft],
+  );
+  const [isSavingProviderTemplate, setIsSavingProviderTemplate] =
+    useState(false);
   const [syncTemplateToLive, setSyncTemplateToLive] = useState(true);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [currentConfigDialogOpen, setCurrentConfigDialogOpen] = useState(false);
@@ -531,8 +983,6 @@ export function ProviderList({
   const [isCurrentConfigContentLoading, setIsCurrentConfigContentLoading] =
     useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
-  const [isSyncingCurrentProviderConfig, setIsSyncingCurrentProviderConfig] =
-    useState(false);
   const [isImportingCurrentConfigMcp, setIsImportingCurrentConfigMcp] =
     useState(false);
 
@@ -561,18 +1011,11 @@ export function ProviderList({
 
   const isCurrentConfigLoading =
     isConfigFilesFetching || isCurrentConfigContentLoading;
-  const currentProvider = providers[currentProviderId];
   const isSwitchModeApp = !isAdditiveMode;
   const isCurrentAppTakeoverActive =
     isSwitchModeApp &&
     Boolean(takeoverStatus?.[appId as keyof typeof takeoverStatus]);
-  const currentProviderUsesConfigTemplate =
-    currentProvider?.meta?.useConfigTemplate ?? true;
-  const canSyncCurrentConfigToProvider =
-    isSwitchModeApp &&
-    Boolean(currentProviderId) &&
-    Boolean(currentProvider) &&
-    !currentProviderUsesConfigTemplate;
+  const canSyncTemplateToLive = isCurrentAppTakeoverActive;
   const canImportCurrentConfigMcp = appId !== "openclaw";
 
   const {
@@ -583,6 +1026,15 @@ export function ProviderList({
     queryKey: ["appConfigTemplate", appId],
     queryFn: () => configApi.getAppConfigTemplate(appId),
     enabled: templateDialogOpen,
+  });
+
+  const {
+    data: persistedProviderTemplate,
+    isFetching: isProviderTemplateFetching,
+  } = useQuery({
+    queryKey: ["providerDefaultTemplate", appId],
+    queryFn: () => configApi.getProviderDefaultTemplate(appId),
+    enabled: providerTemplateDialogOpen,
   });
 
   const handleTest = useCallback(
@@ -751,6 +1203,14 @@ export function ProviderList({
     setTemplateDrafts(resolvedTemplate);
   }, [appId, persistedTemplate, templateDialogOpen]);
 
+  useEffect(() => {
+    if (!providerTemplateDialogOpen) return;
+    const fallback = DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "";
+    setProviderTemplateDraft(
+      formatProviderTemplateForApp(appId, persistedProviderTemplate?.trim() || fallback),
+    );
+  }, [appId, persistedProviderTemplate, providerTemplateDialogOpen]);
+
   const getProviderCurrentState = useCallback(
     (provider: Provider) => {
       const isOmo = provider.category === "omo";
@@ -803,9 +1263,28 @@ export function ProviderList({
           : isCurrent;
       const activeRequest = activeRequestProviders?.[provider.id];
       const activeRequestCount = activeRequest?.count ?? 0;
+      const isProcessingProvider = activeRequestCount > 0;
 
       const isActiveProxyProvider =
-        isFailoverModeActive && activeProviderId === provider.id;
+        isCurrentAppTakeoverActive &&
+        activeProviderId === provider.id &&
+        !isProcessingProvider;
+
+      const modeState: ProviderRowView["modeState"] = isFailoverModeActive
+        ? failoverPriority
+          ? "failover_enabled"
+          : "inactive"
+        : isTakeoverModeActive
+          ? isCurrent
+            ? "proxy_target"
+            : "inactive"
+          : isAdditiveMode
+            ? isInConfig
+              ? "live_current"
+              : "inactive"
+            : isCurrent
+              ? "live_current"
+              : "inactive";
 
       const orderNumber =
         failoverPriority ?? (sortedIndexMap.get(provider.id) ?? 0) + 1;
@@ -814,9 +1293,11 @@ export function ProviderList({
         getEndpointFromProvider(provider, appId),
       );
       const endpointWithoutV1 = stripV1Suffix(endpoint);
+      const endpointForNameLink = stripFromV1Segment(endpoint) || endpointWithoutV1;
 
       const website = normalizeOptionalUrl(provider.websiteUrl);
-      const nameLink = website || endpointWithoutV1 || undefined;
+      const websiteForNameLink = stripFromV1Segment(website);
+      const nameLink = websiteForNameLink || endpointForNameLink || undefined;
 
       const isOfficial = isOfficialProvider(provider, appId);
       const isCopilot =
@@ -839,6 +1320,7 @@ export function ProviderList({
 
       return {
         provider,
+        modeState,
         isOmo,
         isOmoSlim,
         isAnyOmo,
@@ -847,8 +1329,11 @@ export function ProviderList({
         isReadOnly,
         isEnabled,
         isActiveProxyProvider,
+        isProcessingProvider,
         activeRequestCount,
         activeRequestModel: activeRequest?.model,
+        activeRequestRequestModel: activeRequest?.requestModel,
+        activeRequestUpstreamModel: activeRequest?.upstreamModel,
         failoverPriority,
         orderNumber,
         statusRank,
@@ -866,6 +1351,7 @@ export function ProviderList({
     getFailoverPriority,
     getProviderCurrentState,
     isAdditiveMode,
+    isCurrentAppTakeoverActive,
     isFailoverModeActive,
     isProviderInConfig,
     sortedProviders,
@@ -937,6 +1423,26 @@ export function ProviderList({
     [],
   );
 
+  const getScrollableListContainer = useCallback(() => {
+    const outer = listScrollRef.current;
+    const tableWrapper = providerTableRef.current?.parentElement;
+
+    const isVerticallyScrollable = (node: Element | null | undefined) =>
+      !!node &&
+      node instanceof HTMLElement &&
+      node.scrollHeight > node.clientHeight + 1;
+
+    if (isVerticallyScrollable(outer)) {
+      return outer;
+    }
+
+    if (isVerticallyScrollable(tableWrapper)) {
+      return tableWrapper as HTMLDivElement;
+    }
+
+    return outer ?? (tableWrapper as HTMLDivElement | null) ?? null;
+  }, []);
+
   const scrollToProviderRow = useCallback(
     (providerId: string, behavior: ScrollBehavior = "smooth") => {
       const node = rowRefs.current[providerId];
@@ -951,24 +1457,41 @@ export function ProviderList({
   );
 
   const scrollByPage = useCallback((direction: -1 | 1) => {
-    const container = listScrollRef.current;
+    const container = getScrollableListContainer();
     if (!container) return;
-    if (typeof container.scrollBy !== "function") return;
-    container.scrollBy({
-      top: direction * Math.max(container.clientHeight * 0.82, 280),
-      behavior: "smooth",
-    });
-  }, []);
+    const delta = direction * Math.max(container.clientHeight * 0.82, 280);
+    const targetTop = Math.max(
+      0,
+      Math.min(
+        container.scrollHeight - container.clientHeight,
+        container.scrollTop + delta,
+      ),
+    );
+
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({
+        top: targetTop,
+        behavior: "smooth",
+      });
+      return;
+    }
+
+    container.scrollTop = targetTop;
+  }, [getScrollableListContainer]);
 
   const scrollToEdge = useCallback((edge: "start" | "end") => {
-    const container = listScrollRef.current;
+    const container = getScrollableListContainer();
     if (!container) return;
-    if (typeof container.scrollTo !== "function") return;
-    container.scrollTo({
-      top: edge === "start" ? 0 : container.scrollHeight,
-      behavior: "smooth",
-    });
-  }, []);
+    const targetTop = edge === "start" ? 0 : container.scrollHeight;
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({
+        top: targetTop,
+        behavior: "smooth",
+      });
+      return;
+    }
+    container.scrollTop = targetTop;
+  }, [getScrollableListContainer]);
 
   const jumpToSearchMatch = useCallback(
     (nextIndex: number) => {
@@ -1140,6 +1663,13 @@ export function ProviderList({
           }
           if (!enabled && row.isInConfig) {
             await providersApi.removeFromLiveConfig(row.provider.id, appId);
+            queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
+              pruneProxyStatusProviderActivity(
+                current as any,
+                appId,
+                row.provider.id,
+              ) ?? current,
+            );
           }
         }
         success += 1;
@@ -1210,6 +1740,13 @@ export function ProviderList({
 
       try {
         await providersApi.delete(row.provider.id, appId);
+        queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
+          pruneProxyStatusProviderActivity(
+            current as any,
+            appId,
+            row.provider.id,
+          ) ?? current,
+        );
         success += 1;
       } catch (error) {
         failed += 1;
@@ -1329,7 +1866,7 @@ export function ProviderList({
       toast.error(
         t("provider.currentConfigSaveBlockedByTakeover", {
           defaultValue:
-            "当前应用已开启代理接管，不能直接保存到实际配置；请关闭接管，或使用“导回当前供应商”入口。",
+            "当前应用已开启代理接管，实际配置由应用接入配置模板管理；请修改应用接入配置模板或先关闭接管。",
         }),
       );
       return;
@@ -1360,38 +1897,6 @@ export function ProviderList({
       );
     } finally {
       setIsSavingConfig(false);
-    }
-  };
-
-  const syncCurrentConfigToProvider = async () => {
-    if (configFiles.length === 0) return;
-    setIsSyncingCurrentProviderConfig(true);
-
-    try {
-      await configApi.syncCurrentProviderFromAppConfigFiles({
-        appId,
-        files: configFiles.map((file) => ({
-          fileKey: file.key,
-          content: currentConfigDrafts[file.key] ?? "",
-        })),
-      });
-      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
-      await refreshCurrentConfig();
-      toast.success(
-        t("provider.currentConfigSyncedToProvider", {
-          defaultValue: "当前配置已导回当前供应商，并按安全链路同步。",
-        }),
-      );
-    } catch (error) {
-      console.error("Failed to sync current config to provider", error);
-      toast.error(
-        t("provider.currentConfigSyncToProviderFailed", {
-          defaultValue: "导回当前供应商失败：{{error}}",
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    } finally {
-      setIsSyncingCurrentProviderConfig(false);
     }
   };
 
@@ -1449,7 +1954,7 @@ export function ProviderList({
       );
       toast.success(
         t("provider.templateCopied", {
-          defaultValue: "配置模板已复制",
+          defaultValue: "应用接入配置模板已复制",
         }),
       );
     } catch (error) {
@@ -1471,30 +1976,205 @@ export function ProviderList({
           templateDrafts.length > 0
             ? templateDrafts
             : buildTemplateByApp(appId),
-        syncToLive: syncTemplateToLive,
+        syncToLive: canSyncTemplateToLive && syncTemplateToLive,
       });
       await queryClient.invalidateQueries({
         queryKey: ["appConfigTemplate", appId],
       });
-      if (syncTemplateToLive) {
+      if (canSyncTemplateToLive && syncTemplateToLive) {
         await queryClient.invalidateQueries({
           queryKey: ["appConfigFiles", appId],
         });
       }
       toast.success(
         t("provider.templateSaved", {
-          defaultValue: "配置模板已保存",
+          defaultValue: "应用接入配置模板已保存",
         }),
       );
     } catch (error) {
       console.error("Failed to save template", error);
       toast.error(
         t("provider.templateSaveFailed", {
-          defaultValue: "保存配置模板失败",
+          defaultValue: "保存应用接入配置模板失败",
         }),
       );
     } finally {
       setIsSavingTemplate(false);
+    }
+  };
+
+  const saveProviderTemplate = async () => {
+    setIsSavingProviderTemplate(true);
+    try {
+      await configApi.setProviderDefaultTemplate({
+        appId,
+        template: providerTemplateDraft.trim() || null,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["providerDefaultTemplate", appId],
+      });
+      toast.success(
+        t("provider.providerTemplateSaved", {
+          defaultValue: "供应商配置模板已保存",
+        }),
+      );
+    } catch (error) {
+      console.error("Failed to save provider default template", error);
+      toast.error(
+        t("provider.providerTemplateSaveFailed", {
+          defaultValue: "保存供应商配置模板失败",
+        }),
+      );
+    } finally {
+      setIsSavingProviderTemplate(false);
+    }
+  };
+
+  const applyProviderTemplateToSelection = async () => {
+    if (selectedRows.length === 0) return;
+
+    let templateObject: Record<string, unknown>;
+    try {
+      templateObject = JSON.parse(providerTemplateDraft) as Record<
+        string,
+        unknown
+      >;
+      if (Object.keys(templateObject).length === 0) {
+        throw new Error("empty-template");
+      }
+    } catch (error) {
+      toast.error(
+        t("provider.providerTemplateInvalid", {
+          defaultValue: "供应商配置模板不是有效 JSON",
+        }),
+      );
+      return;
+    }
+
+    setIsSavingProviderTemplate(true);
+    let success = 0;
+    let failed = 0;
+
+    try {
+      for (const row of selectedRows) {
+        try {
+          const bindings = getProviderTemplateBindings(row.provider, appId);
+          const nextSettingsConfig = replaceTemplatePlaceholders(
+            templateObject,
+            bindings,
+          ) as Record<string, unknown>;
+
+          await providersApi.update(
+            {
+              ...row.provider,
+              settingsConfig: nextSettingsConfig,
+            },
+            appId,
+          );
+          success += 1;
+        } catch (error) {
+          failed += 1;
+          console.error("Failed to apply provider template", row.provider.id, error);
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+
+      if (success > 0) {
+        toast.success(
+          t("provider.providerTemplateApplied", {
+            defaultValue: "已应用到 {{count}} 个供应商",
+            count: success,
+          }),
+        );
+      }
+
+      if (failed > 0) {
+        toast.warning(
+          t("provider.providerTemplateApplyFailed", {
+            defaultValue: "{{count}} 个供应商应用失败",
+            count: failed,
+          }),
+        );
+      }
+    } finally {
+      setIsSavingProviderTemplate(false);
+    }
+  };
+
+  const applyProviderTemplateToAll = async () => {
+    if (displayRows.length === 0) return;
+
+    let templateObject: Record<string, unknown>;
+    try {
+      templateObject = JSON.parse(providerTemplateDraft) as Record<
+        string,
+        unknown
+      >;
+      if (Object.keys(templateObject).length === 0) {
+        throw new Error("empty-template");
+      }
+    } catch (error) {
+      toast.error(
+        t("provider.providerTemplateInvalid", {
+          defaultValue: "供应商配置模板不是有效 JSON",
+        }),
+      );
+      return;
+    }
+
+    setIsSavingProviderTemplate(true);
+    let success = 0;
+    let failed = 0;
+
+    try {
+      for (const row of displayRows) {
+        try {
+          const bindings = getProviderTemplateBindings(row.provider, appId);
+          const nextSettingsConfig = replaceTemplatePlaceholders(
+            templateObject,
+            bindings,
+          ) as Record<string, unknown>;
+
+          await providersApi.update(
+            {
+              ...row.provider,
+              settingsConfig: nextSettingsConfig,
+            },
+            appId,
+          );
+          success += 1;
+        } catch (error) {
+          failed += 1;
+          console.error(
+            "Failed to apply provider template to all",
+            row.provider.id,
+            error,
+          );
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+
+      if (success > 0) {
+        toast.success(
+          t("provider.providerTemplateApplied", {
+            defaultValue: "已应用到 {{count}} 个供应商",
+            count: success,
+          }),
+        );
+      }
+
+      if (failed > 0) {
+        toast.warning(
+          t("provider.providerTemplateApplyFailed", {
+            defaultValue: "{{count}} 个供应商应用失败",
+            count: failed,
+          }),
+        );
+      }
+    } finally {
+      setIsSavingProviderTemplate(false);
     }
   };
 
@@ -1552,6 +2232,13 @@ export function ProviderList({
       try {
         if (row.isInConfig) {
           await providersApi.removeFromLiveConfig(row.provider.id, appId);
+          queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
+            pruneProxyStatusProviderActivity(
+              current as any,
+              appId,
+              row.provider.id,
+            ) ?? current,
+          );
           await queryClient.invalidateQueries({
             queryKey: ["providers", appId],
           });
@@ -1614,38 +2301,49 @@ export function ProviderList({
   }
 
   return (
-    <div className="mt-4 space-y-3">
+    <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-default bg-card/60 px-3 py-2">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          onClick={() => void applyBulkEnableState(true)}
-          disabled={
-            isBulkOperating ||
-            !(isFailoverModeActive || isAdditiveMode) ||
-            effectiveTargetRows.length === 0
-          }
-        >
-          {t("provider.bulkEnable", { defaultValue: "全部启用" })}
-        </Button>
+        {showBulkMembershipActions ? (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => void applyBulkEnableState(true)}
+              disabled={isBulkOperating || effectiveTargetRows.length === 0}
+            >
+              {interactionMode === "failover"
+                ? t("provider.bulkAddToQueue", {
+                    defaultValue: "加入队列",
+                  })
+                : t("provider.bulkAddToConfig", {
+                    defaultValue: "写入配置",
+                  })}
+            </Button>
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          onClick={() => void applyBulkEnableState(false)}
-          disabled={
-            isBulkOperating ||
-            !(isFailoverModeActive || isAdditiveMode) ||
-            effectiveTargetRows.length === 0
-          }
-        >
-          {t("provider.bulkDisable", { defaultValue: "全部禁用" })}
-        </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => void applyBulkEnableState(false)}
+              disabled={isBulkOperating || effectiveTargetRows.length === 0}
+            >
+              {interactionMode === "failover"
+                ? t("provider.bulkRemoveFromQueue", {
+                    defaultValue: "移出队列",
+                  })
+                : t("provider.bulkRemoveFromConfig", {
+                    defaultValue: "移出配置",
+                  })}
+            </Button>
+          </>
+        ) : null}
 
-        <Badge variant="secondary" className="h-7 px-2 text-xs font-mono">
+        <Badge variant="secondary" className="h-7 px-2 text-sm font-mono">
           {enabledCount}/{totalCount}
+        </Badge>
+        <Badge variant="outline" className="h-7 px-2 text-xs">
+          {interactionModeLabel}
         </Badge>
 
         <Button
@@ -1685,12 +2383,12 @@ export function ProviderList({
             </div>
             <ScrollArea className="max-h-72">
               {isRecentSessionsLoading ? (
-                <div className="p-3 text-xs text-muted-foreground flex items-center gap-2">
+                <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {t("common.loading", { defaultValue: "加载中..." })}
                 </div>
               ) : recentSessionsForApp.length === 0 ? (
-                <div className="p-3 text-xs text-muted-foreground">
+                <div className="p-3 text-sm text-muted-foreground">
                   {t("provider.noRecentSessions", {
                     defaultValue: "暂无最近会话",
                   })}
@@ -1713,7 +2411,7 @@ export function ProviderList({
                         onClick={() => void handleResumeSession(session)}
                         disabled={!session.resumeCommand}
                       >
-                        <div className="text-xs font-medium truncate">
+                        <div className="truncate text-sm font-medium">
                           {title}
                         </div>
                         <div className="text-[11px] text-muted-foreground truncate font-mono">
@@ -1735,7 +2433,9 @@ export function ProviderList({
           onClick={() => setTemplateDialogOpen(true)}
         >
           <FileText className="h-3.5 w-3.5 mr-1" />
-          {t("provider.configTemplate", { defaultValue: "配置模板" })}
+          {t("provider.commonConfigTemplate", {
+            defaultValue: "接管代理配置模板",
+          })}
         </Button>
 
         <Button
@@ -1746,6 +2446,18 @@ export function ProviderList({
         >
           <FileText className="h-3.5 w-3.5 mr-1" />
           {t("provider.currentConfig", { defaultValue: "当前配置" })}
+        </Button>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setProviderTemplateDialogOpen(true)}
+        >
+          <FileText className="h-3.5 w-3.5 mr-1" />
+          {t("provider.providerDefaultTemplate", {
+            defaultValue: "供应商配置模板",
+          })}
         </Button>
 
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
@@ -1779,8 +2491,74 @@ export function ProviderList({
               aria-label={t("provider.searchAriaLabel", {
                 defaultValue: "Search providers",
               })}
-              className="h-8 pr-28 pl-9 text-xs"
+              className="h-8 pr-28 pl-9 text-sm"
             />
+            {searchTerm && searchMatches.length > 0 ? (
+              <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-30 overflow-hidden rounded-lg border border-border-default bg-background/98 shadow-lg backdrop-blur">
+                <ScrollArea className="max-h-72">
+                  <div className="divide-y divide-border-default">
+                    {searchMatches.map((match, index) => {
+                      const row = displayRows[match.rowIndex];
+                      if (!row) return null;
+                      return (
+                        <button
+                          key={`${match.providerId}:${index}`}
+                          type="button"
+                          className={cn(
+                            "flex w-full flex-col gap-1 px-3 py-2 text-left transition-colors hover:bg-muted/70",
+                            index === activeSearchMatchIndex && "bg-amber-500/10",
+                          )}
+                          onClick={() => jumpToSearchMatch(index)}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">
+                              {row.provider.name}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="h-5 shrink-0 px-1.5 text-[10px] font-mono"
+                            >
+                              #{row.orderNumber}
+                            </Badge>
+                            <Badge
+                              variant={row.isEnabled ? "default" : "secondary"}
+                              className="h-5 shrink-0 px-1.5 text-[10px]"
+                            >
+                              {row.isEnabled
+                                ? t("provider.enabled", { defaultValue: "启用" })
+                                : t("provider.disabled", { defaultValue: "禁用" })}
+                            </Badge>
+                            {row.isActiveProxyProvider ? (
+                              <Badge className="h-5 shrink-0 bg-emerald-600 px-1.5 text-[10px] hover:bg-emerald-600">
+                                {t("provider.currentProxy", {
+                                  defaultValue: "当前代理",
+                                })}
+                              </Badge>
+                            ) : null}
+                            {row.activeRequestCount > 0 ? (
+                              <Badge
+                                variant="outline"
+                                className="h-5 shrink-0 border-emerald-500/40 px-1.5 text-[10px] text-emerald-700 dark:text-emerald-300"
+                              >
+                                {t("provider.liveRequests", {
+                                  defaultValue: "请求中",
+                                })}
+                                {row.activeRequestCount > 1
+                                  ? ` ${row.activeRequestCount}`
+                                  : ""}
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <div className="truncate text-sm text-muted-foreground">
+                            {row.provider.notes || row.modelDisplay || row.endpointDisplay}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </div>
+            ) : null}
             {searchTerm ? (
               <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
                 <span className="min-w-[3.25rem] text-center font-mono text-[11px] text-muted-foreground">
@@ -1820,7 +2598,7 @@ export function ProviderList({
         </div>
       </div>
 
-      <div className="relative rounded-xl border border-border-default bg-card/40">
+      <div className="relative flex min-h-0 flex-1 flex-col rounded-xl border border-border-default bg-card/40">
         <div className="flex items-center justify-between gap-2 border-b border-border-default px-3 py-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 items-center gap-2">
             <span>
@@ -1889,10 +2667,10 @@ export function ProviderList({
           </div>
         </div>
 
-        <div className="relative">
+        <div className="relative min-h-0 flex-1">
           <div
             ref={listScrollRef}
-            className="max-h-[min(70vh,calc(100vh-18rem))] overflow-auto"
+            className="h-full overflow-auto"
           >
             <DndContext
               sensors={sensors}
@@ -1903,15 +2681,18 @@ export function ProviderList({
                 items={displayRows.map((row) => row.provider.id)}
                 strategy={verticalListSortingStrategy}
               >
-                <Table className="min-w-[1360px] table-fixed text-xs">
+                <Table
+                  ref={providerTableRef}
+                  className="min-w-[1340px] table-fixed text-[13px]"
+                >
                   <colgroup>
-                    <col className="w-[44px]" />
-                    <col className="w-[76px]" />
+                    <col className="w-[48px]" />
+                    <col className="w-[84px]" />
                     <col />
-                    <col className="w-[200px]" />
-                    <col className="w-[292px]" />
-                    <col className="w-[206px]" />
-                    <col className="w-[272px]" />
+                    <col className="w-[210px]" />
+                    <col className="w-[300px]" />
+                    <col className="w-[196px]" />
+                    <col className="w-[214px]" />
                   </colgroup>
                   <TableHeader>
                     <TableRow className="bg-muted/40 hover:bg-muted/40">
@@ -1972,6 +2753,10 @@ export function ProviderList({
                         key={row.provider.id}
                         row={row}
                         appId={appId}
+                        interactionMode={interactionMode}
+                        showFailoverHealth={
+                          isFailoverModeActive && Boolean(row.failoverPriority)
+                        }
                         canDragRows={canDragRows}
                         rowRef={(node) => registerRowRef(row.provider.id, node)}
                         isSearchMatch={searchMatchIdSet.has(row.provider.id)}
@@ -1983,6 +2768,7 @@ export function ProviderList({
                           toggleSelectRow(row.provider.id, checked)
                         }
                         onOpenWebsite={onOpenWebsite}
+                        onActivateProvider={() => onSwitch(row.provider)}
                         onToggleEnabled={() => void handleRowEnableToggle(row)}
                         onPinToTop={() => void handlePinToTop(row.provider.id)}
                         onOpenTerminal={
@@ -1990,7 +2776,9 @@ export function ProviderList({
                             ? () => onOpenTerminal(row.provider)
                             : undefined
                         }
-                        onEdit={() => onEdit(row.provider)}
+                        onEdit={() =>
+                          onEdit(row.provider, { isEnabled: row.isEnabled })
+                        }
                         onDuplicate={() => onDuplicate(row.provider)}
                         onTest={
                           row.canTest
@@ -2032,37 +2820,6 @@ export function ProviderList({
             </DndContext>
           </div>
 
-          {searchTerm && searchMatches.length > 0 ? (
-            <div className="pointer-events-none absolute bottom-3 right-3 top-3 hidden w-4 rounded-full border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur md:block">
-              <div className="relative h-full w-full rounded-full bg-muted/70">
-                {searchMatches.map((match, index) => {
-                  const topPercent =
-                    displayRows.length <= 1
-                      ? 0
-                      : (match.rowIndex / (displayRows.length - 1)) * 100;
-                  const isActive = index === activeSearchMatchIndex;
-                  return (
-                    <button
-                      key={`${match.providerId}:${index}`}
-                      type="button"
-                      className={cn(
-                        "pointer-events-auto absolute left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full border transition-all",
-                        isActive
-                          ? "border-amber-600 bg-amber-500 shadow-[0_0_0_2px_rgba(251,191,36,0.25)]"
-                          : "border-sky-500/50 bg-sky-500/80",
-                      )}
-                      style={{ top: `calc(${topPercent}% - 5px)` }}
-                      onClick={() => jumpToSearchMatch(index)}
-                      title={t("provider.searchMinimapJump", {
-                        defaultValue: "定位到第 {{index}} 个结果",
-                        index: index + 1,
-                      })}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
 
@@ -2101,64 +2858,19 @@ export function ProviderList({
         }}
       />
 
-      <Dialog open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
-        <DialogContent className="max-w-4xl p-6">
-          <DialogHeader>
-            <DialogTitle>
-              {t("provider.configTemplate", { defaultValue: "配置模板" })}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              {appId === "gemini"
-                ? t("provider.configTemplateHintGemini", {
-                    defaultValue:
-                      "Gemini 模板支持 {providerConfig}（.env）、{settingsConfig}（settings.json 其他字段）与 {mcpConfig}（mcpServers）。",
-                  })
-                : t("provider.configTemplateHint", {
-                    defaultValue:
-                      "模板中保留 {providerConfig} 与 {mcpConfig} 占位符，便于按应用注入实际配置。",
-                  })}
-            </p>
-            <div className="space-y-4">
-              {(templateDrafts.length > 0
-                ? templateDrafts
-                : buildTemplateByApp(appId)
-              ).map((file) => (
-                <div key={file.key} className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs font-medium">{file.label}</div>
-                    <div className="text-[11px] text-muted-foreground font-mono">
-                      {file.key}
-                    </div>
-                  </div>
-                  <Textarea
-                    value={file.content}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setTemplateDrafts((current) =>
-                        (current.length > 0
-                          ? current
-                          : buildTemplateByApp(appId)
-                        ).map((item) =>
-                          item.key === file.key
-                            ? { ...item, content: value }
-                            : item,
-                        ),
-                      );
-                    }}
-                    rows={file.key === "env" ? 8 : 14}
-                    className="font-mono text-xs"
-                    placeholder={file.content}
-                    disabled={isTemplateFetching || isSavingTemplate}
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center justify-between gap-2">
+      <FullScreenPanel
+        isOpen={templateDialogOpen}
+        title={t("provider.commonConfigTemplate", {
+          defaultValue: "接管代理配置模板",
+        })}
+        onClose={() => setTemplateDialogOpen(false)}
+        footer={
+          <>
+            <div className="mr-auto flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
                 variant="outline"
+                className="h-8 text-sm"
                 onClick={() => setTemplateDrafts(buildTemplateByApp(appId))}
                 disabled={isSavingTemplate}
               >
@@ -2166,96 +2878,127 @@ export function ProviderList({
                   defaultValue: "恢复默认模板",
                 })}
               </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void loadLiveConfigIntoTemplate()}
-                  disabled={isSavingTemplate}
-                >
-                  {t("provider.loadLiveConfig", {
-                    defaultValue: "加载环境配置",
-                  })}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void copyTemplate()}
-                >
-                  <Copy className="h-3.5 w-3.5 mr-1" />
-                  {t("common.copy", { defaultValue: "复制" })}
-                </Button>
-                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                  <Checkbox
-                    checked={syncTemplateToLive}
-                    onCheckedChange={(checked) =>
-                      setSyncTemplateToLive(Boolean(checked))
-                    }
-                  />
-                  {t("provider.syncTemplateToLive", {
-                    defaultValue: "保存后更新实际配置",
-                  })}
-                </label>
-                <Button
-                  size="sm"
-                  onClick={() => void saveTemplate()}
-                  disabled={isTemplateFetching || isSavingTemplate}
-                >
-                  {isSavingTemplate
-                    ? t("common.saving", { defaultValue: "保存中..." })
-                    : t("common.save", { defaultValue: "保存" })}
-                </Button>
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              {appId === "gemini"
-                ? t("provider.templateEffectHintGemini", {
-                  defaultValue:
-                      "当前版本会在 Gemini 实际写入时同时渲染 .env 与 settings.json；启用 MCP 时写入 mcpServers，未启用时不写空 mcpServers。",
-                })
-                : t("provider.templateEffectHint", {
-                    defaultValue:
-                      "当前版本会在 Codex 实际写入时应用该模板；其他应用先按现有稳定逻辑写入。",
-                  })}
-            </p>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={currentConfigDialogOpen}
-        onOpenChange={setCurrentConfigDialogOpen}
-      >
-        <DialogContent className="max-w-5xl p-6">
-          <DialogHeader>
-            <DialogTitle>
-              {t("provider.currentConfig", { defaultValue: "当前配置" })}
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            {isSwitchModeApp && (
-              <div
-                className={cn(
-                  "rounded-md border px-3 py-2 text-xs",
-                  isCurrentAppTakeoverActive
-                    ? "border-amber-300 bg-amber-50 text-amber-900"
-                    : "border-border/60 bg-muted/40 text-muted-foreground",
-                )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-sm"
+                onClick={() => void loadLiveConfigIntoTemplate()}
+                disabled={isSavingTemplate}
               >
-                {isCurrentAppTakeoverActive
-                  ? t("provider.currentConfigTakeoverHint", {
-                      defaultValue:
-                        "当前应用已开启代理接管。这里的“保存”不会再直接写实际配置；如需把当前草稿纳入安全链路，请使用“导回当前供应商”。",
-                    })
-                  : t("provider.currentConfigSsotHint", {
-                      defaultValue:
-                        "“保存”只会直接写实际配置文件，不会自动回写当前供应商或 MCP 管理。若希望这些修改成为后续恢复/切换的事实源，请使用下方显式入口。",
-                    })}
+                {t("provider.loadLiveConfig", {
+                  defaultValue: "加载环境配置",
+                })}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-sm"
+                onClick={() => void copyTemplate()}
+              >
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                {t("common.copy", { defaultValue: "复制" })}
+              </Button>
+              <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <Checkbox
+                  checked={canSyncTemplateToLive && syncTemplateToLive}
+                  onCheckedChange={(checked) =>
+                    setSyncTemplateToLive(Boolean(checked))
+                  }
+                  disabled={!canSyncTemplateToLive}
+                />
+                {t("provider.syncTemplateToLive", {
+                  defaultValue: "接管中同步 live",
+                })}
+              </label>
+            </div>
+            <Button
+              size="sm"
+              className="h-8 text-sm"
+              onClick={() => void saveTemplate()}
+              disabled={isTemplateFetching || isSavingTemplate}
+            >
+              {isSavingTemplate
+                ? t("common.saving", { defaultValue: "保存中..." })
+                : t("common.save", { defaultValue: "保存" })}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            {appId === "opencode" ||
+            appId === "openclaw" ||
+            appId === "hermes"
+              ? t("provider.configTemplateHintAdditive", {
+                  defaultValue:
+                    "该应用当前不支持代理接管；这里提供可直接编辑保存的 starter 配置，供应商仍由列表中的供应商配置累加写入 live 文件。",
+                })
+              : appId === "gemini"
+                ? t("provider.configTemplateHintGemini", {
+                    defaultValue:
+                      "Gemini 模板按 .env 与 settings.json 分文件管理，支持 {proxyBaseUrl}、{proxyToken} 与 {mcpConfig}。",
+                  })
+                : t("provider.configTemplateHint", {
+                    defaultValue:
+                      "模板只用于代理接管模式下生成应用连接 cc-switch 的稳定接入配置，支持 {proxyBaseUrl}、{proxyCodexBaseUrl}、{proxyToken} 与 {mcpConfig}。",
+                  })}
+          </p>
+          <div className="space-y-4">
+            {(templateDrafts.length > 0
+              ? templateDrafts
+              : buildTemplateByApp(appId)
+            ).map((file) => (
+              <div key={file.key} className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-medium">{file.label}</div>
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {file.key}
+                  </div>
+                </div>
+                <Textarea
+                  value={file.content}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setTemplateDrafts((current) =>
+                      (current.length > 0
+                        ? current
+                        : buildTemplateByApp(appId)
+                      ).map((item) =>
+                        item.key === file.key
+                          ? { ...item, content: value }
+                          : item,
+                      ),
+                    );
+                  }}
+                  rows={file.key === "env" ? 8 : 14}
+                  className="font-mono text-sm leading-6"
+                  placeholder={file.content}
+                  disabled={isTemplateFetching || isSavingTemplate}
+                />
               </div>
-            )}
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {appId === "gemini"
+              ? t("provider.templateEffectHintGemini", {
+                  defaultValue:
+                    "接管模式会同时渲染 Gemini .env 与 settings.json；启用 MCP 时写入 mcpServers，未启用时不写空 mcpServers。直连模式仍使用供应商自身配置。",
+                })
+              : t("provider.templateEffectHint", {
+                  defaultValue:
+                    "接管模式会用该模板重建应用 live 配置；直连模式不套用此模板，直接写当前供应商配置并合并 MCP。",
+                })}
+          </p>
+        </div>
+      </FullScreenPanel>
 
-            <div className="flex flex-wrap items-center gap-2">
+      <FullScreenPanel
+        isOpen={currentConfigDialogOpen}
+        title={t("provider.currentConfig", { defaultValue: "当前配置" })}
+        onClose={() => setCurrentConfigDialogOpen(false)}
+        footer={
+          <>
+            <div className="mr-auto flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
                 variant="outline"
@@ -2289,89 +3032,195 @@ export function ProviderList({
                 </Button>
               )}
 
-              {isSwitchModeApp && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8 text-xs"
-                  onClick={() => void syncCurrentConfigToProvider()}
-                  disabled={
-                    !canSyncCurrentConfigToProvider ||
-                    configFiles.length === 0 ||
-                    isCurrentConfigLoading ||
-                    isSyncingCurrentProviderConfig
-                  }
-                >
-                  {isSyncingCurrentProviderConfig
-                    ? t("provider.currentConfigSyncingToProvider", {
-                        defaultValue: "导回供应商中...",
-                      })
-                    : t("provider.currentConfigSyncToProvider", {
-                        defaultValue: "导回当前供应商",
-                      })}
-                </Button>
-              )}
-
-              <Button
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => void saveCurrentConfig()}
-                disabled={
-                  configFiles.length === 0 ||
-                  isCurrentConfigLoading ||
-                  isSavingConfig ||
-                  isCurrentAppTakeoverActive
-                }
-              >
-                {isSavingConfig
-                  ? t("common.saving", { defaultValue: "保存中..." })
-                  : t("common.save", { defaultValue: "保存" })}
-              </Button>
             </div>
+            <Button
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => void saveCurrentConfig()}
+              disabled={
+                configFiles.length === 0 ||
+                isCurrentConfigLoading ||
+                isSavingConfig ||
+                isCurrentAppTakeoverActive
+              }
+            >
+              {isSavingConfig
+                ? t("common.saving", { defaultValue: "保存中..." })
+                : t("common.save", { defaultValue: "保存" })}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {isSwitchModeApp && (
+            <div
+              className={cn(
+                "rounded-md border px-3 py-2 text-xs",
+                isCurrentAppTakeoverActive
+                  ? "border-amber-300 bg-amber-50 text-amber-900"
+                  : "border-border/60 bg-muted/40 text-muted-foreground",
+              )}
+            >
+              {isCurrentAppTakeoverActive
+                ? t("provider.currentConfigTakeoverHint", {
+                    defaultValue:
+                      "当前应用已开启代理接管。这里展示的是应用实际配置，保存被禁用，避免绕过接管链路。",
+                  })
+                : t("provider.currentConfigSsotHint", {
+                    defaultValue:
+                      "“保存”只会直接写应用实际配置文件，不会回写供应商事实源；供应商 API 地址、Key 和模型请在供应商编辑中维护。",
+                  })}
+            </div>
+          )}
 
-            {isSwitchModeApp && currentProvider && currentProviderUsesConfigTemplate && (
-              <p className="text-[11px] text-muted-foreground">
-                {t("provider.currentConfigSyncBlockedByTemplate", {
-                  defaultValue:
-                    "当前供应商启用了配置模板，不能把这里的渲染结果直接反向导回供应商；请改模板，或先关闭模板再导回。",
-                })}
-              </p>
-            )}
-
-            <div className="space-y-4">
-              {configFiles.map((file: AppConfigFileEntry) => {
-                const meta = currentConfigContents[file.key];
-                return (
-                  <div key={file.key} className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-xs font-medium">{file.label}</div>
-                      <div className="text-[11px] text-muted-foreground font-mono break-all">
-                        {meta?.path || file.path}
-                      </div>
+          <div className="space-y-4">
+            {configFiles.map((file: AppConfigFileEntry) => {
+              const meta = currentConfigContents[file.key];
+              return (
+                <div key={file.key} className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-medium">{file.label}</div>
+                    <div className="text-[11px] text-muted-foreground font-mono break-all">
+                      {meta?.path || file.path}
                     </div>
-                    <Textarea
-                      value={currentConfigDrafts[file.key] ?? ""}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setCurrentConfigDrafts((current) => ({
-                          ...current,
-                          [file.key]: value,
-                        }));
-                      }}
-                      rows={file.key === "env" ? 8 : 14}
-                      className="font-mono text-xs"
-                      placeholder={t("provider.currentConfigPlaceholder", {
-                        defaultValue: "配置文件内容为空",
-                      })}
-                      disabled={isCurrentConfigLoading}
-                    />
                   </div>
-                );
+                  <Textarea
+                    value={currentConfigDrafts[file.key] ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCurrentConfigDrafts((current) => ({
+                        ...current,
+                        [file.key]: value,
+                      }));
+                    }}
+                    rows={file.key === "env" ? 8 : 14}
+                    className="font-mono text-sm leading-6"
+                    placeholder={t("provider.currentConfigPlaceholder", {
+                      defaultValue: "配置文件内容为空",
+                    })}
+                    disabled={isCurrentConfigLoading}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </FullScreenPanel>
+
+      <FullScreenPanel
+        isOpen={providerTemplateDialogOpen}
+        title={t("provider.providerDefaultTemplate", {
+          defaultValue: "供应商配置模板",
+        })}
+        onClose={() => setProviderTemplateDialogOpen(false)}
+        footer={
+          <>
+            <div className="mr-auto text-xs text-muted-foreground">
+              {t("provider.providerTemplateHint", {
+                defaultValue:
+                  "可使用占位符：{baseUrl}、{apiKey}、{model}。保存后将用于新增供应商默认配置，后续会支持批量套用到现有供应商。",
               })}
             </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-sm"
+              onClick={() =>
+                setProviderTemplateDraft(
+                  formatProviderTemplateForApp(
+                    appId,
+                    DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "",
+                  ),
+                )
+              }
+              disabled={isSavingProviderTemplate}
+              >
+                {t("provider.resetTemplate", {
+                  defaultValue: "恢复默认模板",
+                })}
+              </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-sm"
+              onClick={() => void applyProviderTemplateToSelection()}
+              disabled={selectedRows.length === 0 || isSavingProviderTemplate}
+            >
+              {t("provider.providerTemplateApplyToSelected", {
+                defaultValue: "应用到选中项",
+              })}
+              {selectedRows.length > 0 ? ` (${selectedRows.length})` : ""}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-sm"
+              onClick={() => void applyProviderTemplateToAll()}
+              disabled={displayRows.length === 0 || isSavingProviderTemplate}
+            >
+              {t("provider.providerTemplateApplyToAll", {
+                defaultValue: "应用到当前应用全部",
+              })}
+              {displayRows.length > 0 ? ` (${displayRows.length})` : ""}
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 text-sm"
+              onClick={() => void saveProviderTemplate()}
+              disabled={isProviderTemplateFetching || isSavingProviderTemplate}
+            >
+              {isSavingProviderTemplate
+                ? t("common.saving", { defaultValue: "保存中..." })
+                : t("common.save", { defaultValue: "保存" })}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {providerTemplateSections.length > 0 ? (
+            providerTemplateSections.map((section) => (
+              <div key={section.key} className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium">{section.label}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {section.language === "json" ? "JSON" : "TEXT"}
+                  </div>
+                </div>
+                <Textarea
+                  value={section.value}
+                  onChange={(event) =>
+                    setProviderTemplateDraft((current) =>
+                      updateProviderTemplateSection(
+                        appId,
+                        current,
+                        section.key,
+                        event.target.value,
+                      ),
+                    )
+                  }
+                  rows={section.rows}
+                  className="font-mono text-sm leading-6"
+                />
+              </div>
+            ))
+          ) : (
+            <Textarea
+              value={providerTemplateDraft}
+              onChange={(event) =>
+                setProviderTemplateDraft(
+                  formatProviderTemplateForApp(appId, event.target.value),
+                )
+              }
+              rows={18}
+              className="font-mono text-sm leading-6"
+              placeholder={formatProviderTemplateForApp(
+                appId,
+                DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "",
+              )}
+            />
+          )}
+        </div>
+      </FullScreenPanel>
     </div>
   );
 }
@@ -2379,6 +3228,8 @@ export function ProviderList({
 interface SortableProviderTableRowProps {
   row: ProviderRowView;
   appId: AppId;
+  interactionMode: ProviderInteractionMode;
+  showFailoverHealth: boolean;
   canDragRows: boolean;
   rowRef: (node: HTMLTableRowElement | null) => void;
   isSearchMatch: boolean;
@@ -2386,6 +3237,7 @@ interface SortableProviderTableRowProps {
   isSelected: boolean;
   onSelectedChange: (checked: boolean) => void;
   onOpenWebsite: (url: string) => void;
+  onActivateProvider: () => void;
   onToggleEnabled: () => void;
   onPinToTop: () => void;
   onOpenTerminal?: () => void;
@@ -2404,6 +3256,8 @@ interface SortableProviderTableRowProps {
 function SortableProviderTableRow({
   row,
   appId,
+  interactionMode,
+  showFailoverHealth,
   canDragRows,
   rowRef,
   isSearchMatch,
@@ -2411,6 +3265,7 @@ function SortableProviderTableRow({
   isSelected,
   onSelectedChange,
   onOpenWebsite,
+  onActivateProvider,
   onToggleEnabled,
   onPinToTop,
   onOpenTerminal,
@@ -2448,21 +3303,113 @@ function SortableProviderTableRow({
     row.nameLink && /^https?:\/\//i.test(row.nameLink),
   );
 
-  const isCircuitOpen = circuitStats?.state === "open";
-  const isCircuitHalfOpen = circuitStats?.state === "half_open";
+  const isCircuitOpen = showFailoverHealth && circuitStats?.state === "open";
+  const isCircuitHalfOpen =
+    showFailoverHealth && circuitStats?.state === "half_open";
   const failureCount = health?.consecutive_failures ?? 0;
   const isDegraded =
+    showFailoverHealth &&
     !isCircuitOpen &&
     !isCircuitHalfOpen &&
     health?.is_healthy !== false &&
     failureCount > 0;
+  const isProcessing = row.activeRequestCount > 0;
+  const activityModel = row.activeRequestModel;
+  const requestModel = row.activeRequestRequestModel;
+  const upstreamModel = row.activeRequestUpstreamModel;
+  const lastFailureAt = health?.last_failure_at
+    ? new Date(health.last_failure_at).toLocaleString()
+    : null;
+  const circuitFailureRate =
+    circuitStats && circuitStats.totalRequests > 0
+      ? `${circuitStats.failedRequests}/${circuitStats.totalRequests}`
+      : null;
+  const healthDetailLines = [
+    isCircuitOpen
+      ? t("provider.statusReasonCircuitOpen", {
+          defaultValue: "熔断器已打开，当前新请求不会再路由到该供应商。",
+        })
+      : null,
+    isCircuitHalfOpen
+      ? t("provider.statusReasonCircuitHalfOpen", {
+          defaultValue: "熔断器处于半开状态，正在尝试恢复探测请求。",
+        })
+      : null,
+    isDegraded
+      ? t("provider.statusReasonDegraded", {
+          defaultValue: "近期请求存在失败，当前处于降级观察状态。",
+        })
+      : null,
+    failureCount > 0
+      ? t("provider.statusReasonFailures", {
+          defaultValue: "连续失败次数：{{count}}",
+          count: failureCount,
+        })
+      : null,
+    circuitFailureRate
+      ? t("provider.statusReasonFailureRate", {
+          defaultValue: "熔断统计：{{rate}}",
+          rate: circuitFailureRate,
+        })
+      : null,
+    health?.last_error
+      ? t("provider.statusReasonLastError", {
+          defaultValue: "最后错误：{{error}}",
+          error: health.last_error,
+        })
+      : null,
+    lastFailureAt
+      ? t("provider.statusReasonLastFailureAt", {
+          defaultValue: "最后失败时间：{{time}}",
+          time: lastFailureAt,
+        })
+      : null,
+    isProcessing && activityModel
+      ? t(
+          upstreamModel && requestModel && upstreamModel !== requestModel
+            ? "provider.statusReasonUpstreamModel"
+            : "provider.statusReasonActivityModel",
+          {
+            defaultValue:
+              upstreamModel && requestModel && upstreamModel !== requestModel
+                ? "实际上游模型：{{model}}"
+                : "活动模型：{{model}}",
+            model: activityModel,
+          },
+        )
+      : null,
+    isProcessing && requestModel && upstreamModel && requestModel !== upstreamModel
+      ? t("provider.statusReasonRequestModel", {
+          defaultValue: "请求模型：{{model}}",
+          model: requestModel,
+        })
+      : null,
+  ].filter(Boolean) as string[];
+  const hasStatusTooltip = healthDetailLines.length > 0;
 
   const statusLabel = row.isActiveProxyProvider
     ? t("provider.currentProxy", { defaultValue: "当前代理" })
-    : row.isEnabled
-      ? t("provider.enabled", { defaultValue: "启用" })
-      : t("provider.disabled", { defaultValue: "禁用" });
-  const isProcessing = row.activeRequestCount > 0;
+    : row.modeState === "proxy_target"
+      ? t("provider.currentProxy", { defaultValue: "当前代理" })
+      : row.modeState === "failover_enabled"
+        ? t("provider.enabled", { defaultValue: "启用" })
+        : row.modeState === "live_current"
+          ? t("provider.inUse", { defaultValue: "使用中" })
+          : t("provider.disabled", { defaultValue: "禁用" });
+  const showMembershipToggle =
+    interactionMode === "failover" || interactionMode === "additive";
+  const activationLabel =
+    interactionMode === "takeover"
+      ? row.isCurrent
+        ? t("provider.currentProxy", { defaultValue: "当前代理" })
+        : t("provider.switchToThisProvider", {
+            defaultValue: "切换到此供应商",
+          })
+      : row.isCurrent
+        ? t("provider.inUse", { defaultValue: "使用中" })
+        : t("provider.useThisProvider", {
+            defaultValue: "使用此供应商",
+          });
 
   return (
     <TableRow
@@ -2489,7 +3436,7 @@ function SortableProviderTableRow({
       </TableCell>
 
       <TableCell className="px-2 py-1 whitespace-nowrap">
-        <div className="flex items-center justify-center gap-1 font-mono text-[11px]">
+        <div className="flex items-center justify-center gap-1 font-mono text-sm">
           <button
             type="button"
             className={cn(
@@ -2522,36 +3469,53 @@ function SortableProviderTableRow({
 
       <TableCell className="px-2 py-1 whitespace-nowrap">
         <div className="flex w-full min-w-0 items-center gap-2">
-          <ProviderIcon
-            icon={row.provider.icon}
-            name={row.provider.name}
-            color={row.provider.iconColor}
-            size={16}
-          />
+          {showMembershipToggle ? (
+            <Switch
+              checked={row.isEnabled}
+              onCheckedChange={onToggleEnabled}
+              className="h-5 w-9 shrink-0"
+              title={
+                row.isEnabled
+                  ? t("provider.disable", { defaultValue: "禁用" })
+                  : t("provider.enable", { defaultValue: "启用" })
+              }
+            />
+          ) : (
+            <Button
+              type="button"
+              size="icon"
+              variant={row.isCurrent ? "secondary" : "outline"}
+              className={cn(
+                "h-7 w-7 shrink-0",
+                row.isCurrent && "opacity-70 cursor-default",
+              )}
+              onClick={row.isCurrent ? undefined : onActivateProvider}
+              disabled={row.isCurrent}
+              title={activationLabel}
+            >
+              {row.isCurrent ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <CircleArrowRight className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          )}
           <div className="min-w-0 flex-1">
             {canOpenNameLink && row.nameLink ? (
               <button
                 type="button"
                 onClick={() => onOpenWebsite(row.nameLink!)}
-                className="block w-full truncate text-left font-medium text-blue-600 hover:underline dark:text-blue-400"
+                className="block w-full truncate text-left text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
                 title={row.nameLink}
               >
                 {row.provider.name}
               </button>
             ) : (
               <div
-                className="w-full truncate font-medium"
+                className="w-full truncate text-sm font-medium"
                 title={row.provider.name}
               >
                 {row.provider.name}
-              </div>
-            )}
-            {!row.provider.websiteUrl && row.endpointDisplay !== "-" && (
-              <div
-                className="w-full truncate text-[11px] text-muted-foreground"
-                title={row.endpointDisplay}
-              >
-                {row.endpointDisplay}
               </div>
             )}
           </div>
@@ -2559,14 +3523,14 @@ function SortableProviderTableRow({
       </TableCell>
 
       <TableCell className="px-2 py-1 whitespace-nowrap">
-        <div className="w-full truncate" title={row.provider.notes || ""}>
+        <div className="w-full truncate text-sm" title={row.provider.notes || ""}>
           {row.provider.notes || "-"}
         </div>
       </TableCell>
 
       <TableCell className="px-2 py-1">
         <div
-          className="w-full truncate font-mono text-[11px]"
+          className="w-full truncate font-mono text-[12px]"
           title={row.modelDisplay}
         >
           {row.modelDisplay}
@@ -2574,53 +3538,66 @@ function SortableProviderTableRow({
       </TableCell>
 
       <TableCell className="px-2 py-1 text-center whitespace-nowrap">
-        <div className="inline-flex max-w-full items-center justify-center gap-0.5 whitespace-nowrap">
-          <Badge
-            variant={row.isEnabled ? "default" : "secondary"}
-            className={cn(
-              "h-5 px-1 text-[10px]",
-              row.isActiveProxyProvider &&
-                "bg-emerald-600 hover:bg-emerald-600",
-            )}
-          >
-            {statusLabel}
-          </Badge>
-          {isProcessing ? (
-            <Badge
-              variant="outline"
-              className="h-5 border-emerald-500/40 px-1 text-[10px] text-emerald-700 dark:text-emerald-300"
-              title={
-                row.activeRequestModel
-                  ? t("provider.processingWithModel", {
-                      defaultValue: "正在处理 {{model}}",
-                      model: row.activeRequestModel,
-                    })
-                  : t("provider.processing", {
-                      defaultValue: "正在处理请求",
-                    })
-              }
-            >
-              {t("provider.processing", {
-                defaultValue: "处理中",
-              })}
-              {row.activeRequestCount > 1 ? ` ${row.activeRequestCount}` : ""}
-            </Badge>
-          ) : null}
-          {isCircuitOpen ? (
-            <Badge variant="destructive" className="h-5 px-1 text-[10px]">
-              {t("provider.circuitOpen", { defaultValue: "熔断" })}
-            </Badge>
-          ) : isCircuitHalfOpen ? (
-            <Badge variant="outline" className="h-5 px-1 text-[10px]">
-              {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
-            </Badge>
-          ) : isDegraded ? (
-            <Badge variant="outline" className="h-5 px-1 text-[10px]">
-              {t("provider.degraded", { defaultValue: "降级" })}
-              {failureCount > 0 ? ` ${failureCount}` : ""}
-            </Badge>
-          ) : null}
-        </div>
+        <TooltipProvider delayDuration={120}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div
+                className="inline-flex max-w-full items-center justify-center gap-0.5 whitespace-nowrap"
+                title={hasStatusTooltip ? healthDetailLines.join("\n") : undefined}
+              >
+                <Badge
+                  variant={row.isEnabled ? "default" : "secondary"}
+                  className={cn(
+                    "h-5 px-1.5 text-xs",
+                    row.isActiveProxyProvider &&
+                      "bg-emerald-600 hover:bg-emerald-600",
+                    row.isEnabled &&
+                      !row.isActiveProxyProvider &&
+                      "bg-sky-600 hover:bg-sky-600",
+                  )}
+                >
+                  {statusLabel}
+                </Badge>
+                {isProcessing ? (
+                  <Badge
+                    variant="outline"
+                    className="h-5 border-emerald-500/40 px-1.5 text-xs text-emerald-700 dark:text-emerald-300"
+                  >
+                    {t("provider.liveRequests", {
+                      defaultValue: "请求中",
+                    })}
+                    {row.activeRequestCount > 1 ? ` ${row.activeRequestCount}` : ""}
+                  </Badge>
+                ) : null}
+                {isCircuitOpen ? (
+                  <Badge
+                    variant="destructive"
+                    className="h-5 px-1.5 text-xs"
+                  >
+                    {t("provider.circuitOpen", { defaultValue: "熔断" })}
+                  </Badge>
+                ) : isCircuitHalfOpen ? (
+                  <Badge className="h-5 border border-amber-500/40 bg-amber-500/10 px-1.5 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300">
+                    {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
+                  </Badge>
+                ) : isDegraded ? (
+                  <Badge className="h-5 border border-yellow-500/40 bg-yellow-500/10 px-1.5 text-xs text-yellow-700 hover:bg-yellow-500/10 dark:text-yellow-300">
+                    {t("provider.degraded", { defaultValue: "降级" })}
+                    {failureCount > 0 ? ` ${failureCount}` : ""}
+                  </Badge>
+                ) : null}
+              </div>
+            </TooltipTrigger>
+            {hasStatusTooltip ? (
+              <TooltipContent
+                side="top"
+                className="max-w-[26rem] whitespace-pre-line text-left leading-relaxed"
+              >
+                {healthDetailLines.join("\n")}
+              </TooltipContent>
+            ) : null}
+          </Tooltip>
+        </TooltipProvider>
       </TableCell>
 
       <TableCell className="px-2 py-1 whitespace-nowrap">
@@ -2645,16 +3622,17 @@ function SortableProviderTableRow({
             </Button>
           )}
 
-          <Switch
-            checked={row.isEnabled}
-            onCheckedChange={onToggleEnabled}
-            className="h-5 w-9"
-            title={
-              row.isEnabled
-                ? t("provider.disable", { defaultValue: "禁用" })
-                : t("provider.enable", { defaultValue: "启用" })
-            }
-          />
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            onClick={onEdit}
+            aria-label={t("common.edit", { defaultValue: "编辑" })}
+            title={t("common.edit", { defaultValue: "编辑" })}
+            disabled={row.isReadOnly}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
 
           <Button
             size="icon"
@@ -2667,33 +3645,6 @@ function SortableProviderTableRow({
             title={t("provider.pinToTop", { defaultValue: "置顶（顺序 1）" })}
           >
             <ArrowUpToLine className="h-3.5 w-3.5" />
-          </Button>
-
-          {onOpenTerminal && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-7 w-7"
-              onClick={onOpenTerminal}
-              aria-label={t("provider.openTerminal", {
-                defaultValue: "打开终端",
-              })}
-              title={t("provider.openTerminal", { defaultValue: "打开终端" })}
-            >
-              <Terminal className="h-3.5 w-3.5" />
-            </Button>
-          )}
-
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={onEdit}
-            aria-label={t("common.edit", { defaultValue: "编辑" })}
-            title={t("common.edit", { defaultValue: "编辑" })}
-            disabled={row.isReadOnly}
-          >
-            <Pencil className="h-3.5 w-3.5" />
           </Button>
 
           <Button
@@ -2749,6 +3700,21 @@ function SortableProviderTableRow({
               })}
             >
               <BarChart2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+
+          {onOpenTerminal && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={onOpenTerminal}
+              aria-label={t("provider.openTerminal", {
+                defaultValue: "打开终端",
+              })}
+              title={t("provider.openTerminal", { defaultValue: "打开终端" })}
+            >
+              <Terminal className="h-3.5 w-3.5" />
             </Button>
           )}
         </div>

@@ -56,7 +56,7 @@ impl Default for StreamCheckConfig {
             max_retries: 2,
             degraded_threshold_ms: 6000,
             claude_model: "claude-haiku-4-5-20251001".to_string(),
-            codex_model: "gpt-5.4@low".to_string(),
+            codex_model: "gpt-5.5@low".to_string(),
             gemini_model: "gemini-3-flash-preview".to_string(),
             test_prompt: default_test_prompt(),
         }
@@ -1787,7 +1787,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_chat",
             true,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://relay.example/v1/chat/completions");
@@ -1800,7 +1800,7 @@ mod tests {
             AuthStrategy::GitHubCopilot,
             "openai_chat",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://api.githubcopilot.com/chat/completions");
@@ -1813,7 +1813,7 @@ mod tests {
             AuthStrategy::GitHubCopilot,
             "openai_responses",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://api.githubcopilot.com/v1/responses");
@@ -1826,7 +1826,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_chat",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://example.com/v1/chat/completions");
@@ -1839,7 +1839,7 @@ mod tests {
             AuthStrategy::Bearer,
             "openai_responses",
             false,
-            "gpt-5.4",
+            "gpt-5.5",
         );
 
         assert_eq!(url, "https://example.com/v1/responses");

@@ -2,11 +2,32 @@
 
 use crate::session_manager;
 use crate::store::AppState;
+use tauri::AppHandle;
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 
 fn normalize_session_app_type(provider_id: &str) -> &str {
     // Session manager provider_id already matches app_type for supported apps.
     provider_id
+}
+
+fn sanitize_export_filename(value: &str) -> String {
+    let sanitized = value
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    if sanitized.is_empty() {
+        "session".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[tauri::command]
@@ -36,8 +57,8 @@ pub async fn list_sessions(
             .map_err(|e| format!("Failed to upsert session snapshot: {e}"))?;
 
             if let Some(custom_title) = db
-                .get_custom_session_title(app_type, &session.session_id, source_path.as_deref())
-                .map_err(|e| format!("Failed to read custom session title: {e}"))?
+                .get_effective_session_title(app_type, &session.session_id, source_path.as_deref())
+                .map_err(|e| format!("Failed to read effective session title: {e}"))?
             {
                 session.title = Some(custom_title);
             }
@@ -84,8 +105,8 @@ pub async fn list_recent_sessions(
             .map_err(|e| format!("Failed to upsert recent session snapshot: {e}"))?;
 
             if let Some(custom_title) = db
-                .get_custom_session_title(&app_type, &session.session_id, source_path.as_deref())
-                .map_err(|e| format!("Failed to read custom recent session title: {e}"))?
+                .get_effective_session_title(&app_type, &session.session_id, source_path.as_deref())
+                .map_err(|e| format!("Failed to read effective recent session title: {e}"))?
             {
                 session.title = Some(custom_title);
             }
@@ -191,6 +212,49 @@ pub async fn launch_session_terminal(
     .map_err(|e| format!("Failed to launch terminal: {e}"))??;
 
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn export_session_markdown(
+    app: AppHandle,
+    session: session_manager::SessionMeta,
+) -> Result<Option<String>, String> {
+    let source_path = session
+        .source_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "会话缺少 sourcePath，无法导出".to_string())?
+        .to_string();
+    let provider_id = session.provider_id.clone();
+    let default_name = format!(
+        "{}.md",
+        sanitize_export_filename(session.title.as_deref().unwrap_or(&session.session_id))
+    );
+
+    let messages = tauri::async_runtime::spawn_blocking(move || {
+        session_manager::load_messages(&provider_id, &source_path)
+    })
+    .await
+    .map_err(|e| format!("Failed to load session messages for export: {e}"))??;
+
+    let markdown = session_manager::export_session_markdown(&session, &messages);
+    let Some(file_path) = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &["md"])
+        .set_file_name(&default_name)
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+
+    let resolved_path = file_path
+        .into_path()
+        .map_err(|e| format!("解析保存路径失败: {e}"))?;
+    crate::config::write_text_file(&resolved_path, &markdown)
+        .map_err(|e| format!("写入导出文件失败: {e}"))?;
+
+    Ok(Some(resolved_path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]

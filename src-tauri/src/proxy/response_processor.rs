@@ -3,7 +3,7 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
-    activity::finish_request,
+    activity::{finish_request, route_request, ProxyActivityState},
     handler_config::UsageParserConfig,
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
@@ -256,6 +256,8 @@ pub async fn handle_non_streaming(
         String::from_utf8_lossy(&body_bytes)
     );
 
+    let mut resolved_response_model: Option<String> = None;
+
     // 解析并记录使用量
     if let Ok(json_value) = serde_json::from_slice::<Value>(&body_bytes) {
         // 解析使用量
@@ -268,6 +270,7 @@ pub async fn handle_non_streaming(
             } else {
                 ctx.request_model.clone()
             };
+            resolved_response_model = Some(model.clone());
 
             spawn_log_usage(
                 state,
@@ -284,6 +287,7 @@ pub async fn handle_non_streaming(
                 .and_then(|m| m.as_str())
                 .unwrap_or(&ctx.request_model)
                 .to_string();
+            resolved_response_model = Some(model.clone());
             spawn_log_usage(
                 state,
                 ctx,
@@ -313,6 +317,20 @@ pub async fn handle_non_streaming(
             status.as_u16(),
             false,
         );
+    }
+
+    if let Some(model) = resolved_response_model {
+        route_request(
+            &state.proxy_activity,
+            state.app_handle.as_ref(),
+            &ctx.request_id,
+            ctx.app_type_str,
+            &ctx.provider.id,
+            &ctx.provider.name,
+            None,
+            Some(model),
+        )
+        .await;
     }
 
     finish_request(
@@ -372,6 +390,36 @@ pub async fn process_response(
 
 type UsageCallbackWithTiming = Arc<dyn Fn(Vec<Value>, Option<u64>) + Send + Sync + 'static>;
 
+#[derive(Clone)]
+pub(crate) struct ActivityModelUpdate {
+    activity: Arc<tokio::sync::RwLock<ProxyActivityState>>,
+    app_handle: Option<tauri::AppHandle>,
+    request_id: String,
+    app_type: String,
+    provider_id: String,
+    provider_name: String,
+}
+
+impl ActivityModelUpdate {
+    pub(crate) fn new(
+        activity: Arc<tokio::sync::RwLock<ProxyActivityState>>,
+        app_handle: Option<tauri::AppHandle>,
+        request_id: String,
+        app_type: String,
+        provider_id: String,
+        provider_name: String,
+    ) -> Self {
+        Self {
+            activity,
+            app_handle,
+            request_id,
+            app_type,
+            provider_id,
+            provider_name,
+        }
+    }
+}
+
 /// SSE 使用量收集器
 #[derive(Clone)]
 pub struct SseUsageCollector {
@@ -383,13 +431,41 @@ struct SseUsageCollectorInner {
     first_event_time: Mutex<Option<std::time::Instant>>,
     start_time: std::time::Instant,
     on_complete: UsageCallbackWithTiming,
+    activity_update: Option<ActivityModelUpdate>,
     finished: AtomicBool,
+}
+
+struct SseUsageCollectorDropGuard(Option<SseUsageCollector>);
+
+impl SseUsageCollectorDropGuard {
+    fn new(collector: Option<SseUsageCollector>) -> Self {
+        Self(collector)
+    }
+
+    fn as_ref(&self) -> Option<&SseUsageCollector> {
+        self.0.as_ref()
+    }
+
+    fn take(&mut self) -> Option<SseUsageCollector> {
+        self.0.take()
+    }
+}
+
+impl Drop for SseUsageCollectorDropGuard {
+    fn drop(&mut self) {
+        if let Some(collector) = self.0.take() {
+            tokio::spawn(async move {
+                collector.finish().await;
+            });
+        }
+    }
 }
 
 impl SseUsageCollector {
     /// 创建新的使用量收集器
     pub fn new(
         start_time: std::time::Instant,
+        activity_update: Option<ActivityModelUpdate>,
         callback: impl Fn(Vec<Value>, Option<u64>) + Send + Sync + 'static,
     ) -> Self {
         let on_complete: UsageCallbackWithTiming = Arc::new(callback);
@@ -399,6 +475,7 @@ impl SseUsageCollector {
                 first_event_time: Mutex::new(None),
                 start_time,
                 on_complete,
+                activity_update,
                 finished: AtomicBool::new(false),
             }),
         }
@@ -406,6 +483,8 @@ impl SseUsageCollector {
 
     /// 推送 SSE 事件
     pub async fn push(&self, event: Value) {
+        let stream_model = extract_stream_event_model(&event);
+
         // 记录首个事件时间
         {
             let mut first_time = self.inner.first_event_time.lock().await;
@@ -415,6 +494,23 @@ impl SseUsageCollector {
         }
         let mut events = self.inner.events.lock().await;
         events.push(event);
+        drop(events);
+
+        if let Some(update) = self.inner.activity_update.as_ref() {
+            if let Some(model) = stream_model {
+                route_request(
+                    &update.activity,
+                    update.app_handle.as_ref(),
+                    &update.request_id,
+                    &update.app_type,
+                    &update.provider_id,
+                    &update.provider_name,
+                    None,
+                    Some(model),
+                )
+                .await;
+            }
+        }
     }
 
     /// 完成收集并触发回调
@@ -435,6 +531,21 @@ impl SseUsageCollector {
 
         (self.inner.on_complete)(events, first_token_ms);
     }
+}
+
+pub(crate) fn extract_stream_event_model(event: &Value) -> Option<String> {
+    event
+        .get("response")
+        .and_then(|response| response.get("model"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            event
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| event.get("model").and_then(|value| value.as_str()))
+        .map(str::to_string)
 }
 
 // ============================================================================
@@ -465,8 +576,16 @@ fn create_usage_collector(
     let request_id = ctx.request_id.clone();
     let app_handle = state.app_handle.clone();
     let proxy_activity = state.proxy_activity.clone();
+    let activity_update = ActivityModelUpdate::new(
+        proxy_activity.clone(),
+        app_handle.clone(),
+        request_id.clone(),
+        app_type_str.to_string(),
+        provider_id.clone(),
+        ctx.provider.name.clone(),
+    );
 
-    SseUsageCollector::new(start_time, move |events, first_token_ms| {
+    SseUsageCollector::new(start_time, Some(activity_update), move |events, first_token_ms| {
         let model = model_extractor(&events, &request_model);
         let latency_ms = start_time.elapsed().as_millis() as u64;
         let maybe_usage = stream_parser(&events);
@@ -636,7 +755,7 @@ pub fn create_logged_passthrough_stream(
     async_stream::stream! {
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
-        let mut collector = usage_collector;
+        let mut collector = SseUsageCollectorDropGuard::new(usage_collector);
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -697,7 +816,7 @@ pub fn create_logged_passthrough_stream(
                                 if let Some(data) = strip_sse_field(line, "data") {
                                     if data.trim() != "[DONE]" {
                                         if let Ok(json_value) = serde_json::from_str::<Value>(data) {
-                                            if let Some(c) = &collector {
+                                            if let Some(c) = collector.as_ref() {
                                                 c.push(json_value.clone()).await;
                                             }
                                             log::debug!("[{tag}] <<< SSE 事件: {data}");
@@ -861,6 +980,22 @@ mod tests {
         assert_eq!(
             headers.get(axum::http::header::CONTENT_TYPE),
             Some(&axum::http::HeaderValue::from_static("text/event-stream"))
+        );
+    }
+
+    #[test]
+    fn test_extract_stream_event_model_supports_anthropic_message_start() {
+        let event = serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_123",
+                "model": "gpt-5.3-codex"
+            }
+        });
+
+        assert_eq!(
+            extract_stream_event_model(&event).as_deref(),
+            Some("gpt-5.3-codex")
         );
     }
 

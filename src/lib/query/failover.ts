@@ -3,6 +3,8 @@ import { failoverApi } from "@/lib/api/failover";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import type { ProxyStatus } from "@/types/proxy";
+import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 
 // ========== 熔断器 Hooks ==========
 
@@ -155,6 +157,19 @@ export function useRemoveFromFailoverQueue() {
       appType: string;
       providerId: string;
     }) => failoverApi.removeFromFailoverQueue(appType, providerId),
+    onMutate: async ({ appType, providerId }) => {
+      await queryClient.cancelQueries({ queryKey: ["proxyStatus"] });
+      const previousStatus = queryClient.getQueryData<ProxyStatus>([
+        "proxyStatus",
+      ]);
+      queryClient.setQueryData<ProxyStatus | undefined>(
+        ["proxyStatus"],
+        (current) =>
+          pruneProxyStatusProviderActivity(current, appType, providerId) ??
+          current,
+      );
+      return { previousStatus };
+    },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
         queryKey: ["failoverQueue", variables.appType],
@@ -177,6 +192,11 @@ export function useRemoveFromFailoverQueue() {
           variables.appType,
         ],
       });
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previousStatus) {
+        queryClient.setQueryData(["proxyStatus"], context.previousStatus);
+      }
     },
   });
 }
@@ -227,7 +247,13 @@ export function useSetAutoFailoverEnabled() {
           ? "Claude"
           : variables.appType === "codex"
             ? "Codex"
-            : "Gemini";
+            : variables.appType === "gemini"
+              ? "Gemini"
+              : variables.appType === "openclaw"
+                ? "OpenClaw"
+                : variables.appType === "hermes"
+                  ? "Hermes"
+                  : "OpenCode";
 
       toast.success(
         variables.enabled

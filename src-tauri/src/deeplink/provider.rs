@@ -318,7 +318,7 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
     let model_name = request
         .model
         .as_deref()
-        .unwrap_or("gpt-5-codex")
+        .unwrap_or("gpt-5.5")
         .to_string();
 
     // Endpoint: normalize trailing slashes (use primary endpoint only)
@@ -763,7 +763,7 @@ mod tests {
             name: Some("MyHermes".to_string()),
             endpoint: Some("https://api.example.com/v1".to_string()),
             api_key: Some("sk-test".to_string()),
-            model: Some("anthropic/claude-opus-4-7".to_string()),
+            model: Some("anthropic/claude-opus-4-6".to_string()),
             ..Default::default()
         }
     }
@@ -785,7 +785,7 @@ mod tests {
         // models array with the deeplink model id
         let models = obj.get("models").unwrap().as_array().unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0]["id"], "anthropic/claude-opus-4-7");
+        assert_eq!(models[0]["id"], "anthropic/claude-opus-4-6");
     }
 
     #[test]

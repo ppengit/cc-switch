@@ -1,12 +1,13 @@
 pub mod providers;
 pub mod terminal;
 
+use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use providers::{claude, codex, gemini, hermes, openclaw, opencode};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub provider_id: String,
@@ -27,7 +28,7 @@ pub struct SessionMeta {
     pub resume_command: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMessage {
     pub role: String,
@@ -106,6 +107,113 @@ fn sort_sessions_by_recent(sessions: &mut [SessionMeta]) {
         let b_ts = b.last_active_at.or(b.created_at).unwrap_or(0);
         b_ts.cmp(&a_ts)
     });
+}
+
+pub fn sanitize_detected_title_candidate(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.starts_with("# AGENTS.md")
+        || lower.starts_with("<environment_context>")
+        || lower.starts_with("<cwd>")
+        || lower.starts_with("<shell>")
+        || lower.contains("<local-command-caveat>")
+        || lower.starts_with("<command-name>")
+    {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn format_markdown_timestamp(ts: Option<i64>) -> Option<String> {
+    let ts = ts?;
+    if ts <= 0 {
+        return None;
+    }
+
+    let dt = if ts > 10_000_000_000 {
+        Local.timestamp_millis_opt(ts).single()
+    } else {
+        Local.timestamp_opt(ts, 0).single()
+    }?;
+
+    Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+fn markdown_role_label(role: &str) -> &str {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "assistant" => "Assistant",
+        "user" => "User",
+        "system" => "System",
+        "tool" => "Tool",
+        _ => role,
+    }
+}
+
+pub fn export_session_markdown(session: &SessionMeta, messages: &[SessionMessage]) -> String {
+    let title = session
+        .title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&session.session_id);
+
+    let mut output = String::new();
+    output.push_str("# ");
+    output.push_str(title);
+    output.push_str("\n\n");
+    output.push_str("- Provider: ");
+    output.push_str(&session.provider_id);
+    output.push('\n');
+    output.push_str("- Session ID: ");
+    output.push_str(&session.session_id);
+    output.push('\n');
+
+    if let Some(project_dir) = session
+        .project_dir
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        output.push_str("- Project: ");
+        output.push_str(project_dir);
+        output.push('\n');
+    }
+
+    if let Some(created_at) = format_markdown_timestamp(session.created_at) {
+        output.push_str("- Created At: ");
+        output.push_str(&created_at);
+        output.push('\n');
+    }
+
+    if let Some(last_active_at) = format_markdown_timestamp(session.last_active_at) {
+        output.push_str("- Last Active At: ");
+        output.push_str(&last_active_at);
+        output.push('\n');
+    }
+
+    output.push_str("\n---\n");
+
+    for message in messages {
+        output.push_str("\n## ");
+        output.push_str(markdown_role_label(&message.role));
+        output.push('\n');
+
+        if let Some(ts) = format_markdown_timestamp(message.ts) {
+            output.push_str("_Time: ");
+            output.push_str(&ts);
+            output.push_str("_\n\n");
+        } else {
+            output.push('\n');
+        }
+
+        output.push_str(message.content.trim_end());
+        output.push('\n');
+    }
+
+    output
 }
 
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {
@@ -308,5 +416,57 @@ mod tests {
             outcomes[2].error.as_deref(),
             Some("Session was not deleted")
         );
+    }
+
+    #[test]
+    fn sanitize_detected_title_candidate_skips_injected_environment_blocks() {
+        assert_eq!(
+            sanitize_detected_title_candidate(
+                "<environment_context>\n<cwd>D:\\Solution\\cc-switch</cwd>\n</environment_context>"
+            ),
+            None
+        );
+        assert_eq!(sanitize_detected_title_candidate("# AGENTS.md instructions"), None);
+        assert_eq!(
+            sanitize_detected_title_candidate("How do I deploy this project?"),
+            Some("How do I deploy this project?".to_string())
+        );
+    }
+
+    #[test]
+    fn export_markdown_contains_session_metadata_and_messages() {
+        let session = SessionMeta {
+            provider_id: "codex".to_string(),
+            session_id: "session-123".to_string(),
+            title: Some("Test Session".to_string()),
+            summary: None,
+            project_dir: Some("D:\\Solution\\cc-switch".to_string()),
+            created_at: Some(1_777_000_000),
+            last_active_at: Some(1_777_000_600),
+            source_path: Some("dummy".to_string()),
+            resume_command: Some("codex resume session-123".to_string()),
+        };
+        let messages = vec![
+            SessionMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+                ts: Some(1_777_000_001),
+            },
+            SessionMessage {
+                role: "assistant".to_string(),
+                content: "World".to_string(),
+                ts: Some(1_777_000_002),
+            },
+        ];
+
+        let markdown = export_session_markdown(&session, &messages);
+        assert!(markdown.contains("# Test Session"));
+        assert!(markdown.contains("- Provider: codex"));
+        assert!(markdown.contains("- Session ID: session-123"));
+        assert!(markdown.contains("- Project: D:\\Solution\\cc-switch"));
+        assert!(markdown.contains("## User"));
+        assert!(markdown.contains("Hello"));
+        assert!(markdown.contains("## Assistant"));
+        assert!(markdown.contains("World"));
     }
 }

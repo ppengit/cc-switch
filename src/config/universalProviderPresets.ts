@@ -46,11 +46,11 @@ const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
     opusModel: "claude-opus-4-7",
   },
   codex: {
-    model: "gpt-5.4",
+    model: "gpt-5.5",
     reasoningEffort: "high",
   },
   gemini: {
-    model: "gemini-3.1-pro",
+    model: "gemini-3.1-pro-preview",
   },
 };
 

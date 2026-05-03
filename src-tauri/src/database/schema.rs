@@ -1571,14 +1571,6 @@ impl Database {
             ),
             // Gemini 3 系列
             (
-                "gemini-3-pro-preview",
-                "Gemini 3 Pro Preview",
-                "2",
-                "12",
-                "0.2",
-                "0",
-            ),
-            (
                 "gemini-3-flash-preview",
                 "Gemini 3 Flash Preview",
                 "0.5",

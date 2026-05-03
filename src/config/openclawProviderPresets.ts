@@ -834,10 +834,22 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
           cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
         },
         {
+          id: "openai/gpt-5.5",
+          name: "GPT-5.5",
+          contextWindow: 400000,
+          cost: { input: 5, output: 30, cacheRead: 0.5 },
+        },
+        {
           id: "openai/gpt-5.3-codex",
           name: "GPT-5.3 Codex",
           contextWindow: 400000,
           cost: { input: 5, output: 40, cacheRead: 0.5 },
+        },
+        {
+          id: "google/gemini-3.1-pro-preview",
+          name: "Gemini 3.1 Pro Preview",
+          contextWindow: 1000000,
+          cost: { input: 1.25, output: 10, cacheRead: 0.125 },
         },
         {
           id: "openai/gpt-5.2",
@@ -871,12 +883,16 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       model: {
         primary: "therouter/anthropic/claude-sonnet-4.6",
         fallbacks: [
+          "therouter/openai/gpt-5.5",
+          "therouter/google/gemini-3.1-pro-preview",
           "therouter/openai/gpt-5.2",
           "therouter/google/gemini-3-flash-preview",
         ],
       },
       modelCatalog: {
         "therouter/anthropic/claude-sonnet-4.6": { alias: "Sonnet" },
+        "therouter/openai/gpt-5.5": { alias: "GPT-5.5" },
+        "therouter/google/gemini-3.1-pro-preview": { alias: "Gemini Pro" },
         "therouter/openai/gpt-5.2": { alias: "GPT-5.2" },
         "therouter/google/gemini-3-flash-preview": { alias: "Gemini Flash" },
         "therouter/openai/gpt-5.3-codex": { alias: "Codex" },
@@ -1705,8 +1721,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
           name: "gpt-5.3-codex",
         },
         {
-          id: "gpt-5.4",
-          name: "gpt-5.4",
+          id: "gpt-5.5",
+          name: "gpt-5.5",
         },
         {
           id: "gpt-5.2-codex",
@@ -1730,12 +1746,12 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
     suggestedDefaults: {
       model: {
-        primary: "eflowcode/gpt-5.3-codex",
-        fallbacks: ["eflowcode/gpt-5.4", "eflowcode/gpt-5.2-codex"],
+        primary: "eflowcode/gpt-5.5",
+        fallbacks: ["eflowcode/gpt-5.3-codex", "eflowcode/gpt-5.2-codex"],
       },
       modelCatalog: {
         "eflowcode/gpt-5.3-codex": { alias: "gpt-5.3-codex" },
-        "eflowcode/gpt-5.4": { alias: "gpt-5.4" },
+        "eflowcode/gpt-5.5": { alias: "gpt-5.5" },
         "eflowcode/gpt-5.2-codex": { alias: "gpt-5.2-codex" },
         "eflowcode/gpt-5.2": { alias: "gpt-5.2" },
       },
@@ -1751,8 +1767,8 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       api: "openai-completions",
       models: [
         {
-          id: "gpt-5.4",
-          name: "GPT-5.4",
+          id: "gpt-5.5",
+          name: "GPT-5.5",
           contextWindow: 400000,
         },
       ],
@@ -1770,10 +1786,10 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
     },
     suggestedDefaults: {
       model: {
-        primary: "lemondata/gpt-5.4",
+        primary: "lemondata/gpt-5.5",
       },
       modelCatalog: {
-        "lemondata/gpt-5.4": { alias: "GPT-5.4" },
+        "lemondata/gpt-5.5": { alias: "GPT-5.5" },
       },
     },
   },

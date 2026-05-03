@@ -49,8 +49,6 @@ describe("EditProviderDialog", () => {
         api_key: "sk-hermes",
       }),
       providerKey: "hermes-provider-renamed",
-      enableOnSave: true,
-      pinToTopOnSave: false,
     };
   });
 
@@ -69,6 +67,8 @@ describe("EditProviderDialog", () => {
             api_key: "sk-old",
           },
         }}
+        currentProviderId="hermes-provider"
+        initialEnabledState={true}
         onOpenChange={handleOpenChange}
         onSubmit={handleSubmit}
         appId="hermes"

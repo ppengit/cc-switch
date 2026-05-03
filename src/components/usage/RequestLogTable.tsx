@@ -18,7 +18,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useRequestLogs } from "@/lib/query/usage";
-import type { LogFilters, UsageRangeSelection } from "@/types/usage";
+import type {
+  LogFilters,
+  RequestLog,
+  UsageRangeSelection,
+} from "@/types/usage";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { RequestDetailPanel } from "./RequestDetailPanel";
@@ -35,6 +39,7 @@ interface RequestLogTableProps {
   appType?: string;
   refreshIntervalMs: number;
   onRangeChange?: (range: UsageRangeSelection) => void;
+  onOpenRequestDetail?: (request: RequestLog) => void;
 }
 
 export function RequestLogTable({
@@ -43,6 +48,7 @@ export function RequestLogTable({
   appType: dashboardAppType,
   refreshIntervalMs,
   onRangeChange,
+  onOpenRequestDetail,
 }: RequestLogTableProps) {
   const { t, i18n } = useTranslation();
 
@@ -51,6 +57,7 @@ export function RequestLogTable({
   const [page, setPage] = useState(0);
   const [pageInput, setPageInput] = useState("");
   const [detailRequestId, setDetailRequestId] = useState<string | null>(null);
+  const [detailRequest, setDetailRequest] = useState<RequestLog | null>(null);
   const pageSize = 20;
 
   const dashboardAppTypeActive = dashboardAppType && dashboardAppType !== "all";
@@ -143,6 +150,8 @@ export function RequestLogTable({
               <SelectItem value="claude">Claude</SelectItem>
               <SelectItem value="codex">Codex</SelectItem>
               <SelectItem value="gemini">Gemini</SelectItem>
+              <SelectItem value="opencode">OpenCode</SelectItem>
+              <SelectItem value="openclaw">OpenClaw</SelectItem>
               <SelectItem value="hermes">Hermes</SelectItem>
             </SelectContent>
           </Select>
@@ -296,7 +305,14 @@ export function RequestLogTable({
                     <TableRow
                       key={log.requestId}
                       className="cursor-pointer"
-                      onDoubleClick={() => setDetailRequestId(log.requestId)}
+                      onDoubleClick={() => {
+                        if (onOpenRequestDetail) {
+                          onOpenRequestDetail(log);
+                          return;
+                        }
+                        setDetailRequest(log);
+                        setDetailRequestId(log.requestId);
+                      }}
                     >
                       <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
                         {new Date(log.createdAt * 1000).toLocaleString(locale, {
@@ -334,27 +350,31 @@ export function RequestLogTable({
                         )}
                       </TableCell>
                       <TableCell className="text-center font-mono text-xs max-w-[200px]">
-                        <div
-                          className="truncate"
-                          title={
-                            log.requestModel && log.requestModel !== log.model
-                              ? `${log.requestModel} → ${log.model}`
-                              : log.model
-                          }
-                        >
-                          {log.requestModel &&
-                          log.requestModel !== log.model ? (
-                            <span>
-                              {log.requestModel}
-                              <span className="text-muted-foreground">
-                                {" → "}
-                                {log.model}
-                              </span>
-                            </span>
-                          ) : (
-                            log.model
-                          )}
-                        </div>
+                        {(() => {
+                          const requestModel = log.requestModel?.trim() || "";
+                          const actualModel = log.model;
+                          const showRequestModel =
+                            requestModel.length > 0 && requestModel !== actualModel;
+                          const title = showRequestModel
+                            ? `${actualModel} (req: ${requestModel})`
+                            : actualModel;
+                          return (
+                            <div
+                              className="truncate"
+                              title={title}
+                            >
+                              <div className="truncate">{actualModel}</div>
+                              {showRequestModel ? (
+                                <div className="truncate text-[10px] text-muted-foreground">
+                                  {t("usage.requestModel", {
+                                    defaultValue: "请求模型",
+                                  })}
+                                  : {requestModel}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="tabular-nums">
@@ -499,10 +519,14 @@ export function RequestLogTable({
           </div>
         </>
       )}
-      {detailRequestId && (
+      {!onOpenRequestDetail && detailRequestId && (
         <RequestDetailPanel
           requestId={detailRequestId}
-          onClose={() => setDetailRequestId(null)}
+          initialRequest={detailRequest}
+          onClose={() => {
+            setDetailRequestId(null);
+            setDetailRequest(null);
+          }}
         />
       )}
     </div>

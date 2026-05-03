@@ -20,7 +20,7 @@ const DialogOverlay = React.forwardRef<
     base: "z-40",
     nested: "z-50",
     alert: "z-[60]",
-    top: "z-[110]",
+    top: "z-[220]",
   };
 
   return (
@@ -60,7 +60,7 @@ const DialogContent = React.forwardRef<
       base: "z-40",
       nested: "z-50",
       alert: "z-[60]",
-      top: "z-[110]",
+      top: "z-[220]",
     };
 
     const variantClass = {

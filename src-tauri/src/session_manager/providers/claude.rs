@@ -165,12 +165,10 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
             if is_user {
                 if let Some(message) = value.get("message") {
                     let text = message.get("content").map(extract_text).unwrap_or_default();
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty()
-                        && !trimmed.contains("<local-command-caveat>")
-                        && !trimmed.starts_with("<command-name>")
+                    if let Some(title) =
+                        crate::session_manager::sanitize_detected_title_candidate(&text)
                     {
-                        first_user_message = Some(trimmed.to_string());
+                        first_user_message = Some(title);
                     }
                 }
             }

@@ -9,6 +9,8 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
+import type { ProxyStatus } from "@/types/proxy";
+import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -164,6 +166,19 @@ export const useDeleteProviderMutation = (appId: AppId) => {
     mutationFn: async (providerId: string) => {
       await providersApi.delete(providerId, appId);
     },
+    onMutate: async (providerId) => {
+      await queryClient.cancelQueries({ queryKey: ["proxyStatus"] });
+      const previousStatus = queryClient.getQueryData<ProxyStatus>([
+        "proxyStatus",
+      ]);
+      queryClient.setQueryData<ProxyStatus | undefined>(
+        ["proxyStatus"],
+        (current) =>
+          pruneProxyStatusProviderActivity(current, appId, providerId) ??
+          current,
+      );
+      return { previousStatus };
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
 
@@ -210,7 +225,10 @@ export const useDeleteProviderMutation = (appId: AppId) => {
         },
       );
     },
-    onError: (error: Error) => {
+    onError: (error: Error, _providerId, context) => {
+      if (context?.previousStatus) {
+        queryClient.setQueryData(["proxyStatus"], context.previousStatus);
+      }
       const detail = extractErrorMessage(error) || t("common.unknown");
       toast.error(
         t("notifications.deleteFailed", {

@@ -68,6 +68,18 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     }
   }, [initialData]);
 
+  // 新建供应商时确保默认模型贴合当前 Codex/Responses 最佳实践
+  useEffect(() => {
+    if (initialData) return;
+    if (extractCodexModelName(codexConfig)) return;
+    isUpdatingCodexModelNameRef.current = true;
+    setCodexConfigState((prev) => setCodexModelNameInConfig(prev, "gpt-5.4"));
+    setCodexModelName("gpt-5.4");
+    setTimeout(() => {
+      isUpdatingCodexModelNameRef.current = false;
+    }, 0);
+  }, [codexConfig, initialData]);
+
   // 与 TOML 配置保持基础 URL 同步
   useEffect(() => {
     if (isUpdatingCodexBaseUrlRef.current) {

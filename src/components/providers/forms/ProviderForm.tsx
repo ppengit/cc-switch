@@ -5,7 +5,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
@@ -133,8 +132,55 @@ interface ProviderFormProps {
     icon?: string;
     iconColor?: string;
   };
+  providerDefaultSettingsConfig?: Record<string, unknown>;
   showButtons?: boolean;
 }
+
+const getSeededCodexTemplate = (
+  seededSettingsConfig?: Record<string, unknown>,
+) => {
+  const auth =
+    seededSettingsConfig &&
+    typeof seededSettingsConfig === "object" &&
+    typeof (seededSettingsConfig as Record<string, unknown>).auth === "object" &&
+    (seededSettingsConfig as Record<string, unknown>).auth !== null
+      ? ((seededSettingsConfig as Record<string, unknown>).auth as Record<
+          string,
+          unknown
+        >)
+      : {};
+  const config =
+    seededSettingsConfig &&
+    typeof (seededSettingsConfig as Record<string, unknown>).config === "string"
+      ? ((seededSettingsConfig as Record<string, unknown>).config as string)
+      : "";
+  return { auth, config };
+};
+
+const getSeededGeminiTemplate = (
+  seededSettingsConfig?: Record<string, unknown>,
+) => {
+  const env =
+    seededSettingsConfig &&
+    typeof seededSettingsConfig === "object" &&
+    typeof (seededSettingsConfig as Record<string, unknown>).env === "object" &&
+    (seededSettingsConfig as Record<string, unknown>).env !== null
+      ? ((seededSettingsConfig as Record<string, unknown>).env as Record<
+          string,
+          unknown
+        >)
+      : {};
+  const config =
+    seededSettingsConfig &&
+    typeof (seededSettingsConfig as Record<string, unknown>).config === "object" &&
+    (seededSettingsConfig as Record<string, unknown>).config !== null
+      ? ((seededSettingsConfig as Record<string, unknown>).config as Record<
+          string,
+          unknown
+        >)
+      : {};
+  return { env, config };
+};
 
 const normalizeUrlForSave = (value: string): string => {
   const trimmed = value.trim();
@@ -158,10 +204,14 @@ export function ProviderForm({
   onManageUniversalProviders,
   onSubmittingChange,
   initialData,
+  providerDefaultSettingsConfig,
   showButtons = true,
 }: ProviderFormProps) {
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
+  const formSeedKey = `${appId}:${providerId ?? "new"}:${isEditMode ? "edit" : "new"}`;
+  const seededSettingsConfig =
+    initialData?.settingsConfig ?? providerDefaultSettingsConfig;
 
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(
     initialData ? null : "custom",
@@ -240,15 +290,15 @@ export function ProviderForm({
         initialData?.meta?.pricingModelSource,
       ),
     });
-  }, [appId, initialData, supportsFullUrl]);
+  }, [appId, formSeedKey, initialData, supportsFullUrl]);
 
   const defaultValues: ProviderFormData = useMemo(
     () => ({
       name: initialData?.name ?? "",
       websiteUrl: initialData?.websiteUrl ?? "",
       notes: initialData?.notes ?? "",
-      settingsConfig: initialData?.settingsConfig
-        ? JSON.stringify(initialData.settingsConfig, null, 2)
+      settingsConfig: seededSettingsConfig
+        ? JSON.stringify(seededSettingsConfig, null, 2)
         : appId === "codex"
           ? CODEX_DEFAULT_CONFIG
           : appId === "gemini"
@@ -263,7 +313,7 @@ export function ProviderForm({
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
-    [initialData, appId],
+    [appId, formSeedKey, initialData, seededSettingsConfig],
   );
 
   const form = useForm<ProviderFormData>({
@@ -274,17 +324,6 @@ export function ProviderForm({
   const { isSubmitting } = form.formState;
   const websiteUrlFieldValue = form.watch("websiteUrl") || "";
   const syncingUrlFieldsRef = useRef(false);
-  const [pinToTopOnSave, setPinToTopOnSave] = useState(!isEditMode);
-  const [enableOnSave, setEnableOnSave] = useState(true);
-  const [useConfigTemplateOnSave, setUseConfigTemplateOnSave] = useState(
-    () => initialData?.meta?.useConfigTemplate ?? true,
-  );
-
-  useEffect(() => {
-    setPinToTopOnSave(!initialData);
-    setEnableOnSave(true);
-    setUseConfigTemplateOnSave(initialData?.meta?.useConfigTemplate ?? true);
-  }, [initialData]);
 
   const handleSettingsConfigChange = useCallback(
     (config: string) => {
@@ -298,7 +337,7 @@ export function ProviderForm({
       if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
       if (initialData?.meta?.apiKeyField) return initialData.meta.apiKeyField;
       // Infer from existing config env
-      const env = (initialData?.settingsConfig as Record<string, unknown>)
+      const env = (seededSettingsConfig as Record<string, unknown>)
         ?.env as Record<string, unknown> | undefined;
       if (env?.ANTHROPIC_API_KEY !== undefined) return "ANTHROPIC_API_KEY";
       return "ANTHROPIC_AUTH_TOKEN";
@@ -414,7 +453,11 @@ export function ProviderForm({
     handleCodexModelNameChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
-  } = useCodexConfigState({ initialData });
+  } = useCodexConfigState({
+    initialData: seededSettingsConfig
+      ? { settingsConfig: seededSettingsConfig }
+      : undefined,
+  });
 
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
@@ -428,15 +471,8 @@ export function ProviderForm({
   );
 
   useEffect(() => {
-    if (appId === "codex" && !initialData && selectedPresetId === "custom") {
-      const template = getCodexCustomTemplate();
-      resetCodexConfig(template.auth, template.config);
-    }
-  }, [appId, initialData, selectedPresetId, resetCodexConfig]);
-
-  useEffect(() => {
     form.reset(defaultValues);
-  }, [defaultValues, form]);
+  }, [form, formSeedKey]);
 
   const presetCategoryLabels: Record<string, string> = useMemo(
     () => ({
@@ -518,8 +554,7 @@ export function ProviderForm({
     codexConfig,
     onConfigChange: handleCodexConfigChange,
     initialData: appId === "codex" ? initialData : undefined,
-    initialEnabled:
-      appId === "codex" ? initialData?.meta?.commonConfigEnabled : undefined,
+    initialEnabled: undefined,
     selectedPresetId: selectedPresetId ?? undefined,
     enabled: false,
   });
@@ -541,7 +576,10 @@ export function ProviderForm({
     envStringToObj,
     envObjToString,
   } = useGeminiConfigState({
-    initialData: appId === "gemini" ? initialData : undefined,
+    initialData:
+      appId === "gemini" && seededSettingsConfig
+        ? { settingsConfig: seededSettingsConfig }
+        : undefined,
   });
 
   const updateGeminiEnvField = useCallback(
@@ -660,8 +698,7 @@ export function ProviderForm({
     envStringToObj,
     envObjToString,
     initialData: appId === "gemini" ? initialData : undefined,
-    initialEnabled:
-      appId === "gemini" ? initialData?.meta?.commonConfigEnabled : undefined,
+    initialEnabled: undefined,
     selectedPresetId: selectedPresetId ?? undefined,
     enabled: false,
   });
@@ -728,6 +765,62 @@ export function ProviderForm({
     data: hermesLiveProviderIds = [],
     isLoading: isHermesLiveProviderIdsLoading,
   } = useHermesLiveProviderIds(appId === "hermes");
+
+  useEffect(() => {
+    if (isEditMode || selectedPresetId !== "custom" || !seededSettingsConfig) {
+      return;
+    }
+
+    if (appId === "codex") {
+      const seeded = getSeededCodexTemplate(seededSettingsConfig);
+      resetCodexConfig(seeded.auth, seeded.config);
+      return;
+    }
+
+    if (appId === "gemini") {
+      const seeded = getSeededGeminiTemplate(seededSettingsConfig);
+      resetGeminiConfig(seeded.env, seeded.config);
+      return;
+    }
+
+    if (appId === "opencode") {
+      opencodeForm.resetOpencodeState((seededSettingsConfig as any) || undefined);
+      return;
+    }
+
+    if (appId === "openclaw") {
+      openclawForm.resetOpenclawState(
+        (seededSettingsConfig as any) || undefined,
+      );
+      return;
+    }
+
+    if (appId === "hermes") {
+      hermesForm.resetHermesState((seededSettingsConfig as any) || undefined);
+      return;
+    }
+
+    if (appId === "claude") {
+      const env = (seededSettingsConfig as Record<string, unknown>).env as
+        | Record<string, unknown>
+        | undefined;
+      if (env?.ANTHROPIC_API_KEY !== undefined) {
+        setLocalApiKeyField("ANTHROPIC_API_KEY");
+      } else {
+        setLocalApiKeyField("ANTHROPIC_AUTH_TOKEN");
+      }
+    }
+  }, [
+    appId,
+    isEditMode,
+    hermesForm.resetHermesState,
+    openclawForm.resetOpenclawState,
+    opencodeForm.resetOpencodeState,
+    resetCodexConfig,
+    resetGeminiConfig,
+    seededSettingsConfig,
+    selectedPresetId,
+  ]);
 
   const additiveExistingProviderKeys = useMemo(() => {
     if (appId === "opencode" && !isAnyOmoCategory) {
@@ -1194,8 +1287,6 @@ export function ProviderForm({
       name: values.name.trim(),
       websiteUrl: effectiveWebsiteUrl,
       settingsConfig,
-      pinToTopOnSave,
-      enableOnSave,
     };
 
     if (appId === "opencode") {
@@ -1275,6 +1366,9 @@ export function ProviderForm({
 
     const baseMeta: ProviderMeta | undefined =
       payload.meta ?? (initialData?.meta ? { ...initialData.meta } : undefined);
+    if (baseMeta && "commonConfigEnabled" in baseMeta) {
+      delete (baseMeta as Record<string, unknown>).commonConfigEnabled;
+    }
 
     // 确定 providerType（新建时从预设获取，编辑时从现有数据获取）
     const providerType =
@@ -1282,9 +1376,6 @@ export function ProviderForm({
 
     const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),
-      commonConfigEnabled:
-        baseMeta?.commonConfigEnabled === true ? true : undefined,
-      useConfigTemplate: useConfigTemplateOnSave,
       endpointAutoSelect,
       // 保存 providerType（用于识别 Copilot / Codex OAuth 等特殊供应商）
       providerType,
@@ -1534,22 +1625,33 @@ export function ProviderForm({
       form.reset(defaultValues);
 
       if (appId === "codex") {
-        const template = getCodexCustomTemplate();
-        resetCodexConfig(template.auth, template.config);
+        const seeded = getSeededCodexTemplate(seededSettingsConfig);
+        if (seeded.config || Object.keys(seeded.auth).length > 0) {
+          resetCodexConfig(seeded.auth, seeded.config);
+        } else {
+          const template = getCodexCustomTemplate();
+          resetCodexConfig(template.auth, template.config);
+        }
       }
       if (appId === "gemini") {
-        resetGeminiConfig({}, {});
+        const seeded = getSeededGeminiTemplate(seededSettingsConfig);
+        resetGeminiConfig(seeded.env, seeded.config);
       }
       if (appId === "opencode") {
-        opencodeForm.resetOpencodeState();
+        opencodeForm.resetOpencodeState(
+          (seededSettingsConfig as any) || undefined,
+        );
         omoDraft.resetOmoDraftState();
       }
-      // OpenClaw 自定义模式：重置为空配置
       if (appId === "openclaw") {
-        openclawForm.resetOpenclawState();
+        openclawForm.resetOpenclawState(
+          (seededSettingsConfig as any) || undefined,
+        );
       }
       if (appId === "hermes") {
-        hermesForm.resetHermesState();
+        hermesForm.resetHermesState(
+          (seededSettingsConfig as any) || undefined,
+        );
       }
       return;
     }
@@ -2316,46 +2418,6 @@ export function ProviderForm({
               />
             )}
 
-          <div className="flex flex-wrap items-center gap-4 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
-            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-              <Checkbox
-                checked={pinToTopOnSave}
-                onCheckedChange={(checked) =>
-                  setPinToTopOnSave(Boolean(checked))
-                }
-              />
-              <span>
-                {t("providerForm.pinToTopOnSave", {
-                  defaultValue: "置顶（保存后顺序为 1）",
-                })}
-              </span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-              <Checkbox
-                checked={enableOnSave}
-                onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
-              />
-              <span>
-                {t("providerForm.enableOnSave", {
-                  defaultValue: "启用（保存后立即生效）",
-                })}
-              </span>
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-              <Checkbox
-                checked={useConfigTemplateOnSave}
-                onCheckedChange={(checked) =>
-                  setUseConfigTemplateOnSave(Boolean(checked))
-                }
-              />
-              <span>
-                {t("providerForm.useConfigTemplateOnSave", {
-                  defaultValue: "使用配置模板",
-                })}
-              </span>
-            </label>
-          </div>
-
           {showButtons && (
             <div className="flex justify-end gap-2">
               <Button variant="outline" type="button" onClick={onCancel}>
@@ -2426,6 +2488,4 @@ export type ProviderFormValues = ProviderFormData & {
   meta?: ProviderMeta;
   providerKey?: string; // OpenCode/OpenClaw: user-defined provider key
   suggestedDefaults?: OpenClawSuggestedDefaults; // OpenClaw: suggested default model configuration
-  pinToTopOnSave?: boolean;
-  enableOnSave?: boolean;
 };

@@ -5,6 +5,18 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
+fn parse_json_with_json5_fallback<T: for<'a> Deserialize<'a>>(
+    content: &str,
+    path: &Path,
+) -> Result<T, AppError> {
+    match serde_json::from_str(content) {
+        Ok(value) => Ok(value),
+        Err(primary_error) => {
+            json5::from_str(content).map_err(|_| AppError::json(path, primary_error))
+        }
+    }
+}
+
 /// 获取用户主目录，带回退和日志
 ///
 /// ## Windows 注意事项
@@ -155,8 +167,7 @@ pub fn read_json_file<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T, AppE
     }
 
     let content = fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
-
-    serde_json::from_str(&content).map_err(|e| AppError::json(path, e))
+    parse_json_with_json5_fallback(&content, path)
 }
 
 /// 写入 JSON 配置文件
@@ -241,6 +252,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn derive_mcp_path_from_override_preserves_folder_name() {
@@ -270,6 +282,30 @@ mod tests {
     fn derive_mcp_path_from_root_like_dir_returns_none() {
         let override_dir = PathBuf::from("/");
         assert!(derive_mcp_path_from_override(&override_dir).is_none());
+    }
+
+    #[test]
+    fn read_json_falls_back_to_json5_for_trailing_commas() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://example.com",
+  }
+}"#,
+        )
+        .expect("write json5-like file");
+
+        let value: Value = read_json_file(&path).expect("read with json5 fallback");
+        assert_eq!(
+            value
+                .get("env")
+                .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
+                .and_then(Value::as_str),
+            Some("https://example.com")
+        );
     }
 }
 

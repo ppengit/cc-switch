@@ -3,9 +3,35 @@ import type { PricingModelSourceOption } from "../ProviderAdvancedConfig";
 
 // ── Default configs ──────────────────────────────────────────────────
 
-export const CLAUDE_DEFAULT_CONFIG = JSON.stringify({ env: {} }, null, 2);
+export const CLAUDE_DEFAULT_CONFIG = JSON.stringify(
+  {
+    env: {
+      ANTHROPIC_BASE_URL: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+      ANTHROPIC_MODEL: "claude-sonnet-4-6",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    },
+  },
+  null,
+  2,
+);
 export const CODEX_DEFAULT_CONFIG = JSON.stringify(
-  { auth: {}, config: "" },
+  {
+    auth: { OPENAI_API_KEY: "" },
+    config: `model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+base_url = ""
+wire_api = "responses"
+requires_openai_auth = true`,
+  },
   null,
   2,
 );
@@ -14,7 +40,17 @@ export const GEMINI_DEFAULT_CONFIG = JSON.stringify(
     env: {
       GOOGLE_GEMINI_BASE_URL: "",
       GEMINI_API_KEY: "",
-      GEMINI_MODEL: "gemini-3-pro-preview",
+      GEMINI_MODEL: "gemini-3.1-pro-preview",
+    },
+    config: {
+      model: {
+        name: "gemini-3.1-pro-preview",
+      },
+      security: {
+        auth: {
+          selectedType: "gemini-api-key",
+        },
+      },
     },
   },
   null,
@@ -30,7 +66,10 @@ export const OPENCODE_DEFAULT_CONFIG = JSON.stringify(
       apiKey: "",
       setCacheKey: true,
     },
-    models: {},
+    models: {
+      "gpt-5.5": { name: "GPT-5.5" },
+      "gpt-5.4-mini": { name: "GPT-5.4 Mini" },
+    },
   },
   null,
   2,
@@ -45,8 +84,21 @@ export const OPENCLAW_DEFAULT_CONFIG = JSON.stringify(
   {
     baseUrl: "",
     apiKey: "",
-    api: "openai-completions",
-    models: [],
+    api: "openai-responses",
+    models: [
+      {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        reasoning: true,
+        input: ["text", "image"],
+      },
+      {
+        id: "gpt-5.4-mini",
+        name: "GPT-5.4 Mini",
+        reasoning: true,
+        input: ["text", "image"],
+      },
+    ],
   },
   null,
   2,

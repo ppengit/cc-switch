@@ -69,13 +69,12 @@ fn migrate_legacy_common_config_usage_marks_historical_provider_enabled() {
         .get("legacy-provider")
         .expect("legacy provider exists");
 
-    assert_eq!(
+    assert!(
         provider
             .meta
             .as_ref()
-            .and_then(|meta| meta.common_config_enabled),
-        None,
-        "legacy common-config migration is inert after config templates became the live source of truth"
+            .is_none_or(|meta| meta.custom_endpoints.is_empty()),
+        "legacy common-config migration should not inject migration side effects into provider metadata"
     );
     assert!(
         provider
@@ -487,7 +486,7 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
             .expect("claude manager");
         manager.current = "current-provider".to_string();
 
-        let mut provider = Provider::with_id(
+        let provider = Provider::with_id(
             "current-provider".to_string(),
             "Current".to_string(),
             json!({
@@ -498,10 +497,6 @@ fn sync_current_provider_for_app_keeps_live_takeover_and_updates_restore_backup(
             }),
             None,
         );
-        provider.meta = Some(ProviderMeta {
-            common_config_enabled: Some(true),
-            ..Default::default()
-        });
 
         manager
             .providers

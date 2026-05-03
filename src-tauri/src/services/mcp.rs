@@ -128,8 +128,42 @@ impl McpService {
         Ok(())
     }
 
+    fn is_proxy_takeover_enabled(state: &AppState, app: &AppType) -> bool {
+        if !matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return false;
+        }
+
+        futures::executor::block_on(state.db.get_proxy_config_for_app(app.as_str()))
+            .map(|config| config.enabled)
+            .unwrap_or(false)
+    }
+
     fn reconcile_app_after_mcp_change(state: &AppState, app: &AppType) -> Result<(), AppError> {
         if matches!(app, AppType::OpenClaw) {
+            return Ok(());
+        }
+
+        if Self::is_proxy_takeover_enabled(state, app) {
+            if Self::has_syncable_provider(state, app)? {
+                if let Err(err) =
+                    crate::services::provider::ProviderService::sync_current_provider_for_app(
+                        state,
+                        app.clone(),
+                    )
+                {
+                    log::warn!(
+                        "Failed to rebuild {} proxy takeover config after MCP change: {err}",
+                        app.as_str()
+                    );
+                }
+            }
+
+            // Claude MCP is stored in ~/.claude.json, separate from settings.json.
+            // Codex/Gemini receive MCP through the app access template while takeover is active.
+            if matches!(app, AppType::Claude) {
+                Self::sync_all_for_app_from_db(state, app)?;
+            }
+
             return Ok(());
         }
 
@@ -249,6 +283,28 @@ impl McpService {
 
         for app in AppType::all() {
             if matches!(app, AppType::OpenClaw) {
+                continue;
+            }
+
+            if Self::is_proxy_takeover_enabled(state, &app) {
+                if Self::has_syncable_provider(state, &app)? {
+                    if let Err(err) =
+                        crate::services::provider::ProviderService::sync_current_provider_for_app(
+                            state,
+                            app.clone(),
+                        )
+                    {
+                        log::warn!(
+                            "Failed to rebuild {} proxy takeover config during MCP sync: {err}",
+                            app.as_str()
+                        );
+                    }
+                }
+
+                if matches!(app, AppType::Claude) {
+                    Self::sync_all_for_app_from_db(state, &app)?;
+                }
+
                 continue;
             }
 

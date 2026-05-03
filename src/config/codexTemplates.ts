@@ -15,11 +15,12 @@ export interface CodexTemplate {
 export function getCodexCustomTemplate(): CodexTemplate {
   const config = `model_provider = "custom"
 model = "gpt-5.4"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.custom]
 name = "custom"
+base_url = ""
 wire_api = "responses"
 requires_openai_auth = true`;
 

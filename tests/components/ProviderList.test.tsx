@@ -7,6 +7,10 @@ import { ProviderList } from "@/components/providers/ProviderList";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
+let mockAutoFailoverEnabled = false;
+let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
+let mockProviderHealth: unknown = undefined;
+let mockCircuitBreakerStats: unknown = undefined;
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -14,6 +18,13 @@ vi.mock("@/hooks/useDragSort", () => ({
 
 vi.mock("@/components/UsageFooter", () => ({
   default: () => <div data-testid="usage-footer" />,
+}));
+
+vi.mock("@/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: any) => <div>{children}</div>,
+  Tooltip: ({ children }: any) => <div>{children}</div>,
+  TooltipTrigger: ({ children }: any) => <>{children}</>,
+  TooltipContent: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@dnd-kit/sortable", async () => {
@@ -53,13 +64,13 @@ vi.mock("@/lib/api/sessions", () => ({
 }));
 
 vi.mock("@/lib/query/failover", () => ({
-  useAutoFailoverEnabled: () => ({ data: false }),
-  useFailoverQueue: () => ({ data: [] }),
+  useAutoFailoverEnabled: () => ({ data: mockAutoFailoverEnabled }),
+  useFailoverQueue: () => ({ data: mockFailoverQueue }),
   useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
   useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
-  useProviderHealth: () => ({ data: undefined }),
-  useCircuitBreakerStats: () => ({ data: undefined }),
+  useProviderHealth: () => ({ data: mockProviderHealth }),
+  useCircuitBreakerStats: () => ({ data: mockCircuitBreakerStats }),
 }));
 
 function createProvider(overrides: Partial<Provider> = {}): Provider {
@@ -88,6 +99,10 @@ function renderWithQueryClient(ui: ReactElement) {
 beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
+  mockAutoFailoverEnabled = false;
+  mockFailoverQueue = [];
+  mockProviderHealth = undefined;
+  mockCircuitBreakerStats = undefined;
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -202,7 +217,9 @@ describe("ProviderList Component", () => {
       within(rowA).getByRole("button", { name: "拖拽排序" }),
     ).toHaveAttribute("data-dnd-id", "a");
 
-    fireEvent.click(within(rowB).getByRole("switch", { name: "启用" }));
+    fireEvent.click(
+      within(rowB).getByRole("button", { name: "使用此供应商" }),
+    );
     fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "用量配置" }));
@@ -210,7 +227,7 @@ describe("ProviderList Component", () => {
     fireEvent.click(within(rowB).getByRole("button", { name: "删除" }));
 
     expect(handleSwitch).toHaveBeenCalledWith(providerB);
-    expect(handleEdit).toHaveBeenCalledWith(providerB);
+    expect(handleEdit).toHaveBeenCalledWith(providerB, { isEnabled: false });
     expect(handleDuplicate).toHaveBeenCalledWith(providerB);
     expect(handleUsage).toHaveBeenCalledWith(providerB);
     expect(handleDelete).toHaveBeenCalledWith(providerB);
@@ -248,17 +265,77 @@ describe("ProviderList Component", () => {
     const searchInput =
       screen.getByPlaceholderText("按名称、备注、网址或模型定位...");
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
-    expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
 
     fireEvent.change(searchInput, { target: { value: "beta" } });
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
-    expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(1);
     expect(screen.getByText("1/1")).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: "gamma" } });
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
-    expect(screen.getByText("Beta Works")).toBeInTheDocument();
+    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
     expect(screen.getByText("0/0")).toBeInTheDocument();
     expect(screen.getByText("没有找到匹配结果")).toBeInTheDocument();
+  });
+
+  it("uses separate badges for lifecycle status and live requests, and exposes request/upstream models", () => {
+    const provider = createProvider({
+      id: "provider-active",
+      name: "Active Provider",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          ANTHROPIC_MODEL: "gpt-5.4",
+        },
+      },
+    });
+
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [
+      { providerId: "provider-active", providerName: "Active Provider" },
+    ];
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "provider-active": provider }}
+        currentProviderId=""
+        appId="claude"
+        isProxyTakeover
+        activeRequestProviders={{
+          "provider-active": {
+            count: 1,
+            model: "gpt-5.3-codex",
+            requestModel: "gpt-5.4",
+            upstreamModel: "gpt-5.3-codex",
+          },
+        }}
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("启用")).toBeInTheDocument();
+    expect(screen.getByText("请求中")).toBeInTheDocument();
+    expect(screen.queryByText("处理中")).not.toBeInTheDocument();
+
+    const statusSummary = screen.getByTitle((value) => {
+      const text = String(value);
+      return (
+        text.includes("实际上游模型：gpt-5.3-codex") &&
+        text.includes("请求模型：gpt-5.4")
+      );
+    });
+
+    expect(statusSummary).toBeInTheDocument();
   });
 });

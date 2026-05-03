@@ -17,6 +17,10 @@ impl Database {
         format!("config_template_{app_type}")
     }
 
+    fn provider_default_template_key(app_type: &str) -> String {
+        format!("provider_default_template_{app_type}")
+    }
+
     /// 获取设置值
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, AppError> {
         let conn = lock_conn!(self.conn);
@@ -153,6 +157,33 @@ impl Database {
         template: Option<String>,
     ) -> Result<(), AppError> {
         let key = Self::config_template_key(app_type);
+        if let Some(value) = template {
+            self.set_setting(&key, &value)
+        } else {
+            let conn = lock_conn!(self.conn);
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        }
+    }
+
+    // --- 供应商配置模板 (Provider Default Template) ---
+
+    /// 获取供应商默认配置模板
+    pub fn get_provider_default_template(
+        &self,
+        app_type: &str,
+    ) -> Result<Option<String>, AppError> {
+        self.get_setting(&Self::provider_default_template_key(app_type))
+    }
+
+    /// 设置供应商默认配置模板
+    pub fn set_provider_default_template(
+        &self,
+        app_type: &str,
+        template: Option<String>,
+    ) -> Result<(), AppError> {
+        let key = Self::provider_default_template_key(app_type);
         if let Some(value) = template {
             self.set_setting(&key, &value)
         } else {

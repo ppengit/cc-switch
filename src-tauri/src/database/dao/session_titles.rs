@@ -31,9 +31,9 @@ impl Database {
                 project_dir, last_active_at, updated_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(app_type, session_id, source_path) DO UPDATE SET
-                detected_title = excluded.detected_title,
-                project_dir = excluded.project_dir,
-                last_active_at = excluded.last_active_at,
+                detected_title = COALESCE(excluded.detected_title, session_title_mappings.detected_title),
+                project_dir = COALESCE(excluded.project_dir, session_title_mappings.project_dir),
+                last_active_at = COALESCE(excluded.last_active_at, session_title_mappings.last_active_at),
                 updated_at = excluded.updated_at",
             params![
                 app_type,
@@ -48,6 +48,29 @@ impl Database {
         .map_err(|e| AppError::Database(format!("保存会话快照失败: {e}")))?;
 
         Ok(())
+    }
+
+    pub fn get_effective_session_title(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        source_path: Option<&str>,
+    ) -> Result<Option<String>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let normalized_source = Self::normalize_session_source_path(source_path);
+
+        let value = conn
+            .query_row(
+                "SELECT COALESCE(NULLIF(custom_title, ''), NULLIF(detected_title, ''))
+                 FROM session_title_mappings
+                 WHERE app_type = ?1 AND session_id = ?2 AND source_path = ?3",
+                params![app_type, session_id, normalized_source],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(format!("读取会话有效标题失败: {e}")))?;
+
+        Ok(value.flatten().filter(|title| !title.trim().is_empty()))
     }
 
     pub fn get_custom_session_title(

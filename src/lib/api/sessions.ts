@@ -87,4 +87,8 @@ export const sessionsApi = {
       customConfig,
     });
   },
+
+  async exportMarkdown(session: SessionMeta): Promise<string | null> {
+    return await invoke("export_session_markdown", { session });
+  },
 };

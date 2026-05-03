@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ProxyConfig,
   ProxyStatus,
+  ProxyRawLogEntry,
   ProxyServerInfo,
   ProxyTakeoverStatus,
   GlobalProxyConfig,
@@ -24,6 +25,16 @@ export const proxyApi = {
   // 获取代理服务器状态
   async getProxyStatus(): Promise<ProxyStatus> {
     return invoke("get_proxy_status");
+  },
+
+  async getProxyRawLogs(params?: {
+    limit?: number;
+    appType?: string;
+  }): Promise<ProxyRawLogEntry[]> {
+    return invoke("get_proxy_raw_logs", {
+      limit: params?.limit,
+      appType: params?.appType,
+    });
   },
 
   // 检查代理服务器是否正在运行

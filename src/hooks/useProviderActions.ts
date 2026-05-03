@@ -2,7 +2,13 @@ import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { providersApi, settingsApi, openclawApi, type AppId } from "@/lib/api";
+import {
+  providersApi,
+  settingsApi,
+  openclawApi,
+  proxyApi,
+  type AppId,
+} from "@/lib/api";
 import type {
   Provider,
   UsageScript,
@@ -206,7 +212,25 @@ export function useProviderActions(
       }
 
       try {
-        const result = await switchProviderMutation.mutateAsync(provider.id);
+        const isTakeoverHotSwitch =
+          isProxyTakeover &&
+          isProxyRunning &&
+          (activeApp === "claude" ||
+            activeApp === "codex" ||
+            activeApp === "gemini");
+
+        const result = isTakeoverHotSwitch
+          ? await (async () => {
+              await proxyApi.switchProxyProvider(activeApp, provider.id);
+              await queryClient.invalidateQueries({
+                queryKey: ["providers", activeApp],
+              });
+              await queryClient.invalidateQueries({
+                queryKey: ["proxyStatus"],
+              });
+              return { warnings: [] };
+            })()
+          : await switchProviderMutation.mutateAsync(provider.id);
         await syncClaudePlugin(provider);
 
         // Show backfill warning if present
@@ -244,6 +268,7 @@ export function useProviderActions(
       switchProviderMutation,
       syncClaudePlugin,
       activeApp,
+      queryClient,
       isProxyRunning,
       isProxyTakeover,
       t,

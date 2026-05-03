@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Copy,
+  Download,
   RefreshCw,
   Search,
   Play,
@@ -96,6 +97,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [renameSession, setRenameSession] = useState<SessionMeta | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [isSavingRename, setIsSavingRename] = useState(false);
+  const [isExportingSession, setIsExportingSession] = useState(false);
 
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
@@ -249,6 +251,31 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       }
     }
   };
+
+  const handleExportSession = useCallback(async () => {
+    if (!selectedSession?.sourcePath || isExportingSession) return;
+
+    setIsExportingSession(true);
+    try {
+      const exportedPath = await sessionsApi.exportMarkdown(selectedSession);
+      if (exportedPath) {
+        toast.success(
+          t("sessionManager.exportSuccess", {
+            defaultValue: "会话已导出为 Markdown",
+          }),
+        );
+      }
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("sessionManager.exportFailed", {
+            defaultValue: "导出会话失败",
+          }),
+      );
+    } finally {
+      setIsExportingSession(false);
+    }
+  }, [isExportingSession, selectedSession, t]);
 
   const handleOpenRenameDialog = useCallback((session: SessionMeta) => {
     setRenameSession(session);
@@ -901,6 +928,30 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <h2 className="text-base font-semibold truncate">
                             {formatSessionTitle(selectedSession)}
                           </h2>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 gap-1.5 shrink-0"
+                                onClick={() =>
+                                  handleOpenRenameDialog(selectedSession)
+                                }
+                              >
+                                <Pencil className="size-3.5" />
+                                <span className="hidden sm:inline">
+                                  {t("sessionManager.rename", {
+                                    defaultValue: "修改标题",
+                                  })}
+                                </span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("sessionManager.renameTooltip", {
+                                defaultValue: "仅在本应用中映射，不回写原会话",
+                              })}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
 
                         {/* 元信息 */}
@@ -955,7 +1006,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <TooltipTrigger asChild>
                             <Button
                               size="sm"
-                              className="gap-1.5"
+                              className="gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700"
                               onClick={() => void handleResume()}
                               disabled={!selectedSession.resumeCommand}
                             >
@@ -982,22 +1033,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="gap-1.5"
-                              onClick={() =>
-                                handleOpenRenameDialog(selectedSession)
+                              className="gap-1.5 border-sky-200 bg-sky-50/80 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:border-sky-800 dark:hover:bg-sky-950/50 dark:hover:text-sky-200"
+                              onClick={() => void handleExportSession()}
+                              disabled={
+                                !selectedSession.sourcePath || isExportingSession
                               }
                             >
-                              <Pencil className="size-3.5" />
+                              <Download className="size-3.5" />
                               <span className="hidden sm:inline">
-                                {t("sessionManager.rename", {
-                                  defaultValue: "修改标题",
-                                })}
+                                {isExportingSession
+                                  ? t("sessionManager.exporting", {
+                                      defaultValue: "导出中...",
+                                    })
+                                  : t("sessionManager.export", {
+                                      defaultValue: "导出会话",
+                                    })}
                               </span>
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            {t("sessionManager.renameTooltip", {
-                              defaultValue: "仅在本应用中映射，不回写原会话",
+                            {t("sessionManager.exportTooltip", {
+                              defaultValue: "导出当前会话内容为 Markdown",
                             })}
                           </TooltipContent>
                         </Tooltip>
@@ -1220,7 +1276,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
               })}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-3 px-6 pb-6 pt-4">
             <div className="space-y-2">
               <Label htmlFor="session-rename-input">
                 {t("sessionManager.renameInputLabel", {

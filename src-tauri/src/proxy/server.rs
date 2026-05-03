@@ -274,6 +274,14 @@ impl ProxyServer {
         status
     }
 
+    pub async fn get_raw_logs(
+        &self,
+        limit: usize,
+        app_type: Option<&str>,
+    ) -> Vec<ProxyRawLogEntry> {
+        super::activity::raw_logs(&self.state.proxy_activity, limit, app_type).await
+    }
+
     /// 更新某个应用类型当前“目标供应商”（用于 UI 展示 active_targets）
     ///
     /// 注意：这不代表该供应商一定已经处理过请求，而是用于“热切换/启用故障转移立即切 P1”
@@ -284,6 +292,26 @@ impl ProxyServer {
             app_type.to_string(),
             (provider_id.to_string(), provider_name.to_string()),
         );
+    }
+
+    pub async fn clear_provider_runtime_state(&self, app_type: &str, provider_id: &str) {
+        super::activity::clear_provider(
+            &self.state.proxy_activity,
+            self.state.app_handle.as_ref(),
+            app_type,
+            provider_id,
+        )
+        .await;
+
+        let mut current_providers = self.state.current_providers.write().await;
+        let should_clear = current_providers
+            .get(app_type)
+            .map(|(current_id, _)| current_id == provider_id)
+            .unwrap_or(false);
+
+        if should_clear {
+            current_providers.remove(app_type);
+        }
     }
 
     fn build_router(&self) -> Router {

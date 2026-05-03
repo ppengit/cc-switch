@@ -13,6 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
+import { useProxyStatus } from "@/hooks/useProxyStatus";
 
 interface FailoverToggleProps {
   className?: string;
@@ -24,6 +25,9 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
   const { data: isEnabled = false, isLoading } =
     useAutoFailoverEnabled(activeApp);
   const setEnabled = useSetAutoFailoverEnabled();
+  const { takeoverStatus, isRunning } = useProxyStatus();
+  const takeoverEnabled = Boolean(takeoverStatus?.[activeApp]);
+  const canEnableFailover = takeoverEnabled && isRunning;
 
   const handleToggle = (checked: boolean) => {
     setEnabled.mutate({ appType: activeApp, enabled: checked });
@@ -41,6 +45,11 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
         app: appLabel,
         defaultValue: `${appLabel} 故障转移已启用\n按队列优先级（P1→P2→...）选择供应商`,
       })
+    : !canEnableFailover
+      ? t("failover.tooltip.requiresTakeover", {
+          app: appLabel,
+          defaultValue: `请先开启 ${appLabel} 的代理接管；故障转移只在代理接管模式下生效`,
+        })
     : t("failover.tooltip.disabled", {
         app: appLabel,
         defaultValue: `启用 ${appLabel} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个`,
@@ -69,7 +78,7 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
       <Switch
         checked={isEnabled}
         onCheckedChange={handleToggle}
-        disabled={setEnabled.isPending || isLoading}
+        disabled={setEnabled.isPending || isLoading || (!isEnabled && !canEnableFailover)}
       />
     </div>
   );

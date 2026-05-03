@@ -154,8 +154,8 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
             msgs.iter()
                 .find(|m| m.get("type").and_then(Value::as_str) == Some("user"))
                 .and_then(|m| m.get("content").and_then(Value::as_str))
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| truncate_summary(s, 160))
+                .and_then(crate::session_manager::sanitize_detected_title_candidate)
+                .map(|s| truncate_summary(&s, 160))
         });
 
     let source_path = path.to_string_lossy().to_string();

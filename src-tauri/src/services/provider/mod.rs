@@ -28,7 +28,8 @@ pub use live::{
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
-    build_effective_settings_with_common_config, build_effective_settings_without_template,
+    build_direct_live_settings_with_mcp, build_effective_settings_without_template,
+    build_proxy_takeover_settings,
     normalize_provider_common_config_for_storage, provider_exists_in_live_config,
     strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
     write_live_with_common_config,
@@ -430,14 +431,13 @@ base_url = "http://localhost:8080"
         assert_eq!(backup.original_config, expected_backup);
 
         let live: Value = read_json_file(&get_claude_settings_path()).expect("read live");
-        assert_eq!(
-            live.get("permissions"),
-            updated.settings_config.get("permissions"),
-            "provider edits should propagate into Claude live config during takeover"
+        assert!(
+            live.get("permissions").is_none(),
+            "takeover live config should remain stable proxy access config, not provider-specific settings"
         );
         assert_eq!(
             live.get("env")
-                .and_then(|env| env.get("ANTHROPIC_API_KEY"))
+                .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN"))
                 .and_then(|v| v.as_str()),
             Some("PROXY_MANAGED"),
             "takeover placeholder should stay intact"
@@ -449,11 +449,12 @@ base_url = "http://localhost:8080"
             Some(expected_proxy_base_url.as_str()),
             "proxy base URL should stay intact"
         );
-        assert!(
+        assert_eq!(
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_MODEL"))
-                .is_none(),
-            "model override should be removed in takeover live config"
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-6"),
+            "takeover live config should use the app access template default model"
         );
     }
 
@@ -1459,18 +1460,21 @@ impl ProviderService {
         // Check if proxy takeover mode is active AND proxy server is actually running
         // Both conditions must be true to use hot-switch mode
         // Use blocking wait since this is a sync function
-        let is_app_taken_over =
-            futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
-                .ok()
-                .flatten()
-                .is_some();
         let is_proxy_running = futures::executor::block_on(state.proxy_service.is_running());
-        let live_taken_over = state
-            .proxy_service
-            .detect_takeover_in_live_config_for_app(&app_type);
+        let proxy_takeover_enabled = futures::executor::block_on(
+            state.db.get_proxy_config_for_app(app_type.as_str()),
+        )
+        .map(|config| config.enabled)
+        .unwrap_or(false);
 
-        // Hot-switch only when BOTH: this app is taken over AND proxy server is actually running
-        let should_hot_switch = (is_app_taken_over || live_taken_over) && is_proxy_running;
+        // Hot-switch only when proxy takeover is explicitly enabled for this app
+        // and the proxy server is actually running.
+        //
+        // Do not infer takeover state from backups or live-file placeholders here:
+        // those are secondary signals and may temporarily drift, which would make
+        // provider switching fall back to the normal flow even though the app is
+        // still routed through the running local proxy.
+        let should_hot_switch = proxy_takeover_enabled && is_proxy_running;
 
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
@@ -1706,72 +1710,18 @@ impl ProviderService {
     }
 
     pub fn migrate_legacy_common_config_usage(
-        state: &AppState,
-        app_type: AppType,
-        legacy_snippet: &str,
+        _state: &AppState,
+        _app_type: AppType,
+        _legacy_snippet: &str,
     ) -> Result<(), AppError> {
-        if legacy_snippet.trim().is_empty() {
-            return Ok(());
-        }
-
-        let providers = state.db.get_all_providers(app_type.as_str())?;
-
-        for provider in providers.values() {
-            if provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.common_config_enabled)
-                .is_some()
-            {
-                continue;
-            }
-
-            if !live::provider_uses_common_config(&app_type, provider, Some(legacy_snippet)) {
-                continue;
-            }
-
-            let mut updated_provider = provider.clone();
-            updated_provider
-                .meta
-                .get_or_insert_with(Default::default)
-                .common_config_enabled = Some(true);
-
-            match live::remove_common_config_from_settings(
-                &app_type,
-                &updated_provider.settings_config,
-                legacy_snippet,
-            ) {
-                Ok(settings) => updated_provider.settings_config = settings,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to normalize legacy common config for {} provider '{}': {err}",
-                        app_type.as_str(),
-                        updated_provider.id
-                    );
-                }
-            }
-
-            state
-                .db
-                .save_provider(app_type.as_str(), &updated_provider)?;
-        }
-
         Ok(())
     }
 
     pub fn migrate_legacy_common_config_usage_if_needed(
-        state: &AppState,
-        app_type: AppType,
+        _state: &AppState,
+        _app_type: AppType,
     ) -> Result<(), AppError> {
-        let Some(snippet) = state.db.get_config_snippet(app_type.as_str())? else {
-            return Ok(());
-        };
-
-        if snippet.trim().is_empty() {
-            return Ok(());
-        }
-
-        Self::migrate_legacy_common_config_usage(state, app_type, &snippet)
+        Ok(())
     }
 
     /// Extract common config snippet from current provider
@@ -2148,7 +2098,10 @@ impl ProviderService {
         write_gemini_live(provider)
     }
 
-    fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+    pub(crate) fn validate_provider_settings(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
         match app_type {
             AppType::Claude => {
                 if !provider.settings_config.is_object() {

@@ -1,4 +1,6 @@
 import type { AppId } from "@/lib/api/types";
+import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api/auth";
+import type { AppConfigTemplateFile } from "@/lib/api/config";
 import type {
   McpServer,
   Provider,
@@ -11,6 +13,10 @@ type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
 type LiveProviderIdsByApp = Record<"opencode" | "openclaw" | "hermes", string[]>;
+type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
+type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
+type AutoFailoverEnabledByApp = Record<AppId, boolean>;
+type ManagedAuthStatusByProvider = Record<ManagedAuthProvider, ManagedAuthStatus>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -78,6 +84,50 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   hermes: "",
 });
 
+const createDefaultProviderTemplates = (): ProviderDefaultTemplatesByApp => ({
+  claude: null,
+  codex: null,
+  gemini: null,
+  opencode: null,
+  openclaw: null,
+  hermes: null,
+});
+
+const createDefaultAppConfigTemplates = (): AppConfigTemplatesByApp => ({
+  claude: [],
+  codex: [],
+  gemini: [],
+  opencode: [],
+  openclaw: [],
+  hermes: [],
+});
+
+const createDefaultAutoFailoverEnabled = (): AutoFailoverEnabledByApp => ({
+  claude: false,
+  codex: false,
+  gemini: false,
+  opencode: false,
+  openclaw: false,
+  hermes: false,
+});
+
+const createDefaultManagedAuthStatus = (): ManagedAuthStatusByProvider => ({
+  github_copilot: {
+    provider: "github_copilot",
+    authenticated: false,
+    default_account_id: null,
+    migration_error: null,
+    accounts: [],
+  },
+  codex_oauth: {
+    provider: "codex_oauth",
+    authenticated: false,
+    default_account_id: null,
+    migration_error: null,
+    accounts: [],
+  },
+});
+
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
 let liveProviderIds: LiveProviderIdsByApp = {
@@ -85,6 +135,10 @@ let liveProviderIds: LiveProviderIdsByApp = {
   openclaw: [],
   hermes: [],
 };
+let providerDefaultTemplatesByApp = createDefaultProviderTemplates();
+let appConfigTemplatesByApp = createDefaultAppConfigTemplates();
+let autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
+let managedAuthStatusByProvider = createDefaultManagedAuthStatus();
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -200,6 +254,10 @@ export const resetProviderState = () => {
     openclaw: [],
     hermes: [],
   };
+  providerDefaultTemplatesByApp = createDefaultProviderTemplates();
+  appConfigTemplatesByApp = createDefaultAppConfigTemplates();
+  autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
+  managedAuthStatusByProvider = createDefaultManagedAuthStatus();
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
   settingsState = {
@@ -271,6 +329,54 @@ export const setLiveProviderIds = (
   ids: string[],
 ) => {
   liveProviderIds[appType] = [...ids];
+};
+
+export const getProviderDefaultTemplate = (appType: AppId) =>
+  providerDefaultTemplatesByApp[appType] ?? null;
+
+export const setProviderDefaultTemplateState = (
+  appType: AppId,
+  template: string | null,
+) => {
+  providerDefaultTemplatesByApp[appType] = template;
+};
+
+export const getAppConfigTemplate = (appType: AppId) =>
+  JSON.parse(
+    JSON.stringify(appConfigTemplatesByApp[appType] ?? []),
+  ) as AppConfigTemplateFile[];
+
+export const setAppConfigTemplateState = (
+  appType: AppId,
+  files: AppConfigTemplateFile[],
+) => {
+  appConfigTemplatesByApp[appType] = JSON.parse(
+    JSON.stringify(files),
+  ) as AppConfigTemplateFile[];
+};
+
+export const getAutoFailoverEnabled = (appType: AppId) =>
+  autoFailoverEnabledByApp[appType] ?? false;
+
+export const setAutoFailoverEnabledState = (
+  appType: AppId,
+  enabled: boolean,
+) => {
+  autoFailoverEnabledByApp[appType] = enabled;
+};
+
+export const getManagedAuthStatus = (provider: ManagedAuthProvider) =>
+  JSON.parse(
+    JSON.stringify(managedAuthStatusByProvider[provider]),
+  ) as ManagedAuthStatus;
+
+export const setManagedAuthStatusState = (
+  provider: ManagedAuthProvider,
+  status: ManagedAuthStatus,
+) => {
+  managedAuthStatusByProvider[provider] = JSON.parse(
+    JSON.stringify(status),
+  ) as ManagedAuthStatus;
 };
 
 export const setCurrentProviderId = (appType: AppId, providerId: string) => {

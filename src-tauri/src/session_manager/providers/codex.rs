@@ -169,9 +169,10 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
                     && payload.get("role").and_then(Value::as_str) == Some("user")
                 {
                     let text = payload.get("content").map(extract_text).unwrap_or_default();
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() && !trimmed.starts_with("# AGENTS.md") {
-                        first_user_message = Some(trimmed.to_string());
+                    if let Some(title) =
+                        crate::session_manager::sanitize_detected_title_candidate(&text)
+                    {
+                        first_user_message = Some(title);
                     }
                 }
             }

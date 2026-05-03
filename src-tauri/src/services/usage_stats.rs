@@ -1167,15 +1167,19 @@ impl Database {
 
         match result {
             Ok(mut detail) => {
-                Self::populate_session_context_for_log(&conn, &mut detail)?;
+                if let Err(err) = Self::populate_session_context_for_log(&conn, &mut detail) {
+                    log::warn!("请求详情会话上下文补全失败（将返回主记录）: {err}");
+                }
                 let mut provider_cache = HashMap::new();
                 let mut pricing_cache = HashMap::new();
-                Self::maybe_backfill_log_costs(
+                if let Err(err) = Self::maybe_backfill_log_costs(
                     &conn,
                     &mut detail,
                     &mut provider_cache,
                     &mut pricing_cache,
-                )?;
+                ) {
+                    log::warn!("请求详情成本回填失败（将返回主记录）: {err}");
+                }
                 Ok(Some(detail))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

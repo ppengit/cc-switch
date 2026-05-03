@@ -1,5 +1,5 @@
 /**
- * 预设供应商配置模板
+ * 预设供应商定义
  */
 import { ProviderCategory } from "../types";
 
@@ -77,7 +77,13 @@ export const providerPresets: ProviderPreset[] = [
     name: "Claude Official",
     websiteUrl: "https://www.anthropic.com/claude-code",
     settingsConfig: {
-      env: {},
+      env: {
+        ANTHROPIC_MODEL: "claude-sonnet-4-6",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      },
     },
     isOfficial: true, // 明确标识为官方预设
     category: "official",
@@ -114,10 +120,10 @@ export const providerPresets: ProviderPreset[] = [
       env: {
         ANTHROPIC_BASE_URL: "https://generativelanguage.googleapis.com",
         ANTHROPIC_API_KEY: "",
-        ANTHROPIC_MODEL: "gemini-3.1-pro",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3-flash",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gemini-3.1-pro",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gemini-3.1-pro",
+        ANTHROPIC_MODEL: "gemini-3.1-pro-preview",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemini-3-flash-preview",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "gemini-3.1-pro-preview",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "gemini-3.1-pro-preview",
       },
     },
     category: "third_party",
@@ -855,10 +861,10 @@ export const providerPresets: ProviderPreset[] = [
         // base_url 由代理后端强制重写为 chatgpt.com/backend-api/codex
         // 用户无需配置
         ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
-        ANTHROPIC_MODEL: "gpt-5.4",
+        ANTHROPIC_MODEL: "gpt-5.5",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.4-mini",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.4",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.4",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.5",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.5",
       },
     },
     category: "third_party",

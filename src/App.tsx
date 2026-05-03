@@ -32,6 +32,7 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
+import type { ProxyStatus } from "@/types/proxy";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import {
   providersApi,
@@ -40,6 +41,7 @@ import {
   type ProviderSwitchEvent,
 } from "@/lib/api";
 import { failoverApi } from "@/lib/api/failover";
+import { useAutoFailoverEnabled } from "@/lib/query/failover";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
 import { useProviderActions } from "@/hooks/useProviderActions";
 import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
@@ -69,6 +71,14 @@ import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
+import {
+  getActivityDisplayModel,
+  getActivityRequestModel,
+  getActivityUpstreamModel,
+  normalizeActiveRequestTargets,
+  pruneProxyStatusProviderActivity,
+} from "@/lib/proxyActivity";
+import { RequestDetailPanel } from "@/components/usage/RequestDetailPanel";
 import UsageScriptModal from "@/components/UsageScriptModal";
 import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel from "@/components/prompts/PromptPanel";
@@ -92,6 +102,7 @@ import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
 import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
+import type { RequestLog } from "@/types/usage";
 
 type View =
   | "providers"
@@ -222,7 +233,9 @@ function App() {
   }, [activeApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [editingProviderEnabled, setEditingProviderEnabled] = useState(true);
   const [usageProvider, setUsageProvider] = useState<Provider | null>(null);
+  const [detailRequest, setDetailRequest] = useState<RequestLog | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     provider: Provider;
     action: "remove" | "delete";
@@ -252,30 +265,45 @@ function App() {
     status: proxyStatus,
   } = useProxyStatus();
   const isCurrentAppTakeoverActive = takeoverStatus?.[activeApp] || false;
+  const { data: isAutoFailoverEnabledForApp } =
+    useAutoFailoverEnabled(activeApp);
+  const isCurrentAppFailoverMode =
+    isProxyRunning &&
+    isCurrentAppTakeoverActive &&
+    isAutoFailoverEnabledForApp === true;
   const activeProviderId = useMemo(() => {
     const target = proxyStatus?.active_targets?.find(
       (t) => t.app_type === activeApp,
     );
     return target?.provider_id;
   }, [proxyStatus?.active_targets, activeApp]);
+  const normalizedActiveRequestTargets = useMemo(
+    () =>
+      normalizeActiveRequestTargets(
+        proxyStatus?.active_request_targets,
+        proxyStatus?.active_request_count,
+      ),
+    [proxyStatus?.active_request_count, proxyStatus?.active_request_targets],
+  );
   const activeRequestProviders = useMemo(() => {
-    const targets =
-      proxyStatus?.active_request_targets?.filter(
-        (target) => target.app_type === activeApp,
-      ) ?? [];
+    const targets = normalizedActiveRequestTargets.filter(
+      (target) => target.app_type === activeApp,
+    );
 
     return Object.fromEntries(
-      targets.map((target) => [
-        target.provider_id,
-        {
-          count: target.inflight_requests,
-          model: target.last_request_model ?? undefined,
-        },
-      ]),
+        targets.map((target) => [
+          target.provider_id,
+          {
+            count: target.inflight_requests,
+            model: getActivityDisplayModel(target),
+            requestModel: getActivityRequestModel(target),
+            upstreamModel: getActivityUpstreamModel(target),
+          },
+        ]),
     );
-  }, [activeApp, proxyStatus?.active_request_targets]);
+  }, [activeApp, normalizedActiveRequestTargets]);
   const liveActivityTargets = useMemo(() => {
-    return [...(proxyStatus?.active_request_targets ?? [])]
+    return [...normalizedActiveRequestTargets]
       .filter((target) => target.inflight_requests > 0)
       .sort((a, b) => {
         if (a.app_type !== b.app_type) {
@@ -283,7 +311,7 @@ function App() {
         }
         return a.provider_name.localeCompare(b.provider_name);
       });
-  }, [proxyStatus?.active_request_targets]);
+  }, [normalizedActiveRequestTargets]);
   const activeRequestCount =
     proxyStatus?.active_request_count ??
     liveActivityTargets.reduce(
@@ -757,7 +785,7 @@ function App() {
   const applyProviderSaveOptions = async (payload: {
     providerId: string;
     pinToTop: boolean;
-    enabled: boolean;
+    enabled?: boolean;
     wasCurrentBeforeSave: boolean;
   }) => {
     const { providerId, pinToTop, enabled, wasCurrentBeforeSave } = payload;
@@ -776,11 +804,19 @@ function App() {
       }
     }
 
+    if (enabled === undefined) {
+      await invalidateProviderCaches();
+      return;
+    }
+
     if (isFailoverModeActive) {
       if (enabled) {
         await failoverApi.addToFailoverQueue(activeApp, providerId);
       } else {
         await failoverApi.removeFromFailoverQueue(activeApp, providerId);
+        queryClient.setQueryData<ProxyStatus | undefined>(["proxyStatus"], (current) =>
+          pruneProxyStatusProviderActivity(current, activeApp, providerId),
+        );
       }
     } else if (isAdditiveModeApp) {
       if (enabled) {
@@ -812,7 +848,7 @@ function App() {
     };
     saveOptions?: {
       pinToTop: boolean;
-      enabled: boolean;
+      enabled?: boolean;
     };
   }) => {
     const createdProvider = await addProvider(provider);
@@ -846,7 +882,7 @@ function App() {
     originalId?: string;
     saveOptions?: {
       pinToTop: boolean;
-      enabled: boolean;
+      enabled?: boolean;
     };
   }) => {
     const previousId = (originalId || provider.id).trim();
@@ -1120,6 +1156,7 @@ function App() {
               onOpenChange={() => setCurrentView("providers")}
               onImportSuccess={handleImportSuccess}
               defaultTab={settingsDefaultTab}
+              onOpenRequestDetail={setDetailRequest}
             />
           );
         case "prompts":
@@ -1179,7 +1216,7 @@ function App() {
         default:
           return (
             <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden px-1 pb-4">
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={activeApp}
@@ -1187,7 +1224,7 @@ function App() {
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.15 }}
-                    className="space-y-4"
+                    className="flex min-h-0 flex-1 flex-col"
                   >
                     <ProviderList
                       providers={providers}
@@ -1201,7 +1238,8 @@ function App() {
                       activeProviderId={activeProviderId}
                       activeRequestProviders={activeRequestProviders}
                       onSwitch={switchProvider}
-                      onEdit={(provider) => {
+                      onEdit={(provider, options) => {
+                        setEditingProviderEnabled(options?.isEnabled ?? true);
                         setEditingProvider(provider);
                       }}
                       onDelete={(provider) =>
@@ -1764,55 +1802,72 @@ function App() {
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
-        {showLiveActivityStrip && (
-          <div className="sticky top-0 z-30 border-b border-emerald-500/20 bg-background/95 px-6 py-2 shadow-sm backdrop-blur">
-            <div className="flex min-w-0 items-center gap-2 overflow-x-auto text-xs">
-              <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 font-medium text-emerald-700 dark:text-emerald-300">
-                <Activity className="h-3.5 w-3.5" />
-                {t("proxy.activityStrip.title", {
-                  count: activeRequestCount,
-                  defaultValue: "{{count}} 个请求处理中",
-                })}
-              </div>
-              {liveActivityTargets.map((target) => {
-                const isActiveAppTarget = target.app_type === activeApp;
-                return (
-                  <div
-                    key={`${target.app_type}:${target.provider_id}`}
-                    className={cn(
-                      "flex max-w-[26rem] shrink-0 items-center gap-2 rounded-full border px-2.5 py-1",
-                      isActiveAppTarget
-                        ? "border-emerald-500/35 bg-emerald-500/10"
-                        : "border-border bg-muted/60",
-                    )}
-                    title={[
-                      target.app_type,
-                      target.provider_name,
-                      target.last_request_model,
-                    ]
-                      .filter(Boolean)
-                      .join(" / ")}
-                  >
-                    <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
-                      {target.app_type}
-                    </span>
-                    <span className="truncate font-medium">
-                      {target.provider_name}
-                    </span>
-                    {target.last_request_model ? (
-                      <span className="max-w-[11rem] truncate font-mono text-[11px] text-muted-foreground">
-                        {target.last_request_model}
-                      </span>
-                    ) : null}
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      x{target.inflight_requests}
-                    </span>
-                  </div>
-                );
+        <div
+          className={cn(
+            "sticky top-0 z-30 h-10 shrink-0 overflow-hidden border-b bg-background/95 px-6 shadow-sm backdrop-blur transition-colors",
+            showLiveActivityStrip
+              ? "border-emerald-500/20"
+              : "border-transparent shadow-none",
+          )}
+        >
+          <div
+            className={cn(
+              "flex h-full min-w-0 items-center gap-2 overflow-x-auto text-xs transition-opacity",
+              showLiveActivityStrip
+                ? "opacity-100"
+                : "pointer-events-none opacity-0",
+            )}
+          >
+            <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 font-medium text-emerald-700 dark:text-emerald-300">
+              <Activity className="h-3.5 w-3.5" />
+              {t("proxy.activityStrip.title", {
+                count: activeRequestCount,
+                defaultValue: "{{count}} 个请求处理中",
               })}
             </div>
+            {liveActivityTargets.map((target) => {
+              const isActiveAppTarget = target.app_type === activeApp;
+              const requestModel = getActivityRequestModel(target);
+              const upstreamModel = getActivityUpstreamModel(target);
+              const displayModel = getActivityDisplayModel(target);
+              return (
+                <div
+                  key={`${target.app_type}:${target.provider_id}`}
+                  className={cn(
+                    "flex max-w-[26rem] shrink-0 items-center gap-2 rounded-full border px-2.5 py-1",
+                    isActiveAppTarget
+                      ? "border-emerald-500/35 bg-emerald-500/10"
+                      : "border-border bg-muted/60",
+                  )}
+                  title={[
+                    target.app_type,
+                    target.provider_name,
+                    upstreamModel && requestModel && upstreamModel !== requestModel
+                      ? `${upstreamModel} (req: ${requestModel})`
+                      : displayModel,
+                  ]
+                    .filter(Boolean)
+                    .join(" / ")}
+                >
+                  <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+                    {target.app_type}
+                  </span>
+                  <span className="truncate font-medium">
+                    {target.provider_name}
+                  </span>
+                  {displayModel ? (
+                    <span className="max-w-[11rem] truncate font-mono text-[11px] text-muted-foreground">
+                      {displayModel}
+                    </span>
+                  ) : null}
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    x{target.inflight_requests}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        )}
+        </div>
         {isOpenClawView && openclawHealthWarnings.length > 0 && (
           <OpenClawHealthBanner warnings={openclawHealthWarnings} />
         )}
@@ -1823,12 +1878,16 @@ function App() {
         open={isAddOpen}
         onOpenChange={setIsAddOpen}
         appId={activeApp}
+        allowEnableToggle={isAdditiveModeApp || isCurrentAppFailoverMode}
         onSubmit={handleAddProvider}
       />
 
       <EditProviderDialog
         open={Boolean(editingProvider)}
         provider={effectiveEditingProvider}
+        currentProviderId={currentProviderId}
+        initialEnabledState={editingProviderEnabled}
+        allowEnableToggle={isAdditiveModeApp || isCurrentAppFailoverMode}
         onOpenChange={(open) => {
           if (!open) {
             setEditingProvider(null);
@@ -1900,6 +1959,13 @@ function App() {
 
       <DeepLinkImportDialog />
       <FirstRunNoticeDialog />
+      {detailRequest && (
+        <RequestDetailPanel
+          requestId={detailRequest.requestId}
+          initialRequest={detailRequest}
+          onClose={() => setDetailRequest(null)}
+        />
+      )}
     </div>
   );
 }

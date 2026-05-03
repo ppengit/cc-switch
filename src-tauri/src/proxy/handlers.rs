@@ -8,7 +8,7 @@
 //! - Claude 的格式转换逻辑保留在此文件（用于 OpenRouter 旧接口回退）
 
 use super::{
-    activity::finish_request,
+    activity::{finish_request, observe_request, route_request},
     error_mapper::{get_error_message, map_proxy_error_to_status},
     handler_config::{
         CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
@@ -22,8 +22,9 @@ use super::{
     },
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,
+        extract_stream_event_model,
         strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
-        SseUsageCollector,
+        ActivityModelUpdate, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -71,6 +72,19 @@ pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxySta
     Ok(Json(status))
 }
 
+async fn observe_request_start(state: &ProxyState, ctx: &RequestContext) {
+    observe_request(
+        &state.proxy_activity,
+        state.app_handle.as_ref(),
+        &ctx.request_id,
+        ctx.app_type_str,
+        &ctx.provider.id,
+        &ctx.provider.name,
+        Some(ctx.request_model.clone()),
+    )
+    .await;
+}
+
 // ============================================================================
 // Claude API 处理器（包含格式转换逻辑）
 // ============================================================================
@@ -98,6 +112,7 @@ pub async fn handle_messages(
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, AppType::Claude, "Claude", "claude").await?;
+    observe_request_start(&state, &ctx).await;
 
     let endpoint = uri
         .path_and_query()
@@ -133,6 +148,9 @@ pub async fn handle_messages(
     };
 
     ctx.provider = result.provider;
+    if let Some(request_model) = result.effective_request_model {
+        ctx.request_model = request_model;
+    }
     let api_format = result
         .claude_api_format
         .as_deref()
@@ -215,19 +233,33 @@ async fn handle_claude_transform(
         let usage_collector = {
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
-            let model = ctx.request_model.clone();
+            let request_model = ctx.request_model.clone();
+            let provider_name = ctx.provider.name.clone();
             let status_code = status.as_u16();
             let start_time = ctx.start_time;
             let request_id = ctx.request_id.clone();
             let proxy_activity = state.proxy_activity.clone();
             let app_handle = state.app_handle.clone();
+            let activity_update = ActivityModelUpdate::new(
+                proxy_activity.clone(),
+                app_handle.clone(),
+                request_id.clone(),
+                "claude".to_string(),
+                provider_id.clone(),
+                provider_name.clone(),
+            );
 
-            SseUsageCollector::new(start_time, move |events, first_token_ms| {
+            SseUsageCollector::new(start_time, Some(activity_update), move |events, first_token_ms| {
                 let usage = TokenUsage::from_claude_stream_events(&events);
+                let resolved_model = usage
+                    .as_ref()
+                    .and_then(|parsed| parsed.model.clone())
+                    .or_else(|| events.iter().find_map(extract_stream_event_model))
+                    .unwrap_or_else(|| request_model.clone());
                 let latency_ms = start_time.elapsed().as_millis() as u64;
                 let state = state.clone();
                 let provider_id = provider_id.clone();
-                let model = model.clone();
+                let request_model = request_model.clone();
                 let request_id = request_id.clone();
                 let proxy_activity = proxy_activity.clone();
                 let app_handle = app_handle.clone();
@@ -238,8 +270,8 @@ async fn handle_claude_transform(
                             &state,
                             &provider_id,
                             "claude",
-                            &model,
-                            &model,
+                            &resolved_model,
+                            &request_model,
                             usage,
                             latency_ms,
                             first_token_ms,
@@ -381,12 +413,28 @@ async fn handle_claude_transform(
         }
     };
 
+    let response_model = anthropic_response
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+
+    if let Some(model) = response_model.clone() {
+        route_request(
+            &state.proxy_activity,
+            state.app_handle.as_ref(),
+            &ctx.request_id,
+            "claude",
+            &ctx.provider.id,
+            &ctx.provider.name,
+            None,
+            Some(model),
+        )
+        .await;
+    }
+
     // 记录使用量
     if let Some(usage) = TokenUsage::from_claude_response(&anthropic_response) {
-        let model = anthropic_response
-            .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown");
+        let model = response_model.as_deref().unwrap_or("unknown");
         let latency_ms = ctx.latency_ms();
 
         let request_model = ctx.request_model.clone();
@@ -474,6 +522,7 @@ pub async fn handle_chat_completions(
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    observe_request_start(&state, &ctx).await;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -504,6 +553,9 @@ pub async fn handle_chat_completions(
     };
 
     ctx.provider = result.provider;
+    if let Some(request_model) = result.effective_request_model {
+        ctx.request_model = request_model;
+    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
@@ -528,6 +580,7 @@ pub async fn handle_responses(
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    observe_request_start(&state, &ctx).await;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -558,6 +611,9 @@ pub async fn handle_responses(
     };
 
     ctx.provider = result.provider;
+    if let Some(request_model) = result.effective_request_model {
+        ctx.request_model = request_model;
+    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
@@ -582,6 +638,7 @@ pub async fn handle_responses_compact(
 
     let mut ctx =
         RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    observe_request_start(&state, &ctx).await;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -612,6 +669,9 @@ pub async fn handle_responses_compact(
     };
 
     ctx.provider = result.provider;
+    if let Some(request_model) = result.effective_request_model {
+        ctx.request_model = request_model;
+    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
@@ -642,6 +702,7 @@ pub async fn handle_gemini(
     let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
         .await?
         .with_model_from_uri(&uri);
+    observe_request_start(&state, &ctx).await;
 
     // 提取完整的路径和查询参数
     let endpoint = uri
@@ -677,6 +738,9 @@ pub async fn handle_gemini(
     };
 
     ctx.provider = result.provider;
+    if let Some(request_model) = result.effective_request_model {
+        ctx.request_model = request_model;
+    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await

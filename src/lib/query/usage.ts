@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
+import { proxyApi } from "@/lib/api/proxy";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type { LogFilters, UsageRangeSelection } from "@/types/usage";
 
@@ -108,6 +109,13 @@ export const usageKeys = {
     [...usageKeys.all, "limits", providerId, appType] as const,
   script: (providerId: string, appType: string) =>
     [...usageKeys.all, providerId, appType] as const,
+  rawProxyLogs: (appType?: string, limit?: number) =>
+    [
+      ...usageKeys.all,
+      "raw-proxy-logs",
+      appType ?? "all",
+      limit ?? 200,
+    ] as const,
 };
 
 // Hooks
@@ -232,6 +240,24 @@ export function useRequestDetail(requestId: string) {
     queryKey: usageKeys.detail(requestId),
     queryFn: () => usageApi.getRequestDetail(requestId),
     enabled: !!requestId,
+  });
+}
+
+export function useProxyRawLogs(
+  appType?: string,
+  limit = 200,
+  options?: UsageQueryOptions,
+) {
+  const effectiveAppType = appType === "all" ? undefined : appType;
+  return useQuery({
+    queryKey: usageKeys.rawProxyLogs(effectiveAppType, limit),
+    queryFn: () =>
+      proxyApi.getProxyRawLogs({
+        limit,
+        appType: effectiveAppType,
+      }),
+    refetchInterval: options?.refetchInterval ?? 2000,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
 }
 

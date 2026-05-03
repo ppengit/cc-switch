@@ -22,6 +22,19 @@ const HERMES_DEFAULT_CONFIG_OBJ = {
   name: "",
   base_url: "",
   api_key: "",
+  api_mode: "codex_responses",
+  models: [
+    {
+      id: "openai/gpt-5.5",
+      name: "GPT-5.5",
+      context_length: 400000,
+    },
+    {
+      id: "openai/gpt-5.4-mini",
+      name: "GPT-5.4 Mini",
+      context_length: 400000,
+    },
+  ],
 } as const;
 
 export const HERMES_DEFAULT_CONFIG = JSON.stringify(

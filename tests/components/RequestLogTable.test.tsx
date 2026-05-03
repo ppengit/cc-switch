@@ -206,4 +206,52 @@ describe("RequestLogTable", () => {
     expect(screen.getByText("Codex (Session)")).toBeInTheDocument();
     expect(screen.getByText("codex_session")).toBeInTheDocument();
   });
+
+  it("shows actual model first and request model as secondary text when they differ", () => {
+    useRequestLogsMock.mockReturnValue({
+      data: {
+        data: [
+          {
+            requestId: "req-model-diff",
+            providerId: "provider-1",
+            providerName: "Provider One",
+            appType: "codex",
+            model: "gpt-5.3-codex",
+            requestModel: "gpt-5.4",
+            costMultiplier: "1.0",
+            inputTokens: 10,
+            outputTokens: 20,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            inputCostUsd: "0",
+            outputCostUsd: "0",
+            cacheReadCostUsd: "0",
+            cacheCreationCostUsd: "0",
+            totalCostUsd: "0",
+            isStreaming: true,
+            latencyMs: 1000,
+            statusCode: 200,
+            createdAt: 1_710_000_100,
+          },
+        ],
+        total: 1,
+        page: 0,
+        pageSize: 20,
+      },
+      isLoading: false,
+    });
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="Today"
+        appType="all"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    expect(screen.getByText("gpt-5.3-codex")).toBeInTheDocument();
+    expect(screen.getByText("请求模型: gpt-5.4")).toBeInTheDocument();
+    expect(screen.queryByText(/gpt-5\.3-codex\s*→\s*gpt-5\.4/)).not.toBeInTheDocument();
+  });
 });

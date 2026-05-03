@@ -62,7 +62,7 @@ export const CodexAuthSection: React.FC<CodexAuthSectionProps> = ({
         onChange={handleChange}
         placeholder={t("codexConfig.authJsonPlaceholder")}
         darkMode={isDarkMode}
-        rows={6}
+        rows={4}
         showValidation={true}
         language="json"
       />

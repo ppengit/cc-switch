@@ -35,6 +35,7 @@ pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
     pub claude_api_format: Option<String>,
+    pub effective_request_model: Option<String>,
 }
 
 pub struct ForwardError {
@@ -198,6 +199,7 @@ impl RequestForwarder {
                 &provider.id,
                 &provider.name,
                 Some(self.request_model.clone()),
+                None,
             )
             .await;
 
@@ -213,6 +215,7 @@ impl RequestForwarder {
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
             match self
                 .forward(
+                    app_type_str,
                     provider,
                     endpoint,
                     &provider_body,
@@ -222,7 +225,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format)) => {
+                Ok((response, claude_api_format, effective_request_model)) => {
                     // 成功：记录成功并更新熔断器
                     let _ = self
                         .router
@@ -277,6 +280,7 @@ impl RequestForwarder {
                         response,
                         provider: provider.clone(),
                         claude_api_format,
+                        effective_request_model,
                     });
                 }
                 Err(e) => {
@@ -343,6 +347,7 @@ impl RequestForwarder {
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
                                     .forward(
+                                        app_type_str,
                                         provider,
                                         endpoint,
                                         &provider_body,
@@ -352,7 +357,7 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format)) => {
+                                    Ok((response, claude_api_format, effective_request_model)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         // 记录成功
                                         let _ = self
@@ -412,6 +417,7 @@ impl RequestForwarder {
                                             response,
                                             provider: provider.clone(),
                                             claude_api_format,
+                                            effective_request_model,
                                         });
                                     }
                                     Err(retry_err) => {
@@ -542,6 +548,7 @@ impl RequestForwarder {
                             // 使用同一供应商重试（不计入熔断器）
                             match self
                                 .forward(
+                                    app_type_str,
                                     provider,
                                     endpoint,
                                     &provider_body,
@@ -551,7 +558,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format)) => {
+                                Ok((response, claude_api_format, effective_request_model)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     let _ = self
                                         .router
@@ -604,6 +611,7 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
+                                        effective_request_model,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -781,13 +789,14 @@ impl RequestForwarder {
     /// 转发单个请求（使用适配器）
     async fn forward(
         &self,
+        app_type_str: &str,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<(ProxyResponse, Option<String>), ProxyError> {
+    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -1014,6 +1023,29 @@ impl RequestForwarder {
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let filtered_body = filter_private_params_with_whitelist(request_body, &[]);
+        let effective_request_model = filtered_body
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let trimmed = self.request_model.trim();
+                if trimmed.is_empty() || trimmed == "unknown" {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+        route_request(
+            &self.proxy_activity,
+            self.app_handle.as_ref(),
+            &self.request_id,
+            app_type_str,
+            &provider.id,
+            &provider.name,
+            effective_request_model.clone(),
+            None,
+        )
+        .await;
         let force_identity_encoding = needs_transform
             || should_force_identity_encoding(&effective_endpoint, &filtered_body, headers);
 
@@ -1480,7 +1512,7 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            Ok((response, resolved_claude_api_format))
+            Ok((response, resolved_claude_api_format, effective_request_model))
         } else {
             let status_code = status.as_u16();
             let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();

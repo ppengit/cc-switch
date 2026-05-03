@@ -5,6 +5,7 @@
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
+use crate::app_config::AppType;
 use std::str::FromStr;
 use tauri::Emitter;
 
@@ -48,14 +49,66 @@ pub async fn add_to_failover_queue(
 /// 从故障转移队列移除供应商
 #[tauri::command]
 pub async fn remove_from_failover_queue(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
+    let was_current_provider = state
+        .db
+        .get_current_provider(&app_type)
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        == Some(provider_id.as_str());
+
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    state
+        .proxy_service
+        .clear_provider_runtime_state(&provider_id, &app_type)
+        .await?;
+
+    let (app_enabled, auto_failover_enabled) = match state.db.get_proxy_config_for_app(&app_type).await
+    {
+        Ok(config) => (config.enabled, config.auto_failover_enabled),
+        Err(error) => {
+            log::warn!("[Failover] 读取 {app_type} 代理配置失败，跳过即时切换: {error}");
+            (false, false)
+        }
+    };
+
+    if was_current_provider
+        && app_enabled
+        && auto_failover_enabled
+        && state.proxy_service.is_running().await
+    {
+        if let Some(next_provider) = state
+            .db
+            .get_failover_queue(&app_type)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .next()
+        {
+            let switch_manager =
+                crate::proxy::failover_switch::FailoverSwitchManager::new(state.db.clone());
+            if let Err(error) = switch_manager
+                .try_switch(
+                    Some(&app),
+                    &app_type,
+                    &next_provider.provider_id,
+                    &next_provider.provider_name,
+                )
+                .await
+            {
+                log::error!("[Failover] 禁用后切换到下一个供应商失败: {error}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// 获取指定应用的自动故障转移开关状态（从 proxy_config 表读取）
@@ -86,6 +139,25 @@ pub async fn set_auto_failover_enabled(
         "[Failover] Setting auto_failover_enabled: app_type='{app_type}', enabled={enabled}"
     );
 
+    let app_enum =
+        AppType::from_str(&app_type).map_err(|_| format!("无效的应用类型: {app_type}"))?;
+
+    if enabled {
+        if !matches!(app_enum, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return Err("该应用暂不支持代理故障转移".to_string());
+        }
+
+        let proxy_config = state
+            .db
+            .get_proxy_config_for_app(&app_type)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !proxy_config.enabled || !state.proxy_service.is_running().await {
+            return Err("请先开启该应用的代理接管；故障转移只在代理接管模式下生效".to_string());
+        }
+    }
+
     // 强一致语义：开启故障转移后立即切到队列 P1（并确保队列非空）
     //
     // 说明：
@@ -98,9 +170,6 @@ pub async fn set_auto_failover_enabled(
             .map_err(|e| e.to_string())?;
 
         if queue.is_empty() {
-            let app_enum = crate::app_config::AppType::from_str(&app_type)
-                .map_err(|_| format!("无效的应用类型: {app_type}"))?;
-
             let current_id = crate::settings::get_effective_current_provider(&state.db, &app_enum)
                 .map_err(|e| e.to_string())?;
 

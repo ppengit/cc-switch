@@ -49,12 +49,14 @@ import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
+import type { RequestLog } from "@/types/usage";
 
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImportSuccess?: () => void | Promise<void>;
   defaultTab?: string;
+  onOpenRequestDetail?: (request: RequestLog) => void;
 }
 
 export function SettingsPage({
@@ -62,6 +64,7 @@ export function SettingsPage({
   onOpenChange,
   onImportSuccess,
   defaultTab = "general",
+  onOpenRequestDetail,
 }: SettingsDialogProps) {
   const { t } = useTranslation();
   const {
@@ -469,7 +472,7 @@ export function SettingsPage({
               </TabsContent>
 
               <TabsContent value="usage" className="mt-0">
-                <UsageDashboard />
+                <UsageDashboard onOpenRequestDetail={onOpenRequestDetail} />
               </TabsContent>
             </div>
 

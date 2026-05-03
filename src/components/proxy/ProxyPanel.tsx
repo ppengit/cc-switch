@@ -26,6 +26,12 @@ import {
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
+import {
+  getActivityDisplayModel,
+  getActivityRequestModel,
+  getActivityUpstreamModel,
+  normalizeActiveRequestTargets,
+} from "@/lib/proxyActivity";
 import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
@@ -45,6 +51,10 @@ export function ProxyPanel({
 }: ProxyPanelProps) {
   const { t } = useTranslation();
   const { status, isRunning } = useProxyStatus();
+  const normalizedActiveRequestTargets = normalizeActiveRequestTargets(
+    status?.active_request_targets,
+    status?.active_request_count,
+  );
 
   // 获取应用接管状态
   const { data: takeoverStatus } = useProxyTakeoverStatus();
@@ -375,46 +385,55 @@ export function ProxyPanel({
                   })}
                 </p>
                 {(status.active_request_count ?? 0) > 0 &&
-                status.active_request_targets &&
-                status.active_request_targets.length > 0 ? (
+                normalizedActiveRequestTargets.length > 0 ? (
                   <div className="space-y-1.5">
                     <p className="text-sm text-foreground">
                       {t("proxy.panel.activeRequestCount", {
                         count: status.active_request_count ?? 0,
-                        defaultValue:
-                          "当前共有 {{count}} 个代理请求正在处理中",
+                        defaultValue: "当前共有 {{count}} 个代理请求正在处理中",
                       })}
                     </p>
                     <div className="grid gap-2 sm:grid-cols-2">
-                      {status.active_request_targets.map((target) => (
-                        <div
-                          key={`${target.app_type}:${target.provider_id}`}
-                          className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-muted-foreground">
-                              {target.app_type}
-                            </span>
-                            <span className="font-medium text-foreground">
-                              {target.inflight_requests}x
-                            </span>
-                          </div>
+                      {normalizedActiveRequestTargets.map((target) => {
+                        const requestModel = getActivityRequestModel(target);
+                        const upstreamModel = getActivityUpstreamModel(target);
+                        const displayModel = getActivityDisplayModel(target);
+                        return (
                           <div
-                            className="truncate font-medium text-foreground"
-                            title={target.provider_name}
+                            key={`${target.app_type}:${target.provider_id}`}
+                            className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs"
                           >
-                            {target.provider_name}
-                          </div>
-                          {target.last_request_model ? (
-                            <div
-                              className="truncate text-muted-foreground font-mono"
-                              title={target.last_request_model}
-                            >
-                              {target.last_request_model}
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-muted-foreground">
+                                {target.app_type}
+                              </span>
+                              <span className="font-medium text-foreground">
+                                {target.inflight_requests}x
+                              </span>
                             </div>
-                          ) : null}
-                        </div>
-                      ))}
+                            <div
+                              className="truncate font-medium text-foreground"
+                              title={target.provider_name}
+                            >
+                              {target.provider_name}
+                            </div>
+                            {displayModel ? (
+                              <div
+                                className="truncate text-muted-foreground font-mono"
+                                title={
+                                  upstreamModel &&
+                                  requestModel &&
+                                  upstreamModel !== requestModel
+                                    ? `${upstreamModel} (req: ${requestModel})`
+                                    : displayModel
+                                }
+                              >
+                                {displayModel}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ) : (

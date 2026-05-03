@@ -48,6 +48,22 @@ pub async fn get_proxy_status(state: tauri::State<'_, AppState>) -> Result<Proxy
     state.proxy_service.get_status().await
 }
 
+/// 获取内存中的代理原始事件日志。
+#[tauri::command]
+pub async fn get_proxy_raw_logs(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+    app_type: Option<String>,
+) -> Result<Vec<ProxyRawLogEntry>, String> {
+    let app_filter = app_type
+        .as_deref()
+        .filter(|value| !value.eq_ignore_ascii_case("all"));
+    state
+        .proxy_service
+        .get_raw_logs(limit.unwrap_or(200), app_filter)
+        .await
+}
+
 /// 获取代理配置
 #[tauri::command]
 pub async fn get_proxy_config(state: tauri::State<'_, AppState>) -> Result<ProxyConfig, String> {

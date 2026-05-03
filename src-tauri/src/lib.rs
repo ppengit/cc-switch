@@ -1,4 +1,5 @@
 mod app_config;
+mod app_config_templates;
 mod app_store;
 mod auto_launch;
 mod claude_mcp;
@@ -63,7 +64,31 @@ use std::sync::Arc;
 use tauri::image::Image;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, LogicalSize, Manager, WebviewWindow};
+
+const DEFAULT_MAIN_WINDOW_WIDTH: f64 = 1680.0;
+const DEFAULT_MAIN_WINDOW_HEIGHT: f64 = 1040.0;
+
+fn apply_default_main_window_size(window: &WebviewWindow) {
+    if window.is_maximized().unwrap_or(false) {
+        return;
+    }
+
+    let should_resize = match window.inner_size() {
+        Ok(size) => size.width < 1600 || size.height < 980,
+        Err(_) => true,
+    };
+
+    if !should_resize {
+        return;
+    }
+
+    let _ = window.set_size(LogicalSize::new(
+        DEFAULT_MAIN_WINDOW_WIDTH,
+        DEFAULT_MAIN_WINDOW_HEIGHT,
+    ));
+    let _ = window.center();
+}
 
 fn redact_url_for_log(url_str: &str) -> String {
     match url::Url::parse(url_str) {
@@ -1021,6 +1046,7 @@ pub fn run() {
                     log::info!("静默启动模式：主窗口已隐藏");
                 } else {
                     // 正常启动模式：显示窗口
+                    apply_default_main_window_size(&window);
                     let _ = window.show();
                     log::info!("正常启动模式：主窗口已显示");
 
@@ -1055,10 +1081,11 @@ pub fn run() {
             commands::read_app_config_file,
             commands::write_app_config_file,
             commands::write_app_config_files,
-            commands::sync_current_provider_from_app_config_files,
             commands::import_mcp_from_app_live,
             commands::get_app_config_template,
             commands::set_app_config_template,
+            commands::get_provider_default_template,
+            commands::set_provider_default_template,
             commands::pick_directory,
             commands::open_external,
             commands::get_init_error,
@@ -1199,6 +1226,7 @@ pub fn run() {
             commands::get_proxy_takeover_status,
             commands::set_proxy_takeover_for_app,
             commands::get_proxy_status,
+            commands::get_proxy_raw_logs,
             commands::get_proxy_config,
             commands::update_proxy_config,
             // Global & Per-App Config
@@ -1249,6 +1277,7 @@ pub fn run() {
             commands::list_sessions,
             commands::list_recent_sessions,
             commands::get_session_messages,
+            commands::export_session_markdown,
             commands::delete_session,
             commands::delete_sessions,
             commands::set_session_title_mapping,
@@ -1569,82 +1598,10 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
 }
 
 fn initialize_common_config_snippets(state: &store::AppState) {
-    // Auto-extract common config snippets from clean live files when snippet is missing.
-    // This must run before proxy takeover is restored on startup, otherwise we'd read
-    // proxy-placeholder configs instead of the user's actual live settings.
-    for app_type in crate::app_config::AppType::all() {
-        if !state
-            .db
-            .should_auto_extract_config_snippet(app_type.as_str())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let settings = match crate::services::provider::ProviderService::read_live_settings(
-            app_type.clone(),
-        ) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        match crate::services::provider::ProviderService::extract_common_config_snippet_from_settings(
-            app_type.clone(),
-            &settings,
-        ) {
-            Ok(snippet) if !snippet.is_empty() && snippet != "{}" => {
-                match state.db.set_config_snippet(app_type.as_str(), Some(snippet)) {
-                    Ok(()) => {
-                        let _ = state.db.set_config_snippet_cleared(app_type.as_str(), false);
-                        log::info!(
-                            "✓ Auto-extracted common config snippet for {}",
-                            app_type.as_str()
-                        );
-                    }
-                    Err(e) => log::warn!(
-                        "✗ Failed to save config snippet for {}: {e}",
-                        app_type.as_str()
-                    ),
-                }
-            }
-            Ok(_) => log::debug!(
-                "○ Live config for {} has no extractable common fields",
-                app_type.as_str()
-            ),
-            Err(e) => log::warn!(
-                "✗ Failed to extract config snippet for {}: {e}",
-                app_type.as_str()
-            ),
-        }
-    }
-
-    let should_run_legacy_migration = state
-        .db
-        .is_legacy_common_config_migrated()
-        .map(|done| !done)
-        .unwrap_or(true);
-
-    if should_run_legacy_migration {
-        for app_type in [
-            crate::app_config::AppType::Claude,
-            crate::app_config::AppType::Codex,
-            crate::app_config::AppType::Gemini,
-        ] {
-            if let Err(e) = crate::services::provider::ProviderService::migrate_legacy_common_config_usage_if_needed(
-                state,
-                app_type.clone(),
-            ) {
-                log::warn!(
-                    "✗ Failed to migrate legacy common-config usage for {}: {e}",
-                    app_type.as_str()
-                );
-            }
-        }
-
-        if let Err(e) = state.db.set_legacy_common_config_migrated(true) {
-            log::warn!("✗ Failed to persist legacy common-config migration flag: {e}");
-        }
-    }
+    let _ = state;
+    // Final configuration model no longer auto-extracts or migrates common
+    // snippets. Providers keep their own real config; application live files are
+    // either direct provider snapshots or proxy-takeover access templates.
 }
 
 // ============================================================

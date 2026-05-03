@@ -115,8 +115,8 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
       },
     },
     {
-      id: "gemini-3-pro-preview",
-      name: "Gemini 3 Pro Preview",
+      id: "gemini-3.1-pro-preview",
+      name: "Gemini 3.1 Pro Preview",
       contextLimit: 1048576,
       outputLimit: 65536,
       modalities: {
@@ -135,8 +135,8 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
   ],
   "@ai-sdk/openai": [
     {
-      id: "gpt-5.4",
-      name: "GPT-5.4",
+      id: "gpt-5.5",
+      name: "GPT-5.5",
       contextLimit: 400000,
       outputLimit: 128000,
       modalities: { input: ["text", "image"], output: ["text"] },
@@ -210,6 +210,38 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
   ],
   "@ai-sdk/anthropic": [
     {
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      contextLimit: 1000000,
+      outputLimit: 64000,
+      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+      variants: {
+        low: { effort: "low" },
+        medium: { effort: "medium" },
+        high: { effort: "high" },
+      },
+    },
+    {
+      id: "claude-opus-4-7",
+      name: "Claude Opus 4.7",
+      contextLimit: 1000000,
+      outputLimit: 128000,
+      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+      variants: {
+        low: { effort: "low" },
+        medium: { effort: "medium" },
+        high: { effort: "high" },
+        max: { effort: "max" },
+      },
+    },
+    {
+      id: "claude-haiku-4-5-20251001",
+      name: "Claude Haiku 4.5",
+      contextLimit: 200000,
+      outputLimit: 64000,
+      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+    },
+    {
       id: "claude-sonnet-4-5-20250929",
       name: "Claude Sonnet 4.5",
       contextLimit: 200000,
@@ -232,26 +264,6 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
         medium: { thinking: { budgetTokens: 13000, type: "enabled" } },
         high: { thinking: { budgetTokens: 18000, type: "enabled" } },
       },
-    },
-    {
-      id: "claude-opus-4-7",
-      name: "Claude Opus 4.7",
-      contextLimit: 1000000,
-      outputLimit: 128000,
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-      variants: {
-        low: { effort: "low" },
-        medium: { effort: "medium" },
-        high: { effort: "high" },
-        max: { effort: "max" },
-      },
-    },
-    {
-      id: "claude-haiku-4-5-20251001",
-      name: "Claude Haiku 4.5",
-      contextLimit: 200000,
-      outputLimit: 64000,
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
     },
     {
       id: "gemini-claude-opus-4-5-thinking",
@@ -962,8 +974,12 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "anthropic/claude-sonnet-4.6": { name: "Claude Sonnet 4.6" },
+        "openai/gpt-5.5": { name: "GPT-5.5" },
         "openai/gpt-5.3-codex": { name: "GPT-5.3 Codex" },
         "openai/gpt-5.2": { name: "GPT-5.2" },
+        "google/gemini-3.1-pro-preview": {
+          name: "Gemini 3.1 Pro Preview",
+        },
         "google/gemini-3-flash-preview": {
           name: "Gemini 3 Flash Preview",
         },
@@ -1164,7 +1180,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "gpt-5.4": { name: "GPT-5.4" },
+        "gpt-5.5": { name: "GPT-5.5" },
       },
     },
     category: "third_party",
@@ -1399,6 +1415,9 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         baseURL: "https://e-flowcode.cc/v1",
       },
       models: {
+        "gpt-5.5": {
+          name: "GPT-5.5",
+        },
         "gpt-5.2-codex": {
           name: "gpt-5.2-codex",
         },
@@ -1431,7 +1450,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "gpt-5.4": { name: "GPT-5.4" },
+        "gpt-5.5": { name: "GPT-5.5" },
       },
     },
     category: "third_party",

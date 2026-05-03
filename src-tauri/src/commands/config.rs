@@ -5,8 +5,12 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::app_config::AppType;
+use crate::app_config_templates::{
+    normalize_template_files, parse_stored_template_files, AppConfigTemplateFile,
+};
 use crate::codex_config;
 use crate::config::{self, get_claude_mcp_path, get_claude_settings_path, ConfigStatus};
+use crate::provider::Provider;
 use crate::settings;
 
 #[tauri::command]
@@ -60,6 +64,108 @@ fn validate_common_config_snippet(app_type: &str, snippet: &str) -> Result<(), S
     }
 
     Ok(())
+}
+
+fn provider_template_must_be_object_error() -> String {
+    let lang = settings::get_settings()
+        .language
+        .unwrap_or_else(|| "zh".to_string());
+
+    match lang.as_str() {
+        "en" => "Provider template must be a JSON object".to_string(),
+        "ja" => "プロバイダーテンプレートは JSON オブジェクトである必要があります".to_string(),
+        _ => "供应商模板必须是 JSON 对象".to_string(),
+    }
+}
+
+fn replace_provider_template_tokens(value: &str) -> String {
+    value
+        .replace("{baseUrl}", "https://example.com/v1")
+        .replace("{apiKey}", "test-key")
+        .replace("{model}", "gpt-5.5")
+}
+
+fn replace_codex_template_tokens(value: &str) -> String {
+    [
+        ("baseUrl", "https://example.com/v1"),
+        ("apiKey", "test-key"),
+        ("model", "gpt-5.5"),
+    ]
+    .into_iter()
+    .fold(value.to_string(), |acc, (key, replacement)| {
+        let bare = format!("{{{key}}}");
+        acc.replace(&format!("\"{bare}\""), &format!("\"{replacement}\""))
+            .replace(&format!("'{bare}'"), &format!("'{replacement}'"))
+            .replace(&bare, &format!("\"{replacement}\""))
+    })
+}
+
+fn materialize_provider_template_value(
+    value: serde_json::Value,
+    app_type: &AppType,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(replace_provider_template_tokens(&text))
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .into_iter()
+                .map(|item| materialize_provider_template_value(item, app_type))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        if matches!(app_type, AppType::Codex) && key == "config" {
+                            match value {
+                                serde_json::Value::String(text) => {
+                                    serde_json::Value::String(replace_codex_template_tokens(&text))
+                                }
+                                other => materialize_provider_template_value(other, app_type),
+                            }
+                        } else {
+                            materialize_provider_template_value(value, app_type)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn validate_provider_default_template_payload(
+    app_type: &AppType,
+    template: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(raw_template) = template else {
+        return Ok(None);
+    };
+    let trimmed = raw_template.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let parsed = serde_json::from_str::<serde_json::Value>(trimmed)
+        .map_err(invalid_json_format_error)?;
+    if !parsed.is_object() {
+        return Err(provider_template_must_be_object_error());
+    }
+
+    let settings_config = materialize_provider_template_value(parsed, app_type);
+    let provider = Provider::with_id(
+        "__template_validation__".to_string(),
+        "__template_validation__".to_string(),
+        settings_config,
+        None,
+    );
+    crate::services::ProviderService::validate_provider_settings(app_type, &provider)
+        .map_err(|error| error.to_string())?;
+
+    Ok(Some(trimmed.to_string()))
 }
 
 #[tauri::command]
@@ -147,14 +253,6 @@ pub struct AppConfigFileContent {
     pub key: String,
     pub label: String,
     pub path: String,
-    pub content: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AppConfigTemplateFile {
-    pub key: String,
-    pub label: String,
     pub content: String,
 }
 
@@ -301,6 +399,86 @@ fn validate_app_config_file_content(
     }
 }
 
+fn render_template_preview(
+    template: &str,
+    proxy_url: &str,
+    proxy_codex_base_url: &str,
+    proxy_token: &str,
+    mcp_block: &str,
+) -> String {
+    let template = if mcp_block.trim().is_empty() {
+        template
+            .lines()
+            .filter(|line| !line.contains("{mcpConfig}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        template.to_string()
+    };
+
+    template
+        .replace("{proxyBaseUrl}", proxy_url)
+        .replace("{proxyCodexBaseUrl}", proxy_codex_base_url)
+        .replace("{proxyToken}", proxy_token)
+        .replace("{mcpConfig}", mcp_block.trim())
+        .trim()
+        .to_string()
+}
+
+fn validate_app_config_template_files(
+    app_type: &AppType,
+    files: &[AppConfigTemplateFile],
+) -> Result<(), String> {
+    let proxy_url = "http://127.0.0.1:15721";
+    let proxy_codex_base_url = "http://127.0.0.1:15721/v1";
+    let proxy_token = "PROXY_MANAGED";
+
+    for file in files {
+        let rendered = match (app_type, file.key.as_str()) {
+            (AppType::Claude, "settings") => render_template_preview(
+                &file.content,
+                proxy_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "",
+            ),
+            (AppType::Codex, "auth") => render_template_preview(
+                &file.content,
+                proxy_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "",
+            ),
+            (AppType::Codex, "config") => render_template_preview(
+                &file.content,
+                proxy_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "[mcp_servers.example]\ncommand = \"npx\"",
+            ),
+            (AppType::Gemini, "env") => render_template_preview(
+                &file.content,
+                proxy_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "",
+            ),
+            (AppType::Gemini, "settings") => render_template_preview(
+                &file.content,
+                proxy_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "{}",
+            ),
+            _ => file.content.clone(),
+        };
+
+        validate_app_config_file_content(app_type, &file.key, &file.label, &rendered)?;
+    }
+
+    Ok(())
+}
+
 fn resolve_app_config_file(
     app_type: &AppType,
     file_key: &str,
@@ -326,182 +504,6 @@ fn validate_app_config_writes(
         validate_app_config_file_content(app_type, key, label, content)?;
     }
     Ok(())
-}
-
-fn app_config_write_content<'a>(
-    writes: &'a [(String, String, PathBuf, String)],
-    file_key: &str,
-) -> Result<&'a str, String> {
-    writes
-        .iter()
-        .find(|(key, _, _, _)| key == file_key)
-        .map(|(_, _, _, content)| content.as_str())
-        .ok_or_else(|| format!("Missing config file payload: {file_key}"))
-}
-
-fn parse_json_object_value(content: &str, label: &str) -> Result<serde_json::Value, String> {
-    let value = serde_json::from_str::<serde_json::Value>(content)
-        .map_err(|e| format!("{label} JSON 格式错误: {e}"))?;
-    if !value.is_object() {
-        return Err(format!("{label} 根节点必须是 JSON 对象"));
-    }
-    Ok(value)
-}
-
-fn build_switch_mode_provider_settings_from_config_writes(
-    app_type: &AppType,
-    writes: &[(String, String, PathBuf, String)],
-) -> Result<serde_json::Value, String> {
-    match app_type {
-        AppType::Claude => {
-            let settings_text = app_config_write_content(writes, "settings")?;
-            parse_json_object_value(settings_text, "settings.json")
-        }
-        AppType::Codex => {
-            let auth_text = app_config_write_content(writes, "auth")?;
-            let config_text = app_config_write_content(writes, "config")?;
-            let auth_value = parse_json_object_value(auth_text, "auth.json")?;
-            Ok(serde_json::json!({
-                "auth": auth_value,
-                "config": config_text,
-            }))
-        }
-        AppType::Gemini => {
-            let env_text = app_config_write_content(writes, "env")?;
-            let settings_text = app_config_write_content(writes, "settings")?;
-            let env_map = crate::gemini_config::parse_env_file_strict(env_text)
-                .map_err(|e| format!(".env 格式错误: {e}"))?;
-            let env_value = crate::gemini_config::env_to_json(&env_map)
-                .get("env")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let settings_value = parse_json_object_value(settings_text, "settings.json")?;
-            Ok(serde_json::json!({
-                "env": env_value,
-                "config": settings_value,
-            }))
-        }
-        _ => Err("当前仅支持 Claude / Codex / Gemini 导回当前供应商".to_string()),
-    }
-}
-
-fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFile> {
-    match app_type {
-        AppType::Claude => vec![AppConfigTemplateFile {
-            key: "settings".to_string(),
-            label: "settings.json".to_string(),
-            content: "{providerConfig}\n".to_string(),
-        }],
-        AppType::Codex => vec![AppConfigTemplateFile {
-            key: "config".to_string(),
-            label: "config.toml".to_string(),
-            content: "{providerConfig}\n\n{mcpConfig}\n".to_string(),
-        }],
-        AppType::Gemini => vec![
-            AppConfigTemplateFile {
-                key: "env".to_string(),
-                label: ".env".to_string(),
-                content: "{providerConfig}\n".to_string(),
-            },
-            AppConfigTemplateFile {
-                key: "settings".to_string(),
-                label: "settings.json".to_string(),
-                content: "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n".to_string(),
-            },
-        ],
-        AppType::OpenCode => vec![AppConfigTemplateFile {
-            key: "config".to_string(),
-            label: "opencode.json".to_string(),
-            content: "{providerConfig}\n".to_string(),
-        }],
-        AppType::OpenClaw => vec![AppConfigTemplateFile {
-            key: "config".to_string(),
-            label: "openclaw.json".to_string(),
-            content: "{providerConfig}\n".to_string(),
-        }],
-        AppType::Hermes => vec![AppConfigTemplateFile {
-            key: "config".to_string(),
-            label: "config.yaml".to_string(),
-            content: "{providerConfig}\n".to_string(),
-        }],
-    }
-}
-
-fn split_legacy_gemini_template(template: &str) -> Vec<AppConfigTemplateFile> {
-    let mut env_lines = Vec::new();
-    let mut settings_lines = Vec::new();
-    let mut in_env = false;
-    let mut in_settings = false;
-
-    for line in template.lines() {
-        match line.trim() {
-            "# .env" => {
-                in_env = true;
-                in_settings = false;
-                continue;
-            }
-            "# settings.json" => {
-                in_env = false;
-                in_settings = true;
-                continue;
-            }
-            _ => {}
-        }
-
-        if in_env {
-            env_lines.push(line);
-        } else if in_settings {
-            settings_lines.push(line);
-        }
-    }
-
-    if env_lines.is_empty() && settings_lines.is_empty() {
-        return default_template_files_for(&AppType::Gemini);
-    }
-
-    vec![
-        AppConfigTemplateFile {
-            key: "env".to_string(),
-            label: ".env".to_string(),
-            content: format!("{}\n", env_lines.join("\n").trim_matches('\n')),
-        },
-        AppConfigTemplateFile {
-            key: "settings".to_string(),
-            label: "settings.json".to_string(),
-            content: format!("{}\n", settings_lines.join("\n").trim_matches('\n')),
-        },
-    ]
-}
-
-fn parse_stored_template_files(
-    app_type: &AppType,
-    raw: Option<String>,
-) -> Result<Vec<AppConfigTemplateFile>, String> {
-    let Some(raw) = raw else {
-        return Ok(default_template_files_for(app_type));
-    };
-
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(default_template_files_for(app_type));
-    }
-
-    if let Ok(files) = serde_json::from_str::<Vec<AppConfigTemplateFile>>(trimmed) {
-        return Ok(files);
-    }
-
-    let files = match app_type {
-        AppType::Gemini => split_legacy_gemini_template(&raw),
-        _ => {
-            let mut defaults = default_template_files_for(app_type);
-            if let Some(first) = defaults.first_mut() {
-                first.content = raw;
-            }
-            defaults
-        }
-    };
-
-    Ok(files)
 }
 
 #[tauri::command]
@@ -588,67 +590,6 @@ pub async fn write_app_config_files(
 }
 
 #[tauri::command]
-pub async fn sync_current_provider_from_app_config_files(
-    app: String,
-    files: Vec<AppConfigFileWrite>,
-    state: tauri::State<'_, crate::store::AppState>,
-) -> Result<bool, String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    if app_type.is_additive_mode() {
-        return Err("当前仅支持 Claude / Codex / Gemini 导回当前供应商".to_string());
-    }
-
-    let mut writes = Vec::with_capacity(files.len());
-    for file in files {
-        let (key, label, path) = resolve_app_config_file(&app_type, &file.file_key)?;
-        writes.push((key, label, path, file.content));
-    }
-
-    validate_app_config_writes(&app_type, &writes)?;
-
-    let current_provider_id =
-        crate::settings::get_effective_current_provider(&state.db, &app_type)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "当前应用没有已选中的供应商".to_string())?;
-
-    let mut provider = state
-        .db
-        .get_provider_by_id(&current_provider_id, app_type.as_str())
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "当前供应商不存在".to_string())?;
-
-    let use_config_template = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.use_config_template)
-        .unwrap_or(true);
-    if use_config_template {
-        return Err(
-            "当前供应商启用了配置模板，无法安全地把当前配置反向导回供应商；请修改模板，或关闭模板后再试".to_string(),
-        );
-    }
-
-    provider.settings_config =
-        build_switch_mode_provider_settings_from_config_writes(&app_type, &writes)?;
-    if matches!(app_type, AppType::Claude) {
-        provider.settings_config =
-            crate::services::provider::sanitize_claude_settings_for_live(
-                &provider.settings_config,
-            );
-    }
-
-    state
-        .db
-        .save_provider(app_type.as_str(), &provider)
-        .map_err(|e| e.to_string())?;
-
-    crate::services::ProviderService::sync_current_provider_for_app(state.inner(), app_type)
-        .map_err(|e| e.to_string())?;
-
-    Ok(true)
-}
-
-#[tauri::command]
 pub async fn import_mcp_from_app_live(
     app: String,
     state: tauri::State<'_, crate::store::AppState>,
@@ -678,7 +619,7 @@ pub async fn get_app_config_template(
         .db
         .get_config_template(app_type.as_str())
         .map_err(|e| e.to_string())?;
-    parse_stored_template_files(&app_type, stored)
+    Ok(parse_stored_template_files(&app_type, stored))
 }
 
 #[tauri::command]
@@ -689,15 +630,20 @@ pub async fn set_app_config_template(
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let normalized_files: Vec<AppConfigTemplateFile> = files
-        .into_iter()
-        .map(|file| AppConfigTemplateFile {
-            key: file.key.trim().to_string(),
-            label: file.label.trim().to_string(),
-            content: file.content,
-        })
-        .filter(|file| !file.key.is_empty())
-        .collect();
+    let normalized_files = normalize_template_files(
+        &app_type,
+        files
+            .into_iter()
+            .map(|file| AppConfigTemplateFile {
+                key: file.key.trim().to_string(),
+                label: file.label.trim().to_string(),
+                content: file.content,
+            })
+            .filter(|file| !file.key.is_empty())
+            .collect(),
+    );
+
+    validate_app_config_template_files(&app_type, &normalized_files)?;
 
     let value = if normalized_files.is_empty() {
         None
@@ -714,9 +660,49 @@ pub async fn set_app_config_template(
         .map_err(|e| e.to_string())?;
 
     if syncToLive.unwrap_or(true) {
-        crate::services::ProviderService::sync_current_provider_for_app(state.inner(), app_type)
+        let takeover_enabled = state
+            .db
+            .get_proxy_config_for_app(app_type.as_str())
+            .await
+            .map(|config| config.enabled)
+            .unwrap_or(false);
+
+        if takeover_enabled {
+            crate::services::ProviderService::sync_current_provider_for_app(
+                state.inner(),
+                app_type,
+            )
             .map_err(|e| e.to_string())?;
+        }
     }
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_provider_default_template(
+    app: String,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<Option<String>, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    state
+        .db
+        .get_provider_default_template(app_type.as_str())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_provider_default_template(
+    app: String,
+    template: Option<String>,
+    state: tauri::State<'_, crate::store::AppState>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let validated_template =
+        validate_provider_default_template_payload(&app_type, template)?;
+    state
+        .db
+        .set_provider_default_template(app_type.as_str(), validated_template)
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -922,10 +908,9 @@ pub async fn set_common_config_snippet(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_switch_mode_provider_settings_from_config_writes, validate_common_config_snippet,
+        validate_common_config_snippet, validate_provider_default_template_payload,
     };
     use crate::app_config::AppType;
-    use std::path::PathBuf;
 
     #[test]
     fn validate_common_config_snippet_accepts_comment_only_codex_snippet() {
@@ -944,67 +929,47 @@ mod tests {
     }
 
     #[test]
-    fn build_switch_mode_provider_settings_from_config_writes_builds_codex_payload() {
-        let writes = vec![
-            (
-                "auth".to_string(),
-                "auth.json".to_string(),
-                PathBuf::from("auth.json"),
-                "{\n  \"OPENAI_API_KEY\": \"sk-test\"\n}".to_string(),
-            ),
-            (
-                "config".to_string(),
-                "config.toml".to_string(),
-                PathBuf::from("config.toml"),
-                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://example.com/v1\"\n".to_string(),
-            ),
-        ];
-
-        let result =
-            build_switch_mode_provider_settings_from_config_writes(&AppType::Codex, &writes)
-                .expect("build codex payload");
-
-        assert_eq!(
-            result["auth"]["OPENAI_API_KEY"].as_str(),
-            Some("sk-test")
-        );
-        assert!(
-            result["config"]
-                .as_str()
-                .is_some_and(|text| text.contains("model_provider = \"custom\""))
-        );
+    fn provider_default_template_treats_blank_input_as_clear() {
+        let result = validate_provider_default_template_payload(
+            &AppType::Claude,
+            Some("   ".to_string()),
+        )
+        .expect("blank template should be treated as clear");
+        assert!(result.is_none());
     }
 
     #[test]
-    fn build_switch_mode_provider_settings_from_config_writes_builds_gemini_payload() {
-        let writes = vec![
-            (
-                "env".to_string(),
-                ".env".to_string(),
-                PathBuf::from(".env"),
-                "GEMINI_API_KEY=sk-test\nGOOGLE_GEMINI_BASE_URL=https://example.com\n"
-                    .to_string(),
+    fn provider_default_template_validates_codex_unquoted_placeholders() {
+        validate_provider_default_template_payload(
+            &AppType::Codex,
+            Some(
+                r#"{
+  "auth": {
+    "OPENAI_API_KEY": "{apiKey}"
+  },
+  "config": "model_provider = \"custom\"\nmodel = {model}\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = {baseUrl}\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+}"#
+                .to_string(),
             ),
-            (
-                "settings".to_string(),
-                "settings.json".to_string(),
-                PathBuf::from("settings.json"),
-                "{\n  \"general\": {\n    \"previewFeatures\": true\n  }\n}".to_string(),
+        )
+        .expect("codex template with placeholders should validate");
+    }
+
+    #[test]
+    fn provider_default_template_rejects_invalid_codex_shape() {
+        let err = validate_provider_default_template_payload(
+            &AppType::Codex,
+            Some(
+                r#"{
+  "config": "model = \"gpt-5.5\""
+}"#
+                .to_string(),
             ),
-        ];
-
-        let result =
-            build_switch_mode_provider_settings_from_config_writes(&AppType::Gemini, &writes)
-                .expect("build gemini payload");
-
-        assert_eq!(result["env"]["GEMINI_API_KEY"].as_str(), Some("sk-test"));
-        assert_eq!(
-            result["env"]["GOOGLE_GEMINI_BASE_URL"].as_str(),
-            Some("https://example.com")
-        );
-        assert_eq!(
-            result["config"]["general"]["previewFeatures"].as_bool(),
-            Some(true)
+        )
+        .expect_err("missing auth should be rejected");
+        assert!(
+            err.contains("auth"),
+            "expected auth validation error, got {err}"
         );
     }
 }

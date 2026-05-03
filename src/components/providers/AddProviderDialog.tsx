@@ -1,13 +1,15 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { universalProvidersApi } from "@/lib/api";
+import { configApi } from "@/lib/api";
 import {
   ProviderForm,
   type ProviderFormValues,
@@ -26,6 +28,7 @@ interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   appId: AppId;
+  allowEnableToggle?: boolean;
   onSubmit: (payload: {
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
@@ -34,7 +37,7 @@ interface AddProviderDialogProps {
     };
     saveOptions?: {
       pinToTop: boolean;
-      enabled: boolean;
+      enabled?: boolean;
     };
   }) => Promise<void> | void;
 }
@@ -115,6 +118,7 @@ export function AddProviderDialog({
   open,
   onOpenChange,
   appId,
+  allowEnableToggle = true,
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
@@ -128,7 +132,58 @@ export function AddProviderDialog({
   const [selectedUniversalPreset, setSelectedUniversalPreset] =
     useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [pinToTopOnSave, setPinToTopOnSave] = useState(true);
+  const [enableOnSave, setEnableOnSave] = useState(true);
+  const [isProviderTemplateLoading, setIsProviderTemplateLoading] =
+    useState(false);
+  const [providerTemplateDefault, setProviderTemplateDefault] = useState<
+    Record<string, unknown> | undefined
+  >(undefined);
   const { data: providersData } = useProvidersQuery(appId);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveTab("app-specific");
+    setPinToTopOnSave(true);
+    setEnableOnSave(true);
+  }, [appId, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setProviderTemplateDefault(undefined);
+    setIsProviderTemplateLoading(true);
+    let cancelled = false;
+
+    void configApi
+      .getProviderDefaultTemplate(appId)
+      .then((template) => {
+        if (cancelled) return;
+        if (!template?.trim()) {
+          setProviderTemplateDefault(undefined);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(template) as Record<string, unknown>;
+          setProviderTemplateDefault(parsed);
+        } catch {
+          setProviderTemplateDefault(undefined);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProviderTemplateDefault(undefined);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsProviderTemplateLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appId, open]);
 
   const handleUniversalProviderSave = useCallback(
     async (provider: UniversalProvider) => {
@@ -339,41 +394,77 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      if (values.enableOnSave === false) {
+      if (enableOnSave === false) {
         providerData.addToLive = false;
       }
 
       await onSubmit({
         provider: providerData,
         saveOptions: {
-          pinToTop: values.pinToTopOnSave ?? true,
-          enabled: values.enableOnSave ?? true,
+          pinToTop: pinToTopOnSave,
+          enabled: allowEnableToggle ? enableOnSave : undefined,
         },
       });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange, providersData?.providers, t],
+    [
+      appId,
+      enableOnSave,
+      onSubmit,
+      onOpenChange,
+      pinToTopOnSave,
+      providersData?.providers,
+      t,
+    ],
   );
 
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
       <>
-        <Button
-          variant="outline"
-          onClick={() => onOpenChange(false)}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
-        >
-          {t("common.cancel")}
-        </Button>
-        <Button
-          type="submit"
-          form="provider-form"
-          disabled={isFormSubmitting}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          {t("common.add")}
-        </Button>
+        <div className="mr-auto flex flex-wrap items-center gap-4">
+          <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
+            <Checkbox
+              checked={pinToTopOnSave}
+              onCheckedChange={(checked) => setPinToTopOnSave(Boolean(checked))}
+            />
+            <span>
+              {t("providerForm.pinToTopOnSave", {
+                defaultValue: "置顶（保存后顺序为 1）",
+              })}
+            </span>
+          </label>
+          {allowEnableToggle ? (
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
+              <Checkbox
+                checked={enableOnSave}
+                onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
+              />
+              <span>
+                {t("providerForm.enableOnSave", {
+                  defaultValue: "启用（保存后立即生效）",
+                })}
+              </span>
+            </label>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            className="border-border/20 hover:bg-accent hover:text-accent-foreground"
+          >
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form="provider-form"
+            disabled={isFormSubmitting || isProviderTemplateLoading}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            {t("common.add")}
+          </Button>
+        </div>
       </>
     ) : (
       <>
@@ -416,14 +507,23 @@ export function AddProviderDialog({
           </TabsList>
 
           <TabsContent value="app-specific" className="mt-0">
-            <ProviderForm
-              appId={appId}
-              submitLabel={t("common.add")}
-              onSubmit={handleSubmit}
-              onCancel={() => onOpenChange(false)}
-              onSubmittingChange={setIsFormSubmitting}
-              showButtons={false}
-            />
+            {isProviderTemplateLoading ? (
+              <div className="py-8 text-sm text-muted-foreground">
+                {t("provider.loadingTemplate", {
+                  defaultValue: "加载供应商模板中...",
+                })}
+              </div>
+            ) : (
+              <ProviderForm
+                appId={appId}
+                submitLabel={t("common.add")}
+                onSubmit={handleSubmit}
+                onCancel={() => onOpenChange(false)}
+                onSubmittingChange={setIsFormSubmitting}
+                providerDefaultSettingsConfig={providerTemplateDefault}
+                showButtons={false}
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="universal" className="mt-0">
@@ -432,14 +532,25 @@ export function AddProviderDialog({
         </Tabs>
       ) : (
         // OpenCode/OpenClaw: directly show form without tabs
-        <ProviderForm
-          appId={appId}
-          submitLabel={t("common.add")}
-          onSubmit={handleSubmit}
-          onCancel={() => onOpenChange(false)}
-          onSubmittingChange={setIsFormSubmitting}
-          showButtons={false}
-        />
+        <>
+          {isProviderTemplateLoading ? (
+            <div className="py-8 text-sm text-muted-foreground">
+              {t("provider.loadingTemplate", {
+                defaultValue: "加载供应商模板中...",
+              })}
+            </div>
+          ) : (
+            <ProviderForm
+              appId={appId}
+              submitLabel={t("common.add")}
+              onSubmit={handleSubmit}
+              onCancel={() => onOpenChange(false)}
+              onSubmittingChange={setIsFormSubmitting}
+              providerDefaultSettingsConfig={providerTemplateDefault}
+              showButtons={false}
+            />
+          )}
+        </>
       )}
 
       {showUniversalTab && (

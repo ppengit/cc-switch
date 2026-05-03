@@ -590,7 +590,7 @@ mod tests {
                 id, model, started_at, ended_at, input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
                 actual_cost_usd, estimated_cost_usd
-            ) VALUES (?1, 'openrouter/anthropic/claude-opus-4-7', ?2, ?3, 10, 20, 3, 4, 7, ?4, ?5)",
+            ) VALUES (?1, 'openrouter/anthropic/claude-opus-4-6', ?2, ?3, 10, 20, 3, 4, 7, ?4, ?5)",
             rusqlite::params![id, ended_at - 10.0, ended_at, actual_cost, estimated_cost],
         )
         .expect("insert session");
@@ -602,7 +602,7 @@ mod tests {
                 id, model, started_at, ended_at, input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
                 actual_cost_usd, estimated_cost_usd
-            ) VALUES (?1, 'openrouter/anthropic/claude-opus-4-7', ?2, NULL, 10, 20, 3, 4, 7, 0.1, NULL)",
+            ) VALUES (?1, 'openrouter/anthropic/claude-opus-4-6', ?2, NULL, 10, 20, 3, 4, 7, 0.1, NULL)",
             rusqlite::params![id, started_at],
         )
         .expect("insert active session");
@@ -763,7 +763,7 @@ mod tests {
                 "INSERT OR REPLACE INTO model_pricing (
                     model_id, display_name, input_cost_per_million, output_cost_per_million,
                     cache_read_cost_per_million, cache_creation_cost_per_million
-                ) VALUES ('claude-opus-4-7', 'Claude Opus 4.7', '10', '20', '1', '5')",
+                ) VALUES ('claude-opus-4-6', 'Claude Opus 4.6', '10', '20', '1', '5')",
                 [],
             )?;
         }
@@ -819,8 +819,8 @@ mod tests {
                     request_id, provider_id, app_type, model, request_model,
                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                     total_cost_usd, latency_ms, status_code, created_at, data_source
-                ) VALUES ('proxy-1', 'p1', 'hermes', 'openrouter/anthropic/claude-opus-4-7',
-                    'openrouter/anthropic/claude-opus-4-7', 10, 27, 3, 4, '0.1', 100, 200, 1000, 'proxy')",
+                ) VALUES ('proxy-1', 'p1', 'hermes', 'openrouter/anthropic/claude-opus-4-6',
+                    'openrouter/anthropic/claude-opus-4-6', 10, 27, 3, 4, '0.1', 100, 200, 1000, 'proxy')",
                 [],
             )?;
         }

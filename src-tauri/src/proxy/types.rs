@@ -112,6 +112,8 @@ pub struct ActiveRequestTarget {
     pub provider_name: String,
     pub provider_id: String,
     pub inflight_requests: usize,
+    pub request_model: Option<String>,
+    pub upstream_model: Option<String>,
     pub last_request_model: Option<String>,
     pub last_request_at: String,
 }
@@ -125,10 +127,32 @@ pub struct ProxyActivityEvent {
     pub provider_name: String,
     pub provider_id: String,
     pub request_model: Option<String>,
+    pub upstream_model: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub active_request_count: usize,
     pub active_request_targets: Vec<ActiveRequestTarget>,
+}
+
+/// 内存中的代理原始事件日志。
+///
+/// 只保存链路元数据，不保存请求体、响应体、Authorization 或 API Key。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyRawLogEntry {
+    pub id: u64,
+    pub timestamp: String,
+    pub request_id: String,
+    pub event: String,
+    pub app_type: String,
+    pub provider_name: String,
+    pub provider_id: String,
+    pub request_model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+    pub active_request_count: usize,
+    pub active_target_count: usize,
 }
 
 /// 代理服务器信息
@@ -147,6 +171,7 @@ pub struct ProxyTakeoverStatus {
     pub gemini: bool,
     pub opencode: bool,
     pub openclaw: bool,
+    pub hermes: bool,
 }
 
 /// API 格式类型（预留，当前不需要格式转换）

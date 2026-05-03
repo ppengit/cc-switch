@@ -351,6 +351,31 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_failover_disabled_prefers_local_settings_current_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+
+        // Simulate stale DB current while local settings has the freshly switched target.
+        db.set_current_provider("claude", "a").unwrap();
+        crate::settings::set_current_provider(&AppType::Claude, Some("b")).unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router.select_providers("claude").await.unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_failover_enabled_uses_queue_order_ignoring_current() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());

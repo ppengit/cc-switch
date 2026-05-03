@@ -222,15 +222,6 @@ pub struct ProviderMeta {
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,
-    /// 是否使用应用配置模板渲染实际环境配置
-    #[serde(rename = "useConfigTemplate", skip_serializing_if = "Option::is_none")]
-    pub use_config_template: Option<bool>,
-    /// 是否在写入 live 时应用通用配置片段
-    #[serde(
-        rename = "commonConfigEnabled",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub common_config_enabled: Option<bool>,
     /// 用量查询脚本配置
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_script: Option<UsageScript>,
@@ -485,7 +476,7 @@ impl UniversalProvider {
         let models = self.models.claude.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
         let haiku = models
             .and_then(|m| m.haiku_model.clone())
             .unwrap_or_else(|| model.clone());
@@ -532,7 +523,7 @@ impl UniversalProvider {
         let models = self.models.codex.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "gpt-4o".to_string());
+            .unwrap_or_else(|| "gpt-5.5".to_string());
         let reasoning_effort = models
             .and_then(|m| m.reasoning_effort.clone())
             .unwrap_or_else(|| "high".to_string());
@@ -597,7 +588,7 @@ requires_openai_auth = true"#
         let models = self.models.gemini.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "gemini-2.5-pro".to_string());
+            .unwrap_or_else(|| "gemini-3.1-pro-preview".to_string());
 
         let settings_config = serde_json::json!({
             "env": {
@@ -943,7 +934,7 @@ mod tests {
                 .settings_config
                 .pointer("/env/GEMINI_MODEL")
                 .and_then(|item| item.as_str()),
-            Some("gemini-2.5-pro")
+            Some("gemini-3.1-pro-preview")
         );
     }
 

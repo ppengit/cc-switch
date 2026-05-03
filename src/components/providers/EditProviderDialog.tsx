@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import type { Provider } from "@/types";
 import {
@@ -13,13 +14,16 @@ import type { AppId } from "@/lib/api";
 interface EditProviderDialogProps {
   open: boolean;
   provider: Provider | null;
+  currentProviderId: string;
+  initialEnabledState?: boolean;
+  allowEnableToggle?: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (payload: {
     provider: Provider;
     originalId?: string;
     saveOptions?: {
       pinToTop: boolean;
-      enabled: boolean;
+      enabled?: boolean;
     };
   }) => Promise<void> | void;
   appId: AppId;
@@ -29,36 +33,43 @@ interface EditProviderDialogProps {
 export function EditProviderDialog({
   open,
   provider,
+  initialEnabledState = true,
+  allowEnableToggle = true,
   onOpenChange,
   onSubmit,
   appId,
 }: EditProviderDialogProps) {
   const { t } = useTranslation();
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [pinToTopOnSave, setPinToTopOnSave] = useState(false);
+  const [enableOnSave, setEnableOnSave] = useState(true);
 
-  const initialSettingsConfig = useMemo(() => {
-    return (provider?.settingsConfig ?? {}) as Record<string, unknown>;
-  }, [provider?.settingsConfig]);
-
-  // 固定 initialData，防止 provider 对象更新时重置表单
+  // Freeze the form seed while the dialog is open. Provider rows can refresh
+  // frequently because of proxy activity/status updates; those refreshes must
+  // not reset fields while the user is typing.
   const initialData = useMemo(() => {
     if (!provider) return null;
     return {
       name: provider.name,
       notes: provider.notes,
       websiteUrl: provider.websiteUrl,
-      settingsConfig: initialSettingsConfig,
+      settingsConfig: (provider.settingsConfig ?? {}) as Record<string, unknown>,
       category: provider.category,
       meta: provider.meta,
       icon: provider.icon,
       iconColor: provider.iconColor,
     };
   }, [
-    open, // 修复：编辑保存后再次打开显示旧数据，依赖 open 确保每次打开时重新读取最新 provider 数据
-    provider?.id, // 只依赖 ID，provider 对象更新不会触发重新计算
-    provider?.meta, // 需要依赖 meta 以便正确初始化 testConfig
-    initialSettingsConfig,
+    appId,
+    open, // Re-read latest provider data each time the dialog is opened.
+    provider?.id, // Keep typing stable across provider object refreshes.
   ]);
+
+  useEffect(() => {
+    if (!provider) return;
+    setPinToTopOnSave(false);
+    setEnableOnSave(initialEnabledState);
+  }, [initialEnabledState, provider]);
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
@@ -96,13 +107,13 @@ export function EditProviderDialog({
         provider: updatedProvider,
         originalId: provider.id,
         saveOptions: {
-          pinToTop: values.pinToTopOnSave ?? false,
-          enabled: values.enableOnSave ?? true,
+          pinToTop: pinToTopOnSave,
+          enabled: allowEnableToggle ? enableOnSave : undefined,
         },
       });
       onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange, provider],
+    [appId, enableOnSave, onOpenChange, onSubmit, pinToTopOnSave, provider],
   );
 
   if (!provider || !initialData) {
@@ -115,15 +126,43 @@ export function EditProviderDialog({
       title={t("provider.editProvider")}
       onClose={() => onOpenChange(false)}
       footer={
-        <Button
-          type="submit"
-          form="provider-form"
-          disabled={isFormSubmitting}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Save className="h-4 w-4 mr-2" />
-          {t("common.save")}
-        </Button>
+        <>
+          <div className="mr-auto flex flex-wrap items-center gap-4">
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
+              <Checkbox
+                checked={pinToTopOnSave}
+                onCheckedChange={(checked) => setPinToTopOnSave(Boolean(checked))}
+              />
+              <span>
+                {t("providerForm.pinToTopOnSave", {
+                  defaultValue: "置顶（保存后顺序为 1）",
+                })}
+              </span>
+            </label>
+            {allowEnableToggle ? (
+              <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
+                <Checkbox
+                  checked={enableOnSave}
+                  onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
+                />
+                <span>
+                  {t("providerForm.enableOnSave", {
+                    defaultValue: "启用（保存后立即生效）",
+                  })}
+                </span>
+              </label>
+            ) : null}
+          </div>
+          <Button
+            type="submit"
+            form="provider-form"
+            disabled={isFormSubmitting}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Save className="h-4 w-4 mr-2" />
+            {t("common.save")}
+          </Button>
+        </>
       }
     >
       <ProviderForm

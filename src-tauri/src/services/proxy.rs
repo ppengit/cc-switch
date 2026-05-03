@@ -10,8 +10,8 @@ use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use crate::services::provider::{
-    build_effective_settings_with_common_config, build_effective_settings_without_template,
-    write_live_with_common_config,
+    build_direct_live_settings_with_mcp, build_effective_settings_without_template,
+    build_proxy_takeover_settings, write_live_with_common_config,
 };
 use serde_json::{json, Value};
 use std::str::FromStr;
@@ -22,10 +22,11 @@ use tokio::sync::RwLock;
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
 
-/// 代理接管模式下需要从 Claude Live 配置中移除的"模型覆盖"字段。
+/// 代理接管模式下历史版本可能残留的 Claude Live 模型覆盖字段。
 ///
-/// 原因：接管模式切换供应商时不会写回 Live 配置，如果保留这些字段，
-/// Claude Code 会继续以旧模型名发起请求，导致新供应商不支持时失败。
+/// 新配置体系下，接管 Live 配置由“应用接入配置模板”生成，模板内的默认
+/// 模型字段是有效配置，不应在热切换时删除。这个列表仅保留给显式旧配置
+/// 清理逻辑使用，不参与正常接管渲染。
 const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 6] = [
     "ANTHROPIC_MODEL",
     "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
@@ -102,10 +103,6 @@ impl ProxyService {
             .as_object_mut()
             .expect("Claude env should be normalized to an object");
         env.insert("ANTHROPIC_BASE_URL".to_string(), json!(proxy_url));
-
-        for key in CLAUDE_MODEL_OVERRIDE_ENV_KEYS {
-            env.remove(key);
-        }
 
         let token_keys = [
             "ANTHROPIC_AUTH_TOKEN",
@@ -234,15 +231,17 @@ impl ProxyService {
     pub async fn sync_live_from_provider_while_proxy_active(
         &self,
         app_type: &AppType,
-        provider: &Provider,
+        _provider: &Provider,
     ) -> Result<(), String> {
-        let mut effective_settings = build_effective_settings_with_common_config(
+        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let mut effective_settings = build_proxy_takeover_settings(
             self.db.as_ref(),
             app_type,
-            provider,
+            &proxy_url,
+            &proxy_codex_base_url,
+            PROXY_TOKEN_PLACEHOLDER,
         )
-        .map_err(|e| format!("构建 {} 有效配置失败: {e}", app_type.as_str()))?;
-        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        .map_err(|e| format!("构建 {} 代理接入配置失败: {e}", app_type.as_str()))?;
 
         match app_type {
             AppType::Claude => {
@@ -410,9 +409,10 @@ impl ProxyService {
             .await
             .map(|c| c.enabled)
             .unwrap_or(false);
-        // OpenCode and OpenClaw don't support proxy features, always return false
+        // OpenCode, OpenClaw and Hermes don't support proxy takeover, always return false
         let opencode_enabled = false;
         let openclaw_enabled = false;
+        let hermes_enabled = false;
 
         Ok(ProxyTakeoverStatus {
             claude: claude_enabled,
@@ -420,6 +420,7 @@ impl ProxyService {
             gemini: gemini_enabled,
             opencode: opencode_enabled,
             openclaw: openclaw_enabled,
+            hermes: hermes_enabled,
         })
     }
 
@@ -1044,48 +1045,11 @@ impl ProxyService {
     ///
     /// 因此不需要在 URL 中添加应用前缀。
     async fn takeover_live_configs(&self) -> Result<(), String> {
-        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
-
-        // Claude: 修改 ANTHROPIC_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
-        if let Ok(mut live_config) = self.read_claude_live() {
-            Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
-            self.write_claude_live(&live_config)?;
-            log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
-        }
-
-        // Codex: 修改 config.toml 的 base_url，auth.json 的 OPENAI_API_KEY（代理会注入真实 Token）
-        if let Ok(mut live_config) = self.read_codex_live() {
-            // 1. 修改 auth.json 中的 OPENAI_API_KEY（使用占位符）
-            if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-                auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
+        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            match self.takeover_live_config_best_effort(&app_type).await {
+                Ok(()) => {}
+                Err(err) => log::warn!("{} Live 配置接管失败: {err}", app_type.as_str()),
             }
-
-            // 2. 修改 config.toml 中的 base_url
-            let config_str = live_config
-                .get("config")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
-            live_config["config"] = json!(updated_config);
-
-            self.write_codex_live(&live_config)?;
-            log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
-        }
-
-        // Gemini: 修改 GOOGLE_GEMINI_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
-        if let Ok(mut live_config) = self.read_gemini_live() {
-            if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
-                env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                // 使用占位符，避免显示缺少 key 的警告
-                env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-            } else {
-                live_config["env"] = json!({
-                    "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                    "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-                });
-            }
-            self.write_gemini_live(&live_config)?;
-            log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
         }
 
         Ok(())
@@ -1094,44 +1058,28 @@ impl ProxyService {
     /// 接管指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
     async fn takeover_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let mut live_config = build_proxy_takeover_settings(
+            self.db.as_ref(),
+            app_type,
+            &proxy_url,
+            &proxy_codex_base_url,
+            PROXY_TOKEN_PLACEHOLDER,
+        )
+        .map_err(|e| format!("构建 {} 代理接入配置失败: {e}", app_type.as_str()))?;
 
         match app_type {
             AppType::Claude => {
-                let mut live_config = self.read_claude_live()?;
                 Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
                 self.write_claude_live(&live_config)?;
                 log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
             }
             AppType::Codex => {
-                let mut live_config = self.read_codex_live()?;
-
-                if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut()) {
-                    auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                }
-
-                let config_str = live_config
-                    .get("config")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let updated_config = Self::update_toml_base_url(config_str, &proxy_codex_base_url);
-                live_config["config"] = json!(updated_config);
-
+                Self::apply_codex_takeover_fields(&mut live_config, &proxy_codex_base_url);
                 self.write_codex_live(&live_config)?;
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
-                let mut live_config = self.read_gemini_live()?;
-
-                if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
-                    env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                    env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                } else {
-                    live_config["env"] = json!({
-                        "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                        "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-                    });
-                }
-
+                Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
                 self.write_gemini_live(&live_config)?;
                 log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
             }
@@ -1147,44 +1095,30 @@ impl ProxyService {
     /// 接管指定应用的 Live 配置（尽力而为：配置不存在/读取失败则跳过）
     async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let live_config = build_proxy_takeover_settings(
+            self.db.as_ref(),
+            app_type,
+            &proxy_url,
+            &proxy_codex_base_url,
+            PROXY_TOKEN_PLACEHOLDER,
+        );
 
         match app_type {
             AppType::Claude => {
-                if let Ok(mut live_config) = self.read_claude_live() {
+                if let Ok(mut live_config) = live_config {
                     Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
                     let _ = self.write_claude_live(&live_config);
                 }
             }
             AppType::Codex => {
-                if let Ok(mut live_config) = self.read_codex_live() {
-                    if let Some(auth) = live_config.get_mut("auth").and_then(|v| v.as_object_mut())
-                    {
-                        auth.insert("OPENAI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                    }
-
-                    let config_str = live_config
-                        .get("config")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let updated_config =
-                        Self::update_toml_base_url(config_str, &proxy_codex_base_url);
-                    live_config["config"] = json!(updated_config);
-
+                if let Ok(mut live_config) = live_config {
+                    Self::apply_codex_takeover_fields(&mut live_config, &proxy_codex_base_url);
                     let _ = self.write_codex_live(&live_config);
                 }
             }
             AppType::Gemini => {
-                if let Ok(mut live_config) = self.read_gemini_live() {
-                    if let Some(env) = live_config.get_mut("env").and_then(|v| v.as_object_mut()) {
-                        env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(&proxy_url));
-                        env.insert("GEMINI_API_KEY".to_string(), json!(PROXY_TOKEN_PLACEHOLDER));
-                    } else {
-                        live_config["env"] = json!({
-                            "GOOGLE_GEMINI_BASE_URL": &proxy_url,
-                            "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER
-                        });
-                    }
-
+                if let Ok(mut live_config) = live_config {
+                    Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
                     let _ = self.write_gemini_live(&live_config);
                 }
             }
@@ -1599,8 +1533,8 @@ impl ProxyService {
         let app_type_enum =
             AppType::from_str(app_type).map_err(|_| format!("未知的应用类型: {app_type}"))?;
         let mut effective_settings =
-            build_effective_settings_with_common_config(self.db.as_ref(), &app_type_enum, provider)
-                .map_err(|e| format!("构建 {app_type} 有效配置失败: {e}"))?;
+            build_direct_live_settings_with_mcp(self.db.as_ref(), &app_type_enum, provider)
+                .map_err(|e| format!("构建 {app_type} 直连配置失败: {e}"))?;
 
         if matches!(app_type_enum, AppType::Codex) {
             let effective_without_template =
@@ -1713,11 +1647,6 @@ impl ProxyService {
             if matches!(app_type_enum, AppType::Claude | AppType::Codex | AppType::Gemini) {
                 self.sync_live_from_provider_while_proxy_active(&app_type_enum, &provider)
                     .await?;
-            }
-            if matches!(app_type_enum, AppType::Claude) {
-                if let Err(e) = self.cleanup_claude_model_overrides_in_live() {
-                    log::warn!("清理 Claude Live 模型字段失败（不影响热切换结果）: {e}");
-                }
             }
         }
 
@@ -2190,6 +2119,19 @@ impl ProxyService {
         Ok(())
     }
 
+    pub async fn clear_provider_runtime_state(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<(), String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server
+                .clear_provider_runtime_state(app_type, provider_id)
+                .await;
+        }
+        Ok(())
+    }
+
     /// 读取运行中代理服务器里的 Provider 熔断器统计。
     pub async fn get_circuit_breaker_stats(
         &self,
@@ -2203,14 +2145,31 @@ impl ProxyService {
         }
         Ok(None)
     }
+
+    pub async fn get_raw_logs(
+        &self,
+        limit: usize,
+        app_type: Option<&str>,
+    ) -> Result<Vec<crate::proxy::types::ProxyRawLogEntry>, String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return Ok(server.get_raw_logs(limit, app_type).await);
+        }
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, routing::post, Router};
+    use bytes::Bytes;
+    use futures::StreamExt;
     use serial_test::serial;
+    use std::convert::Infallible;
     use std::env;
     use tempfile::TempDir;
+    use tokio::task::JoinHandle;
+    use tokio::time::{sleep, Duration};
 
     struct TempHome {
         #[allow(dead_code)]
@@ -2257,6 +2216,52 @@ mod tests {
                 None => env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    async fn unused_local_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local ephemeral port");
+        listener
+            .local_addr()
+            .expect("read local addr")
+            .port()
+    }
+
+    async fn start_mock_codex_responses_stream_server() -> (String, JoinHandle<()>) {
+        let app = Router::new().route(
+            "/v1/responses",
+            post(|| async move {
+                let stream = async_stream::stream! {
+                    yield Ok::<Bytes, Infallible>(Bytes::from(
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_live_1\",\"model\":\"gpt-5.3-codex\"}}\n\n",
+                    ));
+                    sleep(Duration::from_millis(250)).await;
+                    yield Ok::<Bytes, Infallible>(Bytes::from(
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_live_1\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n",
+                    ));
+                    yield Ok::<Bytes, Infallible>(Bytes::from("data: [DONE]\n\n"));
+                };
+
+                axum::response::Response::builder()
+                    .status(200)
+                    .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .expect("build mock SSE response")
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        (format!("http://{addr}"), handle)
     }
 
     #[test]
@@ -2319,6 +2324,111 @@ model = "gpt-5.1-codex"
             .expect("base_url should exist");
 
         assert_eq!(base_url, new_url);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn live_codex_stream_request_refreshes_activity_model_to_upstream_model() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let (mock_base_url, mock_handle) = start_mock_codex_responses_stream_server().await;
+        let proxy_port = unused_local_port().await;
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        db.update_proxy_config(ProxyConfig {
+            listen_port: proxy_port,
+            ..Default::default()
+        })
+        .await
+        .expect("update proxy config");
+
+        let service = ProxyService::new(db.clone());
+        let provider = Provider::with_id(
+            "codex-live".to_string(),
+            "Codex Live".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "test-key"
+                },
+                "config": format!(
+                    "model_provider = \"custom\"\nmodel = \"gpt-5.4\"\nmodel_reasoning_effort = \"xhigh\"\ndisable_response_storage = true\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"{mock_base_url}/v1\"\n"
+                )
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.set_current_provider("codex", "codex-live")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("codex-live"))
+            .expect("set local current provider");
+
+        let info = service.start().await.expect("start proxy service");
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/v1/responses", info.port))
+            .json(&json!({
+                "model": "gpt-5.4",
+                "stream": true,
+                "input": "hello"
+            }))
+            .send()
+            .await
+            .expect("send proxied request");
+        assert!(response.status().is_success());
+
+        let mut stream = response.bytes_stream();
+        let first_chunk = stream
+            .next()
+            .await
+            .expect("first stream chunk")
+            .expect("read first stream chunk");
+        assert!(
+            String::from_utf8_lossy(&first_chunk).contains("response.created"),
+            "proxy should forward the first upstream SSE frame"
+        );
+
+        let mut matched = false;
+        for _ in 0..20 {
+            let status = service.get_status().await.expect("get proxy status");
+            if status.active_request_count == 1
+                && status.active_request_targets.iter().any(|target| {
+                    target.app_type == "codex"
+                        && target.provider_id == "codex-live"
+                        && target.inflight_requests == 1
+                        && target.last_request_model.as_deref() == Some("gpt-5.3-codex")
+                })
+            {
+                matched = true;
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            matched,
+            "activity state should refresh from request model gpt-5.4 to upstream model gpt-5.3-codex while the request is still in flight"
+        );
+
+        while let Some(chunk) = stream.next().await {
+            chunk.expect("consume remaining proxied stream");
+        }
+
+        for _ in 0..20 {
+            let status = service.get_status().await.expect("get proxy status");
+            if status.active_request_count == 0 && status.active_request_targets.is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        let final_status = service.get_status().await.expect("get final proxy status");
+        assert_eq!(final_status.active_request_count, 0);
+        assert!(final_status.active_request_targets.is_empty());
+
+        service.stop().await.expect("stop proxy service");
+        mock_handle.abort();
     }
 
     #[tokio::test]
@@ -2549,7 +2659,7 @@ model = "gpt-5.1-codex"
             .write_claude_live(&json!({
                 "env": {
                     "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
-                    "ANTHROPIC_API_KEY": PROXY_TOKEN_PLACEHOLDER,
+                    "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
                     "ANTHROPIC_MODEL": "stale-model"
                 },
                 "permissions": { "allow": ["Bash"] }
@@ -2562,14 +2672,13 @@ model = "gpt-5.1-codex"
             .expect("hot switch provider");
 
         let live = service.read_claude_live().expect("read live config");
-        assert_eq!(
-            live.get("permissions"),
-            provider_b.settings_config.get("permissions"),
-            "provider-derived live settings should be refreshed"
+        assert!(
+            live.get("permissions").is_none(),
+            "takeover live config should stay a stable proxy access config, not provider-specific settings"
         );
         assert_eq!(
             live.get("env")
-                .and_then(|env| env.get("ANTHROPIC_API_KEY"))
+                .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN"))
                 .and_then(|v| v.as_str()),
             Some(PROXY_TOKEN_PLACEHOLDER),
             "takeover token placeholder should be preserved"
@@ -2584,8 +2693,9 @@ model = "gpt-5.1-codex"
         assert!(
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_MODEL"))
-                .is_none(),
-            "Claude model override fields should be removed in takeover mode"
+                .and_then(|v| v.as_str())
+                == Some("claude-sonnet-4-6"),
+            "takeover mode should rewrite stale Claude model override to the access template default"
         );
 
         let backup = db
@@ -2791,7 +2901,21 @@ model = "gpt-5.1-codex"
         .expect("set proxy config");
         db.set_config_template(
             "codex",
-            Some("{providerConfig}\napproval_policy = \"never\"\n\n{mcpConfig}\n".to_string()),
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "approval_policy = \"never\"\nmodel_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = \"cc-switch\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"{proxyCodexBaseUrl}\"\n\n{mcpConfig}\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
         )
         .expect("set codex template");
 
@@ -2865,12 +2989,12 @@ wire_api = "responses"
                     {
                         "key": "env",
                         "label": ".env",
-                        "content": "{providerConfig}\nGEMINI_SANDBOX=1\n"
+                        "content": "GOOGLE_GEMINI_BASE_URL={proxyBaseUrl}\nGEMINI_API_KEY={proxyToken}\nGEMINI_MODEL=gemini-3.1-pro-preview\nGEMINI_SANDBOX=1\n"
                     },
                     {
                         "key": "settings",
                         "label": "settings.json",
-                        "content": "{\n  {settingsConfig}\n  \"mcpServers\": {mcpConfig}\n}\n"
+                        "content": "{\n  \"mcpServers\": {mcpConfig}\n}\n"
                     }
                 ]))
                 .expect("serialize gemini template"),
@@ -2925,10 +3049,8 @@ wire_api = "responses"
         assert!(
             live.get("config")
                 .and_then(|v| v.get("general"))
-                .and_then(|v| v.get("previewFeatures"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            "Gemini settings template should preserve provider settings"
+                .is_none(),
+            "Gemini takeover settings must not include provider-specific live config"
         );
     }
 
@@ -2942,12 +3064,14 @@ wire_api = "responses"
         db.set_config_template(
             "claude",
             Some(
-                r#"{
-  "includeCoAuthoredBy": false,
-  "wrappedProvider": {providerConfig}
-}
-"#
-                .to_string(),
+                serde_json::to_string(&json!([
+                    {
+                        "key": "settings",
+                        "label": "settings.json",
+                        "content": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"{proxyBaseUrl}\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"{proxyToken}\"\n  }\n}\n"
+                    }
+                ]))
+                .expect("serialize claude template"),
             ),
         )
         .expect("set config template");
@@ -2980,16 +3104,15 @@ wire_api = "responses"
             serde_json::from_str(&backup.original_config).expect("parse backup json");
 
         assert_eq!(
-            stored.get("includeCoAuthoredBy").and_then(|v| v.as_bool()),
-            Some(false),
-            "config template should be applied into Claude restore backup"
-        );
-        assert_eq!(
             stored
-                .pointer("/wrappedProvider/env/ANTHROPIC_AUTH_TOKEN")
+                .pointer("/env/ANTHROPIC_AUTH_TOKEN")
                 .and_then(|v| v.as_str()),
             Some("token"),
-            "provider config placeholder should be rendered into Claude backup"
+            "restore backup should store direct provider config, not proxy access template"
+        );
+        assert!(
+            stored.get("includeCoAuthoredBy").is_none(),
+            "application access template must not be applied to restore backup"
         );
     }
 
@@ -3002,7 +3125,21 @@ wire_api = "responses"
         let db = Arc::new(Database::memory().expect("init db"));
         db.set_config_template(
             "codex",
-            Some("disable_response_storage = true\n{providerConfig}\n{mcpConfig}\n".to_string()),
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "disable_response_storage = true\nmodel_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
         )
         .expect("set config template");
 
@@ -3042,9 +3179,10 @@ base_url = "https://codex.example/v1"
             .and_then(|v| v.as_str())
             .expect("config string");
 
+        assert!(config.contains("https://codex.example/v1"));
         assert!(
-            config.contains("disable_response_storage = true"),
-            "config template should be applied into Codex restore backup"
+            !config.contains("disable_response_storage = true"),
+            "application access template must not be applied into Codex restore backup"
         );
     }
 
@@ -3140,7 +3278,7 @@ base_url = "https://new.example/v1"
                     "OPENAI_API_KEY": "rightcode-key"
                 },
                 "config": r#"model_provider = "rightcode"
-model = "gpt-5.4"
+model = "gpt-5.5"
 
 [model_providers.rightcode]
 name = "RightCode"
@@ -3159,7 +3297,7 @@ requires_openai_auth = true
                     "OPENAI_API_KEY": "aihubmix-key"
                 },
                 "config": r#"model_provider = "aihubmix"
-model = "gpt-5.4"
+model = "gpt-5.5"
 
 [model_providers.aihubmix]
 name = "AiHubMix"
@@ -3191,7 +3329,7 @@ requires_openai_auth = true
                     "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
                 },
                 "config": r#"model_provider = "rightcode"
-model = "gpt-5.4"
+model = "gpt-5.5"
 
 [model_providers.rightcode]
 name = "RightCode"

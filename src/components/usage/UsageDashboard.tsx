@@ -5,7 +5,11 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
-import type { AppTypeFilter, UsageRangeSelection } from "@/types/usage";
+import type {
+  AppTypeFilter,
+  RequestLog,
+  UsageRangeSelection,
+} from "@/types/usage";
 import { motion } from "framer-motion";
 import {
   BarChart3,
@@ -29,6 +33,7 @@ import { getLocaleFromLanguage } from "./format";
 import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RawProxyLogPanel } from "@/components/usage/RawProxyLogPanel";
 
 const APP_FILTER_OPTIONS: AppTypeFilter[] = [
   "all",
@@ -38,7 +43,11 @@ const APP_FILTER_OPTIONS: AppTypeFilter[] = [
   "hermes",
 ];
 
-export function UsageDashboard() {
+interface UsageDashboardProps {
+  onOpenRequestDetail?: (request: RequestLog) => void;
+}
+
+export function UsageDashboard({ onOpenRequestDetail }: UsageDashboardProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
@@ -157,6 +166,12 @@ export function UsageDashboard() {
                 <BarChart3 className="h-4 w-4" />
                 {t("usage.modelStats")}
               </TabsTrigger>
+              <TabsTrigger value="raw-proxy" className="gap-2">
+                <ListFilter className="h-4 w-4" />
+                {t("usage.rawProxyLogs", {
+                  defaultValue: "代理原始日志",
+                })}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -172,6 +187,7 @@ export function UsageDashboard() {
                 appType={appType}
                 refreshIntervalMs={refreshIntervalMs}
                 onRangeChange={setRange}
+                onOpenRequestDetail={onOpenRequestDetail}
               />
             </TabsContent>
 
@@ -186,6 +202,13 @@ export function UsageDashboard() {
             <TabsContent value="models" className="mt-0">
               <ModelStatsTable
                 range={range}
+                appType={appType}
+                refreshIntervalMs={refreshIntervalMs}
+              />
+            </TabsContent>
+
+            <TabsContent value="raw-proxy" className="mt-0">
+              <RawProxyLogPanel
                 appType={appType}
                 refreshIntervalMs={refreshIntervalMs}
               />

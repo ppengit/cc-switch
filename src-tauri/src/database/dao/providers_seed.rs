@@ -33,8 +33,8 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://www.anthropic.com/claude-code",
         icon: "anthropic",
         icon_color: "#D4915D",
-        // 空 env 让用户走 Claude CLI 默认认证流程
-        settings_config_json: r#"{"env":{}}"#,
+        // 不写 base URL / key，保留官方认证；默认模型使用当前 Claude Code 推荐编码模型族。
+        settings_config_json: r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}"#,
     },
     OfficialProviderSeed {
         id: "codex-official",
@@ -43,8 +43,8 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://chatgpt.com/codex",
         icon: "openai",
         icon_color: "#00A67E",
-        // 空 auth + 空 config 让用户走 ChatGPT Plus/Pro OAuth
-        settings_config_json: r#"{"auth":{},"config":""}"#,
+        // 不写 API Key，让用户走 Codex 自身认证；默认启用 GPT-5.5 Responses 配置。
+        settings_config_json: r#"{"auth":{},"config":"model = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n"}"#,
     },
     OfficialProviderSeed {
         id: "gemini-official",
@@ -53,8 +53,8 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://ai.google.dev/",
         icon: "gemini",
         icon_color: "#4285F4",
-        // 空 env + 空 config 让用户走 Google OAuth
-        settings_config_json: r#"{"env":{},"config":{}}"#,
+        // 不写 API Key / base URL，保留 Google OAuth；默认模型贴合当前 Gemini CLI。
+        settings_config_json: r#"{"env":{"GEMINI_MODEL":"gemini-3.1-pro-preview"},"config":{"model":{"name":"gemini-3.1-pro-preview"}}}"#,
     },
 ];
 

@@ -12,6 +12,7 @@ import type { SessionMeta } from "@/types";
 import {
   formatRelativeTime,
   formatSessionTitle,
+  getBaseName,
   getProviderIconName,
   getProviderLabel,
   getSessionKey,
@@ -43,6 +44,7 @@ export function SessionItem({
   const title = formatSessionTitle(session);
   const lastActive = session.lastActiveAt || session.createdAt || undefined;
   const sessionKey = getSessionKey(session);
+  const projectName = getBaseName(session.projectDir);
 
   return (
     <div
@@ -95,6 +97,17 @@ export function SessionItem({
             )}
           />
         </div>
+
+        {session.projectDir ? (
+          <div
+            className="mb-1 truncate text-xs text-muted-foreground"
+            title={session.projectDir}
+          >
+            {searchQuery
+              ? highlightText(projectName || session.projectDir, searchQuery)
+              : projectName || session.projectDir}
+          </div>
+        ) : null}
 
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
           <Clock className="size-3" />
