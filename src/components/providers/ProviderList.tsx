@@ -556,51 +556,6 @@ const getProviderTemplateSections = (appId: AppId, template: string) => {
   return [];
 };
 
-const updateProviderTemplateSection = (
-  appId: AppId,
-  template: string,
-  key: string,
-  value: string,
-) => {
-  const parsed = tryParseProviderTemplate(template);
-
-  if (appId === "codex") {
-    if (key === "auth") {
-      try {
-        parsed.auth = value.trim() ? JSON.parse(value) : {};
-      } catch {
-        parsed.auth = value;
-      }
-    } else if (key === "config") {
-      parsed.config = value;
-    }
-    return JSON.stringify(parsed, null, 2);
-  }
-
-  if (appId === "gemini") {
-    if (key === "env") {
-      const env: Record<string, string> = {};
-      for (const line of value.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const index = trimmed.indexOf("=");
-        if (index <= 0) continue;
-        env[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
-      }
-      parsed.env = env;
-    } else if (key === "config") {
-      try {
-        parsed.config = value.trim() ? JSON.parse(value) : {};
-      } catch {
-        parsed.config = value;
-      }
-    }
-    return JSON.stringify(parsed, null, 2);
-  }
-
-  return template;
-};
-
 const getEndpointFromProvider = (provider: Provider, appId: AppId) => {
   const cfg =
     provider.settingsConfig && typeof provider.settingsConfig === "object"
@@ -964,6 +919,13 @@ export function ProviderList({
   const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] =
     useState(false);
   const [providerTemplateDraft, setProviderTemplateDraft] = useState("");
+  // 多 section 编辑器（Codex auth+config / Gemini env+settings）的"原文 drafts"。
+  //
+  // 早期实现把每次 onChange 都通过 `formatProviderTemplateForApp` 重新解析+stringify
+  // 外层 template，导致用户输入还没敲完合法 JSON 就被吞成 `{}`。这里改为 per-section
+  // 维护原文字符串，section 编辑期间不再走 JSON 化回流；只在保存/应用时合成最终对象。
+  const [providerTemplateSectionDrafts, setProviderTemplateSectionDrafts] =
+    useState<Record<string, string>>({});
   const providerTemplateSections = useMemo(
     () => getProviderTemplateSections(appId, providerTemplateDraft),
     [appId, providerTemplateDraft],
@@ -1206,10 +1168,69 @@ export function ProviderList({
   useEffect(() => {
     if (!providerTemplateDialogOpen) return;
     const fallback = DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "";
-    setProviderTemplateDraft(
-      formatProviderTemplateForApp(appId, persistedProviderTemplate?.trim() || fallback),
+    const formatted = formatProviderTemplateForApp(
+      appId,
+      persistedProviderTemplate?.trim() || fallback,
     );
+    setProviderTemplateDraft(formatted);
+    // 同步初始化 section drafts（按当前 appId 的 section 划分）
+    const sections = getProviderTemplateSections(appId, formatted);
+    if (sections.length > 0) {
+      const next: Record<string, string> = {};
+      for (const s of sections) {
+        next[s.key] = s.value;
+      }
+      setProviderTemplateSectionDrafts(next);
+    } else {
+      setProviderTemplateSectionDrafts({});
+    }
   }, [appId, persistedProviderTemplate, providerTemplateDialogOpen]);
+
+  // 把 per-section drafts 合成最终的外层 template JSON 字符串。
+  // 不在 onChange 时调用，仅在保存/应用按钮里使用。
+  const composeTemplateFromSectionDrafts = useCallback(
+    (drafts: Record<string, string>): string => {
+      if (appId === "codex") {
+        let auth: unknown = {};
+        const authRaw = (drafts.auth ?? "").trim();
+        if (authRaw) {
+          try {
+            auth = JSON.parse(authRaw);
+          } catch {
+            // 解析失败：保留原文，让上层校验阶段报错
+            auth = drafts.auth;
+          }
+        }
+        return JSON.stringify(
+          { auth, config: drafts.config ?? "" },
+          null,
+          2,
+        );
+      }
+      if (appId === "gemini") {
+        let config: unknown = {};
+        const configRaw = (drafts.config ?? "").trim();
+        if (configRaw) {
+          try {
+            config = JSON.parse(configRaw);
+          } catch {
+            config = drafts.config;
+          }
+        }
+        const env: Record<string, string> = {};
+        for (const line of (drafts.env ?? "").split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const idx = trimmed.indexOf("=");
+          if (idx <= 0) continue;
+          env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
+        }
+        return JSON.stringify({ env, config }, null, 2);
+      }
+      return providerTemplateDraft;
+    },
+    [appId, providerTemplateDraft],
+  );
 
   const getProviderCurrentState = useCallback(
     (provider: Provider) => {
@@ -1883,6 +1904,7 @@ export function ProviderList({
           defaultValue: "当前配置已保存",
         }),
       );
+      setCurrentConfigDialogOpen(false);
     } catch (error) {
       console.error("Failed to save current config", error);
       toast.error(
@@ -2000,12 +2022,28 @@ export function ProviderList({
     }
   };
 
+  // 把当前编辑器的"有效模板 JSON 字符串"解析出来：
+  // - 多 section 模式：用 section drafts 合成
+  // - 单 textarea 模式：直接用 providerTemplateDraft
+  const resolveActiveProviderTemplate = useCallback((): string => {
+    if (providerTemplateSections.length > 0) {
+      return composeTemplateFromSectionDrafts(providerTemplateSectionDrafts);
+    }
+    return providerTemplateDraft;
+  }, [
+    composeTemplateFromSectionDrafts,
+    providerTemplateDraft,
+    providerTemplateSectionDrafts,
+    providerTemplateSections.length,
+  ]);
+
   const saveProviderTemplate = async () => {
+    const composed = resolveActiveProviderTemplate();
     setIsSavingProviderTemplate(true);
     try {
       await configApi.setProviderDefaultTemplate({
         appId,
-        template: providerTemplateDraft.trim() || null,
+        template: composed.trim() || null,
       });
       await queryClient.invalidateQueries({
         queryKey: ["providerDefaultTemplate", appId],
@@ -2015,6 +2053,7 @@ export function ProviderList({
           defaultValue: "供应商配置模板已保存",
         }),
       );
+      setProviderTemplateDialogOpen(false);
     } catch (error) {
       console.error("Failed to save provider default template", error);
       toast.error(
@@ -2030,9 +2069,10 @@ export function ProviderList({
   const applyProviderTemplateToSelection = async () => {
     if (selectedRows.length === 0) return;
 
+    const composed = resolveActiveProviderTemplate();
     let templateObject: Record<string, unknown>;
     try {
-      templateObject = JSON.parse(providerTemplateDraft) as Record<
+      templateObject = JSON.parse(composed) as Record<
         string,
         unknown
       >;
@@ -2102,9 +2142,10 @@ export function ProviderList({
   const applyProviderTemplateToAll = async () => {
     if (displayRows.length === 0) return;
 
+    const composed = resolveActiveProviderTemplate();
     let templateObject: Record<string, unknown>;
     try {
-      templateObject = JSON.parse(providerTemplateDraft) as Record<
+      templateObject = JSON.parse(composed) as Record<
         string,
         unknown
       >;
@@ -3124,14 +3165,21 @@ export function ProviderList({
               size="sm"
               variant="outline"
               className="h-8 text-sm"
-              onClick={() =>
-                setProviderTemplateDraft(
-                  formatProviderTemplateForApp(
-                    appId,
-                    DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "",
-                  ),
-                )
-              }
+              onClick={() => {
+                const formatted = formatProviderTemplateForApp(
+                  appId,
+                  DEFAULT_PROVIDER_TEMPLATE_BY_APP[appId] ?? "",
+                );
+                setProviderTemplateDraft(formatted);
+                const sections = getProviderTemplateSections(appId, formatted);
+                if (sections.length > 0) {
+                  const next: Record<string, string> = {};
+                  for (const s of sections) next[s.key] = s.value;
+                  setProviderTemplateSectionDrafts(next);
+                } else {
+                  setProviderTemplateSectionDrafts({});
+                }
+              }}
               disabled={isSavingProviderTemplate}
               >
                 {t("provider.resetTemplate", {
@@ -3186,16 +3234,12 @@ export function ProviderList({
                   </div>
                 </div>
                 <Textarea
-                  value={section.value}
+                  value={providerTemplateSectionDrafts[section.key] ?? section.value}
                   onChange={(event) =>
-                    setProviderTemplateDraft((current) =>
-                      updateProviderTemplateSection(
-                        appId,
-                        current,
-                        section.key,
-                        event.target.value,
-                      ),
-                    )
+                    setProviderTemplateSectionDrafts((current) => ({
+                      ...current,
+                      [section.key]: event.target.value,
+                    }))
                   }
                   rows={section.rows}
                   className="font-mono text-sm leading-6"
@@ -3205,11 +3249,7 @@ export function ProviderList({
           ) : (
             <Textarea
               value={providerTemplateDraft}
-              onChange={(event) =>
-                setProviderTemplateDraft(
-                  formatProviderTemplateForApp(appId, event.target.value),
-                )
-              }
+              onChange={(event) => setProviderTemplateDraft(event.target.value)}
               rows={18}
               className="font-mono text-sm leading-6"
               placeholder={formatProviderTemplateForApp(
