@@ -35,7 +35,6 @@ pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
     pub claude_api_format: Option<String>,
-    pub effective_request_model: Option<String>,
 }
 
 pub struct ForwardError {
@@ -72,6 +71,13 @@ pub struct RequestForwarder {
     copilot_optimizer_config: CopilotOptimizerConfig,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
+    /// per-app 切换代次共享 map（用于回写状态前的 epoch 比较）
+    switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
+    /// 本请求开始时 snapshot 的 epoch
+    request_epoch: u64,
+    /// 本请求开始时该应用的"是否启用故障转移"快照。
+    /// 故障转移开启时本请求成功完成后绝不写 is_current（不再有"当前"概念）。
+    auto_failover_enabled_at_start: bool,
 }
 
 impl RequestForwarder {
@@ -95,6 +101,9 @@ impl RequestForwarder {
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
+        switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
+        request_epoch: u64,
+        auto_failover_enabled_at_start: bool,
     ) -> Self {
         Self {
             router,
@@ -113,7 +122,25 @@ impl RequestForwarder {
             optimizer_config,
             copilot_optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
+            switch_epoch,
+            request_epoch,
+            auto_failover_enabled_at_start,
         }
+    }
+
+    /// 检查请求开始时 snapshot 的 epoch 是否仍是最新值。
+    ///
+    /// 任何会改变路由目标的操作（hot-switch、启停故障转移、从队列移除等）
+    /// 都会 bump 该应用的 epoch。请求成功完成后写共享状态前必须先调用此函数：
+    /// 返回 false 表示在请求执行期间发生过切换，**当前请求不能再回写**
+    /// `current_providers` / `is_current` / 托盘状态，否则会把 UI/状态倒退回旧供应商。
+    async fn epoch_is_current(&self, app_type_str: &str) -> bool {
+        let epochs = self.switch_epoch.read().await;
+        epochs
+            .get(app_type_str)
+            .copied()
+            .unwrap_or(0)
+            == self.request_epoch
     }
 
     /// 转发请求（带故障转移）
@@ -189,6 +216,23 @@ impl RequestForwarder {
                     body.clone()
                 };
 
+            // 应用 per-provider quirks：force_model / request_body_patches /
+            // strip_paths(body:) / strip_request_headers。
+            //
+            // headers 同样需要 clone 一份，避免修改影响后续 provider 的 fallback。
+            let mut provider_headers = headers.clone();
+            if let Some(quirks) = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.quirks.as_ref())
+            {
+                crate::quirks::apply_request_quirks(
+                    &mut provider_body,
+                    &mut provider_headers,
+                    quirks,
+                );
+            }
+
             attempted_providers += 1;
 
             route_request(
@@ -219,13 +263,13 @@ impl RequestForwarder {
                     provider,
                     endpoint,
                     &provider_body,
-                    &headers,
+                    &provider_headers,
                     &extensions,
                     adapter.as_ref(),
                 )
                 .await
             {
-                Ok((response, claude_api_format, effective_request_model)) => {
+                Ok((response, claude_api_format, _effective_request_model)) => {
                     // 成功：记录成功并更新熔断器
                     let _ = self
                         .router
@@ -238,8 +282,12 @@ impl RequestForwarder {
                         )
                         .await;
 
+                    // 比较请求开始时的 epoch；若已过期，说明执行期间发生过切换/启停，
+                    // 本次成功结果不应再回写共享状态（current_providers / status / 托盘）。
+                    let epoch_fresh = self.epoch_is_current(app_type_str).await;
+
                     // 更新当前应用类型使用的 provider
-                    {
+                    if epoch_fresh {
                         let mut current_providers = self.current_providers.write().await;
                         current_providers.insert(
                             app_type_str.to_string(),
@@ -252,12 +300,13 @@ impl RequestForwarder {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
+                        let should_switch = epoch_fresh
+                            && !self.auto_failover_enabled_at_start
+                            && self.current_provider_id_at_start.as_str() != provider.id.as_str();
                         if should_switch {
                             status.failover_count += 1;
 
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
+                            // 异步触发供应商切换，更新 UI/托盘，并把"当前供应商"同步为实际使用的 provider
                             let fm = self.failover_manager.clone();
                             let ah = self.app_handle.clone();
                             let pid = provider.id.clone();
@@ -280,7 +329,6 @@ impl RequestForwarder {
                         response,
                         provider: provider.clone(),
                         claude_api_format,
-                        effective_request_model,
                     });
                 }
                 Err(e) => {
@@ -351,13 +399,13 @@ impl RequestForwarder {
                                         provider,
                                         endpoint,
                                         &provider_body,
-                                        &headers,
+                                        &provider_headers,
                                         &extensions,
                                         adapter.as_ref(),
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format, effective_request_model)) => {
+                                    Ok((response, claude_api_format, _effective_request_model)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         // 记录成功
                                         let _ = self
@@ -371,8 +419,11 @@ impl RequestForwarder {
                                             )
                                             .await;
 
+                                        let epoch_fresh =
+                                            self.epoch_is_current(app_type_str).await;
+
                                         // 更新当前应用类型使用的 provider
-                                        {
+                                        if epoch_fresh {
                                             let mut current_providers =
                                                 self.current_providers.write().await;
                                             current_providers.insert(
@@ -386,8 +437,9 @@ impl RequestForwarder {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
+                                            let should_switch = epoch_fresh
+                                                && !self.auto_failover_enabled_at_start
+                                                && self.current_provider_id_at_start.as_str()
                                                     != provider.id.as_str();
                                             if should_switch {
                                                 status.failover_count += 1;
@@ -417,7 +469,6 @@ impl RequestForwarder {
                                             response,
                                             provider: provider.clone(),
                                             claude_api_format,
-                                            effective_request_model,
                                         });
                                     }
                                     Err(retry_err) => {
@@ -552,13 +603,13 @@ impl RequestForwarder {
                                     provider,
                                     endpoint,
                                     &provider_body,
-                                    &headers,
+                                    &provider_headers,
                                     &extensions,
                                     adapter.as_ref(),
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, effective_request_model)) => {
+                                Ok((response, claude_api_format, _effective_request_model)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     let _ = self
                                         .router
@@ -571,7 +622,9 @@ impl RequestForwarder {
                                         )
                                         .await;
 
-                                    {
+                                    let epoch_fresh = self.epoch_is_current(app_type_str).await;
+
+                                    if epoch_fresh {
                                         let mut current_providers =
                                             self.current_providers.write().await;
                                         current_providers.insert(
@@ -584,8 +637,9 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
+                                        let should_switch = epoch_fresh
+                                            && !self.auto_failover_enabled_at_start
+                                            && self.current_provider_id_at_start.as_str()
                                                 != provider.id.as_str();
                                         if should_switch {
                                             status.failover_count += 1;
@@ -611,7 +665,6 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
-                                        effective_request_model,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -806,9 +859,9 @@ impl RequestForwarder {
             .and_then(|meta| meta.is_full_url)
             .unwrap_or(false);
 
-        // 应用模型映射（独立于格式转换）
+        // Claude 的 ANTHROPIC_MODEL 映射只适用于 Claude 语义请求，不能改写 Codex/Gemini 模型。
         let (mapped_body, _original_model, _mapped_model) =
-            super::model_mapper::apply_model_mapping(body.clone(), provider);
+            apply_scoped_model_mapping(app_type_str, body.clone(), provider);
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
@@ -1042,8 +1095,8 @@ impl RequestForwarder {
             app_type_str,
             &provider.id,
             &provider.name,
-            effective_request_model.clone(),
             None,
+            effective_request_model.clone(),
         )
         .await;
         let force_identity_encoding = needs_transform
@@ -1512,7 +1565,11 @@ impl RequestForwarder {
         let status = response.status();
 
         if status.is_success() {
-            Ok((response, resolved_claude_api_format, effective_request_model))
+            Ok((
+                response,
+                resolved_claude_api_format,
+                effective_request_model,
+            ))
         } else {
             let status_code = status.as_u16();
             let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
@@ -1885,6 +1942,19 @@ fn merge_query_params(base_query: Option<&str>, extra_param: Option<&str>) -> Op
     }
 }
 
+fn apply_scoped_model_mapping(
+    app_type_str: &str,
+    body: Value,
+    provider: &Provider,
+) -> (Value, Option<String>, Option<String>) {
+    if app_type_str.eq_ignore_ascii_case(AppType::Claude.as_str()) {
+        return super::model_mapper::apply_model_mapping(body, provider);
+    }
+
+    let original = body.get("model").and_then(|m| m.as_str()).map(String::from);
+    (body, original, None)
+}
+
 fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     match query {
         Some(query) if !query.is_empty() => {
@@ -2155,6 +2225,79 @@ mod tests {
         let url = append_query_to_full_url("https://relay.example/api?foo=bar", Some("x-id=1"));
 
         assert_eq!(url, "https://relay.example/api?foo=bar&x-id=1");
+    }
+
+    #[test]
+    fn append_query_to_full_url_preserves_full_chat_completions_path() {
+        let url = append_query_to_full_url(
+            "https://api.xn--chy-js0fk50c.top/v1/chat/completions",
+            Some("request_id=req-1"),
+        );
+
+        assert_eq!(
+            url,
+            "https://api.xn--chy-js0fk50c.top/v1/chat/completions?request_id=req-1"
+        );
+    }
+
+    #[test]
+    fn codex_model_is_not_rewritten_by_claude_env_mapping() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_MODEL": "gpt-5.4"
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "model": "gpt-5.3-codex", "input": "hello" });
+
+        let (mapped_body, original, mapped) =
+            apply_scoped_model_mapping(AppType::Codex.as_str(), body, &provider);
+
+        assert_eq!(mapped_body["model"], "gpt-5.3-codex");
+        assert_eq!(original.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(mapped, None);
+    }
+
+    #[test]
+    fn claude_model_still_uses_claude_env_mapping() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-5"
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "model": "unknown-client-model", "messages": [] });
+
+        let (mapped_body, original, mapped) =
+            apply_scoped_model_mapping(AppType::Claude.as_str(), body, &provider);
+
+        assert_eq!(mapped_body["model"], "claude-sonnet-4-5");
+        assert_eq!(original.as_deref(), Some("unknown-client-model"));
+        assert_eq!(mapped.as_deref(), Some("claude-sonnet-4-5"));
     }
 
     #[test]

@@ -534,7 +534,7 @@ impl SseUsageCollector {
 }
 
 pub(crate) fn extract_stream_event_model(event: &Value) -> Option<String> {
-    event
+    let nested_model = event
         .get("response")
         .and_then(|response| response.get("model"))
         .and_then(|value| value.as_str())
@@ -543,8 +543,23 @@ pub(crate) fn extract_stream_event_model(event: &Value) -> Option<String> {
                 .get("message")
                 .and_then(|message| message.get("model"))
                 .and_then(|value| value.as_str())
-        })
-        .or_else(|| event.get("model").and_then(|value| value.as_str()))
+        });
+
+    if let Some(model) = nested_model {
+        return Some(model.to_string());
+    }
+
+    // Responses API / Anthropic SSE events carry a `type` field. Their top-level
+    // `model` can be an echoed request/default value, so only trust nested
+    // response.model/message.model for typed events. OpenAI chat-completions
+    // chunks do not use `type`, and keep the model at the top level.
+    if event.get("type").and_then(|value| value.as_str()).is_some() {
+        return None;
+    }
+
+    event
+        .get("model")
+        .and_then(|value| value.as_str())
         .map(str::to_string)
 }
 
@@ -585,64 +600,68 @@ fn create_usage_collector(
         ctx.provider.name.clone(),
     );
 
-    SseUsageCollector::new(start_time, Some(activity_update), move |events, first_token_ms| {
-        let model = model_extractor(&events, &request_model);
-        let latency_ms = start_time.elapsed().as_millis() as u64;
-        let maybe_usage = stream_parser(&events);
-        let state = state.clone();
-        let provider_id = provider_id.clone();
-        let session_id = session_id.clone();
-        let request_model = request_model.clone();
-        let request_id = request_id.clone();
-        let app_handle = app_handle.clone();
-        let proxy_activity = proxy_activity.clone();
+    SseUsageCollector::new(
+        start_time,
+        Some(activity_update),
+        move |events, first_token_ms| {
+            let model = model_extractor(&events, &request_model);
+            let latency_ms = start_time.elapsed().as_millis() as u64;
+            let maybe_usage = stream_parser(&events);
+            let state = state.clone();
+            let provider_id = provider_id.clone();
+            let session_id = session_id.clone();
+            let request_model = request_model.clone();
+            let request_id = request_id.clone();
+            let app_handle = app_handle.clone();
+            let proxy_activity = proxy_activity.clone();
 
-        tokio::spawn(async move {
-            if logging_enabled {
-                if let Some(usage) = maybe_usage {
-                    log_usage_internal(
-                        &state,
-                        &provider_id,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        usage,
-                        latency_ms,
-                        first_token_ms,
-                        true, // is_streaming
-                        status_code,
-                        Some(session_id),
-                    )
-                    .await;
-                } else {
-                    log_usage_internal(
-                        &state,
-                        &provider_id,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        TokenUsage::default(),
-                        latency_ms,
-                        first_token_ms,
-                        true, // is_streaming
-                        status_code,
-                        Some(session_id),
-                    )
-                    .await;
-                    log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+            tokio::spawn(async move {
+                if logging_enabled {
+                    if let Some(usage) = maybe_usage {
+                        log_usage_internal(
+                            &state,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            usage,
+                            latency_ms,
+                            first_token_ms,
+                            true, // is_streaming
+                            status_code,
+                            Some(session_id),
+                        )
+                        .await;
+                    } else {
+                        log_usage_internal(
+                            &state,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            TokenUsage::default(),
+                            latency_ms,
+                            first_token_ms,
+                            true, // is_streaming
+                            status_code,
+                            Some(session_id),
+                        )
+                        .await;
+                        log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+                    }
                 }
-            }
 
-            finish_request(
-                &proxy_activity,
-                app_handle.as_ref(),
-                &request_id,
-                Some(status_code),
-                None,
-            )
-            .await;
-        });
-    })
+                finish_request(
+                    &proxy_activity,
+                    app_handle.as_ref(),
+                    &request_id,
+                    Some(status_code),
+                    None,
+                )
+                .await;
+            });
+        },
+    )
 }
 
 /// 异步记录使用量
@@ -999,6 +1018,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_extract_stream_event_model_prefers_nested_response_model() {
+        let event = serde_json::json!({
+            "type": "response.created",
+            "model": "gpt-5.4",
+            "response": {
+                "id": "resp_123",
+                "model": "gpt-5.3-codex"
+            }
+        });
+
+        assert_eq!(
+            extract_stream_event_model(&event).as_deref(),
+            Some("gpt-5.3-codex")
+        );
+    }
+
+    #[test]
+    fn test_extract_stream_event_model_ignores_typed_top_level_model() {
+        let event = serde_json::json!({
+            "type": "response.output_text.delta",
+            "model": "gpt-5.4",
+            "delta": "hello"
+        });
+
+        assert_eq!(extract_stream_event_model(&event), None);
+    }
+
+    #[test]
+    fn test_extract_stream_event_model_accepts_openai_chat_chunk_model() {
+        let event = serde_json::json!({
+            "id": "chatcmpl_123",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{ "delta": { "content": "hi" } }]
+        });
+
+        assert_eq!(
+            extract_stream_event_model(&event).as_deref(),
+            Some("gpt-4o")
+        );
+    }
+
     fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
             db: db.clone(),
@@ -1010,7 +1072,10 @@ mod tests {
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             app_handle: None,
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
-            proxy_activity: Arc::new(RwLock::new(crate::proxy::activity::ProxyActivityState::default())),
+            proxy_activity: Arc::new(RwLock::new(
+                crate::proxy::activity::ProxyActivityState::default(),
+            )),
+            switch_epoch: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

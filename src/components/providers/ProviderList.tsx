@@ -179,7 +179,7 @@ interface AppConfigFileEntry {
 }
 
 const URL_WITHOUT_TRAILING_SLASH = /\/+$/;
-const URL_V1_SUFFIX = /\/v1(?:\/.*)?$/i;
+const URL_V1_SUFFIX = /\/v1$/i;
 const URL_V1_SEGMENT = /(\/v1)(?=\/|$|[?#])/i;
 
 const stripTrailingSlash = (value?: string | null) =>
@@ -1307,7 +1307,12 @@ export function ProviderList({
         provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
 
       const canDelete =
-        !isReadOnly && (isAnyOmo || isAdditiveMode ? true : !isCurrent);
+        !isReadOnly &&
+        (isAnyOmo || isAdditiveMode
+          ? true
+          : isFailoverModeActive
+            ? true
+            : !isCurrent || Object.keys(providers).length > 1);
 
       const statusRank =
         activeRequestCount > 0
@@ -1862,15 +1867,6 @@ export function ProviderList({
 
   const saveCurrentConfig = async () => {
     if (configFiles.length === 0) return;
-    if (isCurrentAppTakeoverActive) {
-      toast.error(
-        t("provider.currentConfigSaveBlockedByTakeover", {
-          defaultValue:
-            "当前应用已开启代理接管，实际配置由应用接入配置模板管理；请修改应用接入配置模板或先关闭接管。",
-        }),
-      );
-      return;
-    }
     setIsSavingConfig(true);
 
     try {
@@ -1991,6 +1987,7 @@ export function ProviderList({
           defaultValue: "应用接入配置模板已保存",
         }),
       );
+      setTemplateDialogOpen(false);
     } catch (error) {
       console.error("Failed to save template", error);
       toast.error(
@@ -2260,7 +2257,7 @@ export function ProviderList({
       return;
     }
 
-    if (row.isCurrent) {
+    if (row.isCurrent && !isFailoverModeActive) {
       toast.info(
         t("provider.disableCurrentUnsupported", {
           defaultValue: "当前供应商无法直接禁用，请先切换到其他供应商",
@@ -2550,7 +2547,10 @@ export function ProviderList({
                             ) : null}
                           </div>
                           <div className="truncate text-sm text-muted-foreground">
-                            {row.provider.notes || row.modelDisplay || row.endpointDisplay}
+                            {row.provider.notes ||
+                              (row.modelDisplay !== "-"
+                                ? row.modelDisplay
+                                : row.endpointDisplay)}
                           </div>
                         </button>
                       );
@@ -3040,8 +3040,7 @@ export function ProviderList({
               disabled={
                 configFiles.length === 0 ||
                 isCurrentConfigLoading ||
-                isSavingConfig ||
-                isCurrentAppTakeoverActive
+                isSavingConfig
               }
             >
               {isSavingConfig
@@ -3064,7 +3063,7 @@ export function ProviderList({
               {isCurrentAppTakeoverActive
                 ? t("provider.currentConfigTakeoverHint", {
                     defaultValue:
-                      "当前应用已开启代理接管。这里展示的是应用实际配置，保存被禁用，避免绕过接管链路。",
+                      "当前应用已开启代理接管。这里展示的是应用实际配置，可随时手动保存；重新开启或同步接管模板时可能会再次按模板重建。",
                   })
                 : t("provider.currentConfigSsotHint", {
                     defaultValue:

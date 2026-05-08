@@ -426,7 +426,10 @@ mod tests {
             ),
             None
         );
-        assert_eq!(sanitize_detected_title_candidate("# AGENTS.md instructions"), None);
+        assert_eq!(
+            sanitize_detected_title_candidate("# AGENTS.md instructions"),
+            None
+        );
         assert_eq!(
             sanitize_detected_title_candidate("How do I deploy this project?"),
             Some("How do I deploy this project?".to_string())

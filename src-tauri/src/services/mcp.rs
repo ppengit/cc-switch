@@ -102,8 +102,7 @@ impl McpService {
             return Ok(!matches!(app, AppType::OpenClaw));
         }
 
-        let Some(current_id) =
-            crate::settings::get_effective_current_provider(&state.db, app)?
+        let Some(current_id) = crate::settings::get_effective_current_provider(&state.db, app)?
         else {
             return Ok(false);
         };

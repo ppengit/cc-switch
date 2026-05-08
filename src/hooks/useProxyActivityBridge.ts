@@ -52,6 +52,9 @@ export function useProxyActivityBridge() {
               return next;
             },
           );
+          queryClient.invalidateQueries({
+            queryKey: ["usage", "raw-proxy-logs"],
+          });
         },
       );
 

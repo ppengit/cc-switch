@@ -18,8 +18,8 @@ pub async fn get_claude_config_status() -> Result<ConfigStatus, String> {
     Ok(config::get_claude_config_status())
 }
 
-use std::str::FromStr;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 fn invalid_json_format_error(error: serde_json::Error) -> String {
     let lang = settings::get_settings()
@@ -149,8 +149,8 @@ fn validate_provider_default_template_payload(
         return Ok(None);
     }
 
-    let parsed = serde_json::from_str::<serde_json::Value>(trimmed)
-        .map_err(invalid_json_format_error)?;
+    let parsed =
+        serde_json::from_str::<serde_json::Value>(trimmed).map_err(invalid_json_format_error)?;
     if !parsed.is_object() {
         return Err(provider_template_must_be_object_error());
     }
@@ -361,7 +361,9 @@ fn validate_app_config_file_content(
     match (app_type, file_key) {
         (AppType::Claude, "settings") | (AppType::Claude, "mcp") => {
             if trimmed.is_empty() {
-                return Err(format!("{label} 不能为空；如不需要该文件，请保持文件不存在"));
+                return Err(format!(
+                    "{label} 不能为空；如不需要该文件，请保持文件不存在"
+                ));
             }
             parse_json_object(content, label)
         }
@@ -559,7 +561,8 @@ pub async fn write_app_config_file(
         return Ok(true);
     }
     validate_app_config_file_content(&app_type, &key, &label, &content)?;
-    crate::config::write_text_file(&path, &content).map_err(|e| format!("写入配置文件失败: {e}"))?;
+    crate::config::write_text_file(&path, &content)
+        .map_err(|e| format!("写入配置文件失败: {e}"))?;
     Ok(true)
 }
 
@@ -697,8 +700,7 @@ pub async fn set_provider_default_template(
     state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let validated_template =
-        validate_provider_default_template_payload(&app_type, template)?;
+    let validated_template = validate_provider_default_template_payload(&app_type, template)?;
     state
         .db
         .set_provider_default_template(app_type.as_str(), validated_template)
@@ -907,9 +909,7 @@ pub async fn set_common_config_snippet(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        validate_common_config_snippet, validate_provider_default_template_payload,
-    };
+    use super::{validate_common_config_snippet, validate_provider_default_template_payload};
     use crate::app_config::AppType;
 
     #[test]
@@ -930,11 +930,9 @@ mod tests {
 
     #[test]
     fn provider_default_template_treats_blank_input_as_clear() {
-        let result = validate_provider_default_template_payload(
-            &AppType::Claude,
-            Some("   ".to_string()),
-        )
-        .expect("blank template should be treated as clear");
+        let result =
+            validate_provider_default_template_payload(&AppType::Claude, Some("   ".to_string()))
+                .expect("blank template should be treated as clear");
         assert!(result.is_none());
     }
 

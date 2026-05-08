@@ -2,10 +2,10 @@
 //!
 //! 管理代理模式下的故障转移队列（基于 providers 表的 in_failover_queue 字段）
 
+use crate::app_config::AppType;
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
-use crate::app_config::AppType;
 use std::str::FromStr;
 use tauri::Emitter;
 
@@ -71,14 +71,14 @@ pub async fn remove_from_failover_queue(
         .clear_provider_runtime_state(&provider_id, &app_type)
         .await?;
 
-    let (app_enabled, auto_failover_enabled) = match state.db.get_proxy_config_for_app(&app_type).await
-    {
-        Ok(config) => (config.enabled, config.auto_failover_enabled),
-        Err(error) => {
-            log::warn!("[Failover] 读取 {app_type} 代理配置失败，跳过即时切换: {error}");
-            (false, false)
-        }
-    };
+    let (app_enabled, auto_failover_enabled) =
+        match state.db.get_proxy_config_for_app(&app_type).await {
+            Ok(config) => (config.enabled, config.auto_failover_enabled),
+            Err(error) => {
+                log::warn!("[Failover] 读取 {app_type} 代理配置失败，跳过即时切换: {error}");
+                (false, false)
+            }
+        };
 
     if was_current_provider
         && app_enabled
@@ -158,11 +158,13 @@ pub async fn set_auto_failover_enabled(
         }
     }
 
-    // 强一致语义：开启故障转移后立即切到队列 P1（并确保队列非空）
+    // 强一致语义：开启故障转移后立即让队列就位（首位作为活动目标显示用）
     //
     // 说明：
-    // - 仅在 enabled=true 时执行“切到 P1”
-    // - 若队列为空，则尝试把“当前供应商”自动加入队列作为 P1，避免用户在 UI 上陷入死锁（无法先加队列再开启）
+    // - 仅在 enabled=true 时执行"准备 P1"
+    // - 若队列为空，则尝试把"当前供应商"自动加入队列作为 P1，避免用户在 UI 上陷入死锁（无法先加队列再开启）
+    // - 故障转移模式下**不应该**存在"当前供应商"概念，因此本次开启会把
+    //   settings.current_provider_xxx 与 DB.is_current 一并清空。
     let p1_provider_id = if enabled {
         let mut queue = state
             .db
@@ -213,20 +215,44 @@ pub async fn set_auto_failover_enabled(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 开启后立即切到 P1：更新 is_current + 本地 settings + Live 备份（接管模式下）
     if enabled {
-        state
-            .proxy_service
-            .switch_proxy_target(&app_type, &p1_provider_id)
-            .await?;
+        // 故障转移模式下不应该有"当前供应商"概念：清空两端的 is_current 状态。
+        // - settings.current_provider_xxx：本地设备级
+        // - DB.is_current：跨设备同步默认值
+        let _ = crate::settings::set_current_provider(&app_enum, None);
+        if let Err(error) = state.db.clear_current_provider(&app_type) {
+            log::warn!("[Failover] 清空 {app_type} 的 is_current 失败: {error}");
+        }
 
-        // 发射 provider-switched 事件（让前端刷新当前供应商）
+        // 让 P1 立刻成为路由目标（仅更新内存中的 active_target，不写 is_current）。
+        if let Some(provider) = state
+            .db
+            .get_provider_by_id(&p1_provider_id, &app_type)
+            .map_err(|e| e.to_string())?
+        {
+            state
+                .proxy_service
+                .set_active_target_only(&app_type, &provider.id, &provider.name)
+                .await;
+        }
+
+        // 发射 provider-switched 事件（让前端刷新当前活动目标显示）
         let event_data = serde_json::json!({
             "appType": app_type,
             "providerId": p1_provider_id,
             "source": "failoverEnabled"
         });
         let _ = app.emit("provider-switched", event_data);
+    } else {
+        // 关闭故障转移：把队列首位回填为 current_provider，避免回到关闭模式时无可用目标。
+        let queue = state
+            .db
+            .get_failover_queue(&app_type)
+            .map_err(|e| e.to_string())?;
+        if let Some(first) = queue.first() {
+            let _ = state.db.set_current_provider(&app_type, &first.provider_id);
+            let _ = crate::settings::set_current_provider(&app_enum, Some(&first.provider_id));
+        }
     }
 
     // 刷新托盘菜单，确保状态同步

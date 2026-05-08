@@ -29,10 +29,9 @@ pub use live::{
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_direct_live_settings_with_mcp, build_effective_settings_without_template,
-    build_proxy_takeover_settings,
-    normalize_provider_common_config_for_storage, provider_exists_in_live_config,
-    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
-    write_live_with_common_config,
+    build_proxy_takeover_settings, normalize_provider_common_config_for_storage,
+    provider_exists_in_live_config, strip_common_config_from_live_settings,
+    sync_current_provider_for_app_to_live, write_live_with_common_config,
 };
 
 // Internal re-exports
@@ -598,7 +597,10 @@ base_url = "http://localhost:8080"
                 .db
                 .get_provider_by_id("claude-disabled", AppType::Claude.as_str())
                 .expect("query stored provider");
-            assert!(stored.is_some(), "provider should still be saved to database");
+            assert!(
+                stored.is_some(),
+                "provider should still be saved to database"
+            );
 
             let current = state
                 .db
@@ -1301,8 +1303,17 @@ impl ProviderService {
 
     /// Delete a provider
     ///
-    /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
-    /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
+    /// 按"代理 + 故障转移"开关分支处理：
+    ///
+    /// - **故障转移开启**：不存在"当前供应商"概念。直接从故障转移队列移除（如果在）、
+    ///   清理活动面板/熔断器，再从数据库删除。
+    /// - **故障转移关闭，且要删的不是当前**：保持原有行为，直接删除。
+    /// - **故障转移关闭，且要删的就是当前**：先在剩余供应商里按 `sort_index`
+    ///   选下一个候选，调用 `switch` 完成迁移（直连模式会写盘，代理模式做热切换），
+    ///   切换成功后再删除。如果整个应用只有 1 个供应商，阻止删除。
+    ///
+    /// 对于累加模式应用（OpenCode, OpenClaw, Hermes），可以随时删除任意供应商，
+    /// 同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
@@ -1352,15 +1363,88 @@ impl ProviderService {
             return Ok(());
         }
 
-        // For other apps: Check both local settings and database
+        // Switch-mode apps (Claude/Codex/Gemini): branch on auto_failover_enabled.
+        let auto_failover_enabled = futures::executor::block_on(
+            state.db.get_proxy_config_for_app(app_type.as_str()),
+        )
+        .map(|c| c.auto_failover_enabled)
+        .unwrap_or(false);
+
+        // 故障转移开启：不存在"当前供应商"概念。
+        // 直接从队列移除（若在）、清理活动面板/熔断器、删 DB。
+        if auto_failover_enabled {
+            // 1. 从故障转移队列移除（即使不在队列中也是 idempotent）
+            state.db.remove_from_failover_queue(app_type.as_str(), id)?;
+
+            // 2. 清理活动面板/active_targets/熔断器
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .clear_provider_runtime_state(id, app_type.as_str()),
+            )
+            .map_err(AppError::Message)?;
+
+            // 3. 防御性：把可能残留的 is_current/local settings 一并清掉
+            let local_current = crate::settings::get_current_provider(&app_type);
+            if local_current.as_deref() == Some(id) {
+                let _ = crate::settings::set_current_provider(&app_type, None);
+            }
+            // DB 层 is_current 留给 set_auto_failover_enabled 统一清理；这里删除
+            // 行本身就会带走该 provider 的 is_current 标记。
+
+            // 4. 删除 DB 记录
+            return state.db.delete_provider(app_type.as_str(), id);
+        }
+
+        // 故障转移关闭：检查是否在删除"当前供应商"。
         let local_current = crate::settings::get_current_provider(&app_type);
         let db_current = state.db.get_current_provider(app_type.as_str())?;
+        let is_current_target =
+            local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id);
 
-        if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
-            return Err(AppError::Message(
-                "无法删除当前正在使用的供应商".to_string(),
-            ));
+        if !is_current_target {
+            return state.db.delete_provider(app_type.as_str(), id);
         }
+
+        // 删除目标 == 当前供应商：尝试 auto-rotate 到下一个候选。
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+
+        // 按 sort_index 选下一个非 OMO、非 official 的可切换候选；
+        // 优先排除被 hot-switch 拒绝的 official 类目（代理模式下不允许切到 official）。
+        let proxy_takeover_enabled = futures::executor::block_on(
+            state.db.get_proxy_config_for_app(app_type.as_str()),
+        )
+        .map(|c| c.enabled)
+        .unwrap_or(false);
+        let proxy_running =
+            futures::executor::block_on(state.proxy_service.is_running());
+        let block_official = proxy_takeover_enabled && proxy_running;
+
+        let next = providers
+            .values()
+            .filter(|p| p.id != id)
+            .filter(|p| !block_official || p.category.as_deref() != Some("official"))
+            .min_by_key(|p| (p.sort_index.unwrap_or(usize::MAX), p.id.clone()));
+
+        let Some(next) = next else {
+            return Err(AppError::localized(
+                "provider.delete.last_one",
+                "无法删除最后一个供应商，请先添加新的供应商再尝试删除。",
+                "Cannot delete the last remaining provider; add another provider before deleting.",
+            ));
+        };
+
+        let next_id = next.id.clone();
+        // 用统一的 switch 入口，让它根据当前模式决定走 live 写盘还是热切换。
+        Self::switch(state, app_type.clone(), &next_id)?;
+
+        // 切换成功后清理活动面板（被删除的旧 provider 不应再出现在 active_targets）
+        futures::executor::block_on(
+            state
+                .proxy_service
+                .clear_provider_runtime_state(id, app_type.as_str()),
+        )
+        .map_err(AppError::Message)?;
 
         state.db.delete_provider(app_type.as_str(), id)
     }
@@ -1461,11 +1545,10 @@ impl ProviderService {
         // Both conditions must be true to use hot-switch mode
         // Use blocking wait since this is a sync function
         let is_proxy_running = futures::executor::block_on(state.proxy_service.is_running());
-        let proxy_takeover_enabled = futures::executor::block_on(
-            state.db.get_proxy_config_for_app(app_type.as_str()),
-        )
-        .map(|config| config.enabled)
-        .unwrap_or(false);
+        let proxy_takeover_enabled =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
+                .map(|config| config.enabled)
+                .unwrap_or(false);
 
         // Hot-switch only when proxy takeover is explicitly enabled for this app
         // and the proxy server is actually running.
@@ -2033,14 +2116,14 @@ impl ProviderService {
 
         let mut ordered: Vec<Provider> = providers.into_values().collect();
         ordered.sort_by(|a, b| {
-            let sort_diff = (a.sort_index.unwrap_or(usize::MAX))
-                .cmp(&b.sort_index.unwrap_or(usize::MAX));
+            let sort_diff =
+                (a.sort_index.unwrap_or(usize::MAX)).cmp(&b.sort_index.unwrap_or(usize::MAX));
             if sort_diff != std::cmp::Ordering::Equal {
                 return sort_diff;
             }
 
-            let created_diff = (a.created_at.unwrap_or(i64::MAX))
-                .cmp(&b.created_at.unwrap_or(i64::MAX));
+            let created_diff =
+                (a.created_at.unwrap_or(i64::MAX)).cmp(&b.created_at.unwrap_or(i64::MAX));
             if created_diff != std::cmp::Ordering::Equal {
                 return created_diff;
             }

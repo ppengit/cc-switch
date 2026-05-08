@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractCodexBaseUrl,
   extractCodexModelName,
+  isKnownFullApiEndpoint,
   setCodexBaseUrl,
   setCodexModelName,
 } from "@/utils/providerConfigUtils";
@@ -54,6 +55,80 @@ describe("Codex TOML utils", () => {
 
     const output2 = setCodexModelName(output1, " new-model \n");
     expect(extractCodexModelName(output2)).toBe("new-model");
+  });
+
+  it("replaces an empty base_url placeholder instead of appending a duplicate line", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      'model_reasoning_effort = "xhigh"',
+      'disable_response_storage = true',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'base_url = ""',
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://api.example.com/v1");
+
+    expect(output).toContain('base_url = "https://api.example.com/v1"');
+    expect(output).not.toContain('base_url = ""');
+    expect(output.match(/base_url\s*=/g)).toHaveLength(1);
+  });
+
+  it("replaces an empty top-level model placeholder instead of appending a duplicate line", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = ""',
+      'model_reasoning_effort = "xhigh"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'base_url = "https://api.example.com/v1"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+
+    const output = setCodexModelName(input, "gpt-5.5");
+
+    expect(output).toContain('model = "gpt-5.5"');
+    expect(output).not.toContain('model = ""');
+    expect(output.match(/^model\s*=/gm)).toHaveLength(1);
+  });
+
+  it("preserves a full chat completions endpoint in base_url", () => {
+    const input = [
+      'model_provider = "custom"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'base_url = "https://old.example/v1"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+
+    const fullEndpoint =
+      "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
+    const output = setCodexBaseUrl(input, fullEndpoint);
+
+    expect(extractCodexBaseUrl(output)).toBe(fullEndpoint);
+    expect(output).toContain(`base_url = "${fullEndpoint}"`);
+  });
+
+  it("recognizes known full API endpoints without treating /v1 bases as full URLs", () => {
+    expect(
+      isKnownFullApiEndpoint(
+        "https://api.xn--chy-js0fk50c.top/v1/chat/completions",
+      ),
+    ).toBe(true);
+    expect(
+      isKnownFullApiEndpoint("https://relay.example/v1/responses"),
+    ).toBe(true);
+    expect(isKnownFullApiEndpoint("https://relay.example/v1")).toBe(false);
+    expect(isKnownFullApiEndpoint("https://relay.example/api")).toBe(false);
   });
 
   it("reads and writes base_url in the active provider section", () => {

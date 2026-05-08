@@ -208,7 +208,10 @@ pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppE
 ///
 /// 用于判断能否安全地直接回写模板渲染后的原始文本，
 /// 以保留注释、分段和顺序；一旦文本与键值对不一致，则必须回退到序列化写法。
-pub fn env_text_matches_map(content: &str, map: &HashMap<String, String>) -> Result<bool, AppError> {
+pub fn env_text_matches_map(
+    content: &str,
+    map: &HashMap<String, String>,
+) -> Result<bool, AppError> {
     if content.trim().is_empty() {
         return Ok(map.is_empty());
     }

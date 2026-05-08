@@ -1,7 +1,7 @@
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
-use rusqlite::OptionalExtension;
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 impl Database {
     fn normalize_session_source_path(source_path: Option<&str>) -> String {
@@ -84,12 +84,12 @@ impl Database {
 
         let value = conn
             .query_row(
-            "SELECT custom_title
+                "SELECT custom_title
              FROM session_title_mappings
              WHERE app_type = ?1 AND session_id = ?2 AND source_path = ?3",
-            params![app_type, session_id, normalized_source],
-            |row| row.get::<_, Option<String>>(0),
-        )
+                params![app_type, session_id, normalized_source],
+                |row| row.get::<_, Option<String>>(0),
+            )
             .optional()
             .map_err(|e| AppError::Database(format!("读取会话标题映射失败: {e}")))?;
 

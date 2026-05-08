@@ -66,19 +66,26 @@ fn codex_auto_model_extractor(events: &[Value], request_model: &str) -> String {
             return model;
         }
     }
-    // 回退：从 response.completed 事件中提取
+    // 回退：从 Responses API 的嵌套 response.model 中提取。带 `type` 的 SSE
+    // 事件不信任顶层 model，避免把请求默认值误当成上游实际模型。
     events
         .iter()
         .find_map(|e| {
-            if e.get("type")?.as_str()? == "response.completed" {
+            if e.get("type").and_then(|value| value.as_str()).is_some() {
                 e.get("response")?.get("model")?.as_str()
             } else {
                 None
             }
         })
         .or_else(|| {
-            // 再回退：从 OpenAI 格式事件中提取
-            events.iter().find_map(|e| e.get("model")?.as_str())
+            // 再回退：OpenAI Chat Completions chunk 没有 type，模型位于顶层。
+            events.iter().find_map(|e| {
+                if e.get("type").and_then(|value| value.as_str()).is_none() {
+                    e.get("model")?.as_str()
+                } else {
+                    None
+                }
+            })
         })
         .unwrap_or(request_model)
         .to_string()
@@ -186,3 +193,55 @@ pub const GEMINI_HANDLER_CONFIG: HandlerConfig = HandlerConfig {
     app_type_str: "gemini",
     parser_config: &GEMINI_PARSER_CONFIG,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_auto_model_extractor_prefers_nested_response_model() {
+        let events = vec![json!({
+            "type": "response.created",
+            "model": "gpt-5.4",
+            "response": {
+                "id": "resp_123",
+                "model": "gpt-5.3-codex"
+            }
+        })];
+
+        assert_eq!(
+            codex_auto_model_extractor(&events, "gpt-5.3-codex"),
+            "gpt-5.3-codex"
+        );
+    }
+
+    #[test]
+    fn codex_auto_model_extractor_ignores_typed_top_level_model() {
+        let events = vec![json!({
+            "type": "response.output_text.delta",
+            "model": "gpt-5.4",
+            "delta": "hello"
+        })];
+
+        assert_eq!(
+            codex_auto_model_extractor(&events, "gpt-5.3-codex"),
+            "gpt-5.3-codex"
+        );
+    }
+
+    #[test]
+    fn codex_auto_model_extractor_accepts_openai_chat_chunk_model() {
+        let events = vec![json!({
+            "id": "chatcmpl_123",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{ "delta": { "content": "hi" } }]
+        })];
+
+        assert_eq!(
+            codex_auto_model_extractor(&events, "fallback-model"),
+            "gpt-4o"
+        );
+    }
+}

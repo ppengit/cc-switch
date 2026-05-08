@@ -55,10 +55,12 @@ fn current_config_batch_save_validates_all_files_before_writing() {
         ],
     ));
 
-    assert!(result.is_err(), "invalid settings.json should reject the batch");
+    assert!(
+        result.is_err(),
+        "invalid settings.json should reject the batch"
+    );
     assert!(
         !home.join(".gemini").join(".env").exists(),
         "valid files must not be partially written when another file is invalid"
     );
 }
-

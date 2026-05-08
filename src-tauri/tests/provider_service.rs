@@ -1111,7 +1111,7 @@ fn provider_service_delete_claude_removes_provider_files() {
 }
 
 #[test]
-fn provider_service_delete_current_provider_returns_error() {
+fn provider_service_delete_last_remaining_provider_returns_error() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -1138,23 +1138,62 @@ fn provider_service_delete_current_provider_returns_error() {
     let app_state = create_test_state_with_config(&config).expect("create test state");
 
     let err = ProviderService::delete(&app_state, AppType::Claude, "keep")
-        .expect_err("deleting current provider should fail");
-    match err {
-        AppError::Localized { zh, .. } => assert!(
-            zh.contains("不能删除当前正在使用的供应商")
-                || zh.contains("无法删除当前正在使用的供应商"),
-            "unexpected message: {zh}"
-        ),
-        AppError::Config(msg) => assert!(
-            msg.contains("不能删除当前正在使用的供应商")
-                || msg.contains("无法删除当前正在使用的供应商"),
-            "unexpected message: {msg}"
-        ),
-        AppError::Message(msg) => assert!(
-            msg.contains("不能删除当前正在使用的供应商")
-                || msg.contains("无法删除当前正在使用的供应商"),
-            "unexpected message: {msg}"
-        ),
-        other => panic!("expected Config/Message error, got {other:?}"),
+        .expect_err("deleting last remaining provider should fail");
+    let msg = match err {
+        AppError::Localized { zh, .. } => zh,
+        AppError::Config(msg) => msg,
+        AppError::Message(msg) => msg,
+        other => panic!("expected Localized/Config/Message error, got {other:?}"),
+    };
+    assert!(
+        msg.contains("最后一个供应商") || msg.contains("last remaining"),
+        "expected last-remaining error, got: {msg}"
+    );
+}
+
+#[test]
+fn provider_service_delete_current_auto_rotates_to_next() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "a".to_string();
+        let mut a = Provider::with_id(
+            "a".to_string(),
+            "Provider A".to_string(),
+            json!({ "env": { "ANTHROPIC_API_KEY": "key-a" } }),
+            None,
+        );
+        a.sort_index = Some(1);
+        let mut b = Provider::with_id(
+            "b".to_string(),
+            "Provider B".to_string(),
+            json!({ "env": { "ANTHROPIC_API_KEY": "key-b" } }),
+            None,
+        );
+        b.sort_index = Some(2);
+        manager.providers.insert("a".to_string(), a);
+        manager.providers.insert("b".to_string(), b);
     }
+
+    let app_state = create_test_state_with_config(&config).expect("create test state");
+
+    ProviderService::delete(&app_state, AppType::Claude, "a")
+        .expect("auto-rotate then delete should succeed");
+
+    let providers = app_state
+        .db
+        .get_all_providers(AppType::Claude.as_str())
+        .expect("get all providers");
+    assert!(!providers.contains_key("a"), "deleted provider should be gone");
+    let new_current = app_state
+        .db
+        .get_current_provider(AppType::Claude.as_str())
+        .expect("get current");
+    assert_eq!(new_current.as_deref(), Some("b"), "current should auto-rotate to b");
 }

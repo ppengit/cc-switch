@@ -173,6 +173,25 @@ export interface ProviderMeta {
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
   githubAccountId?: string;
+  // per-provider 特殊配置（quirks）：
+  // - strip_paths: 写盘 / 转发前删除指定路径（前缀: env: / auth: / config.toml: / body:）
+  // - force_model: 转发请求时强制覆盖 body.model
+  // - strip_request_headers: 转发请求时删除指定 header（小写匹配）
+  // - request_body_patches: JSON Patch 子集（add/replace/remove）
+  quirks?: ProviderQuirks;
+}
+
+export type JsonPatchOp =
+  | { op: "add"; path: string; value: unknown }
+  | { op: "replace"; path: string; value: unknown }
+  | { op: "remove"; path: string };
+
+export interface ProviderQuirks {
+  strip_paths?: string[];
+  force_model?: string;
+  strip_request_headers?: string[];
+  request_body_patches?: JsonPatchOp[];
+  [key: string]: unknown;
 }
 
 // Skill 同步方式

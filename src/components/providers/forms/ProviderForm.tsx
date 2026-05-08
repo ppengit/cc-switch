@@ -47,7 +47,9 @@ import { HermesFormFields } from "./HermesFormFields";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import {
   applyTemplateValues,
+  extractCodexBaseUrl,
   hasApiKeyField,
+  isKnownFullApiEndpoint,
   setCodexBaseUrl as setCodexBaseUrlInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
@@ -191,7 +193,89 @@ const normalizeUrlForSave = (value: string): string => {
 
 const normalizeWebsiteFromEndpoint = (endpoint: string): string => {
   const normalized = normalizeUrlForSave(endpoint);
+  if (!normalized) return "";
+
+  try {
+    const url = new URL(normalized);
+    if (isKnownFullApiEndpoint(normalized)) {
+      return url.origin;
+    }
+    if (/\/v1$/i.test(url.pathname)) {
+      url.pathname = url.pathname.replace(/\/v1$/i, "") || "/";
+      url.search = "";
+      url.hash = "";
+      return normalizeUrlForSave(url.toString());
+    }
+  } catch {
+    // Fallback for partially typed URLs.
+  }
+
   return normalized.replace(/\/v1$/i, "");
+};
+
+const isUsableHttpUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !!url.host;
+  } catch {
+    return false;
+  }
+};
+
+const tryParseSettingsConfig = (
+  value: string,
+): Record<string, unknown> | undefined => {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getEndpointFromSettingsConfig = (
+  settingsConfig: Record<string, unknown> | undefined,
+  appId: AppId,
+): string => {
+  const cfg =
+    settingsConfig && typeof settingsConfig === "object" ? settingsConfig : {};
+
+  if (appId === "claude") {
+    const env = cfg.env as Record<string, unknown> | undefined;
+    return typeof env?.ANTHROPIC_BASE_URL === "string"
+      ? env.ANTHROPIC_BASE_URL
+      : "";
+  }
+
+  if (appId === "codex") {
+    return extractCodexBaseUrl(
+      typeof cfg.config === "string" ? cfg.config : "",
+    ) || "";
+  }
+
+  if (appId === "gemini") {
+    const env = cfg.env as Record<string, unknown> | undefined;
+    return typeof env?.GOOGLE_GEMINI_BASE_URL === "string"
+      ? env.GOOGLE_GEMINI_BASE_URL
+      : "";
+  }
+
+  if (appId === "opencode") {
+    const options = cfg.options as Record<string, unknown> | undefined;
+    return typeof options?.baseURL === "string" ? options.baseURL : "";
+  }
+
+  if (appId === "openclaw") {
+    return typeof cfg.baseUrl === "string" ? cfg.baseUrl : "";
+  }
+
+  if (appId === "hermes") {
+    return typeof cfg.base_url === "string" ? cfg.base_url : "";
+  }
+
+  return "";
 };
 
 export function ProviderForm({
@@ -269,28 +353,37 @@ export function ProviderForm({
   const isOmoSlimCategory = appId === "opencode" && category === "omo-slim";
   const isAnyOmoCategory = isOmoCategory || isOmoSlimCategory;
 
+  // 只在 formSeedKey 变化时（即真正切换到不同的供应商表单）重新初始化派生状态。
+  //
+  // 注意：依赖里**故意不带 `initialData`**。父组件可能每次 rerender 都会传入新的对象
+  // 引用（例如 React Query 重新拉取），如果把 initialData 放进依赖，用户每次输入都会
+  // 触发 setEndpointAutoSelect / setTestConfig 等被回填覆盖，编辑框/开关瞬间被 reset。
+  // 我们只在切到另一个供应商时（formSeedKey 变化）做一次性同步即可，期间用 ref 取值。
+  const initialDataRef = useRef(initialData);
+  initialDataRef.current = initialData;
+
   useEffect(() => {
-    setSelectedPresetId(initialData ? null : "custom");
+    const seed = initialDataRef.current;
+    setSelectedPresetId(seed ? null : "custom");
     setActivePreset(null);
 
-    if (!initialData) {
+    if (!seed) {
       setDraftCustomEndpoints([]);
     }
-    setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
+    setEndpointAutoSelect(seed?.meta?.endpointAutoSelect ?? true);
     setLocalIsFullUrl(
-      supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
+      supportsFullUrl ? (seed?.meta?.isFullUrl ?? false) : false,
     );
-    setTestConfig(initialData?.meta?.testConfig ?? { enabled: false });
+    setTestConfig(seed?.meta?.testConfig ?? { enabled: false });
     setPricingConfig({
       enabled:
-        initialData?.meta?.costMultiplier !== undefined ||
-        initialData?.meta?.pricingModelSource !== undefined,
-      costMultiplier: initialData?.meta?.costMultiplier,
-      pricingModelSource: normalizePricingSource(
-        initialData?.meta?.pricingModelSource,
-      ),
+        seed?.meta?.costMultiplier !== undefined ||
+        seed?.meta?.pricingModelSource !== undefined,
+      costMultiplier: seed?.meta?.costMultiplier,
+      pricingModelSource: normalizePricingSource(seed?.meta?.pricingModelSource),
     });
-  }, [appId, formSeedKey, initialData, supportsFullUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId, formSeedKey, supportsFullUrl]);
 
   const defaultValues: ProviderFormData = useMemo(
     () => ({
@@ -322,8 +415,33 @@ export function ProviderForm({
     mode: "onSubmit",
   });
   const { isSubmitting } = form.formState;
+  const formResetRef = useRef(form.reset);
+  const defaultValuesRef = useRef(defaultValues);
   const websiteUrlFieldValue = form.watch("websiteUrl") || "";
   const syncingUrlFieldsRef = useRef(false);
+  const urlAutoSyncConsumedRef = useRef(false);
+
+  formResetRef.current = form.reset;
+  defaultValuesRef.current = defaultValues;
+
+  const initialUrlPairIsEmpty = useMemo(() => {
+    const parsedSettingsConfig = tryParseSettingsConfig(
+      defaultValues.settingsConfig,
+    );
+    return (
+      !normalizeUrlForSave(defaultValues.websiteUrl ?? "") &&
+      !normalizeUrlForSave(
+        getEndpointFromSettingsConfig(parsedSettingsConfig, appId),
+      )
+    );
+  }, [appId, defaultValues.settingsConfig, defaultValues.websiteUrl]);
+
+  const canAutoSyncUrlFields =
+    !isEditMode && selectedPresetId === "custom" && initialUrlPairIsEmpty;
+
+  useEffect(() => {
+    urlAutoSyncConsumedRef.current = false;
+  }, [appId, formSeedKey, selectedPresetId]);
 
   const handleSettingsConfigChange = useCallback(
     (config: string) => {
@@ -368,7 +486,10 @@ export function ProviderForm({
     apiKeyField: appId === "claude" ? localApiKeyField : undefined,
   });
 
-  const { baseUrl, handleClaudeBaseUrlChange } = useBaseUrlState({
+  const {
+    baseUrl,
+    handleClaudeBaseUrlChange: originalHandleClaudeBaseUrlChange,
+  } = useBaseUrlState({
     appType: appId,
     category,
     settingsConfig: form.getValues("settingsConfig"),
@@ -439,6 +560,31 @@ export function ProviderForm({
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
+  // Codex 「屏蔽 [features] 段」快捷开关：
+  // 实际存储位置是 meta.quirks.strip_paths 中是否包含 "config.toml:features"。
+  const [disableCodexFeatures, setDisableCodexFeatures] = useState<boolean>(
+    () =>
+      Array.isArray(initialData?.meta?.quirks?.strip_paths) &&
+      (initialData?.meta?.quirks?.strip_paths as string[]).includes(
+        "config.toml:features",
+      ),
+  );
+
+  const codexInitialData = useMemo(
+    () =>
+      appId === "codex" && seededSettingsConfig
+        ? { settingsConfig: seededSettingsConfig }
+        : undefined,
+    [appId, seededSettingsConfig],
+  );
+
+  const geminiInitialData = useMemo(
+    () =>
+      appId === "gemini" && seededSettingsConfig
+        ? { settingsConfig: seededSettingsConfig }
+        : undefined,
+    [appId, seededSettingsConfig],
+  );
 
   const {
     codexAuth,
@@ -449,15 +595,42 @@ export function ProviderForm({
     codexAuthError,
     setCodexAuth,
     handleCodexApiKeyChange,
-    handleCodexBaseUrlChange,
+    handleCodexBaseUrlChange: originalHandleCodexBaseUrlChange,
     handleCodexModelNameChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({
-    initialData: seededSettingsConfig
-      ? { settingsConfig: seededSettingsConfig }
-      : undefined,
+    initialData: codexInitialData,
   });
+
+  const handleEndpointFullUrlDetection = useCallback(
+    (nextUrl: string) => {
+      if (
+        supportsFullUrl &&
+        category !== "official" &&
+        isKnownFullApiEndpoint(nextUrl)
+      ) {
+        setLocalIsFullUrl(true);
+      }
+    },
+    [category, supportsFullUrl],
+  );
+
+  const handleClaudeBaseUrlChange = useCallback(
+    (nextUrl: string) => {
+      handleEndpointFullUrlDetection(nextUrl);
+      originalHandleClaudeBaseUrlChange(nextUrl);
+    },
+    [handleEndpointFullUrlDetection, originalHandleClaudeBaseUrlChange],
+  );
+
+  const handleCodexBaseUrlChange = useCallback(
+    (nextUrl: string) => {
+      handleEndpointFullUrlDetection(nextUrl);
+      originalHandleCodexBaseUrlChange(nextUrl);
+    },
+    [handleEndpointFullUrlDetection, originalHandleCodexBaseUrlChange],
+  );
 
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
@@ -471,8 +644,8 @@ export function ProviderForm({
   );
 
   useEffect(() => {
-    form.reset(defaultValues);
-  }, [form, formSeedKey]);
+    formResetRef.current(defaultValuesRef.current);
+  }, [formSeedKey]);
 
   const presetCategoryLabels: Record<string, string> = useMemo(
     () => ({
@@ -576,10 +749,7 @@ export function ProviderForm({
     envStringToObj,
     envObjToString,
   } = useGeminiConfigState({
-    initialData:
-      appId === "gemini" && seededSettingsConfig
-        ? { settingsConfig: seededSettingsConfig }
-        : undefined,
+    initialData: geminiInitialData,
   });
 
   const updateGeminiEnvField = useCallback(
@@ -594,7 +764,14 @@ export function ProviderForm({
         if (!config.env || typeof config.env !== "object") {
           config.env = {};
         }
-        config.env[key] = value;
+        // 空值不应以 "" 持久化到 .env / settings.json，否则用户在面板上看到一行
+        // `KEY=`、CLI 实际取到 "" 这种空字符串，比"该字段不存在"更难调试。
+        const trimmed = value.trim();
+        if (trimmed) {
+          config.env[key] = trimmed;
+        } else {
+          delete config.env[key];
+        }
         form.setValue("settingsConfig", JSON.stringify(config, null, 2));
       } catch {}
     },
@@ -1175,6 +1352,10 @@ export function ProviderForm({
     const effectiveEndpointUrl =
       normalizedEndpointInput ||
       (effectiveWebsiteUrl ? normalizeUrlForSave(effectiveWebsiteUrl) : "");
+    const nextIsFullUrl =
+      supportsFullUrl &&
+      category !== "official" &&
+      (localIsFullUrl || isKnownFullApiEndpoint(effectiveEndpointUrl));
 
     let settingsConfig: string;
 
@@ -1416,14 +1597,41 @@ export function ProviderForm({
         localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
           ? localApiKeyField
           : undefined,
-      isFullUrl:
-        supportsFullUrl && category !== "official" && localIsFullUrl
-          ? true
-          : undefined,
+      isFullUrl: nextIsFullUrl ? true : undefined,
     };
 
     if (!isCodexOauthProvider && "codexFastMode" in nextMeta) {
       delete nextMeta.codexFastMode;
+    }
+
+    // 同步 Codex 「屏蔽 [features] 段」开关到 quirks.strip_paths。
+    // - 仅 Codex 应用启用此开关；非 Codex 不持久化此开关相关的 quirk。
+    // - 切换时增删数组里的 "config.toml:features" 单元，并在 quirks 整体为空时回收
+    //   meta.quirks，避免保存出 `quirks: {}` 这种空对象。
+    if (appId === "codex") {
+      const FEATURES_TOKEN = "config.toml:features";
+      const existingQuirks = (nextMeta.quirks ?? {}) as Record<string, unknown>;
+      const existingStripPaths = Array.isArray(existingQuirks.strip_paths)
+        ? (existingQuirks.strip_paths as string[]).filter(
+            (item) => item !== FEATURES_TOKEN,
+          )
+        : [];
+      const nextStripPaths = disableCodexFeatures
+        ? [...existingStripPaths, FEATURES_TOKEN]
+        : existingStripPaths;
+
+      const nextQuirks: Record<string, unknown> = { ...existingQuirks };
+      if (nextStripPaths.length > 0) {
+        nextQuirks.strip_paths = nextStripPaths;
+      } else {
+        delete nextQuirks.strip_paths;
+      }
+
+      if (Object.keys(nextQuirks).length === 0) {
+        delete (nextMeta as Record<string, unknown>).quirks;
+      } else {
+        nextMeta.quirks = nextQuirks as ProviderMeta["quirks"];
+      }
     }
 
     payload.meta = nextMeta;
@@ -1498,13 +1706,15 @@ export function ProviderForm({
 
   useEffect(() => {
     if (syncingUrlFieldsRef.current) return;
+    if (!canAutoSyncUrlFields || urlAutoSyncConsumedRef.current) return;
 
     const normalizedWebsite = normalizeUrlForSave(websiteUrlFieldValue);
     const normalizedEndpoint = normalizeUrlForSave(endpointUrlFieldValue);
 
     if (!normalizedWebsite && normalizedEndpoint) {
       const nextWebsite = normalizeWebsiteFromEndpoint(normalizedEndpoint);
-      if (nextWebsite) {
+      if (nextWebsite && nextWebsite !== normalizedEndpoint) {
+        urlAutoSyncConsumedRef.current = true;
         syncingUrlFieldsRef.current = true;
         form.setValue("websiteUrl", nextWebsite, { shouldDirty: true });
         setTimeout(() => {
@@ -1515,6 +1725,8 @@ export function ProviderForm({
     }
 
     if (!normalizedEndpoint && normalizedWebsite) {
+      if (!isUsableHttpUrl(normalizedWebsite)) return;
+      urlAutoSyncConsumedRef.current = true;
       syncingUrlFieldsRef.current = true;
       applyEndpointUrlFieldValue(normalizedWebsite);
       setTimeout(() => {
@@ -1523,6 +1735,7 @@ export function ProviderForm({
     }
   }, [
     applyEndpointUrlFieldValue,
+    canAutoSyncUrlFields,
     endpointUrlFieldValue,
     form,
     websiteUrlFieldValue,
@@ -2139,6 +2352,8 @@ export function ProviderForm({
               modelName={codexModelName}
               onModelNameChange={handleCodexModelNameChange}
               speedTestEndpoints={speedTestEndpoints}
+              disableCodexFeatures={disableCodexFeatures}
+              onDisableCodexFeaturesChange={setDisableCodexFeatures}
             />
           )}
 

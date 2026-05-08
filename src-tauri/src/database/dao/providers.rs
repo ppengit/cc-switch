@@ -309,6 +309,19 @@ impl Database {
         Ok(())
     }
 
+    /// 清空指定应用的"当前供应商"标记（所有 provider 的 is_current 置 0）。
+    ///
+    /// 用于"故障转移开启"场景：故障转移模式下不应该存在 current 概念。
+    pub fn clear_current_provider(&self, app_type: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE providers SET is_current = 0 WHERE app_type = ?1",
+            params![app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,

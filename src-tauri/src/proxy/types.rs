@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES: u64 = 30;
+pub const MIN_RAW_PROXY_LOG_RETENTION_MINUTES: u64 = 1;
+pub const MAX_RAW_PROXY_LOG_RETENTION_MINUTES: u64 = 1440;
+
+pub fn default_raw_proxy_log_retention_minutes() -> u64 {
+    DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES
+}
+
+pub fn clamp_raw_proxy_log_retention_minutes(value: u64) -> u64 {
+    value.clamp(
+        MIN_RAW_PROXY_LOG_RETENTION_MINUTES,
+        MAX_RAW_PROXY_LOG_RETENTION_MINUTES,
+    )
+}
+
 /// 代理服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -134,14 +149,36 @@ pub struct ProxyActivityEvent {
     pub active_request_targets: Vec<ActiveRequestTarget>,
 }
 
-/// 内存中的代理原始事件日志。
+/// 内存中的代理原始日志事件。
 ///
 /// 只保存链路元数据，不保存请求体、响应体、Authorization 或 API Key。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyRawLogEvent {
+    pub id: u64,
+    pub timestamp: String,
+    pub event: String,
+    pub app_type: String,
+    pub provider_name: String,
+    pub provider_id: String,
+    pub request_model: Option<String>,
+    pub upstream_model: Option<String>,
+    pub status_code: Option<u16>,
+    pub error: Option<String>,
+    pub active_request_count: usize,
+    pub active_target_count: usize,
+}
+
+/// 内存中的代理原始请求日志。
+///
+/// 一条记录对应一个 request_id；received/routed/finished/failed 等状态会更新同一条记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyRawLogEntry {
     pub id: u64,
     pub timestamp: String,
+    pub started_at: String,
+    pub updated_at: String,
     pub request_id: String,
     pub event: String,
     pub app_type: String,
@@ -153,6 +190,7 @@ pub struct ProxyRawLogEntry {
     pub error: Option<String>,
     pub active_request_count: usize,
     pub active_target_count: usize,
+    pub events: Vec<ProxyRawLogEvent>,
 }
 
 /// 代理服务器信息
@@ -398,6 +436,9 @@ pub struct LogConfig {
     /// 日志级别: error, warn, info, debug, trace
     #[serde(default = "default_log_level")]
     pub level: String,
+    /// 内存中的代理原始请求日志保留分钟数
+    #[serde(default = "default_raw_proxy_log_retention_minutes")]
+    pub raw_proxy_log_retention_minutes: u64,
 }
 
 impl Default for LogConfig {
@@ -405,11 +446,22 @@ impl Default for LogConfig {
         Self {
             enabled: true,
             level: "info".to_string(),
+            raw_proxy_log_retention_minutes: DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES,
         }
     }
 }
 
 impl LogConfig {
+    pub fn normalized(mut self) -> Self {
+        self.raw_proxy_log_retention_minutes =
+            clamp_raw_proxy_log_retention_minutes(self.raw_proxy_log_retention_minutes);
+        self
+    }
+
+    pub fn clamped_raw_proxy_log_retention_minutes(&self) -> u64 {
+        clamp_raw_proxy_log_retention_minutes(self.raw_proxy_log_retention_minutes)
+    }
+
     /// 将配置转换为 log::LevelFilter
     pub fn to_level_filter(&self) -> log::LevelFilter {
         if !self.enabled {
@@ -481,6 +533,10 @@ mod tests {
         let config = LogConfig::default();
         assert!(config.enabled);
         assert_eq!(config.level, "info");
+        assert_eq!(
+            config.raw_proxy_log_retention_minutes,
+            DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES
+        );
     }
 
     #[test]
@@ -489,6 +545,10 @@ mod tests {
         let config: LogConfig = serde_json::from_str(json).unwrap();
         assert!(config.enabled);
         assert_eq!(config.level, "info");
+        assert_eq!(
+            config.raw_proxy_log_retention_minutes,
+            DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES
+        );
     }
 
     #[test]
@@ -534,6 +594,7 @@ mod tests {
         let config = LogConfig {
             enabled: false,
             level: "debug".to_string(),
+            ..Default::default()
         };
         assert_eq!(config.to_level_filter(), log::LevelFilter::Off);
     }
@@ -543,10 +604,35 @@ mod tests {
         let config = LogConfig {
             enabled: true,
             level: "debug".to_string(),
+            raw_proxy_log_retention_minutes: 90,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: LogConfig = serde_json::from_str(&json).unwrap();
         assert!(parsed.enabled);
         assert_eq!(parsed.level, "debug");
+        assert_eq!(parsed.raw_proxy_log_retention_minutes, 90);
+    }
+
+    #[test]
+    fn test_log_config_normalizes_raw_proxy_log_retention_minutes() {
+        let config = LogConfig {
+            raw_proxy_log_retention_minutes: 0,
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(
+            config.raw_proxy_log_retention_minutes,
+            MIN_RAW_PROXY_LOG_RETENTION_MINUTES
+        );
+
+        let config = LogConfig {
+            raw_proxy_log_retention_minutes: MAX_RAW_PROXY_LOG_RETENTION_MINUTES + 1,
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(
+            config.raw_proxy_log_retention_minutes,
+            MAX_RAW_PROXY_LOG_RETENTION_MINUTES
+        );
     }
 }

@@ -47,6 +47,30 @@ const normalizeEndpointForDuplicateCheck = (value?: unknown) =>
     ? value.trim().replace(/\/+$/, "").replace(/\/v1$/i, "")
     : "";
 
+const stripProviderTemplatePlaceholders = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value
+      .replace(/\{baseUrl\}/g, "")
+      .replace(/\{apiKey\}/g, "")
+      .replace(/\{model\}/g, "");
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => stripProviderTemplatePlaceholders(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        stripProviderTemplatePlaceholders(entry),
+      ]),
+    );
+  }
+
+  return value;
+};
+
 const getProviderEndpointAndKey = (
   appId: AppId,
   config: Record<string, unknown>,
@@ -164,7 +188,9 @@ export function AddProviderDialog({
         }
         try {
           const parsed = JSON.parse(template) as Record<string, unknown>;
-          setProviderTemplateDefault(parsed);
+          setProviderTemplateDefault(
+            stripProviderTemplatePlaceholders(parsed) as Record<string, unknown>,
+          );
         } catch {
           setProviderTemplateDefault(undefined);
         }

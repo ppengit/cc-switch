@@ -223,7 +223,7 @@ describe("ProviderList Component", () => {
     fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "用量配置" }));
-    expect(within(rowA).getByRole("button", { name: "删除" })).toBeDisabled();
+    expect(within(rowA).getByRole("button", { name: "删除" })).toBeEnabled();
     fireEvent.click(within(rowB).getByRole("button", { name: "删除" }));
 
     expect(handleSwitch).toHaveBeenCalledWith(providerB);
@@ -277,6 +277,52 @@ describe("ProviderList Component", () => {
     expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
     expect(screen.getByText("0/0")).toBeInTheDocument();
     expect(screen.getByText("没有找到匹配结果")).toBeInTheDocument();
+  });
+
+  it("keeps full API endpoints visible for search and display text", () => {
+    const fullEndpoint =
+      "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
+    const provider = createProvider({
+      id: "codex-full",
+      name: "Codex Full Endpoint",
+      settingsConfig: {
+        config: [
+          'model_provider = "custom"',
+          "",
+          "[model_providers.custom]",
+          'name = "custom"',
+          `base_url = "${fullEndpoint}"`,
+          'wire_api = "responses"',
+          "",
+        ].join("\n"),
+      },
+    });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "codex-full": provider }}
+        currentProviderId=""
+        appId="codex"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const searchInput =
+      screen.getByPlaceholderText("按名称、备注、网址或模型定位...");
+    fireEvent.change(searchInput, { target: { value: "chat/completions" } });
+
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(screen.getByText(fullEndpoint)).toBeInTheDocument();
   });
 
   it("uses separate badges for lifecycle status and live requests, and exposes request/upstream models", () => {

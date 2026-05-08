@@ -83,10 +83,11 @@ pub async fn list_recent_sessions(
     let take = limit.unwrap_or(10).clamp(1, 50);
     let scan_app_type = app_type.clone();
 
-    let sessions =
-        tauri::async_runtime::spawn_blocking(move || session_manager::scan_sessions_for_provider(&scan_app_type))
-            .await
-            .map_err(|e| format!("Failed to scan recent sessions: {e}"))?;
+    let sessions = tauri::async_runtime::spawn_blocking(move || {
+        session_manager::scan_sessions_for_provider(&scan_app_type)
+    })
+    .await
+    .map_err(|e| format!("Failed to scan recent sessions: {e}"))?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut merged = Vec::with_capacity(sessions.len().min(take));

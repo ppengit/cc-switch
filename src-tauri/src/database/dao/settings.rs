@@ -371,7 +371,8 @@ impl Database {
     /// 获取日志配置
     pub fn get_log_config(&self) -> Result<crate::proxy::types::LogConfig, AppError> {
         match self.get_setting("log_config")? {
-            Some(json) => serde_json::from_str(&json)
+            Some(json) => serde_json::from_str::<crate::proxy::types::LogConfig>(&json)
+                .map(|config| config.normalized())
                 .map_err(|e| AppError::Database(format!("解析日志配置失败: {e}"))),
             None => Ok(crate::proxy::types::LogConfig::default()),
         }
@@ -379,7 +380,8 @@ impl Database {
 
     /// 更新日志配置
     pub fn set_log_config(&self, config: &crate::proxy::types::LogConfig) -> Result<(), AppError> {
-        let json = serde_json::to_string(config)
+        let normalized = config.clone().normalized();
+        let json = serde_json::to_string(&normalized)
             .map_err(|e| AppError::Database(format!("序列化日志配置失败: {e}")))?;
         self.set_setting("log_config", &json)
     }

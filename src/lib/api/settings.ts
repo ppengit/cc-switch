@@ -233,6 +233,7 @@ export interface OptimizerConfig {
 export interface LogConfig {
   enabled: boolean;
   level: "error" | "warn" | "info" | "debug" | "trace";
+  rawProxyLogRetentionMinutes: number;
 }
 
 export interface BackupEntry {

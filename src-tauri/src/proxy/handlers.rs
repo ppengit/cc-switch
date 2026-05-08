@@ -21,10 +21,9 @@ use super::{
         transform_gemini, transform_responses,
     },
     response_processor::{
-        create_logged_passthrough_stream, process_response, read_decoded_body,
-        extract_stream_event_model,
-        strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
-        ActivityModelUpdate, SseUsageCollector,
+        create_logged_passthrough_stream, extract_stream_event_model, process_response,
+        read_decoded_body, strip_entity_headers_for_rebuilt_body,
+        strip_hop_by_hop_response_headers, ActivityModelUpdate, SseUsageCollector,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -148,9 +147,6 @@ pub async fn handle_messages(
     };
 
     ctx.provider = result.provider;
-    if let Some(request_model) = result.effective_request_model {
-        ctx.request_model = request_model;
-    }
     let api_format = result
         .claude_api_format
         .as_deref()
@@ -249,50 +245,56 @@ async fn handle_claude_transform(
                 provider_name.clone(),
             );
 
-            SseUsageCollector::new(start_time, Some(activity_update), move |events, first_token_ms| {
-                let usage = TokenUsage::from_claude_stream_events(&events);
-                let resolved_model = usage
-                    .as_ref()
-                    .and_then(|parsed| parsed.model.clone())
-                    .or_else(|| events.iter().find_map(extract_stream_event_model))
-                    .unwrap_or_else(|| request_model.clone());
-                let latency_ms = start_time.elapsed().as_millis() as u64;
-                let state = state.clone();
-                let provider_id = provider_id.clone();
-                let request_model = request_model.clone();
-                let request_id = request_id.clone();
-                let proxy_activity = proxy_activity.clone();
-                let app_handle = app_handle.clone();
+            SseUsageCollector::new(
+                start_time,
+                Some(activity_update),
+                move |events, first_token_ms| {
+                    let usage = TokenUsage::from_claude_stream_events(&events);
+                    let resolved_model = usage
+                        .as_ref()
+                        .and_then(|parsed| parsed.model.clone())
+                        .or_else(|| events.iter().find_map(extract_stream_event_model))
+                        .unwrap_or_else(|| request_model.clone());
+                    let latency_ms = start_time.elapsed().as_millis() as u64;
+                    let state = state.clone();
+                    let provider_id = provider_id.clone();
+                    let request_model = request_model.clone();
+                    let request_id = request_id.clone();
+                    let proxy_activity = proxy_activity.clone();
+                    let app_handle = app_handle.clone();
 
-                tokio::spawn(async move {
-                    if let Some(usage) = usage {
-                        log_usage(
-                            &state,
-                            &provider_id,
-                            "claude",
-                            &resolved_model,
-                            &request_model,
-                            usage,
-                            latency_ms,
-                            first_token_ms,
-                            true,
-                            status_code,
+                    tokio::spawn(async move {
+                        if let Some(usage) = usage {
+                            log_usage(
+                                &state,
+                                &provider_id,
+                                "claude",
+                                &resolved_model,
+                                &request_model,
+                                usage,
+                                latency_ms,
+                                first_token_ms,
+                                true,
+                                status_code,
+                            )
+                            .await;
+                        } else {
+                            log::debug!(
+                                "[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录"
+                            );
+                        }
+
+                        finish_request(
+                            &proxy_activity,
+                            app_handle.as_ref(),
+                            &request_id,
+                            Some(status_code),
+                            None,
                         )
                         .await;
-                    } else {
-                        log::debug!("[Claude] OpenRouter 流式响应缺少 usage 统计，跳过消费记录");
-                    }
-
-                    finish_request(
-                        &proxy_activity,
-                        app_handle.as_ref(),
-                        &request_id,
-                        Some(status_code),
-                        None,
-                    )
-                    .await;
-                });
-            })
+                    });
+                },
+            )
         };
 
         // 获取流式超时配置
@@ -364,9 +366,8 @@ async fn handle_claude_transform(
             Ok(value) => value,
             Err(e) => {
                 log::error!("[Claude] 解析上游响应失败: {e}, body: {body_str}");
-                let err = ProxyError::TransformError(format!(
-                    "Failed to parse upstream response: {e}"
-                ));
+                let err =
+                    ProxyError::TransformError(format!("Failed to parse upstream response: {e}"));
                 finish_request(
                     &state.proxy_activity,
                     state.app_handle.as_ref(),
@@ -553,9 +554,6 @@ pub async fn handle_chat_completions(
     };
 
     ctx.provider = result.provider;
-    if let Some(request_model) = result.effective_request_model {
-        ctx.request_model = request_model;
-    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
@@ -611,9 +609,6 @@ pub async fn handle_responses(
     };
 
     ctx.provider = result.provider;
-    if let Some(request_model) = result.effective_request_model {
-        ctx.request_model = request_model;
-    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
@@ -669,9 +664,6 @@ pub async fn handle_responses_compact(
     };
 
     ctx.provider = result.provider;
-    if let Some(request_model) = result.effective_request_model {
-        ctx.request_model = request_model;
-    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
@@ -738,9 +730,6 @@ pub async fn handle_gemini(
     };
 
     ctx.provider = result.provider;
-    if let Some(request_model) = result.effective_request_model {
-        ctx.request_model = request_model;
-    }
     let response = result.response;
 
     process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await

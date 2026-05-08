@@ -290,6 +290,68 @@ pub struct ProviderMeta {
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
     pub github_account_id: Option<String>,
+    /// per-provider 特殊配置（quirks）：
+    ///
+    /// 用于在写盘和代理转发链路上对该供应商应用统一的"特殊指令"，
+    /// 比如屏蔽 Codex `[features]` 段、强制覆盖请求 model、剥离上游不接受的字段等。
+    /// 详见 [`ProviderQuirks`]。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quirks: Option<ProviderQuirks>,
+}
+
+/// per-provider 特殊配置：用于在写盘和转发前对该供应商执行的额外 transformation。
+///
+/// 每条规则都明确归属：`strip_paths` 在写盘和转发请求体两个阶段生效；
+/// `force_model` / `request_body_patches` / `strip_request_headers` 仅在转发时生效。
+///
+/// 设计上故意保留 `extra` 自由扩展位，新规则先以 JSON 形式落地，跑稳后再升级为强类型字段。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderQuirks {
+    /// 写盘 / 转发前从 settings_config 或请求体中删除的路径。
+    ///
+    /// 语法（`前缀:路径`）：
+    /// - `env:KEY` —— 删除 `settings_config.env.KEY`（Claude/Gemini）
+    /// - `config.toml:section.key` —— 删除 Codex `config.toml` 中的 TOML 路径
+    ///   （`section.key` 用 `.` 分段；只写 `section` 表示删整段）
+    /// - `auth:key` —— 删除 Codex `auth.json` 中的字段
+    /// - `body:/json/pointer` —— 转发请求体里删字段（JSON Pointer）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_paths: Option<Vec<String>>,
+
+    /// 强制覆盖请求 body 中的 `model` 字段。
+    /// 与 Claude 模型映射（model_mapper）互斥：force_model 优先。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_model: Option<String>,
+
+    /// 转发请求时要从 header 中删除的字段名（一律小写匹配）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip_request_headers: Option<Vec<String>>,
+
+    /// 转发请求体上的 JSON patch 操作（受限子集：add / replace / remove）。
+    /// 顺序应用，按第一个失败立刻终止。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_body_patches: Option<Vec<JsonPatchOp>>,
+
+    /// 自由扩展位：未来加新规则时先丢这里，跑通后再升级为强类型字段。
+    /// 使用 `flatten` 让前端 / 老配置中未识别的 key 不至于被丢弃。
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// JSON Patch 操作的受限子集。
+///
+/// 复杂场景（如 test/move/copy）不在 quirks 范畴内 —— 真正需要复杂改写的
+/// 用户应该写到 settings_config 或代理模板里，而不是 per-provider quirks。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase", tag = "op")]
+pub enum JsonPatchOp {
+    /// 在 `path` 处添加 / 覆盖 `value`。语义同 RFC 6902 add（已存在则覆盖）。
+    Add { path: String, value: serde_json::Value },
+    /// 替换 `path` 处的值；不存在时静默跳过（与严格 RFC 6902 不同）。
+    Replace { path: String, value: serde_json::Value },
+    /// 删除 `path` 处的值；不存在时静默跳过。
+    Remove { path: String },
 }
 
 impl ProviderMeta {

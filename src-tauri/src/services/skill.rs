@@ -373,8 +373,7 @@ fn parse_branch_from_source_url(source_url: Option<&str>) -> Option<String> {
 
 /// 获取 `~/.agents/skills/` 目录（存在时返回）
 fn get_agents_skills_dir() -> Option<PathBuf> {
-    Some(get_home_dir().join(".agents").join("skills"))
-        .filter(|p| p.exists())
+    Some(get_home_dir().join(".agents").join("skills")).filter(|p| p.exists())
 }
 
 /// 解析 `~/.agents/.skill-lock.json`，返回 skill_name -> 仓库信息

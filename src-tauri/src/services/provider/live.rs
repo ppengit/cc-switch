@@ -343,13 +343,8 @@ pub(crate) fn build_proxy_takeover_settings(
     match app_type {
         AppType::Claude => {
             let template = get_template_content_by_key(db, app_type, "settings");
-            let rendered = render_access_template(
-                &template,
-                proxy_url,
-                proxy_codex_base_url,
-                proxy_token,
-                "",
-            );
+            let rendered =
+                render_access_template(&template, proxy_url, proxy_codex_base_url, proxy_token, "");
             let value = if rendered.trim().is_empty() {
                 json!({})
             } else {
@@ -421,13 +416,14 @@ pub(crate) fn build_proxy_takeover_settings(
                 crate::gemini_config::parse_env_file_strict(&env_text)?
             };
 
-            let settings_text = remove_trailing_commas_before_json_closers(&render_access_template(
-                &settings_template,
-                proxy_url,
-                proxy_codex_base_url,
-                proxy_token,
-                &mcp_block,
-            ));
+            let settings_text =
+                remove_trailing_commas_before_json_closers(&render_access_template(
+                    &settings_template,
+                    proxy_url,
+                    proxy_codex_base_url,
+                    proxy_token,
+                    &mcp_block,
+                ));
             let config = if settings_text.trim().is_empty() {
                 json!({})
             } else {
@@ -459,9 +455,9 @@ pub(crate) fn build_proxy_takeover_settings(
 
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => Err(AppError::Message(
-            "该应用不支持代理接管".to_string(),
-        )),
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            Err(AppError::Message("该应用不支持代理接管".to_string()))
+        }
     }
 }
 
@@ -499,9 +495,7 @@ pub(crate) fn build_direct_live_settings_with_mcp(
             }
             if !config.trim().is_empty() {
                 config.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!(
-                        "Invalid Codex config.toml after MCP merge: {e}"
-                    ))
+                    AppError::Message(format!("Invalid Codex config.toml after MCP merge: {e}"))
                 })?;
             }
             obj.insert("config".to_string(), Value::String(config));
@@ -542,6 +536,19 @@ pub(crate) fn write_live_with_common_config(
     effective_provider.settings_config =
         build_direct_live_settings_with_mcp(db, app_type, provider)?;
 
+    // 应用 per-provider 特殊配置（quirks）— 仅在写盘前对 settings_config 做剥离。
+    // 例如 Codex 屏蔽 `[features]`：`config.toml:features`。
+    if let Some(quirks) = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.quirks.as_ref())
+    {
+        crate::quirks::apply_strip_paths_to_settings(
+            &mut effective_provider.settings_config,
+            quirks,
+        );
+    }
+
     write_live_snapshot(app_type, &effective_provider)
 }
 
@@ -552,13 +559,8 @@ pub(crate) fn write_proxy_takeover_live(
     proxy_codex_base_url: &str,
     proxy_token: &str,
 ) -> Result<(), AppError> {
-    let settings = build_proxy_takeover_settings(
-        db,
-        app_type,
-        proxy_url,
-        proxy_codex_base_url,
-        proxy_token,
-    )?;
+    let settings =
+        build_proxy_takeover_settings(db, app_type, proxy_url, proxy_codex_base_url, proxy_token)?;
     let provider = Provider::with_id(
         "__cc_switch_proxy__".to_string(),
         "cc-switch proxy".to_string(),
@@ -1587,10 +1589,7 @@ mod tests {
         )
         .expect("build takeover settings");
 
-        assert_eq!(
-            rendered["auth"]["OPENAI_API_KEY"],
-            json!("PROXY_MANAGED")
-        );
+        assert_eq!(rendered["auth"]["OPENAI_API_KEY"], json!("PROXY_MANAGED"));
         let config = rendered["config"].as_str().expect("config string");
         assert!(config.contains("http://127.0.0.1:15721/v1"));
         assert!(config.contains("[mcp_servers.server-a]"));

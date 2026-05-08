@@ -62,9 +62,26 @@ export interface ProxyActivityEvent {
   active_request_targets: ActiveRequestTarget[];
 }
 
+export interface ProxyRawLogEvent {
+  id: number;
+  timestamp: string;
+  event: string;
+  appType: string;
+  providerName: string;
+  providerId: string;
+  requestModel?: string | null;
+  upstreamModel?: string | null;
+  statusCode?: number | null;
+  error?: string | null;
+  activeRequestCount: number;
+  activeTargetCount: number;
+}
+
 export interface ProxyRawLogEntry {
   id: number;
   timestamp: string;
+  startedAt: string;
+  updatedAt: string;
   requestId: string;
   event: string;
   appType: string;
@@ -76,6 +93,7 @@ export interface ProxyRawLogEntry {
   error?: string | null;
   activeRequestCount: number;
   activeTargetCount: number;
+  events: ProxyRawLogEvent[];
 }
 
 export interface ProxyServerInfo {

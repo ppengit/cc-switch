@@ -1128,12 +1128,7 @@ impl Database {
         Self::populate_session_context_for_logs(&conn, &mut logs)?;
 
         for log in &mut logs {
-            Self::maybe_backfill_log_costs(
-                &conn,
-                log,
-                &mut provider_cache,
-                &mut pricing_cache,
-            )?;
+            Self::maybe_backfill_log_costs(&conn, log, &mut provider_cache, &mut pricing_cache)?;
         }
 
         Ok(PaginatedLogs {

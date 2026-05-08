@@ -26,6 +26,7 @@ mod prompt_files;
 mod provider;
 mod provider_defaults;
 mod proxy;
+mod quirks;
 mod services;
 mod session_manager;
 mod settings;
@@ -835,9 +836,10 @@ pub fn run() {
                 if let Ok(log_config) = db.get_log_config() {
                     log::set_max_level(log_config.to_level_filter());
                     log::info!(
-                        "已加载日志配置: enabled={}, level={}",
+                        "已加载日志配置: enabled={}, level={}, raw_proxy_log_retention_minutes={}",
                         log_config.enabled,
-                        log_config.level
+                        log_config.level,
+                        log_config.clamped_raw_proxy_log_retention_minutes()
                     );
                 }
             }

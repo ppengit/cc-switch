@@ -46,6 +46,10 @@ interface CodexFormFieldsProps {
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
+
+  // 屏蔽 [features] 段的快捷开关（写入 quirks.strip_paths）
+  disableCodexFeatures?: boolean;
+  onDisableCodexFeaturesChange?: (value: boolean) => void;
 }
 
 export function CodexFormFields({
@@ -71,6 +75,8 @@ export function CodexFormFields({
   modelName = "",
   onModelNameChange,
   speedTestEndpoints,
+  disableCodexFeatures = false,
+  onDisableCodexFeaturesChange,
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
 
@@ -188,6 +194,36 @@ export function CodexFormFields({
                   defaultValue: "💡 留空将使用供应商的默认模型",
                 })}
           </p>
+        </div>
+      )}
+
+      {/* 屏蔽 [features] 段：部分供应商对 Codex `[features]` 不兼容，
+          勾选后写盘时会从 config.toml 中删除整段 [features]。 */}
+      {onDisableCodexFeaturesChange && (
+        <div className="flex items-start gap-3 rounded-md border border-dashed border-muted-foreground/30 p-3">
+          <input
+            id="disableCodexFeatures"
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 rounded border-muted-foreground/40"
+            checked={disableCodexFeatures}
+            onChange={(e) => onDisableCodexFeaturesChange(e.target.checked)}
+          />
+          <div className="space-y-1">
+            <label
+              htmlFor="disableCodexFeatures"
+              className="block text-sm font-medium text-foreground cursor-pointer"
+            >
+              {t("providerForm.codexDisableFeaturesLabel", {
+                defaultValue: "屏蔽 [features] 段",
+              })}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {t("providerForm.codexDisableFeaturesHint", {
+                defaultValue:
+                  "若该供应商不兼容 Codex 的 [features] 配置，勾选后写入 config.toml 时会自动剥离整段 [features]。",
+              })}
+            </p>
+          </div>
         </div>
       )}
 

@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { useProxyRawLogs } from "@/lib/query/usage";
 import type { ProxyRawLogEntry } from "@/types/proxy";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,8 @@ interface RawProxyLogPanelProps {
   refreshIntervalMs: number;
 }
 
-const LOG_LIMIT = 300;
+const LOG_LIMIT = 500;
+const PAGE_SIZE = 50;
 
 const EVENT_COLOR_MAP: Record<string, string> = {
   received:
@@ -41,12 +42,22 @@ const normalizeModel = (value?: string | null) => {
   return trimmed || undefined;
 };
 
+const collapseLifecycleEvents = (events: ProxyRawLogEntry["events"]) => {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    if (seen.has(event.event)) return false;
+    seen.add(event.event);
+    return true;
+  });
+};
+
 export function RawProxyLogPanel({
   appType,
   refreshIntervalMs,
 }: RawProxyLogPanelProps) {
   const { t, i18n } = useTranslation();
   const [selectedLog, setSelectedLog] = useState<ProxyRawLogEntry | null>(null);
+  const [page, setPage] = useState(1);
   const { data, isLoading, error, refetch, isFetching } = useProxyRawLogs(
     appType,
     LOG_LIMIT,
@@ -66,9 +77,25 @@ export function RawProxyLogPanel({
     () =>
       [...(data ?? [])]
         .filter((log) => log.event !== "cleared")
-        .reverse(),
+        .sort((a, b) => b.id - a.id),
     [data],
   );
+  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
+  const pagedLogs = useMemo(
+    () => logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [logs, page],
+  );
+  const pageStart = logs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const pageEnd = Math.min(page * PAGE_SIZE, logs.length);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [appType]);
+
   const getEventLabel = (event: string) =>
     t(`usage.proxyEvent.${event}`, {
       defaultValue: event,
@@ -81,7 +108,7 @@ export function RawProxyLogPanel({
           <span>
             {t("usage.rawProxyLogsHint", {
               defaultValue:
-                "显示代理实时链路事件（收到请求、路由、完成/失败）。仅内存保留，重启代理后清空。",
+                "每行显示一个代理请求，事件列汇总收到请求、路由、完成/失败等生命周期。仅内存保留，重启代理后清空。",
             })}
           </span>
           <Button
@@ -151,10 +178,15 @@ export function RawProxyLogPanel({
                   </TableCell>
                 </TableRow>
               ) : (
-                logs.map((log) => {
+                pagedLogs.map((log) => {
                   const requestModel = normalizeModel(log.requestModel);
                   const upstreamModel = normalizeModel(log.upstreamModel);
                   const displayModel = upstreamModel ?? requestModel;
+                  const showRequestModel =
+                    !!requestModel &&
+                    !!displayModel &&
+                    requestModel !== displayModel;
+                  const lifecycleEvents = collapseLifecycleEvents(log.events);
                   const statusText =
                     log.statusCode != null
                       ? String(log.statusCode)
@@ -165,12 +197,12 @@ export function RawProxyLogPanel({
                           : "-";
                   return (
                     <TableRow
-                      key={log.id}
+                      key={log.requestId}
                       className="cursor-pointer"
                       onDoubleClick={() => setSelectedLog(log)}
                     >
                       <TableCell className="text-center whitespace-nowrap text-xs">
-                        {new Date(log.timestamp).toLocaleString(locale, {
+                        {new Date(log.startedAt).toLocaleString(locale, {
                           month: "2-digit",
                           day: "2-digit",
                           hour: "2-digit",
@@ -178,13 +210,18 @@ export function RawProxyLogPanel({
                           second: "2-digit",
                         })}
                       </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        <Badge
-                          variant="outline"
-                          className={EVENT_COLOR_MAP[log.event] ?? ""}
-                        >
-                          {getEventLabel(log.event)}
-                        </Badge>
+                      <TableCell className="min-w-[220px]">
+                        <div className="flex flex-wrap justify-center gap-1">
+                          {lifecycleEvents.map((event) => (
+                            <Badge
+                              key={event.id}
+                              variant="outline"
+                              className={EVENT_COLOR_MAP[event.event] ?? ""}
+                            >
+                              {getEventLabel(event.event)}
+                            </Badge>
+                          ))}
+                        </div>
                       </TableCell>
                       <TableCell className="text-center font-mono text-xs uppercase">
                         {log.appType}
@@ -198,12 +235,20 @@ export function RawProxyLogPanel({
                         <div
                           className="truncate"
                           title={
-                            upstreamModel && requestModel && upstreamModel !== requestModel
-                              ? `${upstreamModel} (req: ${requestModel})`
+                            showRequestModel
+                              ? `${displayModel} (req: ${requestModel})`
                               : displayModel || "-"
                           }
                         >
-                          {displayModel || "-"}
+                          <div className="truncate">{displayModel || "-"}</div>
+                          {showRequestModel ? (
+                            <div className="truncate text-[10px] text-muted-foreground">
+                              {t("usage.requestModel", {
+                                defaultValue: "请求模型",
+                              })}
+                              : {requestModel}
+                            </div>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap text-xs">
@@ -226,6 +271,47 @@ export function RawProxyLogPanel({
               )}
             </TableBody>
           </Table>
+          {logs.length > PAGE_SIZE && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
+              <span>
+                {t("usage.rawProxyLogsPageInfo", {
+                  defaultValue: "第 {{start}}-{{end}} 条，共 {{total}} 条",
+                  start: pageStart,
+                  end: pageEnd,
+                  total: logs.length,
+                })}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={page <= 1}
+                >
+                  <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                  {t("common.previous", { defaultValue: "上一页" })}
+                </Button>
+                <span className="font-mono">
+                  {page} / {totalPages}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={() =>
+                    setPage((current) => Math.min(totalPages, current + 1))
+                  }
+                  disabled={page >= totalPages}
+                >
+                  {t("common.next", { defaultValue: "下一页" })}
+                  <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

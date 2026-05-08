@@ -285,15 +285,21 @@ pub async fn set_log_config(
     state: tauri::State<'_, crate::AppState>,
     config: crate::proxy::types::LogConfig,
 ) -> Result<bool, String> {
+    let config = config.normalized();
     state
         .db
         .set_log_config(&config)
         .map_err(|e| e.to_string())?;
     log::set_max_level(config.to_level_filter());
+    state
+        .proxy_service
+        .set_raw_log_retention_minutes(config.clamped_raw_proxy_log_retention_minutes())
+        .await?;
     log::info!(
-        "日志配置已更新: enabled={}, level={}",
+        "日志配置已更新: enabled={}, level={}, raw_proxy_log_retention_minutes={}",
         config.enabled,
-        config.level
+        config.level,
+        config.clamped_raw_proxy_log_retention_minutes()
     );
     Ok(true)
 }

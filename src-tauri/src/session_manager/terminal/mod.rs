@@ -309,9 +309,13 @@ fn launch_windows_terminal(
             let escaped = escape_powershell_single_quote(command);
             if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
                 let escaped_cwd = escape_powershell_single_quote(cwd_value.trim());
-                let script =
-                    format!("Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'");
-                run_windows_start(&["powershell", "-NoExit", "-Command", &script], "PowerShell")
+                let script = format!(
+                    "Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'"
+                );
+                run_windows_start(
+                    &["powershell", "-NoExit", "-Command", &script],
+                    "PowerShell",
+                )
             } else {
                 run_windows_start(
                     &[

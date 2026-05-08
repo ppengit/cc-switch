@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RawProxyLogPanel } from "@/components/usage/RawProxyLogPanel";
-import type { ProxyRawLogEntry } from "@/types/proxy";
+import type { ProxyRawLogEntry, ProxyRawLogEvent } from "@/types/proxy";
 
 const useProxyRawLogsMock = vi.hoisted(() => vi.fn());
 
@@ -61,6 +61,11 @@ const createLog = (
 ): ProxyRawLogEntry => ({
   id: overrides.id ?? 1,
   timestamp: overrides.timestamp ?? "2026-05-03T10:00:00.000Z",
+  startedAt: overrides.startedAt ?? "2026-05-03T10:00:00.000Z",
+  updatedAt:
+    overrides.updatedAt ??
+    overrides.timestamp ??
+    "2026-05-03T10:00:00.000Z",
   requestId: overrides.requestId ?? "req-1",
   event: overrides.event ?? "routed",
   appType: overrides.appType ?? "codex",
@@ -72,6 +77,24 @@ const createLog = (
   error: overrides.error,
   activeRequestCount: overrides.activeRequestCount ?? 1,
   activeTargetCount: overrides.activeTargetCount ?? 1,
+  events:
+    overrides.events ??
+    [
+      {
+        id: overrides.id ?? 1,
+        timestamp: overrides.timestamp ?? "2026-05-03T10:00:00.000Z",
+        event: overrides.event ?? "routed",
+        appType: overrides.appType ?? "codex",
+        providerName: overrides.providerName ?? "Provider One",
+        providerId: overrides.providerId ?? "provider-1",
+        requestModel: overrides.requestModel ?? "gpt-5.4",
+        upstreamModel: overrides.upstreamModel,
+        statusCode: overrides.statusCode,
+        error: overrides.error,
+        activeRequestCount: overrides.activeRequestCount ?? 1,
+        activeTargetCount: overrides.activeTargetCount ?? 1,
+      } satisfies ProxyRawLogEvent,
+    ],
 });
 
 describe("RawProxyLogPanel", () => {
@@ -86,7 +109,7 @@ describe("RawProxyLogPanel", () => {
     });
   });
 
-  it("filters internal cleared events and prefers upstream model for display", () => {
+  it("filters internal cleared events and shows upstream model with request model when they differ", () => {
     useProxyRawLogsMock.mockReturnValue({
       data: [
         createLog({
@@ -113,6 +136,7 @@ describe("RawProxyLogPanel", () => {
     expect(screen.queryByText("Hidden Provider")).not.toBeInTheDocument();
     expect(screen.getByText("Visible Provider")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.3-codex")).toBeInTheDocument();
+    expect(screen.getByText("请求模型: gpt-5.4")).toBeInTheDocument();
   });
 
   it("falls back to request model when upstream model is absent", () => {

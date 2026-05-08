@@ -9,10 +9,9 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
-    activity::ProxyActivityState,
-    failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
-    provider_router::ProviderRouter, providers::gemini_shadow::GeminiShadowStore, types::*,
-    ProxyError,
+    activity::ProxyActivityState, failover_switch::FailoverSwitchManager, handlers,
+    log_codes::srv as log_srv, provider_router::ProviderRouter,
+    providers::gemini_shadow::GeminiShadowStore, types::*, ProxyError,
 };
 use crate::database::Database;
 use axum::{
@@ -45,6 +44,12 @@ pub struct ProxyState {
     pub failover_manager: Arc<FailoverSwitchManager>,
     /// 实时代理活动（仅内存态，不落库）
     pub proxy_activity: Arc<RwLock<ProxyActivityState>>,
+    /// 切换代次（per-app 单调递增）：每次显式切换/启停供应商时 +1。
+    ///
+    /// 转发请求在开始时 snapshot 此值；请求成功完成后写
+    /// `current_providers` / `is_current` / 托盘 / `status` 之前必须比较 epoch，
+    /// 比 snapshot 大说明"切换已发生"，本次成功完成的 inflight 不应再倒写状态。
+    pub switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
 }
 
 /// 代理HTTP服务器
@@ -66,6 +71,10 @@ impl ProxyServer {
         let provider_router = Arc::new(ProviderRouter::new(db.clone()));
         // 创建故障转移切换管理器
         let failover_manager = Arc::new(FailoverSwitchManager::new(db.clone()));
+        let raw_log_retention_minutes = db
+            .get_log_config()
+            .map(|config| config.clamped_raw_proxy_log_retention_minutes())
+            .unwrap_or(DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES);
 
         let state = ProxyState {
             db,
@@ -77,7 +86,10 @@ impl ProxyServer {
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             app_handle,
             failover_manager,
-            proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
+            proxy_activity: Arc::new(RwLock::new(
+                ProxyActivityState::with_raw_log_retention_minutes(raw_log_retention_minutes),
+            )),
+            switch_epoch: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
 
         Self {
@@ -282,6 +294,10 @@ impl ProxyServer {
         super::activity::raw_logs(&self.state.proxy_activity, limit, app_type).await
     }
 
+    pub async fn set_raw_log_retention_minutes(&self, minutes: u64) {
+        super::activity::set_raw_log_retention_minutes(&self.state.proxy_activity, minutes).await;
+    }
+
     /// 更新某个应用类型当前“目标供应商”（用于 UI 展示 active_targets）
     ///
     /// 注意：这不代表该供应商一定已经处理过请求，而是用于“热切换/启用故障转移立即切 P1”
@@ -292,6 +308,24 @@ impl ProxyServer {
             app_type.to_string(),
             (provider_id.to_string(), provider_name.to_string()),
         );
+    }
+
+    /// 把某个应用类型的"切换代次"加 1，并返回新值。
+    ///
+    /// 任何会改变路由目标的操作（hot-switch、启停故障转移、从队列移除供应商等）
+    /// 都应调用此函数；正在进行中的请求若 epoch snapshot 比当前小，
+    /// 必须放弃回写 `current_providers` / `is_current` / 托盘等共享状态。
+    pub async fn bump_switch_epoch(&self, app_type: &str) -> u64 {
+        let mut epochs = self.state.switch_epoch.write().await;
+        let entry = epochs.entry(app_type.to_string()).or_insert(0);
+        *entry = entry.saturating_add(1);
+        *entry
+    }
+
+    /// 读取某个应用类型当前的"切换代次"。从未切换过则返回 0。
+    pub async fn current_switch_epoch(&self, app_type: &str) -> u64 {
+        let epochs = self.state.switch_epoch.read().await;
+        *epochs.get(app_type).unwrap_or(&0)
     }
 
     pub async fn clear_provider_runtime_state(&self, app_type: &str, provider_id: &str) {

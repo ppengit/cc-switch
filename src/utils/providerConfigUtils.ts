@@ -416,8 +416,8 @@ export const hasTomlCommonConfigSnippet = (
 
 const TOML_SECTION_HEADER_PATTERN = /^\s*\[([^\]\r\n]+)\]\s*$/;
 const TOML_BASE_URL_PATTERN =
-  /^\s*base_url\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
-const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+  /^\s*base_url\s*=\s*(["'])([^"'\r\n]*)\1\s*(?:#.*)?$/;
+const TOML_MODEL_PATTERN = /^\s*model\s*=\s*(["'])([^"'\r\n]*)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_PATTERN =
@@ -518,13 +518,15 @@ const findTomlAssignmentInRange = (
 ): TomlAssignmentMatch | undefined => {
   for (let index = startIndex; index < endIndex; index += 1) {
     const match = lines[index].match(pattern);
-    if (match?.[2]) {
-      return {
-        index,
-        sectionName,
-        value: match[2],
-      };
+    if (!match) {
+      continue;
     }
+
+    return {
+      index,
+      sectionName,
+      value: match[2] ?? "",
+    };
   }
 
   return undefined;
@@ -545,14 +547,14 @@ const findTomlAssignments = (
     }
 
     const match = line.match(pattern);
-    if (!match?.[2]) {
+    if (!match) {
       return;
     }
 
     assignments.push({
       index,
       sectionName: currentSectionName,
-      value: match[2],
+      value: match[2] ?? "",
     });
   });
 
@@ -769,6 +771,19 @@ export const setCodexBaseUrl = (
   const insertIndex = topLevelEndIndex;
   lines.splice(insertIndex, 0, replacementLine);
   return finalizeTomlText(lines);
+};
+
+const KNOWN_FULL_API_ENDPOINT_PATTERN =
+  /(?:\/v\d+(?:beta)?(?:\/openai)?\/(?:chat\/completions|responses(?:\/compact)?|messages)|\/(?:chat\/completions|responses(?:\/compact)?|messages)|:generateContent|:streamGenerateContent)(?:[?#].*)?$/i;
+
+export const isKnownFullApiEndpoint = (
+  url: string | undefined | null,
+): boolean => {
+  const normalized = (url || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(normalized)) {
+    return false;
+  }
+  return KNOWN_FULL_API_ENDPOINT_PATTERN.test(normalized);
 };
 
 // ========== Codex model name utils ==========

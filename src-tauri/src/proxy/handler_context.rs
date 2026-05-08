@@ -68,6 +68,9 @@ pub struct RequestContext {
     pub optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     pub copilot_optimizer_config: CopilotOptimizerConfig,
+    /// 请求开始时该应用的 switch_epoch snapshot。
+    /// 请求成功后回写 `current_providers` / `is_current` / 状态前必须比较此值。
+    pub request_epoch: u64,
 }
 
 impl RequestContext {
@@ -146,13 +149,20 @@ impl RequestContext {
             .cloned()
             .ok_or(ProxyError::NoAvailableProvider)?;
 
+        // Snapshot 当前 switch_epoch；请求成功后写共享状态前必须用它做比对。
+        let request_epoch = {
+            let epochs = state.switch_epoch.read().await;
+            *epochs.get(app_type_str).unwrap_or(&0)
+        };
+
         log::debug!(
-            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}, epoch: {}",
             tag,
             provider.name,
             request_model,
             providers.len(),
-            session_id
+            session_id,
+            request_epoch
         );
 
         Ok(Self {
@@ -171,6 +181,7 @@ impl RequestContext {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
+            request_epoch,
         })
     }
 
@@ -239,6 +250,9 @@ impl RequestContext {
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
+            state.switch_epoch.clone(),
+            self.request_epoch,
+            self.app_config.auto_failover_enabled,
         )
     }
 

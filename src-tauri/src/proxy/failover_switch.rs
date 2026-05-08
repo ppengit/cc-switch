@@ -80,15 +80,15 @@ impl FailoverSwitchManager {
     ) -> Result<bool, AppError> {
         // 检查该应用是否已被代理接管（enabled=true）
         // 只有被接管的应用才允许执行故障转移切换
-        let app_enabled = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(config) => config.enabled,
+        let app_config = match self.db.get_proxy_config_for_app(app_type).await {
+            Ok(config) => config,
             Err(e) => {
                 log::warn!("[FO-002] 无法读取 {app_type} 配置: {e}，跳过切换");
                 return Ok(false);
             }
         };
 
-        if !app_enabled {
+        if !app_config.enabled {
             log::debug!("[Failover] {app_type} 未启用代理，跳过切换");
             return Ok(false);
         }
@@ -96,6 +96,36 @@ impl FailoverSwitchManager {
         log::info!("[FO-001] 切换: {app_type} → {provider_name}");
 
         let mut switched = false;
+
+        // 故障转移开启：不写 is_current / local settings / live；只更新内存中的活动目标
+        // 用于 UI/托盘展示。在故障转移模式下，"当前供应商"概念不存在。
+        if app_config.auto_failover_enabled {
+            if let Some(app) = app_handle {
+                if let Some(app_state) = app.try_state::<crate::store::AppState>() {
+                    app_state
+                        .proxy_service
+                        .set_active_target_only(app_type, provider_id, provider_name)
+                        .await;
+                    if let Ok(new_menu) = crate::tray::create_tray_menu(app, app_state.inner()) {
+                        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
+                            if let Err(e) = tray.set_menu(Some(new_menu)) {
+                                log::error!("[Failover] 更新托盘菜单失败: {e}");
+                            }
+                        }
+                    }
+                }
+
+                let event_data = serde_json::json!({
+                    "appType": app_type,
+                    "providerId": provider_id,
+                    "source": "failover"
+                });
+                if let Err(e) = app.emit("provider-switched", event_data) {
+                    log::error!("[Failover] 发射事件失败: {e}");
+                }
+            }
+            return Ok(true);
+        }
 
         if let Some(app) = app_handle {
             if let Some(app_state) = app.try_state::<crate::store::AppState>() {

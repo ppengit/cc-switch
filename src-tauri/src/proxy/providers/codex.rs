@@ -216,6 +216,23 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_base_url_preserves_full_chat_completions_endpoint() {
+        let adapter = CodexAdapter::new();
+        let provider = create_provider(json!({
+            "config": r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://api.xn--chy-js0fk50c.top/v1/chat/completions"
+wire_api = "responses"
+"#
+        }));
+
+        let url = adapter.extract_base_url(&provider).unwrap();
+        assert_eq!(url, "https://api.xn--chy-js0fk50c.top/v1/chat/completions");
+    }
+
+    #[test]
     fn test_extract_auth_from_auth_field() {
         let adapter = CodexAdapter::new();
         let provider = create_provider(json!({

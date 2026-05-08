@@ -419,6 +419,7 @@ pub fn write_codex_live_atomic_with_stable_provider(
 /// - `"base_url"`: writes to `[model_providers.<current>].base_url` if `model_provider` exists,
 ///   otherwise falls back to top-level `base_url`.
 /// - `"model"`: writes to top-level `model` field.
+/// - `"model_reasoning_effort"`: writes to top-level `model_reasoning_effort` field.
 ///
 /// Empty value removes the field.
 pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Result<String, String> {
@@ -465,17 +466,53 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
                 doc["base_url"] = toml_edit::value(trimmed);
             }
         }
-        "model" => {
+        "model" | "model_reasoning_effort" => {
             if trimmed.is_empty() {
-                doc.as_table_mut().remove("model");
+                doc.as_table_mut().remove(field);
             } else {
-                doc["model"] = toml_edit::value(trimmed);
+                doc[field] = toml_edit::value(trimmed);
             }
         }
         _ => return Err(format!("unsupported field: {field}")),
     }
 
     Ok(doc.to_string())
+}
+
+/// Copy the Codex model selection fields from a provider config into a rendered
+/// takeover config.
+///
+/// Proxy takeover templates provide the local proxy base URL and auth placeholder,
+/// but the selected model must still come from the current provider. If the
+/// provider deliberately has no model field, remove the template's model field so
+/// we do not silently inject a stale template default.
+pub fn sync_codex_toml_model_fields_from_source(
+    target_toml: &str,
+    source_toml: &str,
+) -> Result<String, String> {
+    let source_doc = if source_toml.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        source_toml
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("source TOML parse error: {e}"))?
+    };
+
+    let mut updated = target_toml.to_string();
+    for field in ["model", "model_reasoning_effort"] {
+        let value = match source_doc.as_table().get(field) {
+            Some(item) => Some(
+                item.as_str()
+                    .ok_or_else(|| format!("{field} must be a string"))?
+                    .trim()
+                    .to_string(),
+            ),
+            None => None,
+        };
+        updated = update_codex_toml_field(&updated, field, value.as_deref().unwrap_or(""))?;
+    }
+
+    Ok(updated)
 }
 
 /// Remove `base_url` from the active model_provider section only if it matches `predicate`.
@@ -881,6 +918,88 @@ name = "any"
         let result2 = update_codex_toml_field(&result, "model", "").unwrap();
         let parsed2: toml::Value = toml::from_str(&result2).unwrap();
         assert!(parsed2.get("model").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_field_operates_on_top_level() {
+        let input = r#"model_provider = "any"
+model = "gpt-4"
+model_reasoning_effort = "high"
+
+[model_providers.any]
+name = "any"
+"#;
+
+        let result = update_codex_toml_field(input, "model_reasoning_effort", "medium").unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed
+                .get("model_reasoning_effort")
+                .and_then(|v| v.as_str()),
+            Some("medium")
+        );
+
+        let result2 = update_codex_toml_field(&result, "model_reasoning_effort", "").unwrap();
+        let parsed2: toml::Value = toml::from_str(&result2).unwrap();
+        assert!(parsed2.get("model_reasoning_effort").is_none());
+        assert_eq!(parsed2.get("model").and_then(|v| v.as_str()), Some("gpt-4"));
+    }
+
+    #[test]
+    fn sync_model_fields_from_source_overrides_takeover_template() {
+        let target = r#"approval_policy = "never"
+model_provider = "cc-switch"
+model = "gpt-5.5"
+model_reasoning_effort = "high"
+
+[model_providers.cc-switch]
+base_url = "http://127.0.0.1:15721/v1"
+"#;
+        let source = r#"model_provider = "custom"
+model = "gpt-5.3-codex"
+model_reasoning_effort = "medium"
+
+[model_providers.custom]
+base_url = "https://provider.example/v1"
+"#;
+
+        let result = sync_codex_toml_model_fields_from_source(target, source).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        assert_eq!(
+            parsed.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.3-codex")
+        );
+        assert_eq!(
+            parsed
+                .get("model_reasoning_effort")
+                .and_then(|v| v.as_str()),
+            Some("medium")
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("cc-switch"))
+                .and_then(|v| v.get("base_url"))
+                .and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:15721/v1")
+        );
+    }
+
+    #[test]
+    fn sync_model_fields_from_source_removes_template_defaults_when_provider_omits_them() {
+        let target = r#"model = "gpt-5.5"
+model_reasoning_effort = "high"
+"#;
+        let source = r#"[model_providers.custom]
+base_url = "https://provider.example/v1"
+"#;
+
+        let result = sync_codex_toml_model_fields_from_source(target, source).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        assert!(parsed.get("model").is_none());
+        assert!(parsed.get("model_reasoning_effort").is_none());
     }
 
     #[test]

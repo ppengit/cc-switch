@@ -886,8 +886,6 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|path| path.ends_with("state.db")));
         let profile_state_db = Path::new("profiles").join("work").join("state.db");
-        assert!(paths
-            .iter()
-            .any(|path| path.ends_with(&profile_state_db)));
+        assert!(paths.iter().any(|path| path.ends_with(&profile_state_db)));
     }
 }

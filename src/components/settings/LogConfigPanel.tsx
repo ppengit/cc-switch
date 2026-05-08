@@ -10,15 +10,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { settingsApi, type LogConfig } from "@/lib/api/settings";
 
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"] as const;
+const DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES = 30;
+const MIN_RAW_PROXY_LOG_RETENTION_MINUTES = 1;
+const MAX_RAW_PROXY_LOG_RETENTION_MINUTES = 1440;
+
+const clampRawProxyLogRetentionMinutes = (value: number) =>
+  Math.min(
+    MAX_RAW_PROXY_LOG_RETENTION_MINUTES,
+    Math.max(MIN_RAW_PROXY_LOG_RETENTION_MINUTES, value),
+  );
 
 export function LogConfigPanel() {
   const { t } = useTranslation();
   const [config, setConfig] = useState<LogConfig>({
     enabled: true,
     level: "info",
+    rawProxyLogRetentionMinutes: DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES,
   });
   const [isLoading, setIsLoading] = useState(true);
 
@@ -84,6 +95,42 @@ export function LogConfigPanel() {
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-0.5">
+          <Label>
+            {t("settings.advanced.logConfig.rawProxyLogRetention")}
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              "settings.advanced.logConfig.rawProxyLogRetentionDescription",
+            )}
+          </p>
+        </div>
+        <Input
+          type="number"
+          min={MIN_RAW_PROXY_LOG_RETENTION_MINUTES}
+          max={MAX_RAW_PROXY_LOG_RETENTION_MINUTES}
+          step={1}
+          className="w-[120px]"
+          value={config.rawProxyLogRetentionMinutes}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            if (!Number.isFinite(value)) return;
+            setConfig((current) => ({
+              ...current,
+              rawProxyLogRetentionMinutes: value,
+            }));
+          }}
+          onBlur={(event) => {
+            const parsed = Number(event.target.value);
+            const value = Number.isFinite(parsed)
+              ? clampRawProxyLogRetentionMinutes(Math.round(parsed))
+              : DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES;
+            void handleChange({ rawProxyLogRetentionMinutes: value });
+          }}
+        />
       </div>
 
       {/* 日志级别说明 */}
