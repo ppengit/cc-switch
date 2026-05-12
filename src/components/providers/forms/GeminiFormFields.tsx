@@ -11,6 +11,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { DEFAULT_GEMINI_MODEL } from "@/config/defaultModels";
 import type { ProviderCategory } from "@/types";
 
 interface EndpointCandidate {
@@ -185,7 +186,7 @@ export function GeminiFormFields({
             id="gemini-model"
             value={model}
             onChange={onModelChange}
-            placeholder="gemini-3.1-pro-preview"
+            placeholder={DEFAULT_GEMINI_MODEL}
             fetchedModels={fetchedModels}
             isLoading={isFetchingModels}
           />

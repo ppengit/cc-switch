@@ -314,7 +314,7 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
         }
     };
 
-    // Model name: use deeplink model or default
+    // Model name: use deeplink model or Codex/OpenAI default
     let model_name = request.model.as_deref().unwrap_or("gpt-5.5").to_string();
 
     // Endpoint: normalize trailing slashes (use primary endpoint only)

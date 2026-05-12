@@ -23,7 +23,10 @@ const STALE_REQUEST_PRUNE_SECS: u64 = 600;
 struct ActiveRequestMeta {
     app_type: String,
     provider_id: String,
+    provider_name: String,
     started_at: Instant,
+    request_model: Option<String>,
+    upstream_model: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +218,16 @@ impl ProxyActivityState {
     ) -> ProxyActivityEvent {
         if let Some(existing) = self.requests.get(request_id).cloned() {
             if existing.app_type == app_type && existing.provider_id == provider_id {
+                if let Some(meta) = self.requests.get_mut(request_id) {
+                    meta.provider_name = provider_name.to_string();
+                    if request_model.is_some() {
+                        meta.request_model = request_model.clone();
+                    }
+                    if upstream_model.is_some() {
+                        meta.upstream_model = upstream_model.clone();
+                    }
+                }
+
                 if let Some(target) = self
                     .targets
                     .get_mut(&(app_type.to_string(), provider_id.to_string()))
@@ -280,7 +293,10 @@ impl ProxyActivityState {
             ActiveRequestMeta {
                 app_type: app_type.to_string(),
                 provider_id: provider_id.to_string(),
+                provider_name: provider_name.to_string(),
                 started_at: Instant::now(),
+                request_model: request_model.clone(),
+                upstream_model: upstream_model.clone(),
             },
         );
 
@@ -338,20 +354,9 @@ impl ProxyActivityState {
         let Some(meta) = self.requests.remove(request_id) else {
             return self.finish_observed_request(request_id, event, status_code, error);
         };
-        let target_key = (meta.app_type.clone(), meta.provider_id.clone());
-        let provider_name = self
-            .targets
-            .get(&target_key)
-            .map(|target| target.provider_name.clone())
-            .unwrap_or_else(|| meta.provider_id.clone());
-        let request_model = self
-            .targets
-            .get(&target_key)
-            .and_then(|target| target.request_model.clone());
-        let upstream_model = self
-            .targets
-            .get(&target_key)
-            .and_then(|target| target.upstream_model.clone());
+        let provider_name = meta.provider_name.clone();
+        let request_model = meta.request_model.clone();
+        let upstream_model = meta.upstream_model.clone();
 
         self.decrement_target(&meta.app_type, &meta.provider_id);
 
@@ -739,6 +744,40 @@ mod tests {
             .map(|entry| entry.event.clone())
             .collect();
         assert_eq!(events, vec!["received", "routed"]);
+    }
+
+    #[test]
+    fn raw_logs_keep_request_models_isolated_for_concurrent_requests_same_target() {
+        let mut state = ProxyActivityState::default();
+
+        state.route_request(
+            "req-a",
+            "codex",
+            "provider-a",
+            "Provider A",
+            Some("gpt-5.3-codex".to_string()),
+            None,
+        );
+        state.route_request(
+            "req-b",
+            "codex",
+            "provider-a",
+            "Provider A",
+            Some("gpt-5.5".to_string()),
+            None,
+        );
+
+        state
+            .finish_request("req-a", "finished", Some(200), None)
+            .expect("finish req-a");
+
+        let logs = state.raw_logs(10, Some("codex"));
+        let req_a = logs
+            .iter()
+            .find(|entry| entry.request_id == "req-a")
+            .expect("req-a log");
+        assert_eq!(req_a.event, "finished");
+        assert_eq!(req_a.request_model.as_deref(), Some("gpt-5.3-codex"));
     }
 
     #[test]

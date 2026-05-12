@@ -43,7 +43,9 @@ pub async fn add_to_failover_queue(
     state
         .db
         .add_to_failover_queue(&app_type, &provider_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    state.proxy_service.sync_failover_active_target(&app_type).await
 }
 
 /// 从故障转移队列移除供应商
@@ -54,13 +56,6 @@ pub async fn remove_from_failover_queue(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    let was_current_provider = state
-        .db
-        .get_current_provider(&app_type)
-        .map_err(|e| e.to_string())?
-        .as_deref()
-        == Some(provider_id.as_str());
-
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
@@ -70,43 +65,14 @@ pub async fn remove_from_failover_queue(
         .proxy_service
         .clear_provider_runtime_state(&provider_id, &app_type)
         .await?;
+    state.proxy_service.sync_failover_active_target(&app_type).await?;
 
-    let (app_enabled, auto_failover_enabled) =
-        match state.db.get_proxy_config_for_app(&app_type).await {
-            Ok(config) => (config.enabled, config.auto_failover_enabled),
-            Err(error) => {
-                log::warn!("[Failover] 读取 {app_type} 代理配置失败，跳过即时切换: {error}");
-                (false, false)
-            }
-        };
-
-    if was_current_provider
-        && app_enabled
-        && auto_failover_enabled
-        && state.proxy_service.is_running().await
-    {
-        if let Some(next_provider) = state
-            .db
-            .get_failover_queue(&app_type)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .next()
-        {
-            let switch_manager =
-                crate::proxy::failover_switch::FailoverSwitchManager::new(state.db.clone());
-            if let Err(error) = switch_manager
-                .try_switch(
-                    Some(&app),
-                    &app_type,
-                    &next_provider.provider_id,
-                    &next_provider.provider_name,
-                )
-                .await
-            {
-                log::error!("[Failover] 禁用后切换到下一个供应商失败: {error}");
-            }
-        }
-    }
+    let event_data = serde_json::json!({
+        "appType": app_type,
+        "providerId": provider_id,
+        "source": "failoverQueueChanged"
+    });
+    let _ = app.emit("provider-switched", event_data);
 
     Ok(())
 }
@@ -253,6 +219,11 @@ pub async fn set_auto_failover_enabled(
             let _ = state.db.set_current_provider(&app_type, &first.provider_id);
             let _ = crate::settings::set_current_provider(&app_enum, Some(&first.provider_id));
         }
+
+        state
+            .proxy_service
+            .sync_failover_active_target(&app_type)
+            .await?;
     }
 
     // 刷新托盘菜单，确保状态同步

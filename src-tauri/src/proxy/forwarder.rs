@@ -136,11 +136,7 @@ impl RequestForwarder {
     /// `current_providers` / `is_current` / 托盘状态，否则会把 UI/状态倒退回旧供应商。
     async fn epoch_is_current(&self, app_type_str: &str) -> bool {
         let epochs = self.switch_epoch.read().await;
-        epochs
-            .get(app_type_str)
-            .copied()
-            .unwrap_or(0)
-            == self.request_epoch
+        epochs.get(app_type_str).copied().unwrap_or(0) == self.request_epoch
     }
 
     /// 转发请求（带故障转移）
@@ -221,11 +217,7 @@ impl RequestForwarder {
             //
             // headers 同样需要 clone 一份，避免修改影响后续 provider 的 fallback。
             let mut provider_headers = headers.clone();
-            if let Some(quirks) = provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.quirks.as_ref())
-            {
+            if let Some(quirks) = provider.meta.as_ref().and_then(|meta| meta.quirks.as_ref()) {
                 crate::quirks::apply_request_quirks(
                     &mut provider_body,
                     &mut provider_headers,
@@ -419,8 +411,7 @@ impl RequestForwarder {
                                             )
                                             .await;
 
-                                        let epoch_fresh =
-                                            self.epoch_is_current(app_type_str).await;
+                                        let epoch_fresh = self.epoch_is_current(app_type_str).await;
 
                                         // 更新当前应用类型使用的 provider
                                         if epoch_fresh {
@@ -862,6 +853,8 @@ impl RequestForwarder {
         // Claude 的 ANTHROPIC_MODEL 映射只适用于 Claude 语义请求，不能改写 Codex/Gemini 模型。
         let (mapped_body, _original_model, _mapped_model) =
             apply_scoped_model_mapping(app_type_str, body.clone(), provider);
+        let (mapped_body, _default_model) =
+            apply_provider_default_model_if_missing(app_type_str, mapped_body, provider);
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
@@ -1088,6 +1081,11 @@ impl RequestForwarder {
                     Some(trimmed.to_string())
                 }
             });
+        let activity_request_model = if normalize_activity_model(&self.request_model).is_none() {
+            effective_request_model.clone()
+        } else {
+            None
+        };
         route_request(
             &self.proxy_activity,
             self.app_handle.as_ref(),
@@ -1095,7 +1093,7 @@ impl RequestForwarder {
             app_type_str,
             &provider.id,
             &provider.name,
-            None,
+            activity_request_model,
             effective_request_model.clone(),
         )
         .await;
@@ -1955,6 +1953,90 @@ fn apply_scoped_model_mapping(
     (body, original, None)
 }
 
+fn normalize_activity_model(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn provider_default_model(app_type_str: &str, provider: &Provider) -> Option<String> {
+    let settings = &provider.settings_config;
+
+    if app_type_str.eq_ignore_ascii_case(AppType::Claude.as_str()) {
+        return settings
+            .pointer("/env/ANTHROPIC_MODEL")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+
+    if app_type_str.eq_ignore_ascii_case(AppType::Codex.as_str()) {
+        if let Some(model) = settings
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(model.to_string());
+        }
+
+        let config = settings.get("config")?;
+        if let Some(model) = config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(model.to_string());
+        }
+
+        let config_text = config.as_str()?;
+        let doc = config_text.parse::<toml_edit::DocumentMut>().ok()?;
+        return doc
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+
+    None
+}
+
+fn apply_provider_default_model_if_missing(
+    app_type_str: &str,
+    mut body: Value,
+    provider: &Provider,
+) -> (Value, Option<String>) {
+    let Some(body_obj) = body.as_object_mut() else {
+        return (body, None);
+    };
+
+    if body_obj
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return (body, None);
+    }
+
+    let Some(model) = provider_default_model(app_type_str, provider) else {
+        return (body, None);
+    };
+
+    body_obj.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.clone()),
+    );
+    (body, Some(model))
+}
+
 fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     match query {
         Some(query) if !query.is_empty() => {
@@ -2268,6 +2350,121 @@ mod tests {
         assert_eq!(mapped_body["model"], "gpt-5.3-codex");
         assert_eq!(original.as_deref(), Some("gpt-5.3-codex"));
         assert_eq!(mapped, None);
+    }
+
+    #[test]
+    fn codex_missing_model_uses_provider_config_model() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "config": r#"model_provider = "custom"
+model = "gpt-5.3-codex"
+
+[model_providers.custom]
+base_url = "https://api.example.com/v1"
+"#
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "input": "hello" });
+
+        let (mapped_body, default_model) =
+            apply_provider_default_model_if_missing(AppType::Codex.as_str(), body, &provider);
+
+        assert_eq!(mapped_body["model"], "gpt-5.3-codex");
+        assert_eq!(default_model.as_deref(), Some("gpt-5.3-codex"));
+    }
+
+    #[test]
+    fn codex_existing_model_is_preserved_over_provider_default() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "config": r#"model = "gpt-5.5""#
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "model": "gpt-5.3-codex", "input": "hello" });
+
+        let (mapped_body, default_model) =
+            apply_provider_default_model_if_missing(AppType::Codex.as_str(), body, &provider);
+
+        assert_eq!(mapped_body["model"], "gpt-5.3-codex");
+        assert_eq!(default_model, None);
+    }
+
+    #[test]
+    fn gemini_body_without_model_is_not_injected_from_provider_env() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "env": {
+                    "GEMINI_MODEL": "gemini-2.5-pro"
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "contents": [] });
+
+        let (mapped_body, default_model) =
+            apply_provider_default_model_if_missing(AppType::Gemini.as_str(), body, &provider);
+
+        assert!(mapped_body.get("model").is_none());
+        assert_eq!(default_model, None);
+    }
+
+    #[test]
+    fn default_model_is_not_injected_into_non_object_body() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "config": r#"model = "gpt-5.5""#
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!(["unexpected"]);
+
+        let (mapped_body, default_model) =
+            apply_provider_default_model_if_missing(AppType::Codex.as_str(), body, &provider);
+
+        assert_eq!(mapped_body, json!(["unexpected"]));
+        assert_eq!(default_model, None);
     }
 
     #[test]

@@ -1,5 +1,14 @@
 import type { OpenCodeModel, OpenCodeProviderConfig } from "@/types";
 import type { PricingModelSourceOption } from "../ProviderAdvancedConfig";
+import {
+  DEFAULT_CLAUDE_HAIKU_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_OPUS_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_PROVIDER_MODEL,
+  DEFAULT_PROVIDER_MODEL_LABEL,
+} from "@/config/defaultModels";
 
 // ── Default configs ──────────────────────────────────────────────────
 
@@ -8,10 +17,10 @@ export const CLAUDE_DEFAULT_CONFIG = JSON.stringify(
     env: {
       ANTHROPIC_BASE_URL: "",
       ANTHROPIC_AUTH_TOKEN: "",
-      ANTHROPIC_MODEL: "claude-sonnet-4-6",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
-      ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
-      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+      ANTHROPIC_MODEL: DEFAULT_CLAUDE_MODEL,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: DEFAULT_CLAUDE_HAIKU_MODEL,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: DEFAULT_CLAUDE_SONNET_MODEL,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: DEFAULT_CLAUDE_OPUS_MODEL,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     },
   },
@@ -22,7 +31,7 @@ export const CODEX_DEFAULT_CONFIG = JSON.stringify(
   {
     auth: { OPENAI_API_KEY: "" },
     config: `model_provider = "custom"
-model = "gpt-5.4"
+model = "${DEFAULT_PROVIDER_MODEL}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
@@ -40,11 +49,11 @@ export const GEMINI_DEFAULT_CONFIG = JSON.stringify(
     env: {
       GOOGLE_GEMINI_BASE_URL: "",
       GEMINI_API_KEY: "",
-      GEMINI_MODEL: "gemini-3.1-pro-preview",
+      GEMINI_MODEL: DEFAULT_GEMINI_MODEL,
     },
     config: {
       model: {
-        name: "gemini-3.1-pro-preview",
+        name: DEFAULT_GEMINI_MODEL,
       },
       security: {
         auth: {
@@ -67,7 +76,7 @@ export const OPENCODE_DEFAULT_CONFIG = JSON.stringify(
       setCacheKey: true,
     },
     models: {
-      "gpt-5.5": { name: "GPT-5.5" },
+      [DEFAULT_PROVIDER_MODEL]: { name: DEFAULT_PROVIDER_MODEL_LABEL },
       "gpt-5.4-mini": { name: "GPT-5.4 Mini" },
     },
   },
@@ -87,8 +96,8 @@ export const OPENCLAW_DEFAULT_CONFIG = JSON.stringify(
     api: "openai-responses",
     models: [
       {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
+        id: DEFAULT_PROVIDER_MODEL,
+        name: DEFAULT_PROVIDER_MODEL_LABEL,
         reasoning: true,
         input: ["text", "image"],
       },

@@ -1,5 +1,12 @@
 use crate::app_config::AppType;
 
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_CLAUDE_SONNET_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_OPUS_MODEL: &str = "claude-opus-4-7";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
+
 /// One editable file inside an application's access/live configuration template.
 ///
 /// This is the single backend source of truth used by both the config dialog
@@ -47,7 +54,7 @@ pub fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFi
         AppType::Claude => vec![AppConfigTemplateFile {
             key: "settings".to_string(),
             label: "settings.json".to_string(),
-            content: "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"{proxyBaseUrl}\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"{proxyToken}\",\n    \"ANTHROPIC_MODEL\": \"claude-sonnet-4-6\",\n    \"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"claude-haiku-4-5-20251001\",\n    \"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"claude-sonnet-4-6\",\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }\n}\n".to_string(),
+            content: format!("{{\n  \"env\": {{\n    \"ANTHROPIC_BASE_URL\": \"{{proxyBaseUrl}}\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"{{proxyToken}}\",\n    \"ANTHROPIC_MODEL\": \"{DEFAULT_CLAUDE_MODEL}\",\n    \"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"{DEFAULT_CLAUDE_HAIKU_MODEL}\",\n    \"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"{DEFAULT_CLAUDE_SONNET_MODEL}\",\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"{DEFAULT_CLAUDE_OPUS_MODEL}\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }}\n}}\n"),
         }],
         AppType::Codex => vec![
             AppConfigTemplateFile {
@@ -58,19 +65,19 @@ pub fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFi
             AppConfigTemplateFile {
                 key: "config".to_string(),
                 label: "config.toml".to_string(),
-                content: "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = \"cc-switch\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"{proxyCodexBaseUrl}\"\n\n{mcpConfig}\n".to_string(),
+                content: format!("model_provider = \"cc-switch\"\nmodel = \"{DEFAULT_CODEX_MODEL}\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = \"cc-switch\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"{{proxyCodexBaseUrl}}\"\n\n{{mcpConfig}}\n"),
             },
         ],
         AppType::Gemini => vec![
             AppConfigTemplateFile {
                 key: "env".to_string(),
                 label: ".env".to_string(),
-                content: "GOOGLE_GEMINI_BASE_URL={proxyBaseUrl}\nGEMINI_API_KEY={proxyToken}\nGEMINI_MODEL=gemini-3.1-pro-preview\n".to_string(),
+                content: format!("GOOGLE_GEMINI_BASE_URL={{proxyBaseUrl}}\nGEMINI_API_KEY={{proxyToken}}\nGEMINI_MODEL={DEFAULT_GEMINI_MODEL}\n"),
             },
             AppConfigTemplateFile {
                 key: "settings".to_string(),
                 label: "settings.json".to_string(),
-                content: "{\n  \"mcpServers\": {mcpConfig},\n  \"model\": {\n    \"name\": \"gemini-3.1-pro-preview\"\n  },\n  \"security\": {\n    \"auth\": {\n      \"selectedType\": \"gemini-api-key\"\n    }\n  }\n}\n".to_string(),
+                content: format!("{{\n  \"mcpServers\": {{mcpConfig}},\n  \"model\": {{\n    \"name\": \"{DEFAULT_GEMINI_MODEL}\"\n  }},\n  \"security\": {{\n    \"auth\": {{\n      \"selectedType\": \"gemini-api-key\"\n    }}\n  }}\n}}\n"),
             },
         ],
         AppType::OpenCode => vec![AppConfigTemplateFile {
@@ -121,4 +128,39 @@ pub fn parse_stored_template_files(
     }
 
     normalize_template_files(app_type, default_template_files_for(app_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn content_for(app_type: AppType, key: &str) -> String {
+        default_template_files_for(&app_type)
+            .into_iter()
+            .find(|file| file.key == key)
+            .expect("template file should exist")
+            .content
+    }
+
+    #[test]
+    fn claude_default_template_uses_claude_models() {
+        let content = content_for(AppType::Claude, "settings");
+
+        assert!(content.contains("\"ANTHROPIC_MODEL\": \"claude-sonnet-4-6\""));
+        assert!(content.contains(
+            "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"claude-haiku-4-5-20251001\""
+        ));
+        assert!(content.contains("\"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"claude-sonnet-4-6\""));
+        assert!(content.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
+        assert!(!content.contains("\"ANTHROPIC_MODEL\": \"gpt-5.5\""));
+    }
+
+    #[test]
+    fn gemini_default_template_uses_gemini_model() {
+        let env = content_for(AppType::Gemini, "env");
+        let settings = content_for(AppType::Gemini, "settings");
+
+        assert!(env.contains("GEMINI_MODEL=gemini-3.1-pro-preview"));
+        assert!(settings.contains("\"name\": \"gemini-3.1-pro-preview\""));
+    }
 }

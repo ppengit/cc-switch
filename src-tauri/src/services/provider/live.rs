@@ -538,11 +538,7 @@ pub(crate) fn write_live_with_common_config(
 
     // 应用 per-provider 特殊配置（quirks）— 仅在写盘前对 settings_config 做剥离。
     // 例如 Codex 屏蔽 `[features]`：`config.toml:features`。
-    if let Some(quirks) = provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.quirks.as_ref())
-    {
+    if let Some(quirks) = provider.meta.as_ref().and_then(|meta| meta.quirks.as_ref()) {
         crate::quirks::apply_strip_paths_to_settings(
             &mut effective_provider.settings_config,
             quirks,

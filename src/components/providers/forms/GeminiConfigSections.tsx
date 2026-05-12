@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
+import { DEFAULT_GEMINI_MODEL } from "@/config/defaultModels";
 
 interface GeminiEnvSectionProps {
   value: string;
@@ -103,7 +104,7 @@ export const GeminiEnvSection: React.FC<GeminiEnvSectionProps> = ({
         onChange={handleChange}
         placeholder={`GOOGLE_GEMINI_BASE_URL=https://your-api-endpoint.com/
 GEMINI_API_KEY=sk-your-api-key-here
-GEMINI_MODEL=gemini-3.1-pro-preview`}
+GEMINI_MODEL=${DEFAULT_GEMINI_MODEL}`}
         darkMode={isDarkMode}
         rows={6}
         showValidation={false}

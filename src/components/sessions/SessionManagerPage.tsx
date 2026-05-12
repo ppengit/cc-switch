@@ -13,6 +13,8 @@ import {
   Trash2,
   MessageSquare,
   Clock,
+  ChevronDown,
+  ChevronRight,
   FolderOpen,
   X,
   CheckSquare,
@@ -33,6 +35,7 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -73,6 +76,62 @@ type ProviderFilter =
   | "gemini"
   | "hermes";
 
+const ALL_PROJECTS_FILTER = "__all_projects__";
+const UNCATEGORIZED_PROJECT_KEY = "__uncategorized__";
+
+interface ProjectOption {
+  key: string;
+  label: string;
+  path: string | null;
+  count: number;
+}
+
+interface SessionProjectGroup extends ProjectOption {
+  sessions: SessionMeta[];
+}
+
+const getParentDirectory = (value?: string | null) => {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.replace(/[\\/]+$/, "");
+  const slashIndex = normalized.lastIndexOf("/");
+  const backslashIndex = normalized.lastIndexOf("\\");
+  const index = Math.max(slashIndex, backslashIndex);
+  return index > 0 ? normalized.slice(0, index) : "";
+};
+
+const normalizeProjectPathDisplay = (value?: string | null) => {
+  if (!value) return "";
+  const trimmed = value.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return "";
+
+  const hasUncPrefix = /^[\\/]{2,}[^\\/]/.test(trimmed);
+  const normalized = trimmed.replace(/[\\/]+/g, "/");
+
+  return hasUncPrefix && !normalized.startsWith("//")
+    ? `/${normalized}`
+    : normalized;
+};
+
+const normalizeProjectPathKey = (value?: string | null) => {
+  const normalized = normalizeProjectPathDisplay(value);
+  if (!normalized) return "";
+  return /^[A-Za-z]:/.test(normalized) || normalized.startsWith("//")
+    ? normalized.toLowerCase()
+    : normalized;
+};
+
+const getSessionProjectPath = (session: SessionMeta) => {
+  const projectDir = session.projectDir?.trim();
+  if (projectDir) return normalizeProjectPathDisplay(projectDir);
+  return normalizeProjectPathDisplay(getParentDirectory(session.sourcePath));
+};
+
+const getSessionProjectKey = (session: SessionMeta) =>
+  normalizeProjectPathKey(getSessionProjectPath(session)) ||
+  UNCATEGORIZED_PROJECT_KEY;
+
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -103,6 +162,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
     appId as ProviderFilter,
   );
+  const [projectFilter, setProjectFilter] = useState(ALL_PROJECTS_FILTER);
+  const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // 使用 FlexSearch 全文搜索
@@ -111,9 +174,74 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     providerFilter,
   });
 
-  const filteredSessions = useMemo(() => {
+  const getProjectLabel = useCallback(
+    (key: string, path: string | null) => {
+      if (key === UNCATEGORIZED_PROJECT_KEY) {
+        return t("sessionManager.uncategorizedProject", {
+          defaultValue: "未归类",
+        });
+      }
+      return getBaseName(path) || path || key;
+    },
+    [t],
+  );
+
+  const projectOptions = useMemo<ProjectOption[]>(() => {
+    const optionMap = new Map<string, ProjectOption>();
+
+    sessions
+      .filter(
+        (session) =>
+          providerFilter === "all" || session.providerId === providerFilter,
+      )
+      .forEach((session) => {
+        const key = getSessionProjectKey(session);
+        const path = getSessionProjectPath(session) || null;
+        const existing = optionMap.get(key);
+
+        if (existing) {
+          existing.count += 1;
+          if (path && existing.path && path.length < existing.path.length) {
+            existing.path = path;
+            existing.label = getProjectLabel(key, path);
+          }
+        } else {
+          optionMap.set(key, {
+            key,
+            label: getProjectLabel(key, path),
+            path,
+            count: 1,
+          });
+        }
+      });
+
+    return Array.from(optionMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
+    );
+  }, [getProjectLabel, providerFilter, sessions]);
+
+  useEffect(() => {
+    if (
+      projectFilter !== ALL_PROJECTS_FILTER &&
+      !projectOptions.some((option) => option.key === projectFilter)
+    ) {
+      setProjectFilter(ALL_PROJECTS_FILTER);
+    }
+  }, [projectFilter, projectOptions]);
+
+  const searchFilteredSessions = useMemo(() => {
     return searchSessions(search);
   }, [searchSessions, search]);
+
+  const filteredSessions = useMemo(() => {
+    if (projectFilter === ALL_PROJECTS_FILTER) {
+      return searchFilteredSessions;
+    }
+
+    return searchFilteredSessions.filter(
+      (session) => getSessionProjectKey(session) === projectFilter,
+    );
+  }, [projectFilter, searchFilteredSessions]);
 
   useEffect(() => {
     if (filteredSessions.length === 0) {
@@ -517,6 +645,65 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     setSelectedSessionKeys(new Set());
   };
 
+  const sessionGroups = useMemo<SessionProjectGroup[]>(() => {
+    const groupMap = new Map<string, SessionProjectGroup>();
+
+    filteredSessions.forEach((session) => {
+      const key = getSessionProjectKey(session);
+      const path = getSessionProjectPath(session) || null;
+      const existing = groupMap.get(key);
+
+      if (existing) {
+        existing.sessions.push(session);
+        existing.count += 1;
+        if (path && existing.path && path.length < existing.path.length) {
+          existing.path = path;
+          existing.label = getProjectLabel(key, path);
+        }
+      } else {
+        groupMap.set(key, {
+          key,
+          label: getProjectLabel(key, path),
+          path,
+          count: 1,
+          sessions: [session],
+        });
+      }
+    });
+
+    return Array.from(groupMap.values());
+  }, [filteredSessions, getProjectLabel]);
+
+  useEffect(() => {
+    const validGroupKeys = new Set(sessionGroups.map((group) => group.key));
+    setCollapsedProjectKeys((current) => {
+      let changed = false;
+      const next = new Set<string>();
+
+      current.forEach((key) => {
+        if (validGroupKeys.has(key)) {
+          next.add(key);
+        } else {
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [sessionGroups]);
+
+  const toggleProjectGroup = useCallback((key: string) => {
+    setCollapsedProjectKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <TooltipProvider>
       <div
@@ -759,6 +946,76 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           </SelectContent>
                         </Select>
 
+                        {projectOptions.length > 0 && (
+                          <Select
+                            value={projectFilter}
+                            onValueChange={setProjectFilter}
+                          >
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <SelectTrigger
+                                  aria-label={t(
+                                    "sessionManager.projectFilter",
+                                    {
+                                      defaultValue: "项目筛选",
+                                    },
+                                  )}
+                                  className="h-7 w-[112px] gap-1.5 border-0 bg-transparent px-2 hover:bg-muted"
+                                >
+                                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                                  <SelectValue
+                                    placeholder={t(
+                                      "sessionManager.projectFilterAll",
+                                      {
+                                        defaultValue: "全部项目",
+                                      },
+                                    )}
+                                  />
+                                </SelectTrigger>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {projectFilter === ALL_PROJECTS_FILTER
+                                  ? t("sessionManager.projectFilterAll", {
+                                      defaultValue: "全部项目",
+                                    })
+                                  : projectOptions.find(
+                                      (option) => option.key === projectFilter,
+                                    )?.path ||
+                                    t("sessionManager.projectFilter")}
+                              </TooltipContent>
+                            </Tooltip>
+                            <SelectContent className="max-w-[300px]">
+                              <SelectItem value={ALL_PROJECTS_FILTER}>
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                                  <span>
+                                    {t("sessionManager.projectFilterAll", {
+                                      defaultValue: "全部项目",
+                                    })}
+                                  </span>
+                                </div>
+                              </SelectItem>
+                              {projectOptions.map((option) => (
+                                <SelectItem
+                                  key={option.key}
+                                  value={option.key}
+                                  title={option.path ?? option.label}
+                                >
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                                    <span className="truncate">
+                                      {option.label}
+                                    </span>
+                                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                                      {option.count}
+                                    </span>
+                                  </div>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
@@ -860,28 +1117,67 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                         </p>
                       </div>
                     ) : (
-                      <div className="space-y-1">
-                        {filteredSessions.map((session) => {
-                          const isSelected =
-                            selectedKey !== null &&
-                            getSessionKey(session) === selectedKey;
+                      <div className="space-y-2">
+                        {sessionGroups.map((group) => {
+                          const isCollapsed = collapsedProjectKeys.has(
+                            group.key,
+                          );
 
                           return (
-                            <SessionItem
-                              key={getSessionKey(session)}
-                              session={session}
-                              isSelected={isSelected}
-                              selectionMode={selectionMode}
-                              searchQuery={search}
-                              isChecked={selectedSessionKeys.has(
-                                getSessionKey(session),
+                            <div key={group.key} className="min-w-0">
+                              <button
+                                type="button"
+                                aria-expanded={!isCollapsed}
+                                onClick={() => toggleProjectGroup(group.key)}
+                                className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+                              >
+                                {isCollapsed ? (
+                                  <ChevronRight className="size-3.5 shrink-0" />
+                                ) : (
+                                  <ChevronDown className="size-3.5 shrink-0" />
+                                )}
+                                <FolderOpen className="size-3.5 shrink-0" />
+                                <span
+                                  className="min-w-0 flex-1 truncate"
+                                  title={group.path ?? group.label}
+                                >
+                                  {group.label}
+                                </span>
+                                <Badge
+                                  variant="outline"
+                                  className="h-5 shrink-0 px-1.5 text-[10px]"
+                                >
+                                  {group.count}
+                                </Badge>
+                              </button>
+                              {!isCollapsed && (
+                                <div className="mt-1 space-y-1 border-l border-border-default/70 pl-2">
+                                  {group.sessions.map((session) => {
+                                    const isSelected =
+                                      selectedKey !== null &&
+                                      getSessionKey(session) === selectedKey;
+
+                                    return (
+                                      <SessionItem
+                                        key={getSessionKey(session)}
+                                        session={session}
+                                        isSelected={isSelected}
+                                        selectionMode={selectionMode}
+                                        searchQuery={search}
+                                        isChecked={selectedSessionKeys.has(
+                                          getSessionKey(session),
+                                        )}
+                                        isCheckDisabled={!session.sourcePath}
+                                        onSelect={setSelectedKey}
+                                        onToggleChecked={(checked) =>
+                                          toggleSessionChecked(session, checked)
+                                        }
+                                      />
+                                    );
+                                  })}
+                                </div>
                               )}
-                              isCheckDisabled={!session.sourcePath}
-                              onSelect={setSelectedKey}
-                              onToggleChecked={(checked) =>
-                                toggleSessionChecked(session, checked)
-                              }
-                            />
+                            </div>
                           );
                         })}
                       </div>
@@ -1036,7 +1332,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               className="gap-1.5 border-sky-200 bg-sky-50/80 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:border-sky-800 dark:hover:bg-sky-950/50 dark:hover:text-sky-200"
                               onClick={() => void handleExportSession()}
                               disabled={
-                                !selectedSession.sourcePath || isExportingSession
+                                !selectedSession.sourcePath ||
+                                isExportingSession
                               }
                             >
                               <Download className="size-3.5" />

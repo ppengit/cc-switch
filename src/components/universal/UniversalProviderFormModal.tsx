@@ -15,6 +15,14 @@ import {
   createUniversalProviderFromPreset,
   type UniversalProviderPreset,
 } from "@/config/universalProviderPresets";
+import {
+  DEFAULT_CLAUDE_HAIKU_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_OPUS_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_PROVIDER_MODEL,
+} from "@/config/defaultModels";
 
 interface UniversalProviderFormModalProps {
   isOpen: boolean;
@@ -126,11 +134,10 @@ export function UniversalProviderFormModal({
   // 计算 Claude 配置 JSON 预览
   const claudeConfigJson = useMemo(() => {
     if (!claudeEnabled) return null;
-    const model = models.claude?.model || "claude-sonnet-4-6";
-    const haiku =
-      models.claude?.haikuModel || "claude-haiku-4-5-20251001";
-    const sonnet = models.claude?.sonnetModel || "claude-sonnet-4-6";
-    const opus = models.claude?.opusModel || "claude-opus-4-7";
+    const model = models.claude?.model || DEFAULT_CLAUDE_MODEL;
+    const haiku = models.claude?.haikuModel || DEFAULT_CLAUDE_HAIKU_MODEL;
+    const sonnet = models.claude?.sonnetModel || DEFAULT_CLAUDE_SONNET_MODEL;
+    const opus = models.claude?.opusModel || DEFAULT_CLAUDE_OPUS_MODEL;
     return {
       env: {
         ANTHROPIC_BASE_URL: baseUrl,
@@ -146,7 +153,7 @@ export function UniversalProviderFormModal({
   // 计算 Codex 配置 JSON 预览
   const codexConfigJson = useMemo(() => {
     if (!codexEnabled) return null;
-    const model = models.codex?.model || "gpt-5.5";
+    const model = models.codex?.model || DEFAULT_PROVIDER_MODEL;
     const reasoningEffort = models.codex?.reasoningEffort || "high";
     // 确保 base_url 以 /v1 结尾（Codex 使用 OpenAI 兼容 API）
     const codexBaseUrl = baseUrl.endsWith("/v1")
@@ -173,7 +180,7 @@ requires_openai_auth = true`;
   // 计算 Gemini 配置 JSON 预览
   const geminiConfigJson = useMemo(() => {
     if (!geminiEnabled) return null;
-    const model = models.gemini?.model || "gemini-3.1-pro-preview";
+    const model = models.gemini?.model || DEFAULT_GEMINI_MODEL;
     return {
       env: {
         GOOGLE_GEMINI_BASE_URL: baseUrl,
@@ -548,7 +555,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "model", e.target.value)
                     }
-                    placeholder="claude-sonnet-4-6"
+                    placeholder={DEFAULT_CLAUDE_MODEL}
                   />
                 </div>
                 <div className="space-y-1">
@@ -558,7 +565,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "haikuModel", e.target.value)
                     }
-                    placeholder="claude-haiku-4-5-20251001"
+                    placeholder={DEFAULT_CLAUDE_HAIKU_MODEL}
                   />
                 </div>
                 <div className="space-y-1">
@@ -568,7 +575,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "sonnetModel", e.target.value)
                     }
-                    placeholder="claude-sonnet-4-6"
+                    placeholder={DEFAULT_CLAUDE_SONNET_MODEL}
                   />
                 </div>
                 <div className="space-y-1">
@@ -578,7 +585,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("claude", "opusModel", e.target.value)
                     }
-                    placeholder="claude-opus-4-7"
+                    placeholder={DEFAULT_CLAUDE_OPUS_MODEL}
                   />
                 </div>
               </div>
@@ -602,7 +609,7 @@ requires_openai_auth = true`;
                     onChange={(e) =>
                       updateModel("codex", "model", e.target.value)
                     }
-                    placeholder="gpt-5.5"
+                    placeholder={DEFAULT_PROVIDER_MODEL}
                   />
                 </div>
                 <div className="space-y-1">
@@ -635,7 +642,7 @@ requires_openai_auth = true`;
                   onChange={(e) =>
                     updateModel("gemini", "model", e.target.value)
                   }
-                  placeholder="gemini-3.1-pro-preview"
+                  placeholder={DEFAULT_GEMINI_MODEL}
                 />
               </div>
             </div>

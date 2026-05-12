@@ -7,7 +7,7 @@ import { ProviderList } from "@/components/providers/ProviderList";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
-let mockAutoFailoverEnabled = false;
+let mockAutoFailoverEnabled: boolean | undefined = false;
 let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
 let mockProviderHealth: unknown = undefined;
 let mockCircuitBreakerStats: unknown = undefined;
@@ -217,9 +217,7 @@ describe("ProviderList Component", () => {
       within(rowA).getByRole("button", { name: "拖拽排序" }),
     ).toHaveAttribute("data-dnd-id", "a");
 
-    fireEvent.click(
-      within(rowB).getByRole("button", { name: "使用此供应商" }),
-    );
+    fireEvent.click(within(rowB).getByRole("button", { name: "使用此供应商" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "编辑" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "复制" }));
     fireEvent.click(within(rowB).getByRole("button", { name: "用量配置" }));
@@ -280,8 +278,7 @@ describe("ProviderList Component", () => {
   });
 
   it("keeps full API endpoints visible for search and display text", () => {
-    const fullEndpoint =
-      "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
+    const fullEndpoint = "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
     const provider = createProvider({
       id: "codex-full",
       name: "Codex Full Endpoint",
@@ -383,5 +380,41 @@ describe("ProviderList Component", () => {
     });
 
     expect(statusSummary).toBeInTheDocument();
+  });
+
+  it("does not allow normal provider switching while proxy failover state is unresolved", () => {
+    const providerA = createProvider({ id: "a", name: "A" });
+    const providerB = createProvider({ id: "b", name: "B" });
+    const handleSwitch = vi.fn();
+    mockAutoFailoverEnabled = undefined;
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ a: providerA, b: providerB }}
+        currentProviderId="a"
+        appId="codex"
+        isProxyTakeover
+        onSwitch={handleSwitch}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const rowB = screen.getAllByRole("row")[2];
+    const switchButton = within(rowB).getByRole("button", {
+      name: "切换到此供应商",
+    });
+
+    expect(switchButton).toBeDisabled();
+    fireEvent.click(switchButton);
+    expect(handleSwitch).not.toHaveBeenCalled();
   });
 });

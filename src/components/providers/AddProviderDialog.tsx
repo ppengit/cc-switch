@@ -23,6 +23,11 @@ import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import { useProvidersQuery } from "@/lib/query";
+import {
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_PROVIDER_MODEL,
+} from "@/config/defaultModels";
 
 interface AddProviderDialogProps {
   open: boolean;
@@ -47,23 +52,34 @@ const normalizeEndpointForDuplicateCheck = (value?: unknown) =>
     ? value.trim().replace(/\/+$/, "").replace(/\/v1$/i, "")
     : "";
 
-const stripProviderTemplatePlaceholders = (value: unknown): unknown => {
+const defaultProviderTemplateModelForApp = (appId: AppId) => {
+  if (appId === "claude") return DEFAULT_CLAUDE_MODEL;
+  if (appId === "gemini") return DEFAULT_GEMINI_MODEL;
+  return DEFAULT_PROVIDER_MODEL;
+};
+
+const materializeProviderTemplatePlaceholders = (
+  value: unknown,
+  appId: AppId,
+): unknown => {
   if (typeof value === "string") {
     return value
       .replace(/\{baseUrl\}/g, "")
       .replace(/\{apiKey\}/g, "")
-      .replace(/\{model\}/g, "");
+      .replace(/\{model\}/g, defaultProviderTemplateModelForApp(appId));
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => stripProviderTemplatePlaceholders(item));
+    return value.map((item) =>
+      materializeProviderTemplatePlaceholders(item, appId),
+    );
   }
 
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
         key,
-        stripProviderTemplatePlaceholders(entry),
+        materializeProviderTemplatePlaceholders(entry, appId),
       ]),
     );
   }
@@ -92,7 +108,9 @@ const getProviderEndpointAndKey = (
     const auth = config.auth as Record<string, unknown> | undefined;
     return {
       endpoint: normalizeEndpointForDuplicateCheck(
-        extractCodexBaseUrl(typeof config.config === "string" ? config.config : ""),
+        extractCodexBaseUrl(
+          typeof config.config === "string" ? config.config : "",
+        ),
       ),
       apiKey:
         typeof auth?.OPENAI_API_KEY === "string"
@@ -106,7 +124,9 @@ const getProviderEndpointAndKey = (
     return {
       endpoint: normalizeEndpointForDuplicateCheck(env?.GOOGLE_GEMINI_BASE_URL),
       apiKey:
-        typeof env?.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY.trim() : "",
+        typeof env?.GEMINI_API_KEY === "string"
+          ? env.GEMINI_API_KEY.trim()
+          : "",
     };
   }
 
@@ -114,24 +134,21 @@ const getProviderEndpointAndKey = (
     const options = config.options as Record<string, unknown> | undefined;
     return {
       endpoint: normalizeEndpointForDuplicateCheck(options?.baseURL),
-      apiKey:
-        typeof options?.apiKey === "string" ? options.apiKey.trim() : "",
+      apiKey: typeof options?.apiKey === "string" ? options.apiKey.trim() : "",
     };
   }
 
   if (appId === "openclaw") {
     return {
       endpoint: normalizeEndpointForDuplicateCheck(config.baseUrl),
-      apiKey:
-        typeof config.apiKey === "string" ? config.apiKey.trim() : "",
+      apiKey: typeof config.apiKey === "string" ? config.apiKey.trim() : "",
     };
   }
 
   if (appId === "hermes") {
     return {
       endpoint: normalizeEndpointForDuplicateCheck(config.base_url),
-      apiKey:
-        typeof config.api_key === "string" ? config.api_key.trim() : "",
+      apiKey: typeof config.api_key === "string" ? config.api_key.trim() : "",
     };
   }
 
@@ -189,7 +206,10 @@ export function AddProviderDialog({
         try {
           const parsed = JSON.parse(template) as Record<string, unknown>;
           setProviderTemplateDefault(
-            stripProviderTemplatePlaceholders(parsed) as Record<string, unknown>,
+            materializeProviderTemplatePlaceholders(parsed, appId) as Record<
+              string,
+              unknown
+            >,
           );
         } catch {
           setProviderTemplateDefault(undefined);

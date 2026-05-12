@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_CLAUDE_SONNET_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_OPUS_MODEL: &str = "claude-opus-4-7";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
+
 // SSOT 模式：不再写供应商副本文件
 
 /// 供应商结构体
@@ -347,9 +354,15 @@ pub struct ProviderQuirks {
 #[serde(rename_all = "lowercase", tag = "op")]
 pub enum JsonPatchOp {
     /// 在 `path` 处添加 / 覆盖 `value`。语义同 RFC 6902 add（已存在则覆盖）。
-    Add { path: String, value: serde_json::Value },
+    Add {
+        path: String,
+        value: serde_json::Value,
+    },
     /// 替换 `path` 处的值；不存在时静默跳过（与严格 RFC 6902 不同）。
-    Replace { path: String, value: serde_json::Value },
+    Replace {
+        path: String,
+        value: serde_json::Value,
+    },
     /// 删除 `path` 处的值；不存在时静默跳过。
     Remove { path: String },
 }
@@ -538,16 +551,16 @@ impl UniversalProvider {
         let models = self.models.claude.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_string());
         let haiku = models
             .and_then(|m| m.haiku_model.clone())
-            .unwrap_or_else(|| model.clone());
+            .unwrap_or_else(|| DEFAULT_CLAUDE_HAIKU_MODEL.to_string());
         let sonnet = models
             .and_then(|m| m.sonnet_model.clone())
-            .unwrap_or_else(|| model.clone());
+            .unwrap_or_else(|| DEFAULT_CLAUDE_SONNET_MODEL.to_string());
         let opus = models
             .and_then(|m| m.opus_model.clone())
-            .unwrap_or_else(|| model.clone());
+            .unwrap_or_else(|| DEFAULT_CLAUDE_OPUS_MODEL.to_string());
 
         let settings_config = serde_json::json!({
             "env": {
@@ -585,7 +598,7 @@ impl UniversalProvider {
         let models = self.models.codex.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "gpt-5.5".to_string());
+            .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
         let reasoning_effort = models
             .and_then(|m| m.reasoning_effort.clone())
             .unwrap_or_else(|| "high".to_string());
@@ -650,7 +663,7 @@ requires_openai_auth = true"#
         let models = self.models.gemini.as_ref();
         let model = models
             .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| "gemini-3.1-pro-preview".to_string());
+            .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string());
 
         let settings_config = serde_json::json!({
             "env": {
@@ -896,6 +909,49 @@ mod tests {
                 .pointer("/env/ANTHROPIC_DEFAULT_OPUS_MODEL")
                 .and_then(|item| item.as_str()),
             Some("claude-opus")
+        );
+    }
+
+    #[test]
+    fn universal_provider_to_claude_provider_defaults_models() {
+        let mut universal = UniversalProvider::new(
+            "u1".to_string(),
+            "Universal".to_string(),
+            "newapi".to_string(),
+            "https://api.example.com".to_string(),
+            "api-key".to_string(),
+        );
+        universal.apps.claude = true;
+
+        let provider = universal.to_claude_provider().expect("claude provider");
+
+        assert_eq!(
+            provider
+                .settings_config
+                .pointer("/env/ANTHROPIC_MODEL")
+                .and_then(|item| item.as_str()),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            provider
+                .settings_config
+                .pointer("/env/ANTHROPIC_DEFAULT_HAIKU_MODEL")
+                .and_then(|item| item.as_str()),
+            Some("claude-haiku-4-5-20251001")
+        );
+        assert_eq!(
+            provider
+                .settings_config
+                .pointer("/env/ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .and_then(|item| item.as_str()),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            provider
+                .settings_config
+                .pointer("/env/ANTHROPIC_DEFAULT_OPUS_MODEL")
+                .and_then(|item| item.as_str()),
+            Some("claude-opus-4-7")
         );
     }
 

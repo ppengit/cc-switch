@@ -144,7 +144,8 @@ const getSeededCodexTemplate = (
   const auth =
     seededSettingsConfig &&
     typeof seededSettingsConfig === "object" &&
-    typeof (seededSettingsConfig as Record<string, unknown>).auth === "object" &&
+    typeof (seededSettingsConfig as Record<string, unknown>).auth ===
+      "object" &&
     (seededSettingsConfig as Record<string, unknown>).auth !== null
       ? ((seededSettingsConfig as Record<string, unknown>).auth as Record<
           string,
@@ -174,7 +175,8 @@ const getSeededGeminiTemplate = (
       : {};
   const config =
     seededSettingsConfig &&
-    typeof (seededSettingsConfig as Record<string, unknown>).config === "object" &&
+    typeof (seededSettingsConfig as Record<string, unknown>).config ===
+      "object" &&
     (seededSettingsConfig as Record<string, unknown>).config !== null
       ? ((seededSettingsConfig as Record<string, unknown>).config as Record<
           string,
@@ -216,7 +218,9 @@ const normalizeWebsiteFromEndpoint = (endpoint: string): string => {
 const isUsableHttpUrl = (value: string): boolean => {
   try {
     const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && !!url.host;
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !!url.host
+    );
   } catch {
     return false;
   }
@@ -250,9 +254,10 @@ const getEndpointFromSettingsConfig = (
   }
 
   if (appId === "codex") {
-    return extractCodexBaseUrl(
-      typeof cfg.config === "string" ? cfg.config : "",
-    ) || "";
+    return (
+      extractCodexBaseUrl(typeof cfg.config === "string" ? cfg.config : "") ||
+      ""
+    );
   }
 
   if (appId === "gemini") {
@@ -380,7 +385,9 @@ export function ProviderForm({
         seed?.meta?.costMultiplier !== undefined ||
         seed?.meta?.pricingModelSource !== undefined,
       costMultiplier: seed?.meta?.costMultiplier,
-      pricingModelSource: normalizePricingSource(seed?.meta?.pricingModelSource),
+      pricingModelSource: normalizePricingSource(
+        seed?.meta?.pricingModelSource,
+      ),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, formSeedKey, supportsFullUrl]);
@@ -455,8 +462,9 @@ export function ProviderForm({
       if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
       if (initialData?.meta?.apiKeyField) return initialData.meta.apiKeyField;
       // Infer from existing config env
-      const env = (seededSettingsConfig as Record<string, unknown>)
-        ?.env as Record<string, unknown> | undefined;
+      const env = (seededSettingsConfig as Record<string, unknown>)?.env as
+        | Record<string, unknown>
+        | undefined;
       if (env?.ANTHROPIC_API_KEY !== undefined) return "ANTHROPIC_API_KEY";
       return "ANTHROPIC_AUTH_TOKEN";
     },
@@ -570,21 +578,21 @@ export function ProviderForm({
       ),
   );
 
-  const codexInitialData = useMemo(
-    () =>
-      appId === "codex" && seededSettingsConfig
-        ? { settingsConfig: seededSettingsConfig }
-        : undefined,
-    [appId, seededSettingsConfig],
-  );
+  const codexInitialData = useMemo(() => {
+    if (appId !== "codex") return undefined;
+    return {
+      settingsConfig:
+        seededSettingsConfig ?? tryParseSettingsConfig(CODEX_DEFAULT_CONFIG),
+    };
+  }, [appId, seededSettingsConfig]);
 
-  const geminiInitialData = useMemo(
-    () =>
-      appId === "gemini" && seededSettingsConfig
-        ? { settingsConfig: seededSettingsConfig }
-        : undefined,
-    [appId, seededSettingsConfig],
-  );
+  const geminiInitialData = useMemo(() => {
+    if (appId !== "gemini") return undefined;
+    return {
+      settingsConfig:
+        seededSettingsConfig ?? tryParseSettingsConfig(GEMINI_DEFAULT_CONFIG),
+    };
+  }, [appId, seededSettingsConfig]);
 
   const {
     codexAuth,
@@ -778,13 +786,69 @@ export function ProviderForm({
     [form],
   );
 
+  const updateGeminiModelField = useCallback(
+    (model: string) => {
+      try {
+        const config = JSON.parse(form.getValues("settingsConfig") || "{}") as {
+          env?: Record<string, unknown>;
+          config?: Record<string, unknown>;
+        };
+        if (!config.env || typeof config.env !== "object") {
+          config.env = {};
+        }
+        if (!config.config || typeof config.config !== "object") {
+          config.config = {};
+        }
+
+        const trimmed = model.trim();
+        if (trimmed) {
+          config.env.GEMINI_MODEL = trimmed;
+          const nestedConfig = config.config as Record<string, unknown>;
+          const modelConfig =
+            nestedConfig.model &&
+            typeof nestedConfig.model === "object" &&
+            !Array.isArray(nestedConfig.model)
+              ? { ...(nestedConfig.model as Record<string, unknown>) }
+              : {};
+          modelConfig.name = trimmed;
+          nestedConfig.model = modelConfig;
+        } else {
+          delete config.env.GEMINI_MODEL;
+          const nestedConfig = config.config as Record<string, unknown>;
+          if (
+            nestedConfig.model &&
+            typeof nestedConfig.model === "object" &&
+            !Array.isArray(nestedConfig.model)
+          ) {
+            const modelConfig = {
+              ...(nestedConfig.model as Record<string, unknown>),
+            };
+            delete modelConfig.name;
+            if (Object.keys(modelConfig).length > 0) {
+              nestedConfig.model = modelConfig;
+            } else {
+              delete nestedConfig.model;
+            }
+          }
+        }
+
+        form.setValue("settingsConfig", JSON.stringify(config, null, 2));
+      } catch {
+        // Keep the editor state as source of truth if the hidden JSON is invalid.
+      }
+    },
+    [form],
+  );
+
   const updateGeminiSettingsField = useCallback(
     (patch: {
       env?: Record<string, string>;
       config?: Record<string, unknown>;
     }) => {
       try {
-        const current = JSON.parse(form.getValues("settingsConfig") || "{}") as {
+        const current = JSON.parse(
+          form.getValues("settingsConfig") || "{}",
+        ) as {
           env?: Record<string, unknown>;
           config?: Record<string, unknown>;
         };
@@ -833,9 +897,9 @@ export function ProviderForm({
   const handleGeminiModelChange = useCallback(
     (model: string) => {
       originalHandleGeminiModelChange(model);
-      updateGeminiEnvField("GEMINI_MODEL", model.trim());
+      updateGeminiModelField(model);
     },
-    [originalHandleGeminiModelChange, updateGeminiEnvField],
+    [originalHandleGeminiModelChange, updateGeminiModelField],
   );
 
   const handleGeminiEnvChange = useCallback(
@@ -961,7 +1025,9 @@ export function ProviderForm({
     }
 
     if (appId === "opencode") {
-      opencodeForm.resetOpencodeState((seededSettingsConfig as any) || undefined);
+      opencodeForm.resetOpencodeState(
+        (seededSettingsConfig as any) || undefined,
+      );
       return;
     }
 
@@ -1862,9 +1928,7 @@ export function ProviderForm({
         );
       }
       if (appId === "hermes") {
-        hermesForm.resetHermesState(
-          (seededSettingsConfig as any) || undefined,
-        );
+        hermesForm.resetHermesState((seededSettingsConfig as any) || undefined);
       }
       return;
     }

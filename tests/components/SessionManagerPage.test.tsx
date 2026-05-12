@@ -87,8 +87,8 @@ const openSearch = () => {
 };
 
 const closeSearch = () => {
-  const closeButton = Array.from(screen.getAllByRole("button")).find(
-    (button) => button.querySelector(".lucide-x"),
+  const closeButton = Array.from(screen.getAllByRole("button")).find((button) =>
+    button.querySelector(".lucide-x"),
   );
 
   if (!closeButton) {
@@ -98,11 +98,145 @@ const closeSearch = () => {
   fireEvent.click(closeButton);
 };
 
+const seedProjectSessions = () => {
+  const sessions: SessionMeta[] = [
+    {
+      providerId: "codex",
+      sessionId: "alpha-1",
+      title: "Alpha One",
+      projectDir: "/workspace/alpha",
+      createdAt: 3,
+      lastActiveAt: 30,
+      sourcePath: "/workspace/alpha/session-1.jsonl",
+      resumeCommand: "codex resume alpha-1",
+    },
+    {
+      providerId: "codex",
+      sessionId: "alpha-2",
+      title: "Alpha Two",
+      projectDir: "/workspace/alpha",
+      createdAt: 2,
+      lastActiveAt: 20,
+      sourcePath: "/workspace/alpha/session-2.jsonl",
+      resumeCommand: "codex resume alpha-2",
+    },
+    {
+      providerId: "codex",
+      sessionId: "beta-1",
+      title: "Beta One",
+      projectDir: "/workspace/beta",
+      createdAt: 1,
+      lastActiveAt: 10,
+      sourcePath: "/workspace/beta/session-1.jsonl",
+      resumeCommand: "codex resume beta-1",
+    },
+  ];
+  const messages: Record<string, SessionMessage[]> = {
+    "codex:/workspace/alpha/session-1.jsonl": [
+      { role: "user", content: "alpha one", ts: 30 },
+    ],
+    "codex:/workspace/alpha/session-2.jsonl": [
+      { role: "user", content: "alpha two", ts: 20 },
+    ],
+    "codex:/workspace/beta/session-1.jsonl": [
+      { role: "user", content: "beta one", ts: 10 },
+    ],
+  };
+
+  setSessionFixtures(sessions, messages);
+};
+
+const seedWindowsProjectSessions = () => {
+  const sessions: SessionMeta[] = [
+    {
+      providerId: "codex",
+      sessionId: "win-1",
+      title: "Windows One",
+      projectDir: "C:\\Repo\\App\\",
+      createdAt: 3,
+      lastActiveAt: 30,
+      sourcePath: "C:\\Repo\\App\\session-1.jsonl",
+      resumeCommand: "codex resume win-1",
+    },
+    {
+      providerId: "codex",
+      sessionId: "win-2",
+      title: "Windows Two",
+      projectDir: "c:/repo/app",
+      createdAt: 2,
+      lastActiveAt: 20,
+      sourcePath: "c:/repo/app/session-2.jsonl",
+      resumeCommand: "codex resume win-2",
+    },
+    {
+      providerId: "codex",
+      sessionId: "win-3",
+      title: "Windows Three",
+      projectDir: "C:/Repo/App//",
+      createdAt: 1,
+      lastActiveAt: 10,
+      sourcePath: "C:/Repo/App/session-3.jsonl",
+      resumeCommand: "codex resume win-3",
+    },
+  ];
+  const messages: Record<string, SessionMessage[]> = {
+    "codex:C:\\Repo\\App\\session-1.jsonl": [
+      { role: "user", content: "one", ts: 30 },
+    ],
+    "codex:c:/repo/app/session-2.jsonl": [
+      { role: "user", content: "two", ts: 20 },
+    ],
+    "codex:C:/Repo/App/session-3.jsonl": [
+      { role: "user", content: "three", ts: 10 },
+    ],
+  };
+
+  setSessionFixtures(sessions, messages);
+};
+
+const seedWindowsUncProjectSessions = () => {
+  const sessions: SessionMeta[] = [
+    {
+      providerId: "codex",
+      sessionId: "unc-1",
+      title: "UNC One",
+      projectDir: "\\\\Server\\Share\\Repo\\",
+      createdAt: 2,
+      lastActiveAt: 20,
+      sourcePath: "\\\\Server\\Share\\Repo\\session-1.jsonl",
+      resumeCommand: "codex resume unc-1",
+    },
+    {
+      providerId: "codex",
+      sessionId: "unc-2",
+      title: "UNC Two",
+      projectDir: "//server/share/repo",
+      createdAt: 1,
+      lastActiveAt: 10,
+      sourcePath: "//server/share/repo/session-2.jsonl",
+      resumeCommand: "codex resume unc-2",
+    },
+  ];
+  const messages: Record<string, SessionMessage[]> = {
+    "codex:\\\\Server\\Share\\Repo\\session-1.jsonl": [
+      { role: "user", content: "one", ts: 20 },
+    ],
+    "codex://server/share/repo/session-2.jsonl": [
+      { role: "user", content: "two", ts: 10 },
+    ],
+  };
+
+  setSessionFixtures(sessions, messages);
+};
+
 describe("SessionManagerPage", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     Element.prototype.scrollIntoView = vi.fn();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+    Element.prototype.setPointerCapture = vi.fn();
+    Element.prototype.releasePointerCapture = vi.fn();
 
     const sessions: SessionMeta[] = [
       {
@@ -166,6 +300,127 @@ describe("SessionManagerPage", () => {
     expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("groups the session list by project directory and collapses a project group", async () => {
+    seedProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
+    );
+
+    const alphaGroup = screen.getByRole("button", {
+      name: /^alpha 2$/i,
+      expanded: true,
+    });
+    const betaGroup = screen.getByRole("button", {
+      name: /^beta 1$/i,
+      expanded: true,
+    });
+
+    expect(alphaGroup).toBeInTheDocument();
+    expect(betaGroup).toBeInTheDocument();
+
+    fireEvent.click(alphaGroup);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /Alpha Two/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Beta One/i })).toBeVisible();
+
+    fireEvent.click(alphaGroup);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Alpha Two/i })).toBeVisible(),
+    );
+  });
+
+  it("filters sessions by a deduplicated project directory dropdown", async () => {
+    seedProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
+    );
+
+    const projectFilter = screen.getByRole("combobox", {
+      name: /项目筛选|sessionManager\.projectFilter/,
+    });
+    fireEvent.pointerDown(projectFilter, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: /beta/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha One")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Alpha Two")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Beta One/i })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /^beta 1$/i, expanded: true }),
+    ).toBeVisible();
+  });
+
+  it("deduplicates equivalent Windows project paths in groups and filter options", async () => {
+    seedWindowsProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Windows One")).toBeInTheDocument(),
+    );
+
+    expect(
+      screen.getByRole("button", { name: /^App 3$/i, expanded: true }),
+    ).toBeVisible();
+
+    const projectFilter = screen.getByRole("combobox", {
+      name: /项目筛选|sessionManager\.projectFilter/,
+    });
+    fireEvent.pointerDown(projectFilter, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: /App/i })).toHaveLength(1),
+    );
+    expect(screen.getByRole("option", { name: /App.*3/i })).toBeVisible();
+  });
+
+  it("deduplicates equivalent Windows UNC project paths", async () => {
+    seedWindowsUncProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("UNC One")).toBeInTheDocument(),
+    );
+
+    expect(
+      screen.getByRole("button", { name: /^Repo 2$/i, expanded: true }),
+    ).toBeVisible();
+
+    const projectFilter = screen.getByRole("combobox", {
+      name: /项目筛选|sessionManager\.projectFilter/,
+    });
+    fireEvent.pointerDown(projectFilter, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: /Repo/i })).toHaveLength(1),
+    );
+    expect(screen.getByRole("option", { name: /Repo.*2/i })).toBeVisible();
   });
 
   it("removes a deleted session from filtered search results", async () => {

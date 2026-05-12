@@ -60,7 +60,11 @@ pub fn apply_strip_paths_to_settings(settings: &mut Value, quirks: &ProviderQuir
 }
 
 /// 转发请求前对请求体应用 quirks。返回是否对 body 做过修改（暂未使用）。
-pub fn apply_request_quirks(body: &mut Value, headers: &mut http::HeaderMap, quirks: &ProviderQuirks) {
+pub fn apply_request_quirks(
+    body: &mut Value,
+    headers: &mut http::HeaderMap,
+    quirks: &ProviderQuirks,
+) {
     if let Some(model) = quirks.force_model.as_deref() {
         let model = model.trim();
         if !model.is_empty() {

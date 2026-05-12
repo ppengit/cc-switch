@@ -13,6 +13,10 @@ use crate::config::{self, get_claude_mcp_path, get_claude_settings_path, ConfigS
 use crate::provider::Provider;
 use crate::settings;
 
+const DEFAULT_PROVIDER_TEMPLATE_MODEL: &str = "gpt-5.5";
+const DEFAULT_CLAUDE_TEMPLATE_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_GEMINI_TEMPLATE_MODEL: &str = "gemini-3.1-pro-preview";
+
 #[tauri::command]
 pub async fn get_claude_config_status() -> Result<ConfigStatus, String> {
     Ok(config::get_claude_config_status())
@@ -78,18 +82,26 @@ fn provider_template_must_be_object_error() -> String {
     }
 }
 
-fn replace_provider_template_tokens(value: &str) -> String {
+fn default_provider_template_model_for_app(app_type: &AppType) -> &'static str {
+    match app_type {
+        AppType::Claude => DEFAULT_CLAUDE_TEMPLATE_MODEL,
+        AppType::Gemini => DEFAULT_GEMINI_TEMPLATE_MODEL,
+        _ => DEFAULT_PROVIDER_TEMPLATE_MODEL,
+    }
+}
+
+fn replace_provider_template_tokens_for_app(value: &str, app_type: &AppType) -> String {
     value
         .replace("{baseUrl}", "https://example.com/v1")
         .replace("{apiKey}", "test-key")
-        .replace("{model}", "gpt-5.5")
+        .replace("{model}", default_provider_template_model_for_app(app_type))
 }
 
-fn replace_codex_template_tokens(value: &str) -> String {
+fn replace_codex_template_tokens(value: &str, app_type: &AppType) -> String {
     [
         ("baseUrl", "https://example.com/v1"),
         ("apiKey", "test-key"),
-        ("model", "gpt-5.5"),
+        ("model", default_provider_template_model_for_app(app_type)),
     ]
     .into_iter()
     .fold(value.to_string(), |acc, (key, replacement)| {
@@ -106,7 +118,9 @@ fn materialize_provider_template_value(
 ) -> serde_json::Value {
     match value {
         serde_json::Value::String(text) => {
-            serde_json::Value::String(replace_provider_template_tokens(&text))
+            serde_json::Value::String(replace_provider_template_tokens_for_app(
+                &text, app_type,
+            ))
         }
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
@@ -122,7 +136,9 @@ fn materialize_provider_template_value(
                         if matches!(app_type, AppType::Codex) && key == "config" {
                             match value {
                                 serde_json::Value::String(text) => {
-                                    serde_json::Value::String(replace_codex_template_tokens(&text))
+                                    serde_json::Value::String(replace_codex_template_tokens(
+                                        &text, app_type,
+                                    ))
                                 }
                                 other => materialize_provider_template_value(other, app_type),
                             }

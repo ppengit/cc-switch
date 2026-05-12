@@ -1364,11 +1364,10 @@ impl ProviderService {
         }
 
         // Switch-mode apps (Claude/Codex/Gemini): branch on auto_failover_enabled.
-        let auto_failover_enabled = futures::executor::block_on(
-            state.db.get_proxy_config_for_app(app_type.as_str()),
-        )
-        .map(|c| c.auto_failover_enabled)
-        .unwrap_or(false);
+        let auto_failover_enabled =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
+                .map(|c| c.auto_failover_enabled)
+                .unwrap_or(false);
 
         // 故障转移开启：不存在"当前供应商"概念。
         // 直接从队列移除（若在）、清理活动面板/熔断器、删 DB。
@@ -1411,13 +1410,11 @@ impl ProviderService {
 
         // 按 sort_index 选下一个非 OMO、非 official 的可切换候选；
         // 优先排除被 hot-switch 拒绝的 official 类目（代理模式下不允许切到 official）。
-        let proxy_takeover_enabled = futures::executor::block_on(
-            state.db.get_proxy_config_for_app(app_type.as_str()),
-        )
-        .map(|c| c.enabled)
-        .unwrap_or(false);
-        let proxy_running =
-            futures::executor::block_on(state.proxy_service.is_running());
+        let proxy_takeover_enabled =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
+                .map(|c| c.enabled)
+                .unwrap_or(false);
+        let proxy_running = futures::executor::block_on(state.proxy_service.is_running());
         let block_official = proxy_takeover_enabled && proxy_running;
 
         let next = providers
@@ -1545,10 +1542,16 @@ impl ProviderService {
         // Both conditions must be true to use hot-switch mode
         // Use blocking wait since this is a sync function
         let is_proxy_running = futures::executor::block_on(state.proxy_service.is_running());
-        let proxy_takeover_enabled =
-            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
-                .map(|config| config.enabled)
-                .unwrap_or(false);
+        let app_proxy_config =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str())).ok();
+        let proxy_takeover_enabled = app_proxy_config
+            .as_ref()
+            .map(|config| config.enabled)
+            .unwrap_or(false);
+        let auto_failover_enabled = app_proxy_config
+            .as_ref()
+            .map(|config| config.auto_failover_enabled)
+            .unwrap_or(false);
 
         // Hot-switch only when proxy takeover is explicitly enabled for this app
         // and the proxy server is actually running.
@@ -1570,13 +1573,28 @@ impl ProviderService {
         }
 
         if should_hot_switch {
-            // Proxy takeover mode: hot-switch only, don't write Live config
+            if auto_failover_enabled {
+                log::info!(
+                    "自动故障转移模式：切换 {} 的代理活动目标为 {}，不写 Live 配置",
+                    app_type.as_str(),
+                    id
+                );
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .switch_proxy_target(app_type.as_str(), id),
+                )
+                .map_err(|e| AppError::Message(format!("切换代理活动目标失败: {e}")))?;
+                return Ok(SwitchResult::default());
+            }
+
+            // Proxy takeover single-provider mode: hot-switch the target and keep the
+            // restore backup aligned with the chosen provider.
             log::info!(
                 "代理接管模式：热切换 {} 的目标供应商为 {}",
                 app_type.as_str(),
                 id
             );
-
             futures::executor::block_on(
                 state
                     .proxy_service

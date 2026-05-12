@@ -106,6 +106,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  DEFAULT_CLAUDE_HAIKU_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_OPUS_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_PROVIDER_MODEL,
+  DEFAULT_PROVIDER_MODEL_LABEL,
+} from "@/config/defaultModels";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -151,6 +160,7 @@ interface ProviderRowView {
   isInConfig: boolean;
   isReadOnly: boolean;
   isEnabled: boolean;
+  isProxyModeResolving: boolean;
   isActiveProxyProvider: boolean;
   isProcessingProvider: boolean;
   activeRequestCount: number;
@@ -296,23 +306,32 @@ const getProviderTemplateBindings = (provider: Provider, appId: AppId) => {
 const replaceTemplatePlaceholders = (
   value: unknown,
   bindings: Record<string, string>,
+  appId: AppId,
 ): unknown => {
   if (typeof value === "string") {
+    const defaultModel =
+      appId === "claude"
+        ? DEFAULT_CLAUDE_MODEL
+        : appId === "gemini"
+          ? DEFAULT_GEMINI_MODEL
+          : DEFAULT_PROVIDER_MODEL;
     return value
       .replace(/\{baseUrl\}/g, bindings.baseUrl || "")
       .replace(/\{apiKey\}/g, bindings.apiKey || "")
-      .replace(/\{model\}/g, bindings.model || "");
+      .replace(/\{model\}/g, bindings.model || defaultModel);
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => replaceTemplatePlaceholders(item, bindings));
+    return value.map((item) =>
+      replaceTemplatePlaceholders(item, bindings, appId),
+    );
   }
 
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
         key,
-        replaceTemplatePlaceholders(entry, bindings),
+        replaceTemplatePlaceholders(entry, bindings, appId),
       ]),
     );
   }
@@ -326,10 +345,10 @@ const DEFAULT_PROVIDER_TEMPLATE_BY_APP: Record<string, string> = {
       env: {
         ANTHROPIC_BASE_URL: "{baseUrl}",
         ANTHROPIC_AUTH_TOKEN: "{apiKey}",
-        ANTHROPIC_MODEL: "{model}",
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
-        ANTHROPIC_DEFAULT_SONNET_MODEL: "{model}",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+        ANTHROPIC_MODEL: DEFAULT_CLAUDE_MODEL,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: DEFAULT_CLAUDE_HAIKU_MODEL,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: DEFAULT_CLAUDE_SONNET_MODEL,
+        ANTHROPIC_DEFAULT_OPUS_MODEL: DEFAULT_CLAUDE_OPUS_MODEL,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       },
     },
@@ -342,7 +361,7 @@ const DEFAULT_PROVIDER_TEMPLATE_BY_APP: Record<string, string> = {
         OPENAI_API_KEY: "{apiKey}",
       },
       config: `model_provider = "custom"
-model = "{model}"
+model = "${DEFAULT_PROVIDER_MODEL}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
@@ -360,11 +379,11 @@ requires_openai_auth = true`,
       env: {
         GOOGLE_GEMINI_BASE_URL: "{baseUrl}",
         GEMINI_API_KEY: "{apiKey}",
-        GEMINI_MODEL: "{model}",
+        GEMINI_MODEL: DEFAULT_GEMINI_MODEL,
       },
       config: {
         model: {
-          name: "{model}",
+          name: DEFAULT_GEMINI_MODEL,
         },
         security: {
           auth: {
@@ -385,7 +404,7 @@ requires_openai_auth = true`,
         setCacheKey: true,
       },
       models: {
-        "gpt-5.5": { name: "GPT-5.5" },
+        [DEFAULT_PROVIDER_MODEL]: { name: DEFAULT_PROVIDER_MODEL_LABEL },
         "gpt-5.4-mini": { name: "GPT-5.4 Mini" },
       },
     },
@@ -399,8 +418,8 @@ requires_openai_auth = true`,
       api: "openai-responses",
       models: [
         {
-          id: "gpt-5.5",
-          name: "GPT-5.5",
+          id: DEFAULT_PROVIDER_MODEL,
+          name: DEFAULT_PROVIDER_MODEL_LABEL,
           reasoning: true,
           input: ["text", "image"],
         },
@@ -457,7 +476,9 @@ const formatProviderTemplateForApp = (appId: AppId, template: string) => {
     return JSON.stringify(
       {
         auth:
-          parsed.auth && typeof parsed.auth === "object" && !Array.isArray(parsed.auth)
+          parsed.auth &&
+          typeof parsed.auth === "object" &&
+          !Array.isArray(parsed.auth)
             ? parsed.auth
             : {},
         config: typeof parsed.config === "string" ? parsed.config : "",
@@ -471,7 +492,9 @@ const formatProviderTemplateForApp = (appId: AppId, template: string) => {
     return JSON.stringify(
       {
         env:
-          parsed.env && typeof parsed.env === "object" && !Array.isArray(parsed.env)
+          parsed.env &&
+          typeof parsed.env === "object" &&
+          !Array.isArray(parsed.env)
             ? parsed.env
             : {},
         config:
@@ -504,7 +527,9 @@ const getProviderTemplateSections = (appId: AppId, template: string) => {
         language: "json" as const,
         rows: 6,
         value: JSON.stringify(
-          parsed.auth && typeof parsed.auth === "object" && !Array.isArray(parsed.auth)
+          parsed.auth &&
+            typeof parsed.auth === "object" &&
+            !Array.isArray(parsed.auth)
             ? parsed.auth
             : {},
           null,
@@ -529,9 +554,14 @@ const getProviderTemplateSections = (appId: AppId, template: string) => {
         language: "text" as const,
         rows: 6,
         value:
-          parsed.env && typeof parsed.env === "object" && !Array.isArray(parsed.env)
+          parsed.env &&
+          typeof parsed.env === "object" &&
+          !Array.isArray(parsed.env)
             ? Object.entries(parsed.env as Record<string, unknown>)
-                .map(([key, value]) => `${key}=${typeof value === "string" ? value : ""}`)
+                .map(
+                  ([key, value]) =>
+                    `${key}=${typeof value === "string" ? value : ""}`,
+                )
                 .join("\n")
             : "",
       },
@@ -699,8 +729,7 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "config",
         label: "config.toml",
-        content:
-          'model_provider = "cc-switch"\nmodel = "gpt-5.5"\nmodel_reasoning_effort = "high"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = "cc-switch"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "{proxyCodexBaseUrl}"\n\n{mcpConfig}\n',
+        content: `model_provider = "cc-switch"\nmodel = "${DEFAULT_PROVIDER_MODEL}"\nmodel_reasoning_effort = "high"\ndisable_response_storage = true\n\n[model_providers.cc-switch]\nname = "cc-switch"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "{proxyCodexBaseUrl}"\n\n{mcpConfig}\n`,
       },
     ];
   }
@@ -710,14 +739,12 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
       {
         key: "env",
         label: ".env",
-        content:
-          "GOOGLE_GEMINI_BASE_URL={proxyBaseUrl}\nGEMINI_API_KEY={proxyToken}\nGEMINI_MODEL=gemini-3.1-pro-preview\n",
+        content: `GOOGLE_GEMINI_BASE_URL={proxyBaseUrl}\nGEMINI_API_KEY={proxyToken}\nGEMINI_MODEL=${DEFAULT_GEMINI_MODEL}\n`,
       },
       {
         key: "settings",
         label: "settings.json",
-        content:
-          '{\n  "mcpServers": {mcpConfig},\n  "model": {\n    "name": "gemini-3.1-pro-preview"\n  },\n  "security": {\n    "auth": {\n      "selectedType": "gemini-api-key"\n    }\n  }\n}\n',
+        content: `{\n  "mcpServers": {mcpConfig},\n  "model": {\n    "name": "${DEFAULT_GEMINI_MODEL}"\n  },\n  "security": {\n    "auth": {\n      "selectedType": "gemini-api-key"\n    }\n  }\n}\n`,
       },
     ];
   }
@@ -759,8 +786,7 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
     {
       key: "settings",
       label: "settings.json",
-      content:
-        '{\n  "env": {\n    "ANTHROPIC_BASE_URL": "{proxyBaseUrl}",\n    "ANTHROPIC_AUTH_TOKEN": "{proxyToken}",\n    "ANTHROPIC_MODEL": "claude-sonnet-4-6",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7",\n    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"\n  }\n}\n',
+      content: `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "{proxyBaseUrl}",\n    "ANTHROPIC_AUTH_TOKEN": "{proxyToken}",\n    "ANTHROPIC_MODEL": "${DEFAULT_CLAUDE_MODEL}",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${DEFAULT_CLAUDE_HAIKU_MODEL}",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${DEFAULT_CLAUDE_SONNET_MODEL}",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${DEFAULT_CLAUDE_OPUS_MODEL}",\n    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"\n  }\n}\n`,
     },
   ];
 };
@@ -847,6 +873,8 @@ export function ProviderList({
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
+  const isProxyModeResolving =
+    isProxyTakeover === true && isAutoFailoverEnabled === undefined;
   const isTakeoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled !== true;
 
@@ -1201,11 +1229,7 @@ export function ProviderList({
             auth = drafts.auth;
           }
         }
-        return JSON.stringify(
-          { auth, config: drafts.config ?? "" },
-          null,
-          2,
-        );
+        return JSON.stringify({ auth, config: drafts.config ?? "" }, null, 2);
       }
       if (appId === "gemini") {
         let config: unknown = {};
@@ -1314,7 +1338,8 @@ export function ProviderList({
         getEndpointFromProvider(provider, appId),
       );
       const endpointWithoutV1 = stripV1Suffix(endpoint);
-      const endpointForNameLink = stripFromV1Segment(endpoint) || endpointWithoutV1;
+      const endpointForNameLink =
+        stripFromV1Segment(endpoint) || endpointWithoutV1;
 
       const website = normalizeOptionalUrl(provider.websiteUrl);
       const websiteForNameLink = stripFromV1Segment(website);
@@ -1354,6 +1379,7 @@ export function ProviderList({
         isInConfig,
         isReadOnly,
         isEnabled,
+        isProxyModeResolving,
         isActiveProxyProvider,
         isProcessingProvider,
         activeRequestCount,
@@ -1379,6 +1405,7 @@ export function ProviderList({
     isAdditiveMode,
     isCurrentAppTakeoverActive,
     isFailoverModeActive,
+    isProxyModeResolving,
     isProviderInConfig,
     sortedProviders,
   ]);
@@ -1482,42 +1509,48 @@ export function ProviderList({
     [],
   );
 
-  const scrollByPage = useCallback((direction: -1 | 1) => {
-    const container = getScrollableListContainer();
-    if (!container) return;
-    const delta = direction * Math.max(container.clientHeight * 0.82, 280);
-    const targetTop = Math.max(
-      0,
-      Math.min(
-        container.scrollHeight - container.clientHeight,
-        container.scrollTop + delta,
-      ),
-    );
+  const scrollByPage = useCallback(
+    (direction: -1 | 1) => {
+      const container = getScrollableListContainer();
+      if (!container) return;
+      const delta = direction * Math.max(container.clientHeight * 0.82, 280);
+      const targetTop = Math.max(
+        0,
+        Math.min(
+          container.scrollHeight - container.clientHeight,
+          container.scrollTop + delta,
+        ),
+      );
 
-    if (typeof container.scrollTo === "function") {
-      container.scrollTo({
-        top: targetTop,
-        behavior: "smooth",
-      });
-      return;
-    }
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({
+          top: targetTop,
+          behavior: "smooth",
+        });
+        return;
+      }
 
-    container.scrollTop = targetTop;
-  }, [getScrollableListContainer]);
+      container.scrollTop = targetTop;
+    },
+    [getScrollableListContainer],
+  );
 
-  const scrollToEdge = useCallback((edge: "start" | "end") => {
-    const container = getScrollableListContainer();
-    if (!container) return;
-    const targetTop = edge === "start" ? 0 : container.scrollHeight;
-    if (typeof container.scrollTo === "function") {
-      container.scrollTo({
-        top: targetTop,
-        behavior: "smooth",
-      });
-      return;
-    }
-    container.scrollTop = targetTop;
-  }, [getScrollableListContainer]);
+  const scrollToEdge = useCallback(
+    (edge: "start" | "end") => {
+      const container = getScrollableListContainer();
+      if (!container) return;
+      const targetTop = edge === "start" ? 0 : container.scrollHeight;
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({
+          top: targetTop,
+          behavior: "smooth",
+        });
+        return;
+      }
+      container.scrollTop = targetTop;
+    },
+    [getScrollableListContainer],
+  );
 
   const jumpToSearchMatch = useCallback(
     (nextIndex: number) => {
@@ -1689,12 +1722,14 @@ export function ProviderList({
           }
           if (!enabled && row.isInConfig) {
             await providersApi.removeFromLiveConfig(row.provider.id, appId);
-            queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
-              pruneProxyStatusProviderActivity(
-                current as any,
-                appId,
-                row.provider.id,
-              ) ?? current,
+            queryClient.setQueryData(
+              ["proxyStatus"],
+              (current: unknown) =>
+                pruneProxyStatusProviderActivity(
+                  current as any,
+                  appId,
+                  row.provider.id,
+                ) ?? current,
             );
           }
         }
@@ -1766,12 +1801,14 @@ export function ProviderList({
 
       try {
         await providersApi.delete(row.provider.id, appId);
-        queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
-          pruneProxyStatusProviderActivity(
-            current as any,
-            appId,
-            row.provider.id,
-          ) ?? current,
+        queryClient.setQueryData(
+          ["proxyStatus"],
+          (current: unknown) =>
+            pruneProxyStatusProviderActivity(
+              current as any,
+              appId,
+              row.provider.id,
+            ) ?? current,
         );
         success += 1;
       } catch (error) {
@@ -2072,10 +2109,7 @@ export function ProviderList({
     const composed = resolveActiveProviderTemplate();
     let templateObject: Record<string, unknown>;
     try {
-      templateObject = JSON.parse(composed) as Record<
-        string,
-        unknown
-      >;
+      templateObject = JSON.parse(composed) as Record<string, unknown>;
       if (Object.keys(templateObject).length === 0) {
         throw new Error("empty-template");
       }
@@ -2099,6 +2133,7 @@ export function ProviderList({
           const nextSettingsConfig = replaceTemplatePlaceholders(
             templateObject,
             bindings,
+            appId,
           ) as Record<string, unknown>;
 
           await providersApi.update(
@@ -2111,7 +2146,11 @@ export function ProviderList({
           success += 1;
         } catch (error) {
           failed += 1;
-          console.error("Failed to apply provider template", row.provider.id, error);
+          console.error(
+            "Failed to apply provider template",
+            row.provider.id,
+            error,
+          );
         }
       }
 
@@ -2145,10 +2184,7 @@ export function ProviderList({
     const composed = resolveActiveProviderTemplate();
     let templateObject: Record<string, unknown>;
     try {
-      templateObject = JSON.parse(composed) as Record<
-        string,
-        unknown
-      >;
+      templateObject = JSON.parse(composed) as Record<string, unknown>;
       if (Object.keys(templateObject).length === 0) {
         throw new Error("empty-template");
       }
@@ -2172,6 +2208,7 @@ export function ProviderList({
           const nextSettingsConfig = replaceTemplatePlaceholders(
             templateObject,
             bindings,
+            appId,
           ) as Record<string, unknown>;
 
           await providersApi.update(
@@ -2270,12 +2307,14 @@ export function ProviderList({
       try {
         if (row.isInConfig) {
           await providersApi.removeFromLiveConfig(row.provider.id, appId);
-          queryClient.setQueryData(["proxyStatus"], (current: unknown) =>
-            pruneProxyStatusProviderActivity(
-              current as any,
-              appId,
-              row.provider.id,
-            ) ?? current,
+          queryClient.setQueryData(
+            ["proxyStatus"],
+            (current: unknown) =>
+              pruneProxyStatusProviderActivity(
+                current as any,
+                appId,
+                row.provider.id,
+              ) ?? current,
           );
           await queryClient.invalidateQueries({
             queryKey: ["providers", appId],
@@ -2544,7 +2583,8 @@ export function ProviderList({
                           type="button"
                           className={cn(
                             "flex w-full flex-col gap-1 px-3 py-2 text-left transition-colors hover:bg-muted/70",
-                            index === activeSearchMatchIndex && "bg-amber-500/10",
+                            index === activeSearchMatchIndex &&
+                              "bg-amber-500/10",
                           )}
                           onClick={() => jumpToSearchMatch(index)}
                         >
@@ -2563,8 +2603,12 @@ export function ProviderList({
                               className="h-5 shrink-0 px-1.5 text-[10px]"
                             >
                               {row.isEnabled
-                                ? t("provider.enabled", { defaultValue: "启用" })
-                                : t("provider.disabled", { defaultValue: "禁用" })}
+                                ? t("provider.enabled", {
+                                    defaultValue: "启用",
+                                  })
+                                : t("provider.disabled", {
+                                    defaultValue: "禁用",
+                                  })}
                             </Badge>
                             {row.isActiveProxyProvider ? (
                               <Badge className="h-5 shrink-0 bg-emerald-600 px-1.5 text-[10px] hover:bg-emerald-600">
@@ -2709,10 +2753,7 @@ export function ProviderList({
         </div>
 
         <div className="relative min-h-0 flex-1">
-          <div
-            ref={listScrollRef}
-            className="h-full overflow-auto"
-          >
+          <div ref={listScrollRef} className="h-full overflow-auto">
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -2860,7 +2901,6 @@ export function ProviderList({
               </SortableContext>
             </DndContext>
           </div>
-
         </div>
       </div>
 
@@ -2967,9 +3007,7 @@ export function ProviderList({
       >
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            {appId === "opencode" ||
-            appId === "openclaw" ||
-            appId === "hermes"
+            {appId === "opencode" || appId === "openclaw" || appId === "hermes"
               ? t("provider.configTemplateHintAdditive", {
                   defaultValue:
                     "该应用当前不支持代理接管；这里提供可直接编辑保存的 starter 配置，供应商仍由列表中的供应商配置累加写入 live 文件。",
@@ -3072,7 +3110,6 @@ export function ProviderList({
                       })}
                 </Button>
               )}
-
             </div>
             <Button
               size="sm"
@@ -3181,11 +3218,11 @@ export function ProviderList({
                 }
               }}
               disabled={isSavingProviderTemplate}
-              >
-                {t("provider.resetTemplate", {
-                  defaultValue: "恢复默认模板",
-                })}
-              </Button>
+            >
+              {t("provider.resetTemplate", {
+                defaultValue: "恢复默认模板",
+              })}
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -3234,7 +3271,9 @@ export function ProviderList({
                   </div>
                 </div>
                 <Textarea
-                  value={providerTemplateSectionDrafts[section.key] ?? section.value}
+                  value={
+                    providerTemplateSectionDrafts[section.key] ?? section.value
+                  }
                   onChange={(event) =>
                     setProviderTemplateSectionDrafts((current) => ({
                       ...current,
@@ -3417,7 +3456,10 @@ function SortableProviderTableRow({
           },
         )
       : null,
-    isProcessing && requestModel && upstreamModel && requestModel !== upstreamModel
+    isProcessing &&
+    requestModel &&
+    upstreamModel &&
+    requestModel !== upstreamModel
       ? t("provider.statusReasonRequestModel", {
           defaultValue: "请求模型：{{model}}",
           model: requestModel,
@@ -3528,8 +3570,12 @@ function SortableProviderTableRow({
                 "h-7 w-7 shrink-0",
                 row.isCurrent && "opacity-70 cursor-default",
               )}
-              onClick={row.isCurrent ? undefined : onActivateProvider}
-              disabled={row.isCurrent}
+              onClick={
+                row.isCurrent || row.isProxyModeResolving
+                  ? undefined
+                  : onActivateProvider
+              }
+              disabled={row.isCurrent || row.isProxyModeResolving}
               title={activationLabel}
             >
               {row.isCurrent ? (
@@ -3562,7 +3608,10 @@ function SortableProviderTableRow({
       </TableCell>
 
       <TableCell className="px-2 py-1 whitespace-nowrap">
-        <div className="w-full truncate text-sm" title={row.provider.notes || ""}>
+        <div
+          className="w-full truncate text-sm"
+          title={row.provider.notes || ""}
+        >
           {row.provider.notes || "-"}
         </div>
       </TableCell>
@@ -3582,7 +3631,9 @@ function SortableProviderTableRow({
             <TooltipTrigger asChild>
               <div
                 className="inline-flex max-w-full items-center justify-center gap-0.5 whitespace-nowrap"
-                title={hasStatusTooltip ? healthDetailLines.join("\n") : undefined}
+                title={
+                  hasStatusTooltip ? healthDetailLines.join("\n") : undefined
+                }
               >
                 <Badge
                   variant={row.isEnabled ? "default" : "secondary"}
@@ -3605,14 +3656,13 @@ function SortableProviderTableRow({
                     {t("provider.liveRequests", {
                       defaultValue: "请求中",
                     })}
-                    {row.activeRequestCount > 1 ? ` ${row.activeRequestCount}` : ""}
+                    {row.activeRequestCount > 1
+                      ? ` ${row.activeRequestCount}`
+                      : ""}
                   </Badge>
                 ) : null}
                 {isCircuitOpen ? (
-                  <Badge
-                    variant="destructive"
-                    className="h-5 px-1.5 text-xs"
-                  >
+                  <Badge variant="destructive" className="h-5 px-1.5 text-xs">
                     {t("provider.circuitOpen", { defaultValue: "熔断" })}
                   </Badge>
                 ) : isCircuitHalfOpen ? (

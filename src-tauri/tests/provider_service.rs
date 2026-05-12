@@ -1190,10 +1190,17 @@ fn provider_service_delete_current_auto_rotates_to_next() {
         .db
         .get_all_providers(AppType::Claude.as_str())
         .expect("get all providers");
-    assert!(!providers.contains_key("a"), "deleted provider should be gone");
+    assert!(
+        !providers.contains_key("a"),
+        "deleted provider should be gone"
+    );
     let new_current = app_state
         .db
         .get_current_provider(AppType::Claude.as_str())
         .expect("get current");
-    assert_eq!(new_current.as_deref(), Some("b"), "current should auto-rotate to b");
+    assert_eq!(
+        new_current.as_deref(),
+        Some("b"),
+        "current should auto-rotate to b"
+    );
 }

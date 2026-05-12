@@ -7,6 +7,7 @@ import type { ProviderFormValues } from "@/components/providers/forms/ProviderFo
 const toastErrorMock = vi.fn();
 const getProviderDefaultTemplateMock = vi.fn();
 const upsertUniversalProviderMock = vi.fn();
+const providerFormPropsMock = vi.fn();
 let mockProvidersData: { providers: Record<string, any> };
 let mockFormValues: ProviderFormValues;
 
@@ -36,19 +37,21 @@ vi.mock("@/components/common/FullScreenPanel", () => ({
 }));
 
 vi.mock("@/components/providers/forms/ProviderForm", () => ({
-  ProviderForm: ({
-    onSubmit,
-  }: {
+  ProviderForm: (props: {
     onSubmit: (values: ProviderFormValues) => void;
-  }) => (
-    <form
-      id="provider-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSubmit(mockFormValues);
-      }}
-    />
-  ),
+    providerDefaultSettingsConfig?: Record<string, unknown>;
+  }) => {
+    providerFormPropsMock(props);
+    return (
+      <form
+        id="provider-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.onSubmit(mockFormValues);
+        }}
+      />
+    );
+  },
 }));
 
 vi.mock("@/lib/query", () => ({
@@ -76,7 +79,9 @@ describe("AddProviderDialog", () => {
     );
   };
 
-  const renderDialog = async (onSubmit = vi.fn().mockResolvedValue(undefined)) => {
+  const renderDialog = async (
+    onSubmit = vi.fn().mockResolvedValue(undefined),
+  ) => {
     renderWithQueryClient(
       <AddProviderDialog
         open
@@ -87,9 +92,7 @@ describe("AddProviderDialog", () => {
     );
 
     await waitFor(() =>
-      expect(
-        screen.queryByText("加载供应商模板中..."),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
     );
 
     return { onSubmit };
@@ -99,6 +102,7 @@ describe("AddProviderDialog", () => {
     toastErrorMock.mockReset();
     getProviderDefaultTemplateMock.mockReset();
     upsertUniversalProviderMock.mockReset();
+    providerFormPropsMock.mockReset();
     getProviderDefaultTemplateMock.mockResolvedValue(null);
     upsertUniversalProviderMock.mockResolvedValue(true);
     mockProvidersData = { providers: {} };
@@ -131,9 +135,7 @@ describe("AddProviderDialog", () => {
     );
 
     await waitFor(() =>
-      expect(
-        screen.queryByText("加载供应商模板中..."),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "common.add" }));
@@ -216,9 +218,7 @@ describe("AddProviderDialog", () => {
     );
 
     await waitFor(() =>
-      expect(
-        screen.queryByText("加载供应商模板中..."),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "common.add" }));
@@ -254,5 +254,33 @@ describe("AddProviderDialog", () => {
     const submitted = handleSubmit.mock.calls[0][0];
     expect(submitted.provider.addToLive).toBe(false);
     expect(submitted.saveOptions).toEqual({ pinToTop: false, enabled: false });
+  });
+
+  it("加载 Claude 供应商模板时将模型占位符真实写入 Claude 默认模型", async () => {
+    getProviderDefaultTemplateMock.mockResolvedValue(
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "{baseUrl}",
+          ANTHROPIC_AUTH_TOKEN: "{apiKey}",
+          ANTHROPIC_MODEL: "{model}",
+        },
+      }),
+    );
+
+    await renderDialog();
+
+    await waitFor(() =>
+      expect(providerFormPropsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerDefaultSettingsConfig: {
+            env: {
+              ANTHROPIC_BASE_URL: "",
+              ANTHROPIC_AUTH_TOKEN: "",
+              ANTHROPIC_MODEL: "claude-sonnet-4-6",
+            },
+          },
+        }),
+      ),
+    );
   });
 });

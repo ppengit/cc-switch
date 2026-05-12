@@ -1,3 +1,5 @@
+import { DEFAULT_PROVIDER_MODEL } from "@/config/defaultModels";
+
 /**
  * Codex 配置模板
  * 用于新建自定义供应商时的默认配置
@@ -14,7 +16,7 @@ export interface CodexTemplate {
  */
 export function getCodexCustomTemplate(): CodexTemplate {
   const config = `model_provider = "custom"
-model = "gpt-5.4"
+model = "${DEFAULT_PROVIDER_MODEL}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 

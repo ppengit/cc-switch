@@ -6,6 +6,7 @@ import {
   setCodexModelName as setCodexModelNameInConfig,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
+import { DEFAULT_PROVIDER_MODEL } from "@/config/defaultModels";
 
 interface UseCodexConfigStateProps {
   initialData?: {
@@ -73,8 +74,10 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     if (initialData) return;
     if (extractCodexModelName(codexConfig)) return;
     isUpdatingCodexModelNameRef.current = true;
-    setCodexConfigState((prev) => setCodexModelNameInConfig(prev, "gpt-5.4"));
-    setCodexModelName("gpt-5.4");
+    setCodexConfigState((prev) =>
+      setCodexModelNameInConfig(prev, DEFAULT_PROVIDER_MODEL),
+    );
+    setCodexModelName(DEFAULT_PROVIDER_MODEL);
     setTimeout(() => {
       isUpdatingCodexModelNameRef.current = false;
     }, 0);

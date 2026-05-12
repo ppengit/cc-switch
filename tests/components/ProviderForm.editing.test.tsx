@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
+import type { AppId } from "@/lib/api";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 vi.mock("sonner", () => ({
@@ -87,8 +88,7 @@ describe("ProviderForm edit mode", () => {
   it("does not let website/API endpoint sync trim a full Codex endpoint while editing", async () => {
     const queryClient = createTestQueryClient();
     const onSubmit = vi.fn();
-    const fullEndpoint =
-      "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
+    const fullEndpoint = "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -112,7 +112,7 @@ describe("ProviderForm edit mode", () => {
                 'name = "custom"',
                 `base_url = "${fullEndpoint}"`,
                 'wire_api = "responses"',
-                'requires_openai_auth = true',
+                "requires_openai_auth = true",
                 "",
               ].join("\n"),
             },
@@ -135,5 +135,242 @@ describe("ProviderForm edit mode", () => {
     expect(settingsConfig.config).toContain(`base_url = "${fullEndpoint}"`);
     expect(submitted.websiteUrl).toBe("https://old.example.com");
     expect(submitted.meta?.isFullUrl).toBe(true);
+  });
+});
+
+describe("ProviderForm create mode", () => {
+  const renderCreateProviderForm = (appId: AppId) => {
+    const queryClient = createTestQueryClient();
+    const onSubmit = vi.fn();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProviderForm
+          appId={appId}
+          submitLabel="Save"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    return { onSubmit };
+  };
+
+  const submitCreateForm = async (options?: {
+    providerKeyInputId?: string;
+    providerKey?: string;
+    confirmSoftIssues?: boolean;
+  }) => {
+    if (options?.providerKeyInputId) {
+      fireEvent.change(document.getElementById(options.providerKeyInputId)!, {
+        target: { value: options.providerKey ?? "new-provider" },
+      });
+    }
+    fireEvent.change(screen.getByLabelText("provider.name"), {
+      target: { value: "New Provider" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    if (options?.confirmSoftIssues) {
+      fireEvent.click(await screen.findByRole("button", { name: "仍要保存" }));
+    }
+  };
+
+  it("submits the Codex default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("codex");
+
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.config).toContain('model = "gpt-5.5"');
+    expect(settingsConfig.config).not.toContain('model = ""');
+    expect(settingsConfig.config).not.toContain("{model}");
+  });
+
+  it("submits the Claude default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("claude");
+
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.env.ANTHROPIC_MODEL).toBe("claude-sonnet-4-6");
+    expect(settingsConfig.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(
+      "claude-sonnet-4-6",
+    );
+    expect(settingsConfig.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(
+      "claude-haiku-4-5-20251001",
+    );
+    expect(settingsConfig.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe(
+      "claude-opus-4-7",
+    );
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("submits the Gemini default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("gemini");
+
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.env.GEMINI_MODEL).toBe("gemini-3.1-pro-preview");
+    expect(settingsConfig.config.model.name).toBe("gemini-3.1-pro-preview");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("submits the OpenCode default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("opencode");
+
+    await submitCreateForm({
+      providerKeyInputId: "opencode-key",
+      providerKey: "opencode-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models["gpt-5.5"]).toEqual({ name: "GPT-5.5" });
+    expect(
+      Object.prototype.hasOwnProperty.call(settingsConfig.models, ""),
+    ).toBe(false);
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("submits the OpenClaw default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("openclaw");
+
+    await submitCreateForm({
+      providerKeyInputId: "openclaw-key",
+      providerKey: "openclaw-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models[0].id).toBe("gpt-5.5");
+    expect(
+      settingsConfig.models.map((model: { id?: string }) => model.id),
+    ).not.toContain("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("submits the Hermes default model as a real value instead of an empty placeholder", async () => {
+    const { onSubmit } = renderCreateProviderForm("hermes");
+
+    await submitCreateForm({
+      providerKeyInputId: "hermes-key",
+      providerKey: "hermes-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models[0].id).toBe("openai/gpt-5.5");
+    expect(
+      settingsConfig.models.map((model: { id?: string }) => model.id),
+    ).not.toContain("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("updates the Codex default model in place without keeping an empty model", async () => {
+    const { onSubmit } = renderCreateProviderForm("codex");
+
+    fireEvent.change(screen.getByDisplayValue("gpt-5.5"), {
+      target: { value: "provider-model" },
+    });
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.config).toContain('model = "provider-model"');
+    expect(settingsConfig.config).not.toContain('model = ""');
+    expect(settingsConfig.config).not.toContain("{model}");
+  });
+
+  it("updates the Gemini default model in env and settings without keeping an empty model", async () => {
+    const { onSubmit } = renderCreateProviderForm("gemini");
+
+    fireEvent.change(screen.getByDisplayValue("gemini-3.1-pro-preview"), {
+      target: { value: "provider-model" },
+    });
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.env.GEMINI_MODEL).toBe("provider-model");
+    expect(settingsConfig.config.model.name).toBe("provider-model");
+    expect(settingsConfig.env.GEMINI_MODEL).not.toBe("");
+    expect(settingsConfig.config.model.name).not.toBe("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("renames the OpenCode default model instead of keeping an empty model key", async () => {
+    const { onSubmit } = renderCreateProviderForm("opencode");
+    const modelInput = screen.getByDisplayValue("gpt-5.5");
+
+    fireEvent.change(modelInput, { target: { value: "provider-model" } });
+    fireEvent.blur(modelInput);
+    await submitCreateForm({
+      providerKeyInputId: "opencode-key",
+      providerKey: "opencode-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models["provider-model"]).toEqual({
+      name: "GPT-5.5",
+    });
+    expect(Object.keys(settingsConfig.models)).not.toContain("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("updates the OpenClaw default model row without keeping an empty model id", async () => {
+    const { onSubmit } = renderCreateProviderForm("openclaw");
+
+    fireEvent.change(screen.getByDisplayValue("gpt-5.5"), {
+      target: { value: "provider-model" },
+    });
+    await submitCreateForm({
+      providerKeyInputId: "openclaw-key",
+      providerKey: "openclaw-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models[0].id).toBe("provider-model");
+    expect(
+      settingsConfig.models.map((model: { id?: string }) => model.id),
+    ).not.toContain("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("updates the Hermes default model row without keeping an empty model id", async () => {
+    const { onSubmit } = renderCreateProviderForm("hermes");
+
+    fireEvent.change(screen.getByDisplayValue("openai/gpt-5.5"), {
+      target: { value: "openai/provider-model" },
+    });
+    await submitCreateForm({
+      providerKeyInputId: "hermes-key",
+      providerKey: "hermes-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.models[0].id).toBe("openai/provider-model");
+    expect(
+      settingsConfig.models.map((model: { id?: string }) => model.id),
+    ).not.toContain("");
+    expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
   });
 });

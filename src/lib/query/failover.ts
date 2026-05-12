@@ -139,6 +139,9 @@ export function useAddToFailoverQueue() {
       queryClient.invalidateQueries({
         queryKey: ["providers", variables.appType],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["proxyStatus"],
+      });
     },
   });
 }
@@ -192,6 +195,9 @@ export function useRemoveFromFailoverQueue() {
           variables.appType,
         ],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["proxyStatus"],
+      });
     },
     onError: (_error, _variables, context) => {
       if (context?.previousStatus) {
@@ -210,8 +216,7 @@ export function useAutoFailoverEnabled(appType: string) {
   return useQuery({
     queryKey: ["autoFailoverEnabled", appType],
     queryFn: () => failoverApi.getAutoFailoverEnabled(appType),
-    // 默认值为 false（与后端保持一致）
-    placeholderData: false,
+    placeholderData: (previousData) => previousData,
   });
 }
 

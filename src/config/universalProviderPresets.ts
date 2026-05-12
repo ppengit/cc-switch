@@ -10,6 +10,14 @@ import type {
   UniversalProviderApps,
   UniversalProviderModels,
 } from "@/types";
+import {
+  DEFAULT_CLAUDE_HAIKU_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_OPUS_MODEL,
+  DEFAULT_CLAUDE_SONNET_MODEL,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_GEMINI_MODEL,
+} from "@/config/defaultModels";
 
 /**
  * 统一供应商预设接口
@@ -40,17 +48,17 @@ export interface UniversalProviderPreset {
  */
 const NEWAPI_DEFAULT_MODELS: UniversalProviderModels = {
   claude: {
-    model: "claude-sonnet-4-6",
-    haikuModel: "claude-haiku-4-5-20251001",
-    sonnetModel: "claude-sonnet-4-6",
-    opusModel: "claude-opus-4-7",
+    model: DEFAULT_CLAUDE_MODEL,
+    haikuModel: DEFAULT_CLAUDE_HAIKU_MODEL,
+    sonnetModel: DEFAULT_CLAUDE_SONNET_MODEL,
+    opusModel: DEFAULT_CLAUDE_OPUS_MODEL,
   },
   codex: {
-    model: "gpt-5.5",
+    model: DEFAULT_CODEX_MODEL,
     reasoningEffort: "high",
   },
   gemini: {
-    model: "gemini-3.1-pro-preview",
+    model: DEFAULT_GEMINI_MODEL,
   },
 };
 

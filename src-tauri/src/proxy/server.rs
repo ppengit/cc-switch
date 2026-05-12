@@ -310,6 +310,11 @@ impl ProxyServer {
         );
     }
 
+    pub async fn clear_active_target(&self, app_type: &str) {
+        let mut current_providers = self.state.current_providers.write().await;
+        current_providers.remove(app_type);
+    }
+
     /// 把某个应用类型的"切换代次"加 1，并返回新值。
     ///
     /// 任何会改变路由目标的操作（hot-switch、启停故障转移、从队列移除供应商等）

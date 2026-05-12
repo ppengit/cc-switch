@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { Button } from "@/components/ui/button";
 import JsonEditor from "@/components/JsonEditor";
+import { DEFAULT_GEMINI_MODEL } from "@/config/defaultModels";
 
 interface GeminiCommonConfigModalProps {
   isOpen: boolean;
@@ -135,7 +136,7 @@ export const GeminiCommonConfigModal: React.FC<
           value={draftValue}
           onChange={setDraftValue}
           placeholder={`{
-  "GEMINI_MODEL": "gemini-3.1-pro-preview"
+  "GEMINI_MODEL": "${DEFAULT_GEMINI_MODEL}"
 }`}
           darkMode={isDarkMode}
           rows={16}
