@@ -11,6 +11,24 @@ fn normalize_session_app_type(provider_id: &str) -> &str {
     provider_id
 }
 
+fn default_session_terminal_target() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "cmd"
+    } else if cfg!(target_os = "linux") {
+        "terminal"
+    } else {
+        "terminal"
+    }
+}
+
+fn resolve_session_terminal_target(preferred: Option<String>) -> String {
+    match preferred.as_deref() {
+        Some("iterm2") => "iterm".to_string(),
+        Some(target) if !target.trim().is_empty() => target.trim().to_string(),
+        _ => default_session_terminal_target().to_string(),
+    }
+}
+
 fn sanitize_export_filename(value: &str) -> String {
     let sanitized = value
         .trim()
@@ -191,15 +209,7 @@ pub async fn launch_session_terminal(
     let cwd = cwd.clone();
     let custom_config = custom_config.clone();
 
-    // Read preferred terminal from global settings
-    let preferred = crate::settings::get_preferred_terminal();
-    // Map global setting terminal names to session terminal names
-    // Global uses "iterm2", session terminal uses "iterm"
-    let target = match preferred.as_deref() {
-        Some("iterm2") => "iterm".to_string(),
-        Some(t) => t.to_string(),
-        None => "terminal".to_string(), // Default to Terminal.app on macOS
-    };
+    let target = resolve_session_terminal_target(crate::settings::get_preferred_terminal());
 
     tauri::async_runtime::spawn_blocking(move || {
         session_manager::terminal::launch_terminal(
@@ -282,4 +292,25 @@ pub async fn delete_sessions(
     tauri::async_runtime::spawn_blocking(move || session_manager::delete_sessions(&items))
         .await
         .map_err(|e| format!("Failed to delete sessions: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_session_terminal_target_maps_iterm2_to_terminal_launcher_name() {
+        assert_eq!(
+            resolve_session_terminal_target(Some("iterm2".to_string())),
+            "iterm"
+        );
+    }
+
+    #[test]
+    fn resolve_session_terminal_target_uses_trimmed_preferred_terminal() {
+        assert_eq!(
+            resolve_session_terminal_target(Some(" wt ".to_string())),
+            "wt"
+        );
+    }
 }

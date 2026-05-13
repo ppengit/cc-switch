@@ -1,9 +1,20 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
+import {
+  getProviders,
+  setProviderDefaultTemplateState,
+  setProviders,
+} from "../msw/state";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -380,6 +391,168 @@ describe("ProviderList Component", () => {
     });
 
     expect(statusSummary).toBeInTheDocument();
+  });
+
+  it("preserves existing Codex API key and base URL when applying an incomplete provider template", async () => {
+    const provider = createProvider({
+      id: "codex-safe",
+      name: "Codex Safe",
+      settingsConfig: {
+        auth: { OPENAI_API_KEY: "real-key" },
+        config: [
+          'model_provider = "custom"',
+          'model = "gpt-5.4"',
+          "",
+          "[model_providers.custom]",
+          'name = "custom"',
+          'base_url = "https://real.example/v1"',
+          'wire_api = "responses"',
+        ].join("\n"),
+      },
+    });
+
+    setProviders("codex", { "codex-safe": provider });
+    setProviderDefaultTemplateState(
+      "codex",
+      JSON.stringify(
+        {
+          auth: { OPENAI_API_KEY: "" },
+          config: [
+            'model_provider = "custom"',
+            'model = "gpt-5.5"',
+            "",
+            "[model_providers.custom]",
+            'name = "custom"',
+            'base_url = ""',
+            'wire_api = "responses"',
+            "requires_openai_auth = true",
+          ].join("\n"),
+        },
+        null,
+        2,
+      ),
+    );
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "codex-safe": provider }}
+        currentProviderId=""
+        appId="codex"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+
+    const applyAllButton = await screen.findByRole("button", {
+      name: "应用到当前应用全部 (1)",
+    });
+    await screen.findByDisplayValue(/base_url = ""/);
+    fireEvent.click(applyAllButton);
+
+    await waitFor(() => {
+      const updated = getProviders("codex")["codex-safe"];
+      expect(updated.settingsConfig).toMatchObject({
+        auth: { OPENAI_API_KEY: "real-key" },
+      });
+    });
+
+    const updatedConfig = getProviders("codex")["codex-safe"].settingsConfig
+      ?.config as string;
+    expect(updatedConfig).toContain('base_url = "https://real.example/v1"');
+    expect(updatedConfig).toContain('model = "gpt-5.5"');
+    expect(updatedConfig).toContain("requires_openai_auth = true");
+  });
+
+  it("does not replace existing Codex credentials with fixed provider template values", async () => {
+    const provider = createProvider({
+      id: "codex-fixed",
+      name: "Codex Fixed",
+      settingsConfig: {
+        auth: { OPENAI_API_KEY: "real-key" },
+        config: [
+          'model_provider = "custom"',
+          'model = "gpt-5.4"',
+          "",
+          "[model_providers.custom]",
+          'name = "custom"',
+          'base_url = "https://real.example/v1"',
+          'wire_api = "responses"',
+        ].join("\n"),
+      },
+    });
+
+    setProviders("codex", { "codex-fixed": provider });
+    setProviderDefaultTemplateState(
+      "codex",
+      JSON.stringify(
+        {
+          auth: { OPENAI_API_KEY: "template-key" },
+          config: [
+            'model_provider = "custom"',
+            'model = "gpt-5.5"',
+            "",
+            "[model_providers.custom]",
+            'name = "custom"',
+            'base_url = "https://template.example/v1"',
+            'wire_api = "responses"',
+            "requires_openai_auth = true",
+          ].join("\n"),
+        },
+        null,
+        2,
+      ),
+    );
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "codex-fixed": provider }}
+        currentProviderId=""
+        appId="codex"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+
+    const applyAllButton = await screen.findByRole("button", {
+      name: "应用到当前应用全部 (1)",
+    });
+    await screen.findByDisplayValue(/https:\/\/template\.example\/v1/);
+    fireEvent.click(applyAllButton);
+
+    await waitFor(() => {
+      const updated = getProviders("codex")["codex-fixed"];
+      expect(updated.settingsConfig).toMatchObject({
+        auth: { OPENAI_API_KEY: "real-key" },
+      });
+    });
+
+    const updatedConfig = getProviders("codex")["codex-fixed"].settingsConfig
+      ?.config as string;
+    expect(updatedConfig).toContain('base_url = "https://real.example/v1"');
+    expect(updatedConfig).not.toContain("https://template.example/v1");
+    expect(updatedConfig).toContain('model = "gpt-5.5"');
   });
 
   it("does not allow normal provider switching while proxy failover state is unresolved", () => {

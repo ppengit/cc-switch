@@ -81,9 +81,17 @@ export const providerPresets: ProviderPreset[] = [
         ANTHROPIC_MODEL: "claude-sonnet-4-6",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001",
         ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7[1m]",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+        ANTHROPIC_AUTH_TOKEN: "",
       },
+      permissions: {
+        defaultMode: "bypassPermissions",
+      },
+      skipDangerousModePermissionPrompt: true,
+      effortLevel: "xhigh",
+      language: "chinese",
     },
     isOfficial: true, // 明确标识为官方预设
     category: "official",

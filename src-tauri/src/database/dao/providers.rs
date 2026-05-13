@@ -595,6 +595,8 @@ impl Database {
     pub fn init_default_official_providers(&self) -> Result<usize, AppError> {
         use crate::database::dao::providers_seed::OFFICIAL_SEEDS;
 
+        self.upgrade_legacy_official_seed_defaults()?;
+
         if self
             .get_bool_flag("official_providers_seeded")
             .unwrap_or(false)
@@ -645,5 +647,120 @@ impl Database {
         self.set_setting("official_providers_seeded", "true")?;
 
         Ok(inserted)
+    }
+
+    fn upgrade_legacy_official_seed_defaults(&self) -> Result<usize, AppError> {
+        use crate::database::dao::providers_seed::{
+            LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON, OFFICIAL_SEEDS,
+        };
+
+        let Some(seed) = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == "claude-official")
+        else {
+            return Ok(0);
+        };
+
+        let app_type = seed.app_type.as_str();
+        let Some(provider) = self.get_provider_by_id(seed.id, app_type)? else {
+            return Ok(0);
+        };
+
+        let legacy_settings: serde_json::Value =
+            serde_json::from_str(LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON).map_err(|e| {
+                AppError::Database(format!(
+                    "Legacy Claude Official seed JSON parse failed: {e}"
+                ))
+            })?;
+
+        if provider.settings_config != legacy_settings {
+            return Ok(0);
+        }
+
+        let new_settings: serde_json::Value = serde_json::from_str(seed.settings_config_json)
+            .map_err(|e| {
+                AppError::Database(format!("Seed JSON parse failed for {}: {e}", seed.id))
+            })?;
+
+        self.update_provider_settings_config(app_type, seed.id, &new_settings)?;
+        log::info!(
+            "✓ Upgraded legacy official provider defaults: {}",
+            seed.name
+        );
+        Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::dao::providers_seed::{
+        LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON, OFFICIAL_SEEDS,
+    };
+    use serde_json::json;
+
+    fn current_claude_official_settings() -> serde_json::Value {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == "claude-official")
+            .expect("Claude Official seed should exist");
+        serde_json::from_str(seed.settings_config_json).expect("seed JSON should parse")
+    }
+
+    fn save_seeded_claude_official(db: &Database, settings: serde_json::Value) {
+        let mut provider = Provider::with_id(
+            "claude-official".to_string(),
+            "Claude Official".to_string(),
+            settings,
+            Some("https://www.anthropic.com/claude-code".to_string()),
+        );
+        provider.category = Some("official".to_string());
+        provider.icon = Some("anthropic".to_string());
+        provider.icon_color = Some("#D4915D".to_string());
+
+        db.save_provider("claude", &provider)
+            .expect("save Claude Official provider");
+        db.set_setting("official_providers_seeded", "true")
+            .expect("mark official providers seeded");
+    }
+
+    #[test]
+    fn init_default_official_providers_upgrades_legacy_claude_official_when_seeded_flag_exists() {
+        let db = Database::memory().expect("create memory db");
+        let legacy_settings: serde_json::Value =
+            serde_json::from_str(LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON)
+                .expect("legacy seed JSON should parse");
+        save_seeded_claude_official(&db, legacy_settings);
+
+        db.init_default_official_providers()
+            .expect("init official providers");
+
+        let provider = db
+            .get_provider_by_id("claude-official", "claude")
+            .expect("read provider")
+            .expect("provider exists");
+        assert_eq!(provider.settings_config, current_claude_official_settings());
+    }
+
+    #[test]
+    fn init_default_official_providers_preserves_user_modified_claude_official() {
+        let db = Database::memory().expect("create memory db");
+        let user_settings = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "custom-sonnet",
+                "ANTHROPIC_AUTH_TOKEN": "user-token",
+                "ANTHROPIC_BASE_URL": "https://example.test"
+            }
+        });
+        save_seeded_claude_official(&db, user_settings.clone());
+
+        db.init_default_official_providers()
+            .expect("init official providers");
+
+        let provider = db
+            .get_provider_by_id("claude-official", "claude")
+            .expect("read provider")
+            .expect("provider exists");
+        assert_eq!(provider.settings_config, user_settings);
     }
 }

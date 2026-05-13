@@ -72,10 +72,10 @@ export function SessionItem({
         onClick={() => onSelect(sessionKey)}
         className="min-w-0 flex-1 text-left"
       >
-        <div className="flex items-center gap-2 mb-1">
+        <div className="mb-1.5 grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="shrink-0">
+              <span className="mt-0.5 shrink-0">
                 <ProviderIcon
                   icon={getProviderIconName(session.providerId)}
                   name={session.providerId}
@@ -87,12 +87,12 @@ export function SessionItem({
               {getProviderLabel(session.providerId, t)}
             </TooltipContent>
           </Tooltip>
-          <span className="text-sm font-medium line-clamp-2 flex-1">
+          <span className="min-w-0 break-words text-sm font-medium leading-5 line-clamp-2">
             {searchQuery ? highlightText(title, searchQuery) : title}
           </span>
           <ChevronRight
             className={cn(
-              "size-4 text-muted-foreground/50 shrink-0 transition-transform",
+              "mt-0.5 size-4 shrink-0 text-muted-foreground/50 transition-transform",
               isSelected && "text-primary rotate-90",
             )}
           />
@@ -109,9 +109,9 @@ export function SessionItem({
           </div>
         ) : null}
 
-        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
           <Clock className="size-3" />
-          <span>
+          <span className="truncate">
             {lastActive
               ? formatRelativeTime(lastActive, t)
               : t("common.unknown")}

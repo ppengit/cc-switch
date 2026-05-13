@@ -147,9 +147,9 @@ mod tests {
         let content = content_for(AppType::Claude, "settings");
 
         assert!(content.contains("\"ANTHROPIC_MODEL\": \"claude-sonnet-4-6\""));
-        assert!(content.contains(
-            "\"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"claude-haiku-4-5-20251001\""
-        ));
+        assert!(
+            content.contains("\"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"claude-haiku-4-5-20251001\"")
+        );
         assert!(content.contains("\"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"claude-sonnet-4-6\""));
         assert!(content.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
         assert!(!content.contains("\"ANTHROPIC_MODEL\": \"gpt-5.5\""));

@@ -328,16 +328,10 @@ fn launch_windows_terminal(
                 )
             }
         }
-        "wt" => {
-            if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
-                run_windows_start(
-                    &["wt", "-d", cwd_value.trim(), "cmd", "/K", command],
-                    "Windows Terminal",
-                )
-            } else {
-                run_windows_start(&["wt", "cmd", "/K", command], "Windows Terminal")
-            }
-        }
+        "wt" => run_windows_start_owned(
+            &build_windows_terminal_args(command, cwd),
+            "Windows Terminal",
+        ),
         _ => run_windows_start(&["cmd", "/K", &cmd_chain], "cmd"),
     };
 
@@ -404,12 +398,36 @@ fn run_windows_start(args: &[&str], terminal_name: &str) -> Result<(), String> {
     }
 }
 
+fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> {
+    let command = command.trim();
+    let escaped = escape_powershell_single_quote(command);
+    let mut args = vec!["wt".to_string()];
+
+    if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+        args.push("-d".to_string());
+        args.push(cwd_value.trim().to_string());
+    }
+
+    args.extend([
+        "powershell".to_string(),
+        "-NoExit".to_string(),
+        "-Command".to_string(),
+        format!("Invoke-Expression '{escaped}'"),
+    ]);
+    args
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_start_owned(args: &[String], terminal_name: &str) -> Result<(), String> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_windows_start(&borrowed, terminal_name)
+}
+
 #[cfg(target_os = "windows")]
 fn escape_cmd_double_quotes(value: &str) -> String {
     value.replace('"', "\"\"")
 }
 
-#[cfg(target_os = "windows")]
 fn escape_powershell_single_quote(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -573,5 +591,22 @@ mod tests {
 
         // Verify shell_escape works correctly for paths with spaces
         assert_eq!(shell_escape(cwd), "\"/tmp/project dir\"");
+    }
+
+    #[test]
+    fn windows_terminal_runs_resume_command_in_powershell_without_cmd_wrapper() {
+        let args =
+            build_windows_terminal_args("codex resume abc-123", Some("C:\\Users\\me\\Project"));
+
+        assert_eq!(args[0], "wt");
+        assert_eq!(args[1], "-d");
+        assert_eq!(args[2], "C:\\Users\\me\\Project");
+        assert_eq!(args[3], "powershell");
+        assert!(args.contains(&"-NoExit".to_string()));
+        assert!(args.contains(&"-Command".to_string()));
+        assert!(
+            !args.iter().any(|arg| arg.eq_ignore_ascii_case("cmd")),
+            "Windows Terminal resume should not wrap the command in cmd"
+        );
     }
 }

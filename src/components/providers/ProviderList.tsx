@@ -89,7 +89,10 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
-import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import {
+  extractCodexBaseUrl,
+  setCodexBaseUrl,
+} from "@/utils/providerConfigUtils";
 import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 import {
   Popover,
@@ -337,6 +340,217 @@ const replaceTemplatePlaceholders = (
   }
 
   return value;
+};
+
+const asRecord = (value: unknown): Record<string, any> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {};
+
+const getNestedValue = (target: unknown, path: string[]) => {
+  let cursor = target;
+  for (const key of path) {
+    cursor = asRecord(cursor)[key];
+  }
+  return cursor;
+};
+
+const setNestedValue = (
+  target: Record<string, any>,
+  path: string[],
+  value: string,
+) => {
+  let cursor = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    const existing = cursor[key];
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      cursor[key] = {};
+    }
+    cursor = cursor[key] as Record<string, any>;
+  }
+  cursor[path[path.length - 1]] = value;
+};
+
+const preserveNonEmptyString = (
+  current: Record<string, any>,
+  next: Record<string, any>,
+  template: Record<string, unknown>,
+  path: string[],
+  placeholder: "apiKey" | "baseUrl",
+) => {
+  const currentCursor = getNestedValue(current, path);
+  const nextCursor = getNestedValue(next, path);
+  const templateCursor = getNestedValue(template, path);
+  const currentValue =
+    typeof currentCursor === "string" ? currentCursor.trim() : "";
+  const nextValue = typeof nextCursor === "string" ? nextCursor.trim() : "";
+  const templateUsesPlaceholder =
+    typeof templateCursor === "string" &&
+    templateCursor.includes(`{${placeholder}}`);
+
+  if (currentValue && (!nextValue || !templateUsesPlaceholder)) {
+    setNestedValue(next, path, currentValue);
+  }
+};
+
+const protectProviderTemplateSecrets = (
+  currentSettingsConfig: unknown,
+  templateObject: Record<string, unknown>,
+  renderedTemplate: Record<string, unknown>,
+  appId: AppId,
+): Record<string, unknown> => {
+  const current = asRecord(currentSettingsConfig);
+  const next = { ...renderedTemplate } as Record<string, any>;
+
+  if (appId === "claude") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "ANTHROPIC_BASE_URL"],
+      "baseUrl",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "ANTHROPIC_AUTH_TOKEN"],
+      "apiKey",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "ANTHROPIC_API_KEY"],
+      "apiKey",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "OPENAI_API_KEY"],
+      "apiKey",
+    );
+    return next;
+  }
+
+  if (appId === "codex") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["auth", "OPENAI_API_KEY"],
+      "apiKey",
+    );
+    const currentBaseUrl = firstNonEmpty(
+      extractCodexBaseUrl(
+        typeof current.config === "string" ? current.config : "",
+      ),
+    );
+    const nextBaseUrl = firstNonEmpty(
+      extractCodexBaseUrl(typeof next.config === "string" ? next.config : ""),
+    );
+    const templateConfig = templateObject.config;
+    const templateUsesBaseUrlPlaceholder =
+      typeof templateConfig === "string" &&
+      templateConfig.includes("{baseUrl}");
+
+    if (currentBaseUrl && (!nextBaseUrl || !templateUsesBaseUrlPlaceholder)) {
+      if (typeof next.config === "string") {
+        next.config = setCodexBaseUrl(next.config, currentBaseUrl);
+      } else if (typeof current.config === "string") {
+        next.config = current.config;
+      }
+    }
+    return next;
+  }
+
+  if (appId === "gemini") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "GOOGLE_GEMINI_BASE_URL"],
+      "baseUrl",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["env", "GEMINI_API_KEY"],
+      "apiKey",
+    );
+    return next;
+  }
+
+  if (appId === "opencode") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["options", "baseURL"],
+      "baseUrl",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["options", "apiKey"],
+      "apiKey",
+    );
+    return next;
+  }
+
+  if (appId === "openclaw") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["baseUrl"],
+      "baseUrl",
+    );
+    preserveNonEmptyString(current, next, templateObject, ["apiKey"], "apiKey");
+    return next;
+  }
+
+  if (appId === "hermes") {
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["base_url"],
+      "baseUrl",
+    );
+    preserveNonEmptyString(
+      current,
+      next,
+      templateObject,
+      ["api_key"],
+      "apiKey",
+    );
+  }
+
+  return next;
+};
+
+const buildProviderSettingsFromTemplate = (
+  provider: Provider,
+  templateObject: Record<string, unknown>,
+  appId: AppId,
+) => {
+  const bindings = getProviderTemplateBindings(provider, appId);
+  const rendered = replaceTemplatePlaceholders(
+    templateObject,
+    bindings,
+    appId,
+  ) as Record<string, unknown>;
+  return protectProviderTemplateSecrets(
+    provider.settingsConfig,
+    templateObject,
+    rendered,
+    appId,
+  );
 };
 
 const DEFAULT_PROVIDER_TEMPLATE_BY_APP: Record<string, string> = {
@@ -2129,12 +2343,11 @@ export function ProviderList({
     try {
       for (const row of selectedRows) {
         try {
-          const bindings = getProviderTemplateBindings(row.provider, appId);
-          const nextSettingsConfig = replaceTemplatePlaceholders(
+          const nextSettingsConfig = buildProviderSettingsFromTemplate(
+            row.provider,
             templateObject,
-            bindings,
             appId,
-          ) as Record<string, unknown>;
+          );
 
           await providersApi.update(
             {
@@ -2204,12 +2417,11 @@ export function ProviderList({
     try {
       for (const row of displayRows) {
         try {
-          const bindings = getProviderTemplateBindings(row.provider, appId);
-          const nextSettingsConfig = replaceTemplatePlaceholders(
+          const nextSettingsConfig = buildProviderSettingsFromTemplate(
+            row.provider,
             templateObject,
-            bindings,
             appId,
-          ) as Record<string, unknown>;
+          );
 
           await providersApi.update(
             {

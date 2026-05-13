@@ -338,6 +338,53 @@ describe("SessionManagerPage", () => {
     );
   });
 
+  it("keeps the session list title row separate from filter controls", async () => {
+    seedProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
+    );
+
+    const titleRow = screen.getByTestId("session-list-title-row");
+    const filterRow = screen.getByTestId("session-list-filter-row");
+    const projectFilter = screen.getByRole("combobox", {
+      name: /项目筛选|sessionManager\.projectFilter/,
+    });
+
+    expect(
+      within(titleRow).getByText("sessionManager.sessionList"),
+    ).toBeVisible();
+    expect(filterRow).toContainElement(projectFilter);
+    expect(titleRow).not.toContainElement(projectFilter);
+  });
+
+  it("uses consistent sizing with distinct colors for session detail actions", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    const renameButton = screen.getByRole("button", { name: /修改名称/i });
+    const resumeButton = screen.getByRole("button", { name: /恢复会话/i });
+    const exportButton = screen.getByRole("button", { name: /导出会话/i });
+    const deleteButton = screen.getByRole("button", { name: /删除会话/i });
+    const buttons = [renameButton, resumeButton, exportButton, deleteButton];
+
+    buttons.forEach((button) => {
+      expect(button).toHaveClass("h-8");
+      expect(button).toHaveClass("gap-1.5");
+      expect(button).toHaveClass("border");
+    });
+    expect(renameButton.className).toContain("violet");
+    expect(resumeButton.className).toContain("emerald");
+    expect(exportButton.className).toContain("sky");
+    expect(deleteButton.className).toContain("rose");
+  });
+
   it("filters sessions by a deduplicated project directory dropdown", async () => {
     seedProjectSessions();
     renderPage();

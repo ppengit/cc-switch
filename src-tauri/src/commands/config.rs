@@ -118,9 +118,7 @@ fn materialize_provider_template_value(
 ) -> serde_json::Value {
     match value {
         serde_json::Value::String(text) => {
-            serde_json::Value::String(replace_provider_template_tokens_for_app(
-                &text, app_type,
-            ))
+            serde_json::Value::String(replace_provider_template_tokens_for_app(&text, app_type))
         }
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
@@ -135,11 +133,9 @@ fn materialize_provider_template_value(
                         key.clone(),
                         if matches!(app_type, AppType::Codex) && key == "config" {
                             match value {
-                                serde_json::Value::String(text) => {
-                                    serde_json::Value::String(replace_codex_template_tokens(
-                                        &text, app_type,
-                                    ))
-                                }
+                                serde_json::Value::String(text) => serde_json::Value::String(
+                                    replace_codex_template_tokens(&text, app_type),
+                                ),
                                 other => materialize_provider_template_value(other, app_type),
                             }
                         } else {
@@ -687,11 +683,10 @@ pub async fn set_app_config_template(
             .unwrap_or(false);
 
         if takeover_enabled {
-            crate::services::ProviderService::sync_current_provider_for_app(
-                state.inner(),
-                app_type,
-            )
-            .map_err(|e| e.to_string())?;
+            state
+                .proxy_service
+                .sync_live_access_template_for_app(&app_type)
+                .await?;
         }
     }
     Ok(true)

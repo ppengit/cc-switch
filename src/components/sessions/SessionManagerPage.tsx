@@ -78,6 +78,11 @@ type ProviderFilter =
 
 const ALL_PROJECTS_FILTER = "__all_projects__";
 const UNCATEGORIZED_PROJECT_KEY = "__uncategorized__";
+const detailActionButtonBase = "h-8 gap-1.5 border px-3";
+const detailRenameButtonClass = `${detailActionButtonBase} border-violet-200 bg-violet-50/80 text-violet-700 hover:border-violet-300 hover:bg-violet-100 hover:text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:border-violet-800 dark:hover:bg-violet-950/50 dark:hover:text-violet-200`;
+const detailResumeButtonClass = `${detailActionButtonBase} border-emerald-200 bg-emerald-50/80 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:border-emerald-800 dark:hover:bg-emerald-950/50 dark:hover:text-emerald-200`;
+const detailExportButtonClass = `${detailActionButtonBase} border-sky-200 bg-sky-50/80 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:border-sky-800 dark:hover:bg-sky-950/50 dark:hover:text-sky-200`;
+const detailDeleteButtonClass = `${detailActionButtonBase} border-rose-200 bg-rose-50/80 text-rose-700 hover:border-rose-300 hover:bg-rose-100 hover:text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:border-rose-800 dark:hover:bg-rose-950/50 dark:hover:text-rose-200`;
 
 interface ProjectOption {
   key: string;
@@ -779,7 +784,10 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-2">
+                    <div
+                      data-testid="session-list-title-row"
+                      className="flex items-center justify-between gap-2"
+                    >
                       <div className="flex items-center gap-2 min-w-0">
                         <CardTitle className="text-sm font-medium whitespace-nowrap">
                           {t("sessionManager.sessionList")}
@@ -788,6 +796,11 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {filteredSessions.length}
                         </Badge>
                       </div>
+                    </div>
+                    <div
+                      data-testid="session-list-filter-row"
+                      className="flex min-w-0 flex-wrap items-center gap-1"
+                    >
                       <div className="flex items-center gap-1 shrink-0">
                         {(selectionMode ||
                           deletableFilteredSessions.length > 0) && (
@@ -1224,30 +1237,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <h2 className="text-base font-semibold truncate">
                             {formatSessionTitle(selectedSession)}
                           </h2>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 gap-1.5 shrink-0"
-                                onClick={() =>
-                                  handleOpenRenameDialog(selectedSession)
-                                }
-                              >
-                                <Pencil className="size-3.5" />
-                                <span className="hidden sm:inline">
-                                  {t("sessionManager.rename", {
-                                    defaultValue: "修改标题",
-                                  })}
-                                </span>
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t("sessionManager.renameTooltip", {
-                                defaultValue: "仅在本应用中映射，不回写原会话",
-                              })}
-                            </TooltipContent>
-                          </Tooltip>
                         </div>
 
                         {/* 元信息 */}
@@ -1297,12 +1286,37 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                       </div>
 
                       {/* 右侧：操作按钮组 */}
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
                               size="sm"
-                              className="gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+                              variant="outline"
+                              className={detailRenameButtonClass}
+                              onClick={() =>
+                                handleOpenRenameDialog(selectedSession)
+                              }
+                            >
+                              <Pencil className="size-3.5" />
+                              <span className="hidden sm:inline">
+                                {t("sessionManager.rename", {
+                                  defaultValue: "修改名称",
+                                })}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("sessionManager.renameTooltip", {
+                              defaultValue: "仅在本应用中映射，不回写原会话",
+                            })}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className={detailResumeButtonClass}
                               onClick={() => void handleResume()}
                               disabled={!selectedSession.resumeCommand}
                             >
@@ -1329,7 +1343,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="gap-1.5 border-sky-200 bg-sky-50/80 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:border-sky-800 dark:hover:bg-sky-950/50 dark:hover:text-sky-200"
+                              className={detailExportButtonClass}
                               onClick={() => void handleExportSession()}
                               disabled={
                                 !selectedSession.sourcePath ||
@@ -1358,8 +1372,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           <TooltipTrigger asChild>
                             <Button
                               size="sm"
-                              variant="destructive"
-                              className="gap-1.5"
+                              variant="outline"
+                              className={detailDeleteButtonClass}
                               onClick={() =>
                                 setDeleteTargets([selectedSession])
                               }

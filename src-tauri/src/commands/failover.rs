@@ -45,7 +45,10 @@ pub async fn add_to_failover_queue(
         .add_to_failover_queue(&app_type, &provider_id)
         .map_err(|e| e.to_string())?;
 
-    state.proxy_service.sync_failover_active_target(&app_type).await
+    state
+        .proxy_service
+        .sync_failover_active_target(&app_type)
+        .await
 }
 
 /// 从故障转移队列移除供应商
@@ -65,7 +68,10 @@ pub async fn remove_from_failover_queue(
         .proxy_service
         .clear_provider_runtime_state(&provider_id, &app_type)
         .await?;
-    state.proxy_service.sync_failover_active_target(&app_type).await?;
+    state
+        .proxy_service
+        .sync_failover_active_target(&app_type)
+        .await?;
 
     let event_data = serde_json::json!({
         "appType": app_type,

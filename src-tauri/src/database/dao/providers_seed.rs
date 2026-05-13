@@ -10,6 +10,8 @@
 
 use crate::app_config::AppType;
 
+pub(crate) const LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON: &str = r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}"#;
+
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
     pub id: &'static str,
@@ -33,8 +35,8 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         website_url: "https://www.anthropic.com/claude-code",
         icon: "anthropic",
         icon_color: "#D4915D",
-        // 不写 base URL / key，保留官方认证；默认模型使用当前 Claude Code 推荐编码模型族。
-        settings_config_json: r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}"#,
+        // 显式写入官方 API 地址和空 token，并启用 Claude Code 默认权限与中文输出偏好。
+        settings_config_json: r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7[1m]","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""},"permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true,"effortLevel":"xhigh","language":"chinese"}"#,
     },
     OfficialProviderSeed {
         id: "codex-official",
@@ -63,4 +65,41 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
 /// 单一事实源：直接扫描 `OFFICIAL_SEEDS`，避免在多处重复维护 id 列表。
 pub(crate) fn is_official_seed_id(id: &str) -> bool {
     OFFICIAL_SEEDS.iter().any(|seed| seed.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn claude_official_seed_uses_requested_default_settings() {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == "claude-official")
+            .expect("Claude Official seed should exist");
+        let settings: serde_json::Value =
+            serde_json::from_str(seed.settings_config_json).expect("seed JSON should parse");
+
+        assert_eq!(
+            settings,
+            json!({
+                "env": {
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7[1m]",
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                    "ANTHROPIC_AUTH_TOKEN": ""
+                },
+                "permissions": {
+                    "defaultMode": "bypassPermissions"
+                },
+                "skipDangerousModePermissionPrompt": true,
+                "effortLevel": "xhigh",
+                "language": "chinese"
+            })
+        );
+    }
 }
