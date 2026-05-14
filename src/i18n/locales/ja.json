@@ -357,6 +357,7 @@
     "tabAuth": "認証",
     "tabAdvanced": "詳細",
     "tabProxy": "ルーティング",
+    "tabApiHub": "Api-Hub",
     "authCenter": {
       "title": "OAuth 認証センター",
       "description": "Claude Code で他のサブスクリプションをご利用いただけます。コンプライアンスリスクにご注意ください。",

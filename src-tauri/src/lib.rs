@@ -1231,6 +1231,17 @@ pub fn run() {
             commands::get_proxy_raw_logs,
             commands::get_proxy_config,
             commands::update_proxy_config,
+            // Api-Hub
+            commands::api_hub_import_json,
+            commands::api_hub_list_sites,
+            commands::api_hub_get_site_detail,
+            commands::api_hub_clear_all,
+            commands::api_hub_delete_site,
+            commands::api_hub_cleanup_site_providers,
+            commands::api_hub_sync_site,
+            commands::api_hub_sync_sites,
+            commands::api_hub_align_sites,
+            commands::api_hub_import_to_apps,
             // Global & Per-App Config
             commands::get_global_proxy_config,
             commands::update_global_proxy_config,

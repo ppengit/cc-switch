@@ -68,7 +68,10 @@ impl ProxyServer {
         app_handle: Option<tauri::AppHandle>,
     ) -> Self {
         // 创建共享的 ProviderRouter（熔断器状态将跨所有请求保持）
-        let provider_router = Arc::new(ProviderRouter::new(db.clone()));
+        let provider_router = Arc::new(ProviderRouter::with_app_handle(
+            db.clone(),
+            app_handle.clone(),
+        ));
         // 创建故障转移切换管理器
         let failover_manager = Arc::new(FailoverSwitchManager::new(db.clone()));
         let raw_log_retention_minutes = db

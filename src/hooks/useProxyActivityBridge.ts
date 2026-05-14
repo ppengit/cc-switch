@@ -7,6 +7,33 @@ import {
   pruneProxyStatusProviderActivity,
 } from "@/lib/proxyActivity";
 
+function createStatusFromActivity(payload: ProxyActivityEvent): ProxyStatus {
+  return {
+    running: payload.active_request_count > 0,
+    address: "",
+    port: 0,
+    active_connections: payload.active_request_count,
+    total_requests: 0,
+    success_requests: 0,
+    failed_requests: 0,
+    success_rate: 0,
+    uptime_seconds: 0,
+    current_provider: payload.provider_name || null,
+    current_provider_id: payload.provider_id || null,
+    last_request_at:
+      payload.active_request_targets[0]?.last_request_at ?? null,
+    last_error: payload.error ?? null,
+    failover_count: 0,
+    active_targets: payload.active_request_targets.map((target) => ({
+      app_type: target.app_type,
+      provider_id: target.provider_id,
+      provider_name: target.provider_name,
+    })),
+    active_request_count: payload.active_request_count,
+    active_request_targets: payload.active_request_targets,
+  };
+}
+
 /**
  * 把后端实时代理活动事件同步到 React Query 的 proxyStatus 缓存。
  *
@@ -31,9 +58,25 @@ export function useProxyActivityBridge() {
           queryClient.setQueryData<ProxyStatus | undefined>(
             ["proxyStatus"],
             (current) => {
-              if (!current) return current;
+              if (!current) {
+                const created = createStatusFromActivity({
+                  ...payload,
+                  active_request_targets: normalizedTargets,
+                });
+                if (payload.event === "cleared") {
+                  return (
+                    pruneProxyStatusProviderActivity(
+                      created,
+                      payload.app_type,
+                      payload.provider_id,
+                    ) ?? created
+                  );
+                }
+                return created;
+              }
               const next: ProxyStatus = {
                 ...current,
+                running: current.running || payload.active_request_count > 0,
                 active_request_count: payload.active_request_count,
                 active_request_targets: normalizedTargets,
                 last_request_at:

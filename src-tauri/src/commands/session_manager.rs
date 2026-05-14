@@ -22,10 +22,24 @@ fn default_session_terminal_target() -> &'static str {
 }
 
 fn resolve_session_terminal_target(preferred: Option<String>) -> String {
-    match preferred.as_deref() {
-        Some("iterm2") => "iterm".to_string(),
-        Some(target) if !target.trim().is_empty() => target.trim().to_string(),
-        _ => default_session_terminal_target().to_string(),
+    let Some(target) = preferred else {
+        return default_session_terminal_target().to_string();
+    };
+
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return default_session_terminal_target().to_string();
+    }
+
+    match trimmed.to_ascii_lowercase().as_str() {
+        "iterm2" => "iterm".to_string(),
+        "windows terminal" | "windows-terminal" | "wt.exe" => "wt".to_string(),
+        "cmd.exe" | "command prompt" | "command-prompt" => "cmd".to_string(),
+        "powershell" | "powershell.exe" | "windows powershell" | "windows-powershell" => {
+            "powershell".to_string()
+        }
+        "pwsh" | "pwsh.exe" => "powershell".to_string(),
+        _ => trimmed.to_string(),
     }
 }
 
@@ -311,6 +325,38 @@ mod tests {
         assert_eq!(
             resolve_session_terminal_target(Some(" wt ".to_string())),
             "wt"
+        );
+    }
+
+    #[test]
+    fn resolve_session_terminal_target_maps_windows_terminal_aliases() {
+        assert_eq!(
+            resolve_session_terminal_target(Some("Windows Terminal".to_string())),
+            "wt"
+        );
+        assert_eq!(
+            resolve_session_terminal_target(Some("windows-terminal".to_string())),
+            "wt"
+        );
+        assert_eq!(
+            resolve_session_terminal_target(Some("wt.exe".to_string())),
+            "wt"
+        );
+    }
+
+    #[test]
+    fn resolve_session_terminal_target_maps_windows_shell_aliases() {
+        assert_eq!(
+            resolve_session_terminal_target(Some("cmd.exe".to_string())),
+            "cmd"
+        );
+        assert_eq!(
+            resolve_session_terminal_target(Some("PowerShell".to_string())),
+            "powershell"
+        );
+        assert_eq!(
+            resolve_session_terminal_target(Some("pwsh.exe".to_string())),
+            "powershell"
         );
     }
 }

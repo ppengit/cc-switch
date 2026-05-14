@@ -151,6 +151,7 @@ interface ProviderListProps {
 }
 
 type StatusSortDirection = "asc" | "desc" | null;
+type ModelSortDirection = "asc" | "desc";
 type ProviderInteractionMode = "direct" | "takeover" | "failover" | "additive";
 
 interface ProviderRowView {
@@ -911,6 +912,17 @@ const getModelDisplayByApp = (provider: Provider, appId: AppId) => {
   return "-";
 };
 
+const EMPTY_MODEL_FILTER_VALUE = "__empty__";
+const ALL_MODEL_FILTER_VALUE = "__all__";
+
+const splitModelDisplay = (modelDisplay: string): string[] => {
+  if (!modelDisplay || modelDisplay === "-") return [];
+  return modelDisplay
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
 function isOfficialProvider(provider: Provider, appId: AppId): boolean {
   const config = provider.settingsConfig as Record<string, any>;
   if (appId === "claude") {
@@ -1151,6 +1163,9 @@ export function ProviderList({
   );
   const [statusSortDirection, setStatusSortDirection] =
     useState<StatusSortDirection>(null);
+  const [modelSortDirection, setModelSortDirection] =
+    useState<ModelSortDirection>("asc");
+  const [modelFilter, setModelFilter] = useState(ALL_MODEL_FILTER_VALUE);
   const [isBulkOperating, setIsBulkOperating] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
@@ -1624,16 +1639,82 @@ export function ProviderList({
     sortedProviders,
   ]);
 
-  const displayRows = useMemo(() => {
-    if (!statusSortDirection) {
+  const modelFilterOptions = useMemo(() => {
+    const values = new Map<string, number>();
+    let emptyCount = 0;
+    for (const row of providerRowViews) {
+      const models = splitModelDisplay(row.modelDisplay);
+      if (models.length === 0) {
+        emptyCount += 1;
+        continue;
+      }
+      for (const model of models) {
+        values.set(model, (values.get(model) ?? 0) + 1);
+      }
+    }
+    return Array.from(values.entries())
+      .map(([model, count]) => ({ model, count }))
+      .sort((a, b) => a.model.localeCompare(b.model, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      }))
+      .concat(
+        emptyCount > 0
+          ? [
+              {
+                model: EMPTY_MODEL_FILTER_VALUE,
+                count: emptyCount,
+              },
+            ]
+          : [],
+      );
+  }, [providerRowViews]);
+
+  useEffect(() => {
+    if (modelFilter === ALL_MODEL_FILTER_VALUE) return;
+    const exists = modelFilterOptions.some((option) => option.model === modelFilter);
+    if (!exists) {
+      setModelFilter(ALL_MODEL_FILTER_VALUE);
+    }
+  }, [modelFilter, modelFilterOptions]);
+
+  const filteredRows = useMemo(() => {
+    if (modelFilter === ALL_MODEL_FILTER_VALUE) {
       return providerRowViews;
+    }
+    return providerRowViews.filter((row) => {
+      const models = splitModelDisplay(row.modelDisplay);
+      if (modelFilter === EMPTY_MODEL_FILTER_VALUE) {
+        return models.length === 0;
+      }
+      return models.includes(modelFilter);
+    });
+  }, [modelFilter, providerRowViews]);
+
+  useEffect(() => {
+    const visibleIds = new Set(filteredRows.map((row) => row.provider.id));
+    setSelectedProviderIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (visibleIds.has(id)) {
+          next.add(id);
+        }
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredRows]);
+
+  const displayRows = useMemo(() => {
+    const rows = filteredRows;
+    if (!statusSortDirection) {
+      return rows;
     }
 
     const sortedIndexMap = new Map(
       providerRowViews.map((row, index) => [row.provider.id, index]),
     );
 
-    return [...providerRowViews].sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const diff =
         statusSortDirection === "desc"
           ? b.statusRank - a.statusRank
@@ -1644,7 +1725,7 @@ export function ProviderList({
         (sortedIndexMap.get(b.provider.id) ?? 0)
       );
     });
-  }, [providerRowViews, statusSortDirection]);
+  }, [filteredRows, providerRowViews, statusSortDirection]);
 
   const searchMatches = useMemo<SearchMatchInfo[]>(() => {
     if (!deferredSearchTerm) return [];
@@ -1785,8 +1866,7 @@ export function ProviderList({
   }, [providerRowViews, selectedProviderIds]);
 
   const selectedCount = selectedRows.length;
-  const effectiveTargetRows =
-    selectedCount > 0 ? selectedRows : providerRowViews;
+  const effectiveTargetRows = selectedCount > 0 ? selectedRows : filteredRows;
 
   const enabledCount = useMemo(
     () => providerRowViews.filter((row) => row.isEnabled).length,
@@ -1794,6 +1874,7 @@ export function ProviderList({
   );
 
   const totalCount = providerRowViews.length;
+  const filteredCount = filteredRows.length;
 
   const allDisplayedSelected =
     displayRows.length > 0 &&
@@ -1803,7 +1884,8 @@ export function ProviderList({
     selectedProviderIds.has(row.provider.id),
   );
 
-  const canDragRows = statusSortDirection === null;
+  const canDragRows =
+    statusSortDirection === null && modelFilter === ALL_MODEL_FILTER_VALUE;
 
   useEffect(() => {
     if (!deferredSearchTerm || searchMatches.length === 0) {
@@ -1859,6 +1941,66 @@ export function ProviderList({
       if (current === "desc") return "asc";
       return null;
     });
+  };
+
+  const applyModelNameSort = async () => {
+    if (providerRowViews.length === 0) return;
+
+    const currentIndexMap = new Map(
+      providerRowViews.map((row, index) => [row.provider.id, index]),
+    );
+    const direction = modelSortDirection;
+    const nextRows = [...providerRowViews].sort((a, b) => {
+      if (a.isEnabled !== b.isEnabled) {
+        return a.isEnabled ? -1 : 1;
+      }
+
+      const aModels = splitModelDisplay(a.modelDisplay).join(", ");
+      const bModels = splitModelDisplay(b.modelDisplay).join(", ");
+      if (!aModels && bModels) return 1;
+      if (aModels && !bModels) return -1;
+
+      const modelDiff = aModels.localeCompare(bModels, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (modelDiff !== 0) {
+        return direction === "asc" ? modelDiff : -modelDiff;
+      }
+
+      return (
+        (currentIndexMap.get(a.provider.id) ?? 0) -
+        (currentIndexMap.get(b.provider.id) ?? 0)
+      );
+    });
+
+    const updates = nextRows.map((row, index) => ({
+      id: row.provider.id,
+      sortIndex: index,
+    }));
+
+    try {
+      await providersApi.updateSortOrder(updates, appId);
+      setStatusSortDirection(null);
+      setModelSortDirection(direction === "asc" ? "desc" : "asc");
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: ["failoverQueue", appId],
+      });
+      await providersApi.updateTrayMenu().catch(() => undefined);
+      toast.success(
+        t("provider.sortUpdated", {
+          defaultValue: "排序已更新",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        t("provider.sortUpdateFailed", {
+          defaultValue: "排序更新失败",
+        }),
+      );
+      console.error("Failed to sort providers by model name", error);
+    }
   };
 
   const handlePinToTop = async (providerId: string) => {
@@ -2630,10 +2772,37 @@ export function ProviderList({
 
         <Badge variant="secondary" className="h-7 px-2 text-sm font-mono">
           {enabledCount}/{totalCount}
+          {filteredCount !== totalCount ? ` · ${filteredCount}` : ""}
         </Badge>
         <Badge variant="outline" className="h-7 px-2 text-xs">
           {interactionModeLabel}
         </Badge>
+
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <span className="whitespace-nowrap">
+            {t("provider.modelFilter", { defaultValue: "模型" })}
+          </span>
+          <select
+            aria-label={t("provider.modelFilterAriaLabel", {
+              defaultValue: "模型名称筛选",
+            })}
+            value={modelFilter}
+            onChange={(event) => setModelFilter(event.target.value)}
+            className="h-7 max-w-[13rem] rounded-md border border-border-default bg-background px-2 text-xs text-foreground"
+          >
+            <option value={ALL_MODEL_FILTER_VALUE}>
+              {t("provider.allModels", { defaultValue: "全部模型" })}
+            </option>
+            {modelFilterOptions.map((option) => (
+              <option key={option.model} value={option.model}>
+                {option.model === EMPTY_MODEL_FILTER_VALUE
+                  ? t("provider.emptyModel", { defaultValue: "未填写模型" })
+                  : option.model}{" "}
+                ({option.count})
+              </option>
+            ))}
+          </select>
+        </label>
 
         <Button
           size="sm"
@@ -3017,7 +3186,25 @@ export function ProviderList({
                         {t("provider.notes", { defaultValue: "备注" })}
                       </TableHead>
                       <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
-                        {t("provider.modelName", { defaultValue: "模型名称" })}
+                        <button
+                          type="button"
+                          onClick={() => void applyModelNameSort()}
+                          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                          aria-label={t("provider.modelNameSort", {
+                            defaultValue: "模型名称排序",
+                          })}
+                          title={t("provider.modelNameSortHint", {
+                            defaultValue:
+                              "按模型名称重排供应商，启用项保持在前；会更新序号和故障转移队列顺序",
+                          })}
+                        >
+                          {t("provider.modelName", { defaultValue: "模型名称" })}
+                          {modelSortDirection === "asc" ? (
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          ) : (
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          )}
+                        </button>
                       </TableHead>
                       <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
                         <button

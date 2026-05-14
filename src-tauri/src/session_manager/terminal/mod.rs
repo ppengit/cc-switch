@@ -413,7 +413,14 @@ fn run_windows_start(args: &[&str], terminal_name: &str) -> Result<(), String> {
 
 fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> {
     let command = command.trim();
-    let escaped = escape_powershell_single_quote(command);
+    let cmd_chain = if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+        format!(
+            "cd /d \"{}\" && {command}",
+            escape_cmd_double_quotes(cwd_value.trim())
+        )
+    } else {
+        command.to_string()
+    };
     let mut args = vec!["wt".to_string()];
 
     if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
@@ -421,16 +428,7 @@ fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> 
         args.push(cwd_value.trim().to_string());
     }
 
-    args.extend([
-        "powershell".to_string(),
-        "-NoExit".to_string(),
-        // 同 launch_windows_terminal：绕过 ExecutionPolicy 让 npm wrapper 的
-        // .ps1 能加载（仅作用于本次新启动的 PowerShell 进程）。
-        "-ExecutionPolicy".to_string(),
-        "Bypass".to_string(),
-        "-Command".to_string(),
-        format!("Invoke-Expression '{escaped}'"),
-    ]);
+    args.extend(["cmd".to_string(), "/K".to_string(), cmd_chain]);
     args
 }
 
@@ -440,7 +438,7 @@ fn run_windows_start_owned(args: &[String], terminal_name: &str) -> Result<(), S
     run_windows_start(&borrowed, terminal_name)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn escape_cmd_double_quotes(value: &str) -> String {
     value.replace('"', "\"\"")
 }
@@ -611,42 +609,29 @@ mod tests {
     }
 
     #[test]
-    fn windows_terminal_runs_resume_command_in_powershell_without_cmd_wrapper() {
+    fn windows_terminal_runs_resume_command_in_cmd_inside_windows_terminal() {
         let args =
             build_windows_terminal_args("codex resume abc-123", Some("C:\\Users\\me\\Project"));
 
         assert_eq!(args[0], "wt");
         assert_eq!(args[1], "-d");
         assert_eq!(args[2], "C:\\Users\\me\\Project");
-        assert_eq!(args[3], "powershell");
-        assert!(args.contains(&"-NoExit".to_string()));
-        assert!(args.contains(&"-Command".to_string()));
-        assert!(
-            !args.iter().any(|arg| arg.eq_ignore_ascii_case("cmd")),
-            "Windows Terminal resume should not wrap the command in cmd"
+        assert_eq!(args[3], "cmd");
+        assert_eq!(args[4], "/K");
+        assert_eq!(
+            args[5],
+            "cd /d \"C:\\Users\\me\\Project\" && codex resume abc-123"
         );
     }
 
     #[test]
-    fn windows_terminal_uses_execution_policy_bypass_to_allow_npm_wrapper_ps1_files() {
+    fn windows_terminal_does_not_use_powershell_when_wt_is_selected() {
         let args = build_windows_terminal_args("codex resume abc-123", None);
 
-        // 确保 -ExecutionPolicy Bypass 紧跟在 -NoExit 之后、-Command 之前，
-        // 让 PowerShell 绕过 .ps1 的 ExecutionPolicy 限制。
-        let policy_idx = args
-            .iter()
-            .position(|a| a == "-ExecutionPolicy")
-            .expect("应包含 -ExecutionPolicy");
-        let bypass_idx = policy_idx + 1;
-        assert_eq!(args[bypass_idx], "Bypass");
-
-        let command_idx = args
-            .iter()
-            .position(|a| a == "-Command")
-            .expect("应包含 -Command");
         assert!(
-            bypass_idx < command_idx,
-            "-ExecutionPolicy Bypass 必须出现在 -Command 之前"
+            !args.iter().any(|arg| arg.eq_ignore_ascii_case("powershell")),
+            "Windows Terminal resume should open cmd inside Windows Terminal, not PowerShell"
         );
+        assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);
     }
 }

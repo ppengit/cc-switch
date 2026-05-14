@@ -11,6 +11,7 @@ import {
   getProviderDefaultTemplate,
   getCurrentProviderId,
   getLiveProviderIds,
+  getProxyStatusState,
   getAppConfigDirOverride,
   getMcpConfig,
   getSessionMessages,
@@ -360,23 +361,7 @@ export const handlers = [
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
   http.post(`${TAURI_ENDPOINT}/get_proxy_status`, () =>
-    success({
-      running: false,
-      address: "127.0.0.1",
-      port: 0,
-      active_connections: 0,
-      total_requests: 0,
-      success_requests: 0,
-      failed_requests: 0,
-      success_rate: 0,
-      uptime_seconds: 0,
-      current_provider: null,
-      current_provider_id: null,
-      last_request_at: null,
-      last_error: null,
-      failover_count: 0,
-      active_targets: [],
-    }),
+    success(getProxyStatusState()),
   ),
 
   http.post(`${TAURI_ENDPOINT}/get_proxy_takeover_status`, () =>

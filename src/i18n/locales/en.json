@@ -357,6 +357,7 @@
     "tabAuth": "Auth",
     "tabAdvanced": "Advanced",
     "tabProxy": "Routing",
+    "tabApiHub": "Api-Hub",
     "authCenter": {
       "title": "OAuth Authentication Center",
       "description": "Use your other subscriptions in Claude Code — please be mindful of compliance risks.",

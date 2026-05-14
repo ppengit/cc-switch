@@ -975,7 +975,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                   )}
                                   className="h-7 w-[112px] gap-1.5 border-0 bg-transparent px-2 hover:bg-muted"
                                 >
-                                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
                                   <SelectValue
                                     placeholder={t(
                                       "sessionManager.projectFilterAll",
@@ -1149,9 +1148,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                 ) : (
                                   <ChevronDown className="size-3.5 shrink-0" />
                                 )}
-                                <FolderOpen className="size-3.5 shrink-0" />
+                                <FolderOpen className="size-3.5 shrink-0 text-foreground/70" />
                                 <span
-                                  className="min-w-0 flex-1 truncate"
+                                  className="min-w-0 flex-1 truncate font-semibold text-foreground"
                                   title={group.path ?? group.label}
                                 >
                                   {group.label}

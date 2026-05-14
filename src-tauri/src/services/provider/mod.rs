@@ -51,6 +51,11 @@ pub struct SwitchResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+struct SwitchOptions {
+    backfill_current_live: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,6 +619,107 @@ base_url = "http://localhost:8080"
             assert!(
                 !get_claude_settings_path().exists(),
                 "disabled provider should not write Claude live settings"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn delete_current_provider_rotates_without_overwriting_next_provider_from_live() {
+        with_test_home(|state, _| {
+            let mut provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+                None,
+            );
+            provider_a.sort_index = Some(20);
+            let mut provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://b.example"
+                    }
+                }),
+                None,
+            );
+            provider_b.sort_index = Some(10);
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+                .expect("set local current provider");
+
+            write_json_file(
+                &get_claude_settings_path(),
+                &json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "live-token-from-a",
+                        "ANTHROPIC_BASE_URL": "https://live-a.example"
+                    }
+                }),
+            )
+            .expect("seed live settings for provider a");
+
+            let rotate_result = ProviderService::delete_and_rotate_current(
+                state,
+                AppType::Claude,
+                &provider_a.id,
+                &provider_b.id,
+            )
+                .expect("delete current provider");
+            assert!(
+                !rotate_result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.starts_with("backfill_failed:")),
+                "auto-rotating after delete should not attempt to backfill the provider being deleted"
+            );
+
+            let saved_b = state
+                .db
+                .get_provider_by_id(&provider_b.id, AppType::Claude.as_str())
+                .expect("query provider b")
+                .expect("provider b should remain");
+            assert_eq!(
+                saved_b.settings_config, provider_b.settings_config,
+                "auto-rotating after delete must not backfill live settings into the next provider"
+            );
+            assert_eq!(
+                crate::settings::get_effective_current_provider(&state.db, &AppType::Claude)
+                    .expect("get effective current"),
+                Some(provider_b.id.clone())
+            );
+
+            let live: Value = read_json_file(&get_claude_settings_path()).expect("read live");
+            assert_eq!(
+                live.get("env")
+                    .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN")),
+                Some(&json!("token-b")),
+                "live config should be rewritten from the selected next provider"
+            );
+            assert_eq!(
+                live.get("env")
+                    .and_then(|env| env.get("ANTHROPIC_BASE_URL")),
+                Some(&json!("https://b.example")),
+                "live base URL should come from provider b"
             );
         });
     }
@@ -1432,8 +1538,7 @@ impl ProviderService {
         };
 
         let next_id = next.id.clone();
-        // 用统一的 switch 入口，让它根据当前模式决定走 live 写盘还是热切换。
-        Self::switch(state, app_type.clone(), &next_id)?;
+        Self::delete_and_rotate_current(state, app_type.clone(), id, &next_id)?;
 
         // 切换成功后清理活动面板（被删除的旧 provider 不应再出现在 active_targets）
         futures::executor::block_on(
@@ -1444,6 +1549,31 @@ impl ProviderService {
         .map_err(AppError::Message)?;
 
         state.db.delete_provider(app_type.as_str(), id)
+    }
+
+    fn delete_and_rotate_current(
+        state: &AppState,
+        app_type: AppType,
+        deleted_id: &str,
+        next_id: &str,
+    ) -> Result<SwitchResult, AppError> {
+        // 自动补位不是用户主动切换，不应把当前 live 配置回填到即将删除的 provider。
+        // 先清掉当前指针，避免 switch_normal 在读取 effective current 时命中 deleted_id。
+        if crate::settings::get_current_provider(&app_type).as_deref() == Some(deleted_id) {
+            crate::settings::set_current_provider(&app_type, None)?;
+        }
+        if state.db.get_current_provider(app_type.as_str())?.as_deref() == Some(deleted_id) {
+            state.db.clear_current_provider(app_type.as_str())?;
+        }
+
+        Self::switch_with_options(
+            state,
+            app_type,
+            next_id,
+            SwitchOptions {
+                backfill_current_live: false,
+            },
+        )
     }
 
     /// Remove provider from live config only (for additive mode apps like OpenCode, OpenClaw)
@@ -1520,6 +1650,22 @@ impl ProviderService {
     ///    d. Write target provider config to live files
     ///    e. Sync MCP configuration
     pub fn switch(state: &AppState, app_type: AppType, id: &str) -> Result<SwitchResult, AppError> {
+        Self::switch_with_options(
+            state,
+            app_type,
+            id,
+            SwitchOptions {
+                backfill_current_live: true,
+            },
+        )
+    }
+
+    fn switch_with_options(
+        state: &AppState,
+        app_type: AppType,
+        id: &str,
+        options: SwitchOptions,
+    ) -> Result<SwitchResult, AppError> {
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let _provider = providers
@@ -1528,14 +1674,14 @@ impl ProviderService {
 
         // OMO providers are switched through their own exclusive path.
         if matches!(app_type, AppType::OpenCode) && _provider.category.as_deref() == Some("omo") {
-            return Self::switch_normal(state, app_type, id, &providers);
+            return Self::switch_normal(state, app_type, id, &providers, options);
         }
 
         // OMO Slim providers are switched through their own exclusive path.
         if matches!(app_type, AppType::OpenCode)
             && _provider.category.as_deref() == Some("omo-slim")
         {
-            return Self::switch_normal(state, app_type, id, &providers);
+            return Self::switch_normal(state, app_type, id, &providers, options);
         }
 
         // Check if proxy takeover mode is active AND proxy server is actually running
@@ -1608,7 +1754,7 @@ impl ProviderService {
         }
 
         // Normal mode: full switch with Live config write
-        Self::switch_normal(state, app_type, id, &providers)
+        Self::switch_normal(state, app_type, id, &providers, options)
     }
 
     /// Normal switch flow (non-proxy mode)
@@ -1617,6 +1763,7 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
         providers: &indexmap::IndexMap<String, Provider>,
+        options: SwitchOptions,
     ) -> Result<SwitchResult, AppError> {
         let provider = providers
             .get(id)
@@ -1643,32 +1790,35 @@ impl ProviderService {
 
         let mut result = SwitchResult::default();
 
-        // Backfill: Backfill current live config to current provider
-        // Use effective current provider (validated existence) to ensure backfill targets valid provider
-        let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+        if options.backfill_current_live {
+            // Backfill: Backfill current live config to current provider
+            // Use effective current provider (validated existence) to ensure backfill targets valid provider
+            let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
 
-        if let Some(current_id) = current_id {
-            if current_id != id {
-                // Additive mode apps - all providers coexist in the same file,
-                // no backfill needed (backfill is for exclusive mode apps like Claude/Codex/Gemini)
-                if !app_type.is_additive_mode() {
-                    // Only backfill when switching to a different provider
-                    if let Ok(live_config) = read_live_settings(app_type.clone()) {
-                        if let Some(mut current_provider) = providers.get(&current_id).cloned() {
-                            current_provider.settings_config =
-                                strip_common_config_from_live_settings(
-                                    state.db.as_ref(),
-                                    &app_type,
-                                    &current_provider,
-                                    live_config,
-                                );
-                            if let Err(e) =
-                                state.db.save_provider(app_type.as_str(), &current_provider)
+            if let Some(current_id) = current_id {
+                if current_id != id {
+                    // Additive mode apps - all providers coexist in the same file,
+                    // no backfill needed (backfill is for exclusive mode apps like Claude/Codex/Gemini)
+                    if !app_type.is_additive_mode() {
+                        // Only backfill when switching to a different provider
+                        if let Ok(live_config) = read_live_settings(app_type.clone()) {
+                            if let Some(mut current_provider) = providers.get(&current_id).cloned()
                             {
-                                log::warn!("Backfill failed: {e}");
-                                result
-                                    .warnings
-                                    .push(format!("backfill_failed:{current_id}"));
+                                current_provider.settings_config =
+                                    strip_common_config_from_live_settings(
+                                        state.db.as_ref(),
+                                        &app_type,
+                                        &current_provider,
+                                        live_config,
+                                    );
+                                if let Err(e) =
+                                    state.db.save_provider(app_type.as_str(), &current_provider)
+                                {
+                                    log::warn!("Backfill failed: {e}");
+                                    result
+                                        .warnings
+                                        .push(format!("backfill_failed:{current_id}"));
+                                }
                             }
                         }
                     }

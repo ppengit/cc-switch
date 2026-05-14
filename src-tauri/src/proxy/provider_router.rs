@@ -10,7 +10,10 @@ use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerC
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::RwLock;
+
+const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
 
 /// 供应商路由器
 pub struct ProviderRouter {
@@ -18,14 +21,25 @@ pub struct ProviderRouter {
     db: Arc<Database>,
     /// 熔断器管理器 - key 格式: "app_type:provider_id"
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
+    /// API Key 认证错误计数 - key 格式: "app_type:provider_id"
+    api_key_error_counts: Arc<RwLock<HashMap<String, u32>>>,
+    /// AppHandle，用于通知前端刷新故障转移队列
+    app_handle: Option<tauri::AppHandle>,
 }
 
 impl ProviderRouter {
     /// 创建新的供应商路由器
+    #[allow(dead_code)]
     pub fn new(db: Arc<Database>) -> Self {
+        Self::with_app_handle(db, None)
+    }
+
+    pub fn with_app_handle(db: Arc<Database>, app_handle: Option<tauri::AppHandle>) -> Self {
         Self {
             db,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+            api_key_error_counts: Arc::new(RwLock::new(HashMap::new())),
+            app_handle,
         }
     }
 
@@ -131,6 +145,56 @@ impl ProviderRouter {
         success: bool,
         error_msg: Option<String>,
     ) -> Result<(), AppError> {
+        self.record_result_inner(
+            provider_id,
+            app_type,
+            used_half_open_permit,
+            success,
+            error_msg,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 记录供应商请求结果，并在认证错误熔断禁用时执行运行时清理。
+    pub async fn record_result_with_disable_hook<F, Fut>(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        used_half_open_permit: bool,
+        success: bool,
+        error_msg: Option<String>,
+        on_disabled: F,
+    ) -> Result<(), AppError>
+    where
+        F: FnOnce(String, String) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let disabled = self
+            .record_result_inner(
+                provider_id,
+                app_type,
+                used_half_open_permit,
+                success,
+                error_msg,
+            )
+            .await?;
+
+        if disabled {
+            on_disabled(app_type.to_string(), provider_id.to_string()).await;
+        }
+
+        Ok(())
+    }
+
+    async fn record_result_inner(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        used_half_open_permit: bool,
+        success: bool,
+        error_msg: Option<String>,
+    ) -> Result<bool, AppError> {
         // 1. 按应用独立获取熔断器配置
         let failure_threshold = match self.db.get_proxy_config_for_app(app_type).await {
             Ok(app_config) => app_config.circuit_failure_threshold,
@@ -143,6 +207,7 @@ impl ProviderRouter {
 
         if success {
             breaker.record_success(used_half_open_permit).await;
+            self.reset_api_key_error_count(&circuit_key).await;
         } else {
             breaker.record_failure(used_half_open_permit).await;
         }
@@ -158,7 +223,21 @@ impl ProviderRouter {
             )
             .await?;
 
-        Ok(())
+        let mut disabled = false;
+        if !success && is_api_key_auth_error(error_msg.as_deref()) {
+            let count = self.increment_api_key_error_count(&circuit_key).await;
+            if count >= API_KEY_ERROR_DISABLE_THRESHOLD {
+                breaker.force_open().await;
+                self.db.remove_from_failover_queue(app_type, provider_id)?;
+                log::warn!(
+                    "[{app_type}] Provider {provider_id} 出现 {count} 次 API Key 认证错误，已熔断并从故障转移队列禁用"
+                );
+                self.emit_provider_disabled(app_type, provider_id);
+                disabled = true;
+            }
+        }
+
+        Ok(disabled)
     }
 
     /// 重置熔断器（手动恢复）
@@ -256,6 +335,42 @@ impl ProviderRouter {
 
         breaker
     }
+
+    async fn increment_api_key_error_count(&self, key: &str) -> u32 {
+        let mut counts = self.api_key_error_counts.write().await;
+        let count = counts.entry(key.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    async fn reset_api_key_error_count(&self, key: &str) {
+        let mut counts = self.api_key_error_counts.write().await;
+        counts.remove(key);
+    }
+
+    fn emit_provider_disabled(&self, app_type: &str, provider_id: &str) {
+        let Some(app_handle) = &self.app_handle else {
+            return;
+        };
+
+        let event_data = serde_json::json!({
+            "appType": app_type,
+            "providerId": provider_id,
+            "source": "apiKeyAuthCircuitBreaker"
+        });
+        if let Err(e) = app_handle.emit("provider-switched", event_data) {
+            log::debug!("发射 API Key 熔断禁用事件失败: {e}");
+        }
+    }
+}
+
+fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
+    let Some(error_msg) = error_msg else {
+        return false;
+    };
+
+    let lower = error_msg.to_ascii_lowercase();
+    lower.contains("invalid api key") || lower.contains("api key is disabled")
 }
 
 #[cfg(test)]
@@ -533,5 +648,146 @@ mod tests {
         let third = router.allow_provider_request("a", "claude").await;
         assert!(third.allowed);
         assert!(third.used_half_open_permit);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_auth_errors_trip_breaker_and_disable_provider_after_three_failures() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider = Provider::with_id(
+            "auth-bad".to_string(),
+            "Auth Bad".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", "auth-bad").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        for _ in 0..2 {
+            router
+                .record_result(
+                    "auth-bad",
+                    "claude",
+                    false,
+                    false,
+                    Some(r#"{"error":{"message":"Invalid API Key"}}"#.to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(db.is_in_failover_queue("claude", "auth-bad").unwrap());
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-bad", "claude")
+                .await
+                .unwrap()
+                .state,
+            crate::proxy::circuit_breaker::CircuitState::Closed
+        );
+
+        router
+            .record_result(
+                "auth-bad",
+                "claude",
+                false,
+                false,
+                Some("API Key is disabled".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert!(!db.is_in_failover_queue("claude", "auth-bad").unwrap());
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-bad", "claude")
+                .await
+                .unwrap()
+                .state,
+            crate::proxy::circuit_breaker::CircuitState::Open
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_auth_error_count_resets_after_success() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider = Provider::with_id(
+            "auth-reset".to_string(),
+            "Auth Reset".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", "auth-reset").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+
+        for _ in 0..2 {
+            router
+                .record_result(
+                    "auth-reset",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        router
+            .record_result("auth-reset", "claude", false, true, None)
+            .await
+            .unwrap();
+
+        router
+            .record_result(
+                "auth-reset",
+                "claude",
+                false,
+                false,
+                Some("Invalid API Key".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert!(db.is_in_failover_queue("claude", "auth-reset").unwrap());
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-reset", "claude")
+                .await
+                .unwrap()
+                .state,
+            crate::proxy::circuit_breaker::CircuitState::Closed
+        );
+    }
+
+    #[test]
+    fn detects_api_key_auth_error_messages_case_insensitively() {
+        assert!(is_api_key_auth_error(Some("Invalid API Key")));
+        assert!(is_api_key_auth_error(Some(
+            r#"{"error":{"message":"api key is disabled"}}"#
+        )));
+        assert!(!is_api_key_auth_error(Some("rate limit exceeded")));
+        assert!(!is_api_key_auth_error(None));
     }
 }

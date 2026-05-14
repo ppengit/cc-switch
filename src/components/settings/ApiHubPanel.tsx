@@ -1,0 +1,1194 @@
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  Eraser,
+  ExternalLink,
+  KeyRound,
+  Loader2,
+  PackagePlus,
+  RefreshCw,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
+import { apiHubApi } from "@/lib/api";
+import { buildApiHubSettingsConfigs } from "@/config/apiHubTemplates";
+import type { AppId } from "@/lib/api/types";
+import type {
+  ApiHubAccountsBackup,
+  ApiHubGroupInfo,
+  ApiHubModelInfo,
+  ApiHubModelSelection,
+  ApiHubSiteDetail,
+  ApiHubSiteRow,
+} from "@/types/apiHub";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+const PAGE_SIZES = [10, 20, 50] as const;
+const SITE_TYPE_OPTIONS = [
+  { value: "all", label: "全部协议" },
+  { value: "new-api", label: "new-api" },
+  { value: "sub2api", label: "sub2api" },
+] as const;
+const TARGET_APPS: Array<{ id: AppId; label: string }> = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "Codex" },
+  { id: "gemini", label: "Gemini" },
+  { id: "opencode", label: "OpenCode" },
+  { id: "openclaw", label: "OpenClaw" },
+  { id: "hermes", label: "Hermes" },
+];
+const APP_LABELS = new Map(TARGET_APPS.map((app) => [app.id, app.label]));
+type SiteSortBy =
+  | "site_type"
+  | "site_name"
+  | "group_count"
+  | "model_count"
+  | "token_count"
+  | "last_synced_at"
+  | "imported_apps";
+type SortDirection = "asc" | "desc";
+
+function selectionKey(selection: ApiHubModelSelection): string {
+  return `${selection.group}::${selection.model}`;
+}
+
+function parseSelectionKey(key: string): ApiHubModelSelection {
+  const [group, ...modelParts] = key.split("::");
+  return { group, model: modelParts.join("::") };
+}
+
+function formatGroupRatio(ratio?: number | null): string {
+  if (ratio === null || ratio === undefined) return "倍率 -";
+  return `倍率 ${Number.isInteger(ratio) ? ratio : ratio.toFixed(2)}`;
+}
+
+function importedAppsText(site: ApiHubSiteRow): string {
+  const apps = site.imported_apps ?? [];
+  if (apps.length === 0) return "未导入";
+  return `已导入：${apps
+    .map((app) => APP_LABELS.get(app as AppId) ?? app)
+    .join(" / ")}`;
+}
+
+function siteTypeClass(siteType: string, hasError: boolean): string {
+  if (hasError) return "border-red-500/40 bg-red-500/10 text-red-700";
+  switch (siteType.toLowerCase()) {
+    case "new-api":
+    case "newapi":
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700";
+    case "sub2api":
+      return "border-violet-500/40 bg-violet-500/10 text-violet-700";
+    default:
+      return "border-muted-foreground/30 bg-muted text-muted-foreground";
+  }
+}
+
+function formatSyncTime(value?: number | null): string {
+  if (!value) return "未同步";
+  const date = new Date(value * 1000);
+  if (Number.isNaN(date.getTime())) return "未同步";
+  return date.toLocaleString();
+}
+
+function modelsByGroup(detail?: ApiHubSiteDetail): Array<{
+  group: ApiHubGroupInfo;
+  models: ApiHubModelInfo[];
+}> {
+  if (!detail) return [];
+  return detail.groups
+    .map((group) => ({
+      group,
+      models: detail.models.filter((model) => {
+        if (!model.enable_groups || model.enable_groups.length === 0) return true;
+        return model.enable_groups.includes(group.name);
+      }),
+    }))
+    .filter(({ models }) => models.length > 0);
+}
+
+export function ApiHubPanel() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [siteTypeFilter, setSiteTypeFilter] = useState("all");
+  const [sortBy, setSortBy] = useState<SiteSortBy>("site_type");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [selectedSiteIds, setSelectedSiteIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [importSite, setImportSite] = useState<ApiHubSiteRow | null>(null);
+  const [targetApps, setTargetApps] = useState<Set<AppId>>(() => new Set());
+  const [activeTargetApp, setActiveTargetApp] = useState<AppId>("claude");
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [modelSearch, setModelSearch] = useState("");
+  const [markAsImported, setMarkAsImported] = useState(true);
+  const [syncingSiteIds, setSyncingSiteIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [aligningSiteIds, setAligningSiteIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPage(1);
+      setSearch(searchInput.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [siteTypeFilter, sortBy, sortDirection]);
+
+  useEffect(() => {
+    let unlistenSync: (() => void) | undefined;
+    let unlistenAlign: (() => void) | undefined;
+    void apiHubApi.onSyncProgress((payload) => {
+      setSyncingSiteIds((prev) => {
+        const next = new Set(prev);
+        if (payload.status === "running" || payload.status === "pending") {
+          next.add(payload.site_id);
+        } else {
+          next.delete(payload.site_id);
+        }
+        return next;
+      });
+    }).then((unlisten) => {
+      unlistenSync = unlisten;
+    });
+    void apiHubApi.onAlignProgress((payload) => {
+      setAligningSiteIds((prev) => {
+        const next = new Set(prev);
+        if (payload.status === "running" || payload.status === "pending") {
+          next.add(payload.site_id);
+        } else {
+          next.delete(payload.site_id);
+        }
+        return next;
+      });
+    }).then((unlisten) => {
+      unlistenAlign = unlisten;
+    });
+
+    return () => {
+      unlistenSync?.();
+      unlistenAlign?.();
+    };
+  }, []);
+
+  const sitesQuery = useQuery({
+    queryKey: [
+      "apiHub",
+      "sites",
+      search,
+      siteTypeFilter,
+      sortBy,
+      sortDirection,
+      page,
+      pageSize,
+    ],
+    queryFn: () =>
+      apiHubApi.listSites({
+        search: search || null,
+        site_type: siteTypeFilter === "all" ? null : siteTypeFilter,
+        sort_by: sortBy,
+        sort_direction: sortDirection,
+        page,
+        page_size: pageSize,
+      }),
+  });
+
+  const detailQuery = useQuery({
+    queryKey: ["apiHub", "siteDetail", importSite?.id],
+    enabled: Boolean(importSite),
+    queryFn: () => apiHubApi.getSiteDetail(importSite!.id),
+  });
+
+  const invalidateSites = () =>
+    queryClient.invalidateQueries({ queryKey: ["apiHub", "sites"] });
+
+  const importJsonMutation = useMutation({
+    mutationFn: apiHubApi.importJson,
+    onSuccess: (report) => {
+      toast.success(
+        t("apiHub.toast.imported", {
+          defaultValue: `导入完成：新增 ${report.new_count}，更新 ${report.update_count}`,
+          new: report.new_count,
+          updated: report.update_count,
+        }),
+      );
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "导入失败");
+    },
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: apiHubApi.clearAll,
+    onSuccess: () => {
+      setSelectedSiteIds(new Set());
+      toast.success(t("apiHub.toast.cleared", { defaultValue: "已清空 Api-Hub 缓存" }));
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "清空失败");
+    },
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: apiHubApi.syncSite,
+    onMutate: (siteId) => {
+      setSyncingSiteIds((prev) => new Set([...prev, siteId]));
+    },
+    onSuccess: (report) => {
+      toast.success(
+        t("apiHub.toast.synced", {
+          defaultValue: `同步完成：${report.groups_count} 个分组，${report.models_count} 个模型`,
+          groups: report.groups_count,
+          models: report.models_count,
+        }),
+      );
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "同步失败");
+    },
+    onSettled: (_data, _error, siteId) => {
+      if (!siteId) return;
+      setSyncingSiteIds((prev) => {
+        const next = new Set(prev);
+        next.delete(siteId);
+        return next;
+      });
+    },
+  });
+
+  const syncSitesMutation = useMutation({
+    mutationFn: apiHubApi.syncSites,
+    onMutate: (siteIds) => {
+      setSyncingSiteIds((prev) => new Set([...prev, ...siteIds]));
+    },
+    onSuccess: () => {
+      toast.success("批量同步已完成");
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "批量同步失败");
+    },
+    onSettled: (_data, _error, siteIds) => {
+      if (!siteIds) return;
+      setSyncingSiteIds((prev) => {
+        const next = new Set(prev);
+        for (const siteId of siteIds) next.delete(siteId);
+        return next;
+      });
+    },
+  });
+
+  const alignMutation = useMutation({
+    mutationFn: (siteIds: string[]) =>
+      apiHubApi.alignSites(siteIds, {
+        rename_existing: true,
+        delete_extra: true,
+      }),
+    onMutate: (siteIds) => {
+      setAligningSiteIds((prev) => new Set([...prev, ...siteIds]));
+    },
+    onSuccess: () => {
+      toast.success(t("apiHub.toast.aligned", { defaultValue: "对齐任务已完成" }));
+      void invalidateSites();
+      if (importSite) {
+        void queryClient.invalidateQueries({
+          queryKey: ["apiHub", "siteDetail", importSite.id],
+        });
+      }
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "对齐失败");
+    },
+    onSettled: (_data, _error, siteIds) => {
+      if (!siteIds) return;
+      setAligningSiteIds((prev) => {
+        const next = new Set(prev);
+        for (const siteId of siteIds) next.delete(siteId);
+        return next;
+      });
+    },
+  });
+
+  const deleteSiteMutation = useMutation({
+    mutationFn: apiHubApi.deleteSite,
+    onSuccess: () => {
+      toast.success("站点记录已删除");
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "删除记录失败");
+    },
+  });
+
+  const cleanupSiteMutation = useMutation({
+    mutationFn: apiHubApi.cleanupSiteProviders,
+    onSuccess: (report) => {
+      const failedText =
+        report.failed.length > 0 ? `，失败 ${report.failed.length}` : "";
+      toast.success(`已清理 ${report.deleted} 个供应商${failedText}`);
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "清理站点失败");
+    },
+  });
+
+  const importAppsMutation = useMutation({
+    mutationFn: apiHubApi.importToApps,
+    onSuccess: (report) => {
+      const failedText =
+        report.failed.length > 0 ? `，失败 ${report.failed.length}` : "";
+      toast.success(
+        `导入完成：新增 ${report.created}，更新 ${report.updated}${failedText}`,
+      );
+      setImportSite(null);
+      setTargetApps(new Set());
+      setSelectedModels(new Set());
+      setModelSearch("");
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "导入应用失败");
+    },
+  });
+
+  const sites = sitesQuery.data?.items ?? [];
+  const total = sitesQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const selectedSiteList = Array.from(selectedSiteIds);
+  const allVisibleSelected =
+    sites.length > 0 && sites.every((site) => selectedSiteIds.has(site.id));
+
+  const detail = detailQuery.data;
+  const groupedModels = useMemo(() => modelsByGroup(detail), [detail]);
+  const filteredGroupedModels = useMemo(() => {
+    const keyword = modelSearch.trim().toLowerCase();
+    if (!keyword) return groupedModels;
+    return groupedModels
+      .map(({ group, models }) => ({
+        group,
+        models: models.filter(
+          (model) =>
+            group.name.toLowerCase().includes(keyword) ||
+            model.name.toLowerCase().includes(keyword),
+        ),
+      }))
+      .filter(({ models }) => models.length > 0);
+  }, [groupedModels, modelSearch]);
+  const selectedModelList = useMemo(
+    () => Array.from(selectedModels).map(parseSelectionKey),
+    [selectedModels],
+  );
+  const importSelectionList = useMemo(
+    () =>
+      selectedModelList.length > 0
+        ? selectedModelList
+        : groupedModels.map(({ group }) => ({ group: group.name, model: "" })),
+    [groupedModels, selectedModelList],
+  );
+  const missingTokenGroups = useMemo(() => {
+    if (!detail) return [];
+    const tokenGroups = new Set(
+      detail.tokens
+        .filter(
+          (token) =>
+            token.group_name &&
+            token.name === token.group_name &&
+            typeof token.key === "string" &&
+            token.key.trim().length > 0,
+        )
+        .map((token) => token.group_name as string),
+    );
+    return Array.from(new Set(importSelectionList.map((item) => item.group)))
+      .filter((group) => !tokenGroups.has(group))
+      .sort();
+  }, [detail, importSelectionList]);
+
+  const toggleSite = (siteId: string, checked: boolean) => {
+    setSelectedSiteIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(siteId);
+      else next.delete(siteId);
+      return next;
+    });
+  };
+
+  const toggleVisibleSites = (checked: boolean) => {
+    setSelectedSiteIds((prev) => {
+      const next = new Set(prev);
+      for (const site of sites) {
+        if (checked) next.add(site.id);
+        else next.delete(site.id);
+      }
+      return next;
+    });
+  };
+
+  const toggleApp = (app: AppId, checked: boolean) => {
+    setTargetApps((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(app);
+      else next.delete(app);
+      return next;
+    });
+  };
+
+  const toggleModel = (selection: ApiHubModelSelection, checked: boolean) => {
+    setSelectedModels((prev) => {
+      const next = new Set(prev);
+      const key = selectionKey(selection);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const applySort = (field: SiteSortBy) => {
+    setSortBy((prevField) => {
+      if (prevField === field) {
+        setSortDirection((prevDirection) =>
+          prevDirection === "asc" ? "desc" : "asc",
+        );
+        return prevField;
+      }
+      setSortDirection("asc");
+      return field;
+    });
+  };
+
+  const sortIcon = (field: SiteSortBy) => {
+    if (sortBy !== field) return <ArrowUpDown className="h-3.5 w-3.5" />;
+    return sortDirection === "asc" ? (
+      <ArrowUp className="h-3.5 w-3.5" />
+    ) : (
+      <ArrowDown className="h-3.5 w-3.5" />
+    );
+  };
+
+  const openImportDialog = (site: ApiHubSiteRow) => {
+    setImportSite(site);
+    setActiveTargetApp("claude");
+    setTargetApps(new Set());
+    setSelectedModels(new Set());
+    setModelSearch("");
+    setMarkAsImported(true);
+  };
+
+  const readImportFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text) as ApiHubAccountsBackup;
+      await importJsonMutation.mutateAsync(payload);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("apiHub.error.importFailed", { defaultValue: "导入失败" }),
+      );
+    }
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    void readImportFile(file);
+  };
+
+  const handleClear = () => {
+    const ok = window.confirm(
+      t("apiHub.clearConfirm", {
+        defaultValue: "确认清空 Api-Hub 站点缓存？已导入到 providers 的供应商不会删除。",
+      }),
+    );
+    if (ok) {
+      clearMutation.mutate();
+    }
+  };
+
+  const handleImportApps = () => {
+    if (!importSite) return;
+    const apps = Array.from(targetApps);
+    if (apps.length === 0 || importSelectionList.length === 0) return;
+    importAppsMutation.mutate({
+      site_id: importSite.id,
+      target_apps: apps,
+      selections: importSelectionList,
+      auto_align_if_missing: true,
+      mark_as_imported: markAsImported,
+      settings_configs: buildApiHubSettingsConfigs(
+        importSite,
+        apps,
+        importSelectionList,
+      ),
+    });
+  };
+
+  const handleDeleteSite = (site: ApiHubSiteRow) => {
+    const ok = window.confirm(`确认删除 Api-Hub 站点记录：${site.site_name}？`);
+    if (ok) {
+      deleteSiteMutation.mutate(site.id);
+    }
+  };
+
+  const handleCleanupSite = (site: ApiHubSiteRow) => {
+    const ok = window.confirm(
+      `确认清理 ${site.site_name} 已导入到各应用的供应商记录？`,
+    );
+    if (ok) {
+      cleanupSiteMutation.mutate(site.id);
+    }
+  };
+
+  const isImportingJson = importJsonMutation.isPending;
+  const isBatchBusy =
+    alignMutation.isPending || syncSitesMutation.isPending || clearMutation.isPending;
+  const canImportApps =
+    targetApps.size > 0 &&
+    importSelectionList.length > 0 &&
+    !importAppsMutation.isPending;
+  const sortableHeader = (
+    field: SiteSortBy,
+    label: string,
+    ariaLabel = `${label}排序`,
+  ) => (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      aria-label={ariaLabel}
+      onClick={() => applySort(field)}
+      className="-ml-2 h-8 px-2 text-muted-foreground hover:text-foreground"
+    >
+      {label}
+      {sortIcon(field)}
+    </Button>
+  );
+
+  return (
+    <div className="space-y-4 pb-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
+      <div className="rounded-xl border border-border-default bg-background/70 p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-emerald-600" />
+              <h2 className="text-lg font-semibold">
+                {t("apiHub.title", { defaultValue: "Api-Hub" })}
+              </h2>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("apiHub.description", {
+                defaultValue:
+                  "导入 api-hub 备份，按站点同步分组、模型和 APIKey，再批量写入各应用供应商。",
+              })}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isImportingJson}
+            >
+              {isImportingJson ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Upload className="mr-2 h-4 w-4" />
+              )}
+              {t("apiHub.importJson", { defaultValue: "导入 JSON" })}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => syncSitesMutation.mutate(selectedSiteList)}
+              disabled={selectedSiteList.length === 0 || isBatchBusy}
+            >
+              {syncSitesMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              同步选中
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => alignMutation.mutate(selectedSiteList)}
+              disabled={selectedSiteList.length === 0 || isBatchBusy}
+            >
+              {alignMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <KeyRound className="mr-2 h-4 w-4" />
+              )}
+              对齐选中
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleClear}
+              disabled={isBatchBusy}
+              className="text-red-600 hover:text-red-700"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {t("common.clear")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="relative max-w-xl flex-1">
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder={t("apiHub.searchPlaceholder", {
+                defaultValue: "搜索站点名称或 URL",
+              })}
+              className="pl-9"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <Label htmlFor="api-hub-site-type" className="text-sm font-normal">
+              站点类型
+            </Label>
+            <select
+              id="api-hub-site-type"
+              aria-label="站点类型"
+              value={siteTypeFilter}
+              onChange={(event) => setSiteTypeFilter(event.target.value)}
+              className="h-9 rounded-md border border-border-default bg-background px-2 text-foreground"
+            >
+              {SITE_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <span className="ml-2">每页</span>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPage(1);
+                setPageSize(Number(event.target.value));
+              }}
+              className="h-9 rounded-md border border-border-default bg-background px-2 text-foreground"
+            >
+              {PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+            <span>条</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border-default bg-background/70">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label="选择当前页"
+                  checked={allVisibleSelected}
+                  onCheckedChange={(checked) =>
+                    toggleVisibleSites(checked === true)
+                  }
+                />
+              </TableHead>
+              <TableHead>{sortableHeader("site_name", "站点")}</TableHead>
+              <TableHead>{sortableHeader("site_type", "协议", "协议排序")}</TableHead>
+              <TableHead>{sortableHeader("group_count", "分组 / 模型", "分组模型排序")}</TableHead>
+              <TableHead>{sortableHeader("token_count", "APIKey", "APIKey排序")}</TableHead>
+              <TableHead>{sortableHeader("imported_apps", "导入状态", "导入状态排序")}</TableHead>
+              <TableHead>{sortableHeader("last_synced_at", "最近同步", "最近同步排序")}</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sitesQuery.isLoading ? (
+              <TableRow>
+                <TableCell colSpan={8} className="h-40 text-center">
+                  <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+                </TableCell>
+              </TableRow>
+            ) : sites.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={8}
+                  className="h-40 text-center text-sm text-muted-foreground"
+                >
+                  暂无 Api-Hub 站点，先导入 accounts-backup JSON。
+                </TableCell>
+              </TableRow>
+            ) : (
+              sites.map((site) => (
+                <TableRow key={site.id}>
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`选择 ${site.site_name}`}
+                      checked={selectedSiteIds.has(site.id)}
+                      onCheckedChange={(checked) =>
+                        toggleSite(site.id, checked === true)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell className="min-w-64">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <a
+                        href={site.site_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex min-w-0 items-center gap-1 font-semibold text-foreground hover:text-primary"
+                      >
+                        <span className="truncate">{site.site_name}</span>
+                        <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      </a>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {site.site_url}
+                      </span>
+                      {site.last_sync_error ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-red-600">
+                          <AlertCircle className="h-3.5 w-3.5" />
+                          {site.last_sync_error}
+                        </span>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "whitespace-nowrap",
+                        siteTypeClass(site.site_type, Boolean(site.last_sync_error)),
+                      )}
+                    >
+                      {site.site_type || "unknown"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {site.group_count} 个分组 / {site.model_count} 个模型
+                  </TableCell>
+                  <TableCell>{site.token_count}</TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "whitespace-nowrap",
+                        (site.imported_apps ?? []).length > 0
+                          ? "border-blue-500/30 bg-blue-500/10 text-blue-700"
+                          : "border-muted-foreground/30 bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {importedAppsText(site)}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {formatSyncTime(site.last_synced_at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-2">
+                      {(() => {
+                        const isSyncing = syncingSiteIds.has(site.id);
+                        const isAligning = aligningSiteIds.has(site.id);
+                        const isCleaning =
+                          cleanupSiteMutation.isPending &&
+                          cleanupSiteMutation.variables === site.id;
+                        const isDeleting =
+                          deleteSiteMutation.isPending &&
+                          deleteSiteMutation.variables === site.id;
+                        return (
+                          <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => syncMutation.mutate(site.id)}
+                        disabled={isSyncing}
+                      >
+                        {isSyncing ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="mr-1.5 h-4 w-4" />
+                        )}
+                        {isSyncing ? "同步中" : "同步"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => alignMutation.mutate([site.id])}
+                        disabled={isAligning}
+                      >
+                        {isAligning ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : (
+                          <KeyRound className="mr-1.5 h-4 w-4" />
+                        )}
+                        {isAligning ? "对齐中" : "对齐"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleCleanupSite(site)}
+                        disabled={isCleaning}
+                      >
+                        {isCleaning ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Eraser className="mr-1.5 h-4 w-4" />
+                        )}
+                        清理站点
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => openImportDialog(site)}
+                      >
+                        <PackagePlus className="mr-1.5 h-4 w-4" />
+                        导入应用
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDeleteSite(site)}
+                        disabled={isDeleting}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        {isDeleting ? (
+                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="mr-1.5 h-4 w-4" />
+                        )}
+                        删除记录
+                      </Button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+
+        <div className="flex items-center justify-between border-t border-border-default px-4 py-3 text-sm text-muted-foreground">
+          <span>
+            共 {total} 个站点，已选 {selectedSiteList.length} 个
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              disabled={page <= 1}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span>
+              {page} / {totalPages}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setPage((value) => Math.min(totalPages, value + 1))
+              }
+              disabled={page >= totalPages}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <Dialog
+        open={Boolean(importSite)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setImportSite(null);
+            setTargetApps(new Set());
+            setSelectedModels(new Set());
+            setModelSearch("");
+            setMarkAsImported(true);
+          }
+        }}
+      >
+        <DialogContent
+          zIndex="nested"
+          className="max-w-4xl"
+          onEscapeKeyDown={(event) => {
+            if (modelSearch.trim()) {
+              event.preventDefault();
+              setModelSearch("");
+            }
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>
+              导入到应用{importSite ? ` - ${importSite.site_name}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              选择目标应用和模型，确认后会按模板生成供应商配置。
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailQuery.isLoading ? (
+            <div className="flex h-48 items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : detail ? (
+            <div className="space-y-5 px-6">
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold">目标应用</h3>
+                <Tabs
+                  value={activeTargetApp}
+                  onValueChange={(value) => {
+                    const app = value as AppId;
+                    setActiveTargetApp(app);
+                    toggleApp(app, true);
+                  }}
+                >
+                  <TabsList className="flex w-full flex-wrap justify-start">
+                    {TARGET_APPS.map((app) => (
+                      <TabsTrigger
+                        key={app.id}
+                        value={app.id}
+                        onClick={() => {
+                          setActiveTargetApp(app.id);
+                          toggleApp(app.id, true);
+                        }}
+                        className={cn(
+                          "min-w-0 flex-1 gap-2 px-2",
+                          targetApps.has(app.id) ? "opacity-100" : "",
+                        )}
+                      >
+                        {app.label}
+                        {targetApps.has(app.id) ? (
+                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                        ) : null}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                <Label className="flex items-center justify-between rounded-md border border-border-default px-3 py-2">
+                  <span className="text-sm">
+                    导入到 {APP_LABELS.get(activeTargetApp)}
+                  </span>
+                  <Checkbox
+                    aria-label={`导入到 ${APP_LABELS.get(activeTargetApp)}`}
+                    checked={targetApps.has(activeTargetApp)}
+                    onCheckedChange={(checked) =>
+                      toggleApp(activeTargetApp, checked === true)
+                    }
+                  />
+                </Label>
+              </section>
+
+              <section className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">可选模型</h3>
+                  <span className="text-xs text-muted-foreground">
+                    已选 {selectedModels.size} 个模型
+                    {selectedModels.size === 0
+                      ? "，将按分组导入且不写默认模型"
+                      : ""}
+                  </span>
+                </div>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setModelSearch("");
+                      }
+                    }}
+                    placeholder="筛选模型或分组，按 ESC 清空"
+                    className="pl-9"
+                  />
+                </div>
+                <div className="max-h-72 overflow-y-auto rounded-md border border-border-default">
+                  {filteredGroupedModels.length === 0 ? (
+                    <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                      没有匹配的模型。
+                    </div>
+                  ) : (
+                    filteredGroupedModels.map(({ group, models }) => (
+                      <div key={group.name} className="border-b border-border-default last:border-0">
+                        <div className="flex items-center justify-between bg-muted/40 px-3 py-2">
+                          <div className="font-semibold text-foreground">
+                            {group.name}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span>{formatGroupRatio(group.ratio)}</span>
+                            <span>{models.length} 个模型</span>
+                          </div>
+                        </div>
+                        <div className="divide-y divide-border-default">
+                          {models.map((model) => {
+                            const selection = {
+                              group: group.name,
+                              model: model.name,
+                            };
+                            const key = selectionKey(selection);
+                            return (
+                              <Label
+                                key={key}
+                                className="flex min-w-0 items-center gap-3 px-3 py-2 text-sm hover:bg-muted/30"
+                              >
+                                <Checkbox
+                                  aria-label={`${group.name} / ${model.name}`}
+                                  checked={selectedModels.has(key)}
+                                  onCheckedChange={(checked) =>
+                                    toggleModel(selection, checked === true)
+                                  }
+                                />
+                                <span className="min-w-28 shrink-0 text-muted-foreground">
+                                  {group.name}
+                                </span>
+                                <span className="truncate font-medium text-foreground">
+                                  {model.name}
+                                </span>
+                              </Label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold">命名预览</h3>
+                <div className="max-h-28 overflow-y-auto rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+                  {targetApps.size === 0 ? (
+                    <span>选择目标应用后显示预览。</span>
+                  ) : (
+                    importSelectionList.slice(0, 20).flatMap((selection) =>
+                      Array.from(targetApps).map((app) => (
+                        <div key={`${app}-${selection.group}-${selection.model}`}>
+                          {detail.site.site_name} · {selection.group} ·{" "}
+                          {selection.model || "不写默认模型"} → {app}
+                        </div>
+                      )),
+                    )
+                  )}
+                </div>
+              </section>
+
+              {missingTokenGroups.length > 0 ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                  以下分组缺少同名 APIKey，确认导入前将自动对齐：{" "}
+                  {missingTokenGroups.join(", ")}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="px-6 text-sm text-muted-foreground">
+              站点详情加载失败。
+            </div>
+          )}
+
+          <DialogFooter className="justify-between sm:justify-between">
+            <Label className="flex items-center gap-2 text-sm">
+              <Switch
+                checked={markAsImported}
+                onCheckedChange={setMarkAsImported}
+                aria-label="标记为已导入"
+              />
+              标记为已导入
+            </Label>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setImportSite(null)}
+              >
+                {t("common.cancel")}
+              </Button>
+              <Button
+                type="button"
+                onClick={handleImportApps}
+                disabled={!canImportApps}
+              >
+                {importAppsMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                确认导入
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

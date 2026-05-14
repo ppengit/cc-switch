@@ -740,6 +740,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-stream",
+ "async-trait",
  "auto-launch",
  "axum",
  "base64 0.22.1",

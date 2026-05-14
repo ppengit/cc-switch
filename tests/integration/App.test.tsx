@@ -7,6 +7,7 @@ import {
   resetProviderState,
   setCurrentProviderId,
   setLiveProviderIds,
+  setProxyStatusState,
   setProviders,
 } from "../msw/state";
 import { emitTauriEvent } from "../msw/tauriMocks";
@@ -245,6 +246,62 @@ describe("App integration with MSW", () => {
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalled();
     });
+  });
+
+  it("shows the top live activity strip from proxy status", async () => {
+    setProxyStatusState({
+      running: true,
+      active_request_count: 1,
+      active_request_targets: [
+        {
+          app_type: "claude",
+          provider_id: "claude-2",
+          provider_name: "Claude Custom",
+          inflight_requests: 1,
+          request_model: "claude-sonnet-4-5",
+          upstream_model: "gpt-5.4",
+          last_request_model: "gpt-5.4",
+          last_request_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByText("1 个请求处理中")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Claude Custom")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
+  });
+
+  it("keeps the top live activity count aligned with visible active targets", async () => {
+    setProxyStatusState({
+      running: true,
+      active_request_count: 3,
+      active_request_targets: [
+        {
+          app_type: "claude",
+          provider_id: "claude-2",
+          provider_name: "Claude Custom",
+          inflight_requests: 1,
+          request_model: "claude-sonnet-4-5",
+          upstream_model: "gpt-5.4",
+          last_request_model: "gpt-5.4",
+          last_request_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByText("1 个请求处理中")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("3 个请求处理中")).not.toBeInTheDocument();
+    expect(screen.getByText("x1")).toBeInTheDocument();
   });
 
   it("duplicates openclaw providers with a generated key that avoids live-only ids", async () => {

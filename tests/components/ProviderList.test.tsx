@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { http, HttpResponse } from "msw";
 import type { ReactElement } from "react";
 import type { Provider } from "@/types";
 import { ProviderList } from "@/components/providers/ProviderList";
@@ -15,13 +16,17 @@ import {
   setProviderDefaultTemplateState,
   setProviders,
 } from "../msw/state";
+import { server } from "../msw/server";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
+const mockAddToFailoverQueueMutateAsync = vi.fn();
+const mockRemoveFromFailoverQueueMutateAsync = vi.fn();
 let mockAutoFailoverEnabled: boolean | undefined = false;
 let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
 let mockProviderHealth: unknown = undefined;
 let mockCircuitBreakerStats: unknown = undefined;
+const TAURI_ENDPOINT = "http://tauri.local";
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -77,8 +82,14 @@ vi.mock("@/lib/api/sessions", () => ({
 vi.mock("@/lib/query/failover", () => ({
   useAutoFailoverEnabled: () => ({ data: mockAutoFailoverEnabled }),
   useFailoverQueue: () => ({ data: mockFailoverQueue }),
-  useAddToFailoverQueue: () => ({ mutate: vi.fn() }),
-  useRemoveFromFailoverQueue: () => ({ mutate: vi.fn() }),
+  useAddToFailoverQueue: () => ({
+    mutate: vi.fn(),
+    mutateAsync: mockAddToFailoverQueueMutateAsync,
+  }),
+  useRemoveFromFailoverQueue: () => ({
+    mutate: vi.fn(),
+    mutateAsync: mockRemoveFromFailoverQueueMutateAsync,
+  }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
   useProviderHealth: () => ({ data: mockProviderHealth }),
   useCircuitBreakerStats: () => ({ data: mockCircuitBreakerStats }),
@@ -110,6 +121,10 @@ function renderWithQueryClient(ui: ReactElement) {
 beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
+  mockAddToFailoverQueueMutateAsync.mockReset();
+  mockAddToFailoverQueueMutateAsync.mockResolvedValue(undefined);
+  mockRemoveFromFailoverQueueMutateAsync.mockReset();
+  mockRemoveFromFailoverQueueMutateAsync.mockResolvedValue(undefined);
   mockAutoFailoverEnabled = false;
   mockFailoverQueue = [];
   mockProviderHealth = undefined;
@@ -246,6 +261,148 @@ describe("ProviderList Component", () => {
       { a: providerA, b: providerB },
       "claude",
     );
+  });
+
+  it("persists model-name sorting with enabled providers first", async () => {
+    const providerAlpha = createProvider({
+      id: "alpha",
+      name: "Alpha",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "gpt-5-b" } },
+    });
+    const providerBeta = createProvider({
+      id: "beta",
+      name: "Beta",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "zz-model" } },
+    });
+    const providerGamma = createProvider({
+      id: "gamma",
+      name: "Gamma",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "aa-model" } },
+    });
+    const sortCalls: Array<{
+      updates: { id: string; sortIndex: number }[];
+      app: string;
+    }> = [];
+
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [{ providerId: "beta", providerName: "Beta" }];
+
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/update_providers_sort_order`, async ({ request }) => {
+        const body = (await request.json()) as {
+          updates: { id: string; sortIndex: number }[];
+          app: string;
+        };
+        sortCalls.push(body);
+        return HttpResponse.json(true);
+      }),
+    );
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta, providerGamma],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{
+          alpha: providerAlpha,
+          beta: providerBeta,
+          gamma: providerGamma,
+        }}
+        currentProviderId=""
+        appId="claude"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "模型名称排序" }));
+
+    await waitFor(() => expect(sortCalls).toHaveLength(1));
+    expect(sortCalls[0].app).toBe("claude");
+    expect(sortCalls[0].updates.map((item) => item.id)).toEqual([
+      "beta",
+      "gamma",
+      "alpha",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "模型名称排序" }));
+
+    await waitFor(() => expect(sortCalls).toHaveLength(2));
+    expect(sortCalls[1].updates.map((item) => item.id)).toEqual([
+      "beta",
+      "alpha",
+      "gamma",
+    ]);
+  });
+
+  it("filters rows by model name and uses the filtered rows for bulk enable", async () => {
+    const providerAlpha = createProvider({
+      id: "alpha",
+      name: "Alpha",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "gpt-5" } },
+    });
+    const providerBeta = createProvider({
+      id: "beta",
+      name: "Beta",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "claude-sonnet" } },
+    });
+    const providerGamma = createProvider({
+      id: "gamma",
+      name: "Gamma",
+      settingsConfig: { env: { ANTHROPIC_MODEL: "gpt-5" } },
+    });
+
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [];
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerAlpha, providerBeta, providerGamma],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{
+          alpha: providerAlpha,
+          beta: providerBeta,
+          gamma: providerGamma,
+        }}
+        currentProviderId=""
+        appId="claude"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("模型名称筛选"), {
+      target: { value: "gpt-5" },
+    });
+
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    expect(screen.getByText("Gamma")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "加入队列" }));
+
+    await waitFor(() => {
+      expect(mockAddToFailoverQueueMutateAsync).toHaveBeenCalledTimes(2);
+    });
+    expect(mockAddToFailoverQueueMutateAsync.mock.calls.map(([arg]) => arg)).toEqual([
+      { appType: "claude", providerId: "alpha" },
+      { appType: "claude", providerId: "gamma" },
+    ]);
   });
 
   it("locates providers with the search input without filtering rows", () => {

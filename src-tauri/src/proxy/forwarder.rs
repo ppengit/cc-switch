@@ -4,7 +4,7 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{route_request, ProxyActivityState},
+    activity::{clear_provider, route_request, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -731,15 +731,65 @@ impl RequestForwarder {
                         });
                     }
 
-                    // 失败：记录失败并更新熔断器
+                    // 失败：记录失败并更新熔断器；认证错误达到阈值时会自动禁用该 Provider。
+                    let current_providers = self.current_providers.clone();
+                    let proxy_activity = self.proxy_activity.clone();
+                    let app_handle = self.app_handle.clone();
+                    let switch_epoch = self.switch_epoch.clone();
+                    let status = self.status.clone();
                     let _ = self
                         .router
-                        .record_result(
+                        .record_result_with_disable_hook(
                             &provider.id,
                             app_type_str,
                             used_half_open_permit,
                             false,
                             Some(e.to_string()),
+                            move |disabled_app_type, disabled_provider_id| {
+                                let current_providers = current_providers.clone();
+                                let proxy_activity = proxy_activity.clone();
+                                let app_handle = app_handle.clone();
+                                let switch_epoch = switch_epoch.clone();
+                                let status = status.clone();
+                                async move {
+                                    clear_provider(
+                                        &proxy_activity,
+                                        app_handle.as_ref(),
+                                        &disabled_app_type,
+                                        &disabled_provider_id,
+                                    )
+                                    .await;
+
+                                    {
+                                        let mut current_providers = current_providers.write().await;
+                                        let should_clear = current_providers
+                                            .get(&disabled_app_type)
+                                            .map(|(current_id, _)| {
+                                                current_id == &disabled_provider_id
+                                            })
+                                            .unwrap_or(false);
+                                        if should_clear {
+                                            current_providers.remove(&disabled_app_type);
+                                        }
+                                    }
+
+                                    {
+                                        let mut status = status.write().await;
+                                        if status.current_provider_id.as_deref()
+                                            == Some(disabled_provider_id.as_str())
+                                        {
+                                            status.current_provider = None;
+                                            status.current_provider_id = None;
+                                        }
+                                    }
+
+                                    {
+                                        let mut epochs = switch_epoch.write().await;
+                                        let entry = epochs.entry(disabled_app_type).or_insert(0);
+                                        *entry = entry.saturating_add(1);
+                                    }
+                                }
+                            },
                         )
                         .await;
 

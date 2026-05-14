@@ -8,6 +8,7 @@ import type {
   SessionMeta,
   Settings,
 } from "@/types";
+import type { ProxyStatus } from "@/types/proxy";
 
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
@@ -148,6 +149,26 @@ let settingsState: Settings = {
   language: "zh",
 };
 let appConfigDirOverride: string | null = null;
+const createDefaultProxyStatus = (): ProxyStatus => ({
+  running: false,
+  address: "127.0.0.1",
+  port: 0,
+  active_connections: 0,
+  total_requests: 0,
+  success_requests: 0,
+  failed_requests: 0,
+  success_rate: 0,
+  uptime_seconds: 0,
+  current_provider: null,
+  current_provider_id: null,
+  last_request_at: null,
+  last_error: null,
+  failover_count: 0,
+  active_targets: [],
+  active_request_count: 0,
+  active_request_targets: [],
+});
+let proxyStatusState: ProxyStatus = createDefaultProxyStatus();
 const sessionMessageKey = (providerId: string, sourcePath: string) =>
   `${providerId}:${sourcePath}`;
 
@@ -269,6 +290,7 @@ export const resetProviderState = () => {
     language: "zh",
   };
   appConfigDirOverride = null;
+  proxyStatusState = createDefaultProxyStatus();
   mcpConfigs = {
     claude: {
       sample: {
@@ -312,6 +334,16 @@ export const resetProviderState = () => {
     opencode: {},
     openclaw: {},
     hermes: {},
+  };
+};
+
+export const getProxyStatusState = () =>
+  JSON.parse(JSON.stringify(proxyStatusState)) as ProxyStatus;
+
+export const setProxyStatusState = (status: Partial<ProxyStatus>) => {
+  proxyStatusState = {
+    ...proxyStatusState,
+    ...JSON.parse(JSON.stringify(status)),
   };
 };
 

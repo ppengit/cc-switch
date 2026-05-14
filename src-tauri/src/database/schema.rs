@@ -392,6 +392,7 @@ impl Database {
                 user_id         INTEGER,
                 username        TEXT,
                 exchange_rate   REAL NOT NULL DEFAULT 1,
+                imported_apps   TEXT NOT NULL DEFAULT '[]',
                 sort_index      INTEGER NOT NULL DEFAULT 0,
                 last_synced_at  INTEGER,
                 last_sync_error TEXT,
@@ -446,6 +447,13 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("创建 api_hub_tokens 表失败: {e}")))?;
+
+        Self::add_column_if_missing(
+            conn,
+            "api_hub_sites",
+            "imported_apps",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
 
         // providers 表追加来源追踪列（Api-Hub 导入的 provider 标记）
         Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
@@ -1362,6 +1370,7 @@ impl Database {
                 user_id         INTEGER,
                 username        TEXT,
                 exchange_rate   REAL NOT NULL DEFAULT 1,
+                imported_apps   TEXT NOT NULL DEFAULT '[]',
                 sort_index      INTEGER NOT NULL DEFAULT 0,
                 last_synced_at  INTEGER,
                 last_sync_error TEXT,
@@ -1416,6 +1425,13 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("创建 api_hub_tokens 表失败: {e}")))?;
+
+        Self::add_column_if_missing(
+            conn,
+            "api_hub_sites",
+            "imported_apps",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
 
         // providers 表追加来源追踪列
         Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;

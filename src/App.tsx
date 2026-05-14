@@ -312,12 +312,10 @@ function App() {
         return a.provider_name.localeCompare(b.provider_name);
       });
   }, [normalizedActiveRequestTargets]);
-  const activeRequestCount =
-    proxyStatus?.active_request_count ??
-    liveActivityTargets.reduce(
-      (total, target) => total + target.inflight_requests,
-      0,
-    );
+  const activeRequestCount = liveActivityTargets.reduce(
+    (total, target) => total + target.inflight_requests,
+    0,
+  );
   const showLiveActivityStrip =
     isProxyRunning && activeRequestCount > 0 && liveActivityTargets.length > 0;
 
@@ -401,6 +399,20 @@ function App() {
           async (event: ProviderSwitchEvent) => {
             if (event.appType === activeApp) {
               await refetch();
+              await queryClient.invalidateQueries({
+                queryKey: ["failoverQueue", activeApp],
+              });
+              await queryClient.invalidateQueries({
+                queryKey: ["proxyStatus"],
+              });
+              if (event.providerId) {
+                await queryClient.invalidateQueries({
+                  queryKey: ["providerHealth", event.providerId, activeApp],
+                });
+                await queryClient.invalidateQueries({
+                  queryKey: ["circuitBreakerStats", event.providerId, activeApp],
+                });
+              }
             }
           },
         );
@@ -413,7 +425,7 @@ function App() {
     return () => {
       unsubscribe?.();
     };
-  }, [activeApp, refetch]);
+  }, [activeApp, queryClient, refetch]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;

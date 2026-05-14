@@ -237,6 +237,10 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
 }));
 
+vi.mock("@/components/settings/ApiHubPanel", () => ({
+  ApiHubPanel: () => <div>api-hub-panel</div>,
+}));
+
 vi.mock("@/components/settings/WebdavSyncSection", () => ({
   WebdavSyncSection: ({ config }: any) => (
     <div>webdav-sync-section:{config?.baseUrl ?? "none"}</div>
@@ -357,6 +361,25 @@ describe("SettingsPage Component", () => {
     // 清除选择按钮
     fireEvent.click(screen.getByRole("button", { name: "common.clear" }));
     expect(importExportMock.clearSelection).toHaveBeenCalled();
+  });
+
+  it("should render Api-Hub tab between usage and about tabs", () => {
+    renderSettingsPage();
+
+    const tabLabels = screen
+      .getAllByRole("button")
+      .map((button) => button.textContent);
+
+    expect(tabLabels.indexOf("usage.title")).toBeLessThan(
+      tabLabels.indexOf("settings.tabApiHub"),
+    );
+    expect(tabLabels.indexOf("settings.tabApiHub")).toBeLessThan(
+      tabLabels.indexOf("common.about"),
+    );
+
+    fireEvent.click(screen.getByText("settings.tabApiHub"));
+
+    expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
   });
 
   it("should pass onImportSuccess callback to useImportExport hook", async () => {

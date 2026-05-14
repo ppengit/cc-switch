@@ -357,6 +357,7 @@
     "tabAuth": "认证",
     "tabAdvanced": "高级",
     "tabProxy": "路由",
+    "tabApiHub": "Api-Hub",
     "authCenter": {
       "title": "OAuth 认证中心",
       "description": "在 Claude Code 中使用您的其他订阅，请注意合规风险。",

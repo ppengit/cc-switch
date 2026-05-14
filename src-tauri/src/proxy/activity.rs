@@ -262,6 +262,7 @@ impl ProxyActivityState {
                 return event;
             }
 
+            self.requests.remove(request_id);
             self.decrement_target(&existing.app_type, &existing.provider_id);
         }
 
@@ -414,10 +415,29 @@ impl ProxyActivityState {
 
     fn decrement_target(&mut self, app_type: &str, provider_id: &str) {
         let key = (app_type.to_string(), provider_id.to_string());
+        let remaining: Vec<&ActiveRequestMeta> = self
+            .requests
+            .values()
+            .filter(|meta| meta.app_type == app_type && meta.provider_id == provider_id)
+            .collect();
+
+        if remaining.is_empty() {
+            self.targets.remove(&key);
+            return;
+        }
+
         if let Some(target) = self.targets.get_mut(&key) {
-            target.inflight_requests = target.inflight_requests.saturating_sub(1);
-            if target.inflight_requests == 0 {
-                self.targets.remove(&key);
+            let latest = remaining.iter().max_by_key(|meta| meta.started_at).copied();
+            target.inflight_requests = remaining.len();
+            if let Some(meta) = latest {
+                target.provider_name = meta.provider_name.clone();
+                target.request_model = meta.request_model.clone();
+                target.upstream_model = meta.upstream_model.clone();
+                target.last_request_model = Self::derive_display_model(
+                    target.request_model.as_ref(),
+                    target.upstream_model.as_ref(),
+                );
+                target.last_request_at = chrono::Utc::now().to_rfc3339();
             }
         }
     }
@@ -778,6 +798,46 @@ mod tests {
             .expect("req-a log");
         assert_eq!(req_a.event, "finished");
         assert_eq!(req_a.request_model.as_deref(), Some("gpt-5.3-codex"));
+    }
+
+    #[test]
+    fn finishing_latest_request_refreshes_target_model_from_remaining_request() {
+        let mut state = ProxyActivityState::default();
+
+        state.route_request(
+            "req-a",
+            "codex",
+            "provider-a",
+            "Provider A",
+            Some("gpt-5.3-codex".to_string()),
+            None,
+        );
+        state.route_request(
+            "req-b",
+            "codex",
+            "provider-a",
+            "Provider A",
+            Some("gpt-5.5".to_string()),
+            None,
+        );
+
+        let finished = state
+            .finish_request("req-b", "finished", Some(200), None)
+            .expect("finish req-b");
+
+        assert_eq!(finished.active_request_count, 1);
+        assert_eq!(finished.active_request_targets.len(), 1);
+        assert_eq!(finished.active_request_targets[0].inflight_requests, 1);
+        assert_eq!(
+            finished.active_request_targets[0].request_model.as_deref(),
+            Some("gpt-5.3-codex")
+        );
+        assert_eq!(
+            finished.active_request_targets[0]
+                .last_request_model
+                .as_deref(),
+            Some("gpt-5.3-codex")
+        );
     }
 
     #[test]

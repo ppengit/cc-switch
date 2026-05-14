@@ -359,6 +359,41 @@ describe("SessionManagerPage", () => {
     expect(titleRow).not.toContainElement(projectFilter);
   });
 
+  it("shows a single project icon in the project filter trigger", async () => {
+    seedProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
+    );
+
+    const projectFilter = screen.getByRole("combobox", {
+      name: /项目筛选|sessionManager\.projectFilter/,
+    });
+
+    expect(projectFilter.querySelectorAll(".lucide-folder-open")).toHaveLength(
+      1,
+    );
+  });
+
+  it("emphasizes project names in the session tree", async () => {
+    seedProjectSessions();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
+    );
+
+    const alphaGroup = screen.getByRole("button", {
+      name: /^alpha 2$/i,
+      expanded: true,
+    });
+    const alphaLabel = within(alphaGroup).getByTitle("/workspace/alpha");
+
+    expect(alphaLabel).toHaveClass("font-semibold");
+    expect(alphaLabel).toHaveClass("text-foreground");
+  });
+
   it("uses consistent sizing with distinct colors for session detail actions", async () => {
     renderPage();
 

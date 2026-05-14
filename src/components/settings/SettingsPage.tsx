@@ -39,6 +39,7 @@ import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
+import { ApiHubPanel } from "@/components/settings/ApiHubPanel";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
 import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
@@ -197,7 +198,7 @@ export function SettingsPage({
           onValueChange={setActiveTab}
           className="flex flex-col h-full"
         >
-          <TabsList className="grid w-full grid-cols-6 mb-6 glass rounded-lg">
+          <TabsList className="grid w-full grid-cols-7 mb-6 glass rounded-lg">
             <TabsTrigger value="general">
               {t("settings.tabGeneral")}
             </TabsTrigger>
@@ -209,6 +210,9 @@ export function SettingsPage({
               {t("settings.tabAdvanced")}
             </TabsTrigger>
             <TabsTrigger value="usage">{t("usage.title")}</TabsTrigger>
+            <TabsTrigger value="apiHub">
+              {t("settings.tabApiHub", { defaultValue: "Api-Hub" })}
+            </TabsTrigger>
             <TabsTrigger value="about">{t("common.about")}</TabsTrigger>
           </TabsList>
 
@@ -473,6 +477,10 @@ export function SettingsPage({
 
               <TabsContent value="usage" className="mt-0">
                 <UsageDashboard onOpenRequestDetail={onOpenRequestDetail} />
+              </TabsContent>
+
+              <TabsContent value="apiHub" className="mt-0">
+                <ApiHubPanel />
               </TabsContent>
             </div>
 
