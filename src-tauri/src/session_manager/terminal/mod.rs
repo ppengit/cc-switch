@@ -306,6 +306,10 @@ fn launch_windows_terminal(
 
     let result = match target {
         "powershell" => {
+            // npm / pnpm 等通过 wrapper 暴露的 CLI（如 codex.ps1）会在默认
+            // ExecutionPolicy=Restricted 的 PowerShell 中被拒绝加载。临时给当前
+            // 启动的 PowerShell 进程加上 `-ExecutionPolicy Bypass`，作用域仅限
+            // 本次会话，不修改系统策略，避免拉脚本时报 PSSecurityException。
             let escaped = escape_powershell_single_quote(command);
             if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
                 let escaped_cwd = escape_powershell_single_quote(cwd_value.trim());
@@ -313,7 +317,14 @@ fn launch_windows_terminal(
                     "Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'"
                 );
                 run_windows_start(
-                    &["powershell", "-NoExit", "-Command", &script],
+                    &[
+                        "powershell",
+                        "-NoExit",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        &script,
+                    ],
                     "PowerShell",
                 )
             } else {
@@ -321,6 +332,8 @@ fn launch_windows_terminal(
                     &[
                         "powershell",
                         "-NoExit",
+                        "-ExecutionPolicy",
+                        "Bypass",
                         "-Command",
                         &format!("Invoke-Expression '{escaped}'"),
                     ],
@@ -411,6 +424,10 @@ fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> 
     args.extend([
         "powershell".to_string(),
         "-NoExit".to_string(),
+        // 同 launch_windows_terminal：绕过 ExecutionPolicy 让 npm wrapper 的
+        // .ps1 能加载（仅作用于本次新启动的 PowerShell 进程）。
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
         "-Command".to_string(),
         format!("Invoke-Expression '{escaped}'"),
     ]);
@@ -607,6 +624,29 @@ mod tests {
         assert!(
             !args.iter().any(|arg| arg.eq_ignore_ascii_case("cmd")),
             "Windows Terminal resume should not wrap the command in cmd"
+        );
+    }
+
+    #[test]
+    fn windows_terminal_uses_execution_policy_bypass_to_allow_npm_wrapper_ps1_files() {
+        let args = build_windows_terminal_args("codex resume abc-123", None);
+
+        // 确保 -ExecutionPolicy Bypass 紧跟在 -NoExit 之后、-Command 之前，
+        // 让 PowerShell 绕过 .ps1 的 ExecutionPolicy 限制。
+        let policy_idx = args
+            .iter()
+            .position(|a| a == "-ExecutionPolicy")
+            .expect("应包含 -ExecutionPolicy");
+        let bypass_idx = policy_idx + 1;
+        assert_eq!(args[bypass_idx], "Bypass");
+
+        let command_idx = args
+            .iter()
+            .position(|a| a == "-Command")
+            .expect("应包含 -Command");
+        assert!(
+            bypass_idx < command_idx,
+            "-ExecutionPolicy Bypass 必须出现在 -Command 之前"
         );
     }
 }
