@@ -381,6 +381,75 @@ impl Database {
             [],
         );
 
+        // 20-23. Api-Hub 系列表（v12+）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_sites (
+                id              TEXT PRIMARY KEY,
+                site_name       TEXT NOT NULL,
+                site_url        TEXT NOT NULL,
+                site_type       TEXT NOT NULL,
+                access_token    TEXT NOT NULL,
+                user_id         INTEGER,
+                username        TEXT,
+                exchange_rate   REAL NOT NULL DEFAULT 1,
+                sort_index      INTEGER NOT NULL DEFAULT 0,
+                last_synced_at  INTEGER,
+                last_sync_error TEXT,
+                notes           TEXT,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_sites 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_groups (
+                site_id     TEXT NOT NULL,
+                group_name  TEXT NOT NULL,
+                ratio       REAL,
+                description TEXT,
+                sort_index  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, group_name),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_groups 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_models (
+                site_id       TEXT NOT NULL,
+                model_name    TEXT NOT NULL,
+                enable_groups TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (site_id, model_name),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_models 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_tokens (
+                site_id      TEXT NOT NULL,
+                token_id     INTEGER NOT NULL,
+                name         TEXT NOT NULL,
+                group_name   TEXT,
+                key          TEXT,
+                status       INTEGER,
+                remain_quota INTEGER,
+                expired_at   INTEGER,
+                updated_at   INTEGER,
+                PRIMARY KEY (site_id, token_id),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_tokens 表失败: {e}")))?;
+
+        // providers 表追加来源追踪列（Api-Hub 导入的 provider 标记）
+        Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
+
         Ok(())
     }
 
@@ -464,6 +533,11 @@ impl Database {
                         log::info!("迁移数据库从 v10 到 v11（会话标题映射与会话上下文缓存）");
                         Self::migrate_v10_to_v11(conn)?;
                         Self::set_user_version(conn, 11)?;
+                    }
+                    11 => {
+                        log::info!("迁移数据库从 v11 到 v12（Api-Hub 站点 / 分组 / 模型 / Token 缓存）");
+                        Self::migrate_v11_to_v12(conn)?;
+                        Self::set_user_version(conn, 12)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1273,6 +1347,80 @@ impl Database {
         })?;
 
         log::info!("v10 -> v11 迁移完成：已添加 session_title_mappings 表");
+        Ok(())
+    }
+
+    /// v11 -> v12 迁移：Api-Hub 站点 / 分组 / 模型 / Token 缓存表
+    fn migrate_v11_to_v12(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_sites (
+                id              TEXT PRIMARY KEY,
+                site_name       TEXT NOT NULL,
+                site_url        TEXT NOT NULL,
+                site_type       TEXT NOT NULL,
+                access_token    TEXT NOT NULL,
+                user_id         INTEGER,
+                username        TEXT,
+                exchange_rate   REAL NOT NULL DEFAULT 1,
+                sort_index      INTEGER NOT NULL DEFAULT 0,
+                last_synced_at  INTEGER,
+                last_sync_error TEXT,
+                notes           TEXT,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_sites 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_groups (
+                site_id     TEXT NOT NULL,
+                group_name  TEXT NOT NULL,
+                ratio       REAL,
+                description TEXT,
+                sort_index  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, group_name),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_groups 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_models (
+                site_id       TEXT NOT NULL,
+                model_name    TEXT NOT NULL,
+                enable_groups TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (site_id, model_name),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_models 表失败: {e}")))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_hub_tokens (
+                site_id      TEXT NOT NULL,
+                token_id     INTEGER NOT NULL,
+                name         TEXT NOT NULL,
+                group_name   TEXT,
+                key          TEXT,
+                status       INTEGER,
+                remain_quota INTEGER,
+                expired_at   INTEGER,
+                updated_at   INTEGER,
+                PRIMARY KEY (site_id, token_id),
+                FOREIGN KEY (site_id) REFERENCES api_hub_sites(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建 api_hub_tokens 表失败: {e}")))?;
+
+        // providers 表追加来源追踪列
+        Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
+
+        log::info!("v11 -> v12 迁移完成：已添加 Api-Hub 四张表 + providers.api_hub_origin 列");
         Ok(())
     }
 
