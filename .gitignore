@@ -29,3 +29,8 @@ copilot-api
 .history
 CODEBUDDY.md
 .github
+
+# Local Api-Hub imports and agent handoff notes may contain access tokens.
+/api-hub/
+/docs/superpowers/plans/
+/src-tauri/*dsolutioncc-switchapi-hub-json.txt
