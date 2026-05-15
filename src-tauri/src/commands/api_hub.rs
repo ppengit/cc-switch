@@ -7,9 +7,9 @@ use crate::app_config::AppType;
 use crate::provider::{Provider, ProviderMeta};
 use crate::services::api_hub::{
     align_site_for_groups, align_sites_with_progress, sync_site, sync_sites_with_progress,
-    AccountsBackup, AlignOptions, CleanupSiteProvidersReport, ImportFailure, ImportReport,
-    ImportToAppsReport, ImportToAppsReq, ModelSelection, Paged, SiteDetail, SiteFilter, SiteRow,
-    SyncReport,
+    has_plain_api_key, is_masked_api_key, AccountsBackup, AlignOptions, CleanupSiteProvidersReport,
+    ImportFailure, ImportReport, ImportToAppsReport, ImportToAppsReq, ModelSelection, Paged,
+    SiteDetail, SiteFilter, SiteRow, SyncReport,
 };
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
@@ -163,7 +163,7 @@ async fn import_to_apps(
         .iter()
         .filter_map(
             |group| match db.api_hub_find_token_for_group(&req.site_id, group) {
-                Ok(Some(token)) if token.key.as_deref().unwrap_or("").trim().is_empty() => {
+                Ok(Some(token)) if !has_plain_api_key(token.key.as_deref()) => {
                     Some(group.clone())
                 }
                 Ok(Some(_)) => None,
@@ -209,7 +209,7 @@ async fn import_to_apps(
             }
             let raw_key = token.key?;
             let normalized_key = normalize_api_key(raw_key.trim());
-            if normalized_key.is_empty() {
+            if normalized_key.is_empty() || is_masked_api_key(&normalized_key) {
                 return None;
             }
             Some((group, normalized_key))
@@ -448,6 +448,14 @@ mod tests {
                 "items": ["prefix-sk-test", 1, true, null]
             })
         );
+    }
+
+    #[test]
+    fn masked_keys_are_not_normalized_as_importable() {
+        assert!(is_masked_api_key("sk-****"));
+        assert!(is_masked_api_key("sk-abcd********wxyz"));
+        assert_eq!(normalize_api_key("sk-abcd********wxyz"), "sk-abcd********wxyz");
+        assert!(is_masked_api_key(&normalize_api_key("sk-abcd********wxyz")));
     }
 
     #[test]

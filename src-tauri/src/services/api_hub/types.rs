@@ -43,6 +43,17 @@ pub struct TokenInfo {
     pub expired_at: Option<i64>,
 }
 
+pub fn is_masked_api_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.contains('*')
+}
+
+pub fn has_plain_api_key(value: Option<&str>) -> bool {
+    value
+        .map(|value| !is_masked_api_key(value))
+        .unwrap_or(false)
+}
+
 /// 创建 Token 请求
 #[derive(Debug, Clone)]
 pub struct CreateTokenReq {

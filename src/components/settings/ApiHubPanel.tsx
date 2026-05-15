@@ -230,6 +230,11 @@ function selectNoDefaultGroup(
   );
 }
 
+function isPlainApiKey(value?: string | null): boolean {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 && !trimmed.includes("*");
+}
+
 function modelsByGroup(detail?: ApiHubSiteDetail): Array<{
   group: ApiHubGroupInfo;
   models: ApiHubModelInfo[];
@@ -632,8 +637,7 @@ export function ApiHubPanel() {
           (token) =>
             token.group_name &&
             token.name === token.group_name &&
-            typeof token.key === "string" &&
-            token.key.trim().length > 0,
+            isPlainApiKey(token.key),
         )
         .map((token) => token.group_name as string),
     );
@@ -877,6 +881,7 @@ export function ApiHubPanel() {
   const canImportApps =
     targetApps.size > 0 &&
     importSelectionList.length > 0 &&
+    missingTokenGroups.length === 0 &&
     !importAppsMutation.isPending;
   const sortableHeader = (
     field: SiteSortBy,

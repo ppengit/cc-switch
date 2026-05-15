@@ -340,7 +340,8 @@ impl Database {
                        AND group_name IS NOT NULL
                        AND name = group_name
                        AND key IS NOT NULL
-                       AND TRIM(key) <> ''",
+                       AND TRIM(key) <> ''
+                       AND key NOT LIKE '%*%'",
                     params![item.id],
                     |row| row.get::<_, i64>(0),
                 )
@@ -812,6 +813,52 @@ mod tests {
 
         assert_eq!(page.items[0].group_count, 1);
         assert_eq!(page.items[0].model_count, 1);
+    }
+
+    #[test]
+    fn api_hub_list_sites_does_not_count_masked_keys_as_aligned() {
+        let db = Database::memory().expect("memory database");
+        db.api_hub_import_accounts(&[backup_account("site-1", "Site One")])
+            .expect("import accounts");
+
+        db.api_hub_replace_cache(
+            "site-1",
+            &[GroupInfo {
+                name: "default".to_string(),
+                ratio: Some(1.0),
+                description: None,
+            }],
+            &[ModelInfo {
+                name: "gpt-5".to_string(),
+                enable_groups: vec!["default".to_string()],
+            }],
+            &[TokenInfo {
+                id: 10,
+                name: "default".to_string(),
+                group_name: Some("default".to_string()),
+                key: Some("sk-****".to_string()),
+                status: Some(1),
+                remain_quota: None,
+                expired_at: Some(-1),
+            }],
+            None,
+        )
+        .expect("replace cache");
+
+        let page = db
+            .api_hub_list_sites(SiteFilter {
+                search: None,
+                site_type: None,
+                sort_by: None,
+                sort_direction: None,
+                page: 1,
+                page_size: 20,
+            })
+            .expect("list sites");
+
+        assert_eq!(page.items[0].group_count, 1);
+        assert_eq!(page.items[0].aligned_group_count, 0);
+        assert!(!page.items[0].is_aligned);
     }
 
     #[test]

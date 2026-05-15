@@ -568,6 +568,82 @@ describe("ApiHubPanel", () => {
     expect(screen.getByLabelText("导入到 Codex")).toBeChecked();
   });
 
+  it("treats masked API keys as missing in the import dialog", async () => {
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: null,
+              imported_apps: [],
+              last_synced_at: 1715750061,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 1,
+              model_count: 1,
+              token_count: 1,
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/api_hub_get_site_detail`, () =>
+        HttpResponse.json({
+          site: {
+            id: "site-1",
+            site_name: "Demo Hub",
+            site_url: "https://hub.example.com",
+            site_type: "new-api",
+            exchange_rate: 1,
+            username: null,
+            imported_apps: [],
+            last_synced_at: 1715750061,
+            last_sync_error: null,
+            sort_index: 0,
+            group_count: 1,
+            model_count: 1,
+            token_count: 1,
+          },
+          groups: [{ name: "default", ratio: 1, description: null }],
+          models: [{ name: "gpt-5", enable_groups: ["default"] }],
+          tokens: [
+            {
+              id: 10,
+              name: "default",
+              group_name: "default",
+              key: "sk-abcd********wxyz",
+              status: 1,
+              remain_quota: null,
+              expired_at: -1,
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "导入应用" }));
+    expect(
+      await screen.findByText("导入到应用 - Demo Hub"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByLabelText("default / gpt-5"));
+
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
+    expect(
+      screen.getByText(/以下分组缺少同名 APIKey.*default/),
+    ).toBeInTheDocument();
+  });
+
   it("keeps model selections isolated by target app and supports no-default-model selection", async () => {
     const importCalls: any[] = [];
     server.use(

@@ -12,7 +12,7 @@ use crate::error::AppError;
 use super::adapter::build_adapter;
 use super::grouping::group_names_with_models;
 use super::sync::{emit_progress, sync_site, API_HUB_BATCH_CONCURRENCY};
-use super::types::{AlignOptions, CreateTokenReq, ProgressPayload};
+use super::types::{has_plain_api_key, AlignOptions, CreateTokenReq, ProgressPayload};
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct AlignOutcome {
@@ -65,11 +65,7 @@ pub async fn align_site_for_groups(
         let has_group_token = tokens.iter().any(|token| {
             token.group_name.as_deref() == Some(group.name.as_str())
                 && token.name == group.name
-                && token
-                    .key
-                    .as_deref()
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(false)
+                && has_plain_api_key(token.key.as_deref())
         });
         if has_group_token {
             continue;

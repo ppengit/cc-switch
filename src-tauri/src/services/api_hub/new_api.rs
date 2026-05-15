@@ -120,6 +120,31 @@ impl NewApiAdapter {
 
         resp.json::<Value>().await.or_else(|_| Ok(Value::Null))
     }
+
+    async fn fetch_token_key(
+        &self,
+        ctx: &SiteCtx,
+        token_id: i64,
+    ) -> Result<Option<String>, AppError> {
+        let path = format!("/api/token/{token_id}/key");
+        let value = self
+            .send_json(ctx, reqwest::Method::POST, &path, Value::Null)
+            .await?;
+        let success = value
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !success {
+            return Ok(None);
+        }
+
+        Ok(value
+            .get("data")
+            .and_then(|data| data.get("key"))
+            .and_then(|v| v.as_str())
+            .filter(|key| !key.trim().is_empty())
+            .map(String::from))
+    }
 }
 
 #[async_trait::async_trait]
@@ -243,6 +268,19 @@ impl ApiHubAdapter for NewApiAdapter {
             if id == 0 {
                 continue;
             }
+            let listed_key = item.get("key").and_then(|v| v.as_str()).map(String::from);
+            let key = match self.fetch_token_key(ctx, id).await {
+                Ok(Some(key)) => Some(key),
+                Ok(None) => listed_key,
+                Err(err) => {
+                    log::debug!(
+                        "[ApiHub][new-api] 获取 token 明文 key 失败，保留列表 key: site={}, token_id={}, err={err}",
+                        ctx.site_id,
+                        id
+                    );
+                    listed_key
+                }
+            };
             tokens.push(TokenInfo {
                 id,
                 name: item
@@ -254,7 +292,7 @@ impl ApiHubAdapter for NewApiAdapter {
                     .get("group")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                key: item.get("key").and_then(|v| v.as_str()).map(String::from),
+                key,
                 status: item.get("status").and_then(|v| v.as_i64()).map(|x| x as i32),
                 remain_quota: item.get("remain_quota").and_then(|v| v.as_i64()),
                 expired_at: item.get("expired_time").and_then(|v| v.as_i64()),
