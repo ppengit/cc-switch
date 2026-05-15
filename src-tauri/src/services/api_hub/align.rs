@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use serde::Serialize;
 
 use crate::database::Database;
@@ -10,7 +11,7 @@ use crate::error::AppError;
 
 use super::adapter::build_adapter;
 use super::grouping::group_names_with_models;
-use super::sync::{emit_progress, sync_site};
+use super::sync::{emit_progress, sync_site, API_HUB_BATCH_CONCURRENCY};
 use super::types::{AlignOptions, CreateTokenReq, ProgressPayload};
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -61,18 +62,17 @@ pub async fn align_site_for_groups(
                 continue;
             }
         }
-
-        for token in tokens
-            .iter()
-            .filter(|token| token.group_name.as_deref() == Some(group.name.as_str()))
-        {
-            match adapter.delete_token(&ctx, token.id).await {
-                Ok(()) => outcome.deleted += 1,
-                Err(err) => outcome.warnings.push(format!(
-                    "删除分组 {} 的旧 APIKey {} 失败: {err}",
-                    group.name, token.name
-                )),
-            }
+        let has_group_token = tokens.iter().any(|token| {
+            token.group_name.as_deref() == Some(group.name.as_str())
+                && token.name == group.name
+                && token
+                    .key
+                    .as_deref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+        });
+        if has_group_token {
+            continue;
         }
 
         adapter
@@ -101,38 +101,45 @@ pub async fn align_sites_with_progress(
     options: AlignOptions,
 ) -> Result<(), AppError> {
     let total = site_ids.len();
-    for (index, site_id) in site_ids.iter().enumerate() {
-        let site_name = db
-            .api_hub_get_site_record(site_id)
-            .map(|site| site.site_name)
-            .unwrap_or_else(|_| site_id.clone());
-        emit_progress(
-            &app,
-            "api_hub_align_progress",
-            ProgressPayload {
-                site_id: site_id.clone(),
-                site_name: site_name.clone(),
-                index: index + 1,
-                total,
-                step: Some("align".to_string()),
-                status: "running".to_string(),
-                error: None,
-            },
-        );
-        let result = align_site(db.clone(), site_id, options.clone()).await;
-        emit_progress(
-            &app,
-            "api_hub_align_progress",
-            ProgressPayload {
-                site_id: site_id.clone(),
-                site_name,
-                index: index + 1,
-                total,
-                step: Some("align".to_string()),
-                status: if result.is_ok() { "success" } else { "failed" }.to_string(),
-                error: result.err().map(|err| err.to_string()),
-            },
-        );
-    }
+    stream::iter(site_ids.into_iter().enumerate())
+        .for_each_concurrent(API_HUB_BATCH_CONCURRENCY, |(index, site_id)| {
+            let app = app.clone();
+            let db = db.clone();
+            let options = options.clone();
+            async move {
+                let site_name = db
+                    .api_hub_get_site_record(&site_id)
+                    .map(|site| site.site_name)
+                    .unwrap_or_else(|_| site_id.clone());
+                emit_progress(
+                    &app,
+                    "api_hub_align_progress",
+                    ProgressPayload {
+                        site_id: site_id.clone(),
+                        site_name: site_name.clone(),
+                        index: index + 1,
+                        total,
+                        step: Some("align".to_string()),
+                        status: "running".to_string(),
+                        error: None,
+                    },
+                );
+                let result = align_site(db.clone(), &site_id, options).await;
+                emit_progress(
+                    &app,
+                    "api_hub_align_progress",
+                    ProgressPayload {
+                        site_id,
+                        site_name,
+                        index: index + 1,
+                        total,
+                        step: Some("align".to_string()),
+                        status: if result.is_ok() { "success" } else { "failed" }.to_string(),
+                        error: result.err().map(|err| err.to_string()),
+                    },
+                );
+            }
+        })
+        .await;
     Ok(())
 }

@@ -172,16 +172,23 @@ export function buildApiHubSettingsConfigs(
   selections: ApiHubModelSelection[],
 ): Record<string, Record<string, unknown>> {
   const configs: Record<string, Record<string, unknown>> = {};
+  const targetApps = new Set(apps);
   for (const app of apps) {
     for (const selection of selections) {
+      if (selection.app && selection.app !== app) continue;
       configs[`${app}::${selection.group}::${selection.model}`] =
-        createApiHubSettingsConfig(
-          app,
-          site,
-          selection.group,
-          selection.model,
-        );
+        createApiHubSettingsConfig(app, site, selection.group, selection.model);
     }
+  }
+  for (const selection of selections) {
+    if (!selection.app || targetApps.has(selection.app)) continue;
+    configs[`${selection.app}::${selection.group}::${selection.model}`] =
+      createApiHubSettingsConfig(
+        selection.app,
+        site,
+        selection.group,
+        selection.model,
+      );
   }
   return configs;
 }

@@ -479,7 +479,7 @@ export function SettingsPage({
                 <UsageDashboard onOpenRequestDetail={onOpenRequestDetail} />
               </TabsContent>
 
-              <TabsContent value="apiHub" className="mt-0">
+              <TabsContent value="apiHub" className="mt-0" forceMount>
                 <ApiHubPanel />
               </TabsContent>
             </div>

@@ -52,12 +52,12 @@ describe("apiHubTemplates", () => {
     );
 
     expect(codex.auth.OPENAI_API_KEY).toBe(API_HUB_API_KEY_PLACEHOLDER);
-    expect(codex.config).toContain('base_url = "https://hub.example.com/api/v1"');
+    expect(codex.config).toContain(
+      'base_url = "https://hub.example.com/api/v1"',
+    );
     expect(opencode.options.apiKey).toBe(API_HUB_API_KEY_PLACEHOLDER);
     expect(opencode.options.baseURL).toBe("https://hub.example.com/api/v1");
-    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe(
-      API_HUB_API_KEY_PLACEHOLDER,
-    );
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe(API_HUB_API_KEY_PLACEHOLDER);
   });
 
   it("keys generated settings by app, group, and model for backend import", () => {
@@ -66,7 +66,11 @@ describe("apiHubTemplates", () => {
       { group: "vip", model: "claude-sonnet-4-5" },
     ];
 
-    const configs = buildApiHubSettingsConfigs(site, ["claude", "codex"], selections);
+    const configs = buildApiHubSettingsConfigs(
+      site,
+      ["claude", "codex"],
+      selections,
+    );
 
     expect(Object.keys(configs).sort()).toEqual([
       "claude::default::gpt-5",
@@ -77,9 +81,15 @@ describe("apiHubTemplates", () => {
   });
 
   it("supports importing a group without a default model", () => {
-    const selections: ApiHubModelSelection[] = [{ group: "default", model: "" }];
+    const selections: ApiHubModelSelection[] = [
+      { group: "default", model: "" },
+    ];
 
-    const configs = buildApiHubSettingsConfigs(site, ["claude", "codex"], selections);
+    const configs = buildApiHubSettingsConfigs(
+      site,
+      ["claude", "codex"],
+      selections,
+    );
 
     expect(Object.keys(configs).sort()).toEqual([
       "claude::default::",

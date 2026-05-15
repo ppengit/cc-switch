@@ -8,7 +8,8 @@ use crate::provider::{Provider, ProviderMeta};
 use crate::services::api_hub::{
     align_site_for_groups, align_sites_with_progress, sync_site, sync_sites_with_progress,
     AccountsBackup, AlignOptions, CleanupSiteProvidersReport, ImportFailure, ImportReport,
-    ImportToAppsReport, ImportToAppsReq, Paged, SiteDetail, SiteFilter, SiteRow, SyncReport,
+    ImportToAppsReport, ImportToAppsReq, ModelSelection, Paged, SiteDetail, SiteFilter, SiteRow,
+    SyncReport,
 };
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
@@ -145,6 +146,11 @@ async fn import_to_apps(
     req: ImportToAppsReq,
 ) -> Result<ImportToAppsReport, crate::error::AppError> {
     let site = db.api_hub_get_site_record(&req.site_id)?;
+    let group_ratio_map: HashMap<String, Option<f64>> = db
+        .api_hub_get_groups(&req.site_id)?
+        .into_iter()
+        .map(|group| (group.name, group.ratio))
+        .collect();
     let mut report = ImportToAppsReport::default();
     let mut imported_apps = HashSet::new();
     let groups: HashSet<String> = req
@@ -201,11 +207,12 @@ async fn import_to_apps(
             if token.name != group {
                 return None;
             }
-            let key = token.key?;
-            if key.trim().is_empty() {
+            let raw_key = token.key?;
+            let normalized_key = normalize_api_key(raw_key.trim());
+            if normalized_key.is_empty() {
                 return None;
             }
-            Some((group, key))
+            Some((group, normalized_key))
         })
         .collect();
 
@@ -213,7 +220,7 @@ async fn import_to_apps(
         let app_type = match AppType::from_str(app) {
             Ok(value) => value,
             Err(err) => {
-                for selection in &req.selections {
+                for selection in selections_for_app(&req.selections, app) {
                     report.failed.push(ImportFailure {
                         app: app.clone(),
                         group: selection.group.clone(),
@@ -225,7 +232,7 @@ async fn import_to_apps(
             }
         };
 
-        for selection in &req.selections {
+        for selection in selections_for_app(&req.selections, app) {
             let settings_key = format!("{}::{}::{}", app, selection.group, selection.model);
             let Some(settings_config) = req.settings_configs.get(&settings_key).cloned() else {
                 report.failed.push(ImportFailure {
@@ -258,6 +265,11 @@ async fn import_to_apps(
                 provider_type: Some(site.site_type.clone()),
                 ..Default::default()
             };
+            let ratio_text = group_ratio_map
+                .get(&selection.group)
+                .and_then(|ratio| *ratio)
+                .map(format_ratio_value)
+                .unwrap_or_else(|| "1".to_string());
 
             let provider = Provider {
                 id: provider_id,
@@ -267,10 +279,7 @@ async fn import_to_apps(
                 category: Some("aggregator".to_string()),
                 created_at: Some(chrono::Utc::now().timestamp_millis()),
                 sort_index: None,
-                notes: Some(format!(
-                    "由 Api-Hub 导入：{} / {} / {}",
-                    site.site_url, selection.group, selection.model
-                )),
+                notes: Some(format!("倍率：{}x 分组：{}", ratio_text, selection.group)),
                 meta: Some(meta),
                 icon: Some("newapi".to_string()),
                 icon_color: Some("#10b981".to_string()),
@@ -302,6 +311,20 @@ async fn import_to_apps(
     }
 
     Ok(report)
+}
+
+fn selections_for_app<'a>(selections: &'a [ModelSelection], app: &str) -> Vec<&'a ModelSelection> {
+    let app_specific: Vec<&ModelSelection> = selections
+        .iter()
+        .filter(|selection| selection.app.as_deref() == Some(app))
+        .collect();
+    if !app_specific.is_empty() {
+        return app_specific;
+    }
+    selections
+        .iter()
+        .filter(|selection| selection.app.is_none())
+        .collect()
 }
 
 fn sorted_join(values: HashSet<String>) -> String {
@@ -342,6 +365,37 @@ fn slug(value: &str) -> String {
         "x".to_string()
     } else {
         trimmed
+    }
+}
+
+fn normalize_api_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("bearer ") {
+        return normalize_api_key(trimmed[7..].trim());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("sk-") {
+        return trimmed.to_string();
+    }
+    if trimmed.starts_with("sk") {
+        return format!("sk-{}", &trimmed[2..]);
+    }
+    if trimmed.len() >= 16 {
+        return format!("sk-{trimmed}");
+    }
+    trimmed.to_string()
+}
+
+fn format_ratio_value(value: f64) -> String {
+    if value.fract().abs() < f64::EPSILON {
+        format!("{}", value as i64)
+    } else {
+        let text = format!("{value:.4}");
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -394,5 +448,35 @@ mod tests {
                 "items": ["prefix-sk-test", 1, true, null]
             })
         );
+    }
+
+    #[test]
+    fn selections_for_app_prefers_app_specific_rows() {
+        let selections = vec![
+            ModelSelection {
+                group: "default".to_string(),
+                model: "claude-model".to_string(),
+                app: Some("claude".to_string()),
+            },
+            ModelSelection {
+                group: "default".to_string(),
+                model: "codex-model".to_string(),
+                app: Some("codex".to_string()),
+            },
+            ModelSelection {
+                group: "fallback".to_string(),
+                model: String::new(),
+                app: None,
+            },
+        ];
+
+        let codex = selections_for_app(&selections, "codex");
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0].model, "codex-model");
+
+        let gemini = selections_for_app(&selections, "gemini");
+        assert_eq!(gemini.len(), 1);
+        assert_eq!(gemini[0].group, "fallback");
+        assert_eq!(gemini[0].model, "");
     }
 }

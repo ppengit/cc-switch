@@ -288,14 +288,17 @@ describe("ProviderList Component", () => {
     mockFailoverQueue = [{ providerId: "beta", providerName: "Beta" }];
 
     server.use(
-      http.post(`${TAURI_ENDPOINT}/update_providers_sort_order`, async ({ request }) => {
-        const body = (await request.json()) as {
-          updates: { id: string; sortIndex: number }[];
-          app: string;
-        };
-        sortCalls.push(body);
-        return HttpResponse.json(true);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/update_providers_sort_order`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            updates: { id: string; sortIndex: number }[];
+            app: string;
+          };
+          sortCalls.push(body);
+          return HttpResponse.json(true);
+        },
+      ),
     );
 
     useDragSortMock.mockReturnValue({
@@ -342,7 +345,7 @@ describe("ProviderList Component", () => {
     ]);
   });
 
-  it("filters rows by model name and uses the filtered rows for bulk enable", async () => {
+  it("filters rows by multiple model names before search and uses filtered rows for bulk enable", async () => {
     const providerAlpha = createProvider({
       id: "alpha",
       name: "Alpha",
@@ -386,21 +389,35 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("模型名称筛选"), {
-      target: { value: "gpt-5" },
+    const modelFilter = screen.getByRole("button", { name: "模型名称筛选" });
+    const searchInput = screen.getByRole("textbox", {
+      name: "Search providers",
     });
+    expect(
+      modelFilter.compareDocumentPosition(searchInput) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(modelFilter);
+    fireEvent.click(screen.getByRole("checkbox", { name: "gpt-5 (2)" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "claude-sonnet (1)" }),
+    );
 
     expect(screen.getByText("Alpha")).toBeInTheDocument();
-    expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
     expect(screen.getByText("Gamma")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "加入队列" }));
 
     await waitFor(() => {
-      expect(mockAddToFailoverQueueMutateAsync).toHaveBeenCalledTimes(2);
+      expect(mockAddToFailoverQueueMutateAsync).toHaveBeenCalledTimes(3);
     });
-    expect(mockAddToFailoverQueueMutateAsync.mock.calls.map(([arg]) => arg)).toEqual([
+    expect(
+      mockAddToFailoverQueueMutateAsync.mock.calls.map(([arg]) => arg),
+    ).toEqual([
       { appType: "claude", providerId: "alpha" },
+      { appType: "claude", providerId: "beta" },
       { appType: "claude", providerId: "gamma" },
     ]);
   });

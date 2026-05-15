@@ -1,10 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -45,6 +53,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -80,6 +89,86 @@ type SiteSortBy =
   | "last_synced_at"
   | "imported_apps";
 type SortDirection = "asc" | "desc";
+type AppModelSelections = Partial<Record<AppId, string[]>>;
+type AppNoDefaultSelections = Partial<Record<AppId, boolean>>;
+type AppCollapsedGroups = Partial<Record<AppId, string[]>>;
+type ConfirmAction = "clear" | "delete" | "cleanup";
+interface PendingConfirm {
+  action: ConfirmAction;
+  site?: ApiHubSiteRow;
+}
+interface ApiHubPanelPersistedState {
+  searchInput: string;
+  search: string;
+  siteTypeFilter: string;
+  sortBy: SiteSortBy;
+  sortDirection: SortDirection;
+  page: number;
+  pageSize: number;
+  selectedSiteIds: string[];
+}
+
+const API_HUB_PANEL_STATE_KEY = "cc-switch-api-hub-panel-state";
+const DEFAULT_PANEL_STATE: ApiHubPanelPersistedState = {
+  searchInput: "",
+  search: "",
+  siteTypeFilter: "all",
+  sortBy: "site_type",
+  sortDirection: "asc",
+  page: 1,
+  pageSize: 20,
+  selectedSiteIds: [],
+};
+
+function loadPanelState(): ApiHubPanelPersistedState {
+  if (typeof window === "undefined") return DEFAULT_PANEL_STATE;
+  try {
+    const raw = window.sessionStorage.getItem(API_HUB_PANEL_STATE_KEY);
+    if (!raw) return DEFAULT_PANEL_STATE;
+    const parsed = JSON.parse(raw) as Partial<ApiHubPanelPersistedState>;
+    const sortBy = (
+      [
+        "site_type",
+        "site_name",
+        "group_count",
+        "model_count",
+        "token_count",
+        "last_synced_at",
+        "imported_apps",
+      ] as SiteSortBy[]
+    ).includes(parsed.sortBy as SiteSortBy)
+      ? (parsed.sortBy as SiteSortBy)
+      : DEFAULT_PANEL_STATE.sortBy;
+    const pageSize = PAGE_SIZES.includes(
+      parsed.pageSize as (typeof PAGE_SIZES)[number],
+    )
+      ? Number(parsed.pageSize)
+      : DEFAULT_PANEL_STATE.pageSize;
+    return {
+      searchInput:
+        typeof parsed.searchInput === "string" ? parsed.searchInput : "",
+      search: typeof parsed.search === "string" ? parsed.search : "",
+      siteTypeFilter:
+        typeof parsed.siteTypeFilter === "string"
+          ? parsed.siteTypeFilter
+          : DEFAULT_PANEL_STATE.siteTypeFilter,
+      sortBy,
+      sortDirection: parsed.sortDirection === "desc" ? "desc" : "asc",
+      page:
+        typeof parsed.page === "number" && parsed.page > 0
+          ? parsed.page
+          : DEFAULT_PANEL_STATE.page,
+      pageSize,
+      selectedSiteIds: Array.isArray(parsed.selectedSiteIds)
+        ? parsed.selectedSiteIds.filter(
+            (id): id is string => typeof id === "string",
+          )
+        : [],
+    };
+  } catch {
+    return DEFAULT_PANEL_STATE;
+  }
+}
 
 function selectionKey(selection: ApiHubModelSelection): string {
   return `${selection.group}::${selection.model}`;
@@ -118,9 +207,27 @@ function siteTypeClass(siteType: string, hasError: boolean): string {
 
 function formatSyncTime(value?: number | null): string {
   if (!value) return "未同步";
-  const date = new Date(value * 1000);
+  let timestamp = value;
+  if (timestamp > 10_000_000_000_000_000) {
+    timestamp = Math.floor(timestamp / 1_000_000);
+  } else if (timestamp > 10_000_000_000_000) {
+    timestamp = Math.floor(timestamp / 1_000);
+  } else if (timestamp < 10_000_000_000) {
+    timestamp *= 1000;
+  }
+  const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return "未同步";
   return date.toLocaleString();
+}
+
+function selectNoDefaultGroup(
+  groupedModels: Array<{ group: ApiHubGroupInfo; models: ApiHubModelInfo[] }>,
+): string {
+  return (
+    groupedModels.find(({ group }) => group.name === "default")?.group.name ??
+    groupedModels[0]?.group.name ??
+    "default"
+  );
 }
 
 function modelsByGroup(detail?: ApiHubSiteDetail): Array<{
@@ -132,7 +239,8 @@ function modelsByGroup(detail?: ApiHubSiteDetail): Array<{
     .map((group) => ({
       group,
       models: detail.models.filter((model) => {
-        if (!model.enable_groups || model.enable_groups.length === 0) return true;
+        if (!model.enable_groups || model.enable_groups.length === 0)
+          return true;
         return model.enable_groups.includes(group.name);
       }),
     }))
@@ -143,30 +251,77 @@ export function ApiHubPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [siteTypeFilter, setSiteTypeFilter] = useState("all");
-  const [sortBy, setSortBy] = useState<SiteSortBy>("site_type");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(20);
+  const initialPanelStateRef = useRef<ApiHubPanelPersistedState | null>(null);
+  if (!initialPanelStateRef.current) {
+    initialPanelStateRef.current = loadPanelState();
+  }
+  const initialPanelState = initialPanelStateRef.current;
+  const [searchInput, setSearchInput] = useState(initialPanelState.searchInput);
+  const [search, setSearch] = useState(initialPanelState.search);
+  const [siteTypeFilter, setSiteTypeFilter] = useState(
+    initialPanelState.siteTypeFilter,
+  );
+  const [sortBy, setSortBy] = useState<SiteSortBy>(initialPanelState.sortBy);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(
+    initialPanelState.sortDirection,
+  );
+  const [page, setPage] = useState(initialPanelState.page);
+  const [pageSize, setPageSize] = useState<number>(initialPanelState.pageSize);
   const [selectedSiteIds, setSelectedSiteIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(initialPanelState.selectedSiteIds),
   );
   const [importSite, setImportSite] = useState<ApiHubSiteRow | null>(null);
   const [targetApps, setTargetApps] = useState<Set<AppId>>(() => new Set());
   const [activeTargetApp, setActiveTargetApp] = useState<AppId>("claude");
-  const [selectedModels, setSelectedModels] = useState<Set<string>>(
-    () => new Set(),
+  const [selectedModelsByApp, setSelectedModelsByApp] =
+    useState<AppModelSelections>(() => ({}));
+  const [noDefaultByApp, setNoDefaultByApp] = useState<AppNoDefaultSelections>(
+    () => ({}),
   );
+  const [collapsedGroupsByApp, setCollapsedGroupsByApp] =
+    useState<AppCollapsedGroups>(() => ({}));
   const [modelSearch, setModelSearch] = useState("");
   const [markAsImported, setMarkAsImported] = useState(true);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(
+    null,
+  );
   const [syncingSiteIds, setSyncingSiteIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [aligningSiteIds, setAligningSiteIds] = useState<Set<string>>(
     () => new Set(),
   );
+
+  const invalidateSites = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["apiHub", "sites"] }),
+    [queryClient],
+  );
+
+  useEffect(() => {
+    const state: ApiHubPanelPersistedState = {
+      searchInput,
+      search,
+      siteTypeFilter,
+      sortBy,
+      sortDirection,
+      page,
+      pageSize,
+      selectedSiteIds: Array.from(selectedSiteIds),
+    };
+    window.sessionStorage.setItem(
+      API_HUB_PANEL_STATE_KEY,
+      JSON.stringify(state),
+    );
+  }, [
+    page,
+    pageSize,
+    search,
+    searchInput,
+    selectedSiteIds,
+    siteTypeFilter,
+    sortBy,
+    sortDirection,
+  ]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -183,38 +338,48 @@ export function ApiHubPanel() {
   useEffect(() => {
     let unlistenSync: (() => void) | undefined;
     let unlistenAlign: (() => void) | undefined;
-    void apiHubApi.onSyncProgress((payload) => {
-      setSyncingSiteIds((prev) => {
-        const next = new Set(prev);
-        if (payload.status === "running" || payload.status === "pending") {
-          next.add(payload.site_id);
-        } else {
-          next.delete(payload.site_id);
+    void apiHubApi
+      .onSyncProgress((payload) => {
+        setSyncingSiteIds((prev) => {
+          const next = new Set(prev);
+          if (payload.status === "running" || payload.status === "pending") {
+            next.add(payload.site_id);
+          } else {
+            next.delete(payload.site_id);
+          }
+          return next;
+        });
+        if (payload.status !== "running" && payload.status !== "pending") {
+          void invalidateSites();
         }
-        return next;
+      })
+      .then((unlisten) => {
+        unlistenSync = unlisten;
       });
-    }).then((unlisten) => {
-      unlistenSync = unlisten;
-    });
-    void apiHubApi.onAlignProgress((payload) => {
-      setAligningSiteIds((prev) => {
-        const next = new Set(prev);
-        if (payload.status === "running" || payload.status === "pending") {
-          next.add(payload.site_id);
-        } else {
-          next.delete(payload.site_id);
+    void apiHubApi
+      .onAlignProgress((payload) => {
+        setAligningSiteIds((prev) => {
+          const next = new Set(prev);
+          if (payload.status === "running" || payload.status === "pending") {
+            next.add(payload.site_id);
+          } else {
+            next.delete(payload.site_id);
+          }
+          return next;
+        });
+        if (payload.status !== "running" && payload.status !== "pending") {
+          void invalidateSites();
         }
-        return next;
+      })
+      .then((unlisten) => {
+        unlistenAlign = unlisten;
       });
-    }).then((unlisten) => {
-      unlistenAlign = unlisten;
-    });
 
     return () => {
       unlistenSync?.();
       unlistenAlign?.();
     };
-  }, []);
+  }, [invalidateSites]);
 
   const sitesQuery = useQuery({
     queryKey: [
@@ -244,9 +409,6 @@ export function ApiHubPanel() {
     queryFn: () => apiHubApi.getSiteDetail(importSite!.id),
   });
 
-  const invalidateSites = () =>
-    queryClient.invalidateQueries({ queryKey: ["apiHub", "sites"] });
-
   const importJsonMutation = useMutation({
     mutationFn: apiHubApi.importJson,
     onSuccess: (report) => {
@@ -268,7 +430,9 @@ export function ApiHubPanel() {
     mutationFn: apiHubApi.clearAll,
     onSuccess: () => {
       setSelectedSiteIds(new Set());
-      toast.success(t("apiHub.toast.cleared", { defaultValue: "已清空 Api-Hub 缓存" }));
+      toast.success(
+        t("apiHub.toast.cleared", { defaultValue: "已清空 Api-Hub 缓存" }),
+      );
       void invalidateSites();
     },
     onError: (error) => {
@@ -306,9 +470,6 @@ export function ApiHubPanel() {
 
   const syncSitesMutation = useMutation({
     mutationFn: apiHubApi.syncSites,
-    onMutate: (siteIds) => {
-      setSyncingSiteIds((prev) => new Set([...prev, ...siteIds]));
-    },
     onSuccess: () => {
       toast.success("批量同步已完成");
       void invalidateSites();
@@ -316,8 +477,9 @@ export function ApiHubPanel() {
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "批量同步失败");
     },
-    onSettled: (_data, _error, siteIds) => {
+    onSettled: (_data, error, siteIds) => {
       if (!siteIds) return;
+      if (!error) return;
       setSyncingSiteIds((prev) => {
         const next = new Set(prev);
         for (const siteId of siteIds) next.delete(siteId);
@@ -332,11 +494,10 @@ export function ApiHubPanel() {
         rename_existing: true,
         delete_extra: true,
       }),
-    onMutate: (siteIds) => {
-      setAligningSiteIds((prev) => new Set([...prev, ...siteIds]));
-    },
     onSuccess: () => {
-      toast.success(t("apiHub.toast.aligned", { defaultValue: "对齐任务已完成" }));
+      toast.success(
+        t("apiHub.toast.aligned", { defaultValue: "对齐任务已完成" }),
+      );
       void invalidateSites();
       if (importSite) {
         void queryClient.invalidateQueries({
@@ -347,8 +508,8 @@ export function ApiHubPanel() {
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : "对齐失败");
     },
-    onSettled: (_data, _error, siteIds) => {
-      if (!siteIds) return;
+    onSettled: (_data, error, siteIds) => {
+      if (!siteIds || !error) return;
       setAligningSiteIds((prev) => {
         const next = new Set(prev);
         for (const siteId of siteIds) next.delete(siteId);
@@ -372,7 +533,9 @@ export function ApiHubPanel() {
     mutationFn: apiHubApi.cleanupSiteProviders,
     onSuccess: (report) => {
       const failedText =
-        report.failed.length > 0 ? `，失败 ${report.failed.length}` : "";
+        (report.failed?.length ?? 0) > 0
+          ? `，失败 ${report.failed.length}`
+          : "";
       toast.success(`已清理 ${report.deleted} 个供应商${failedText}`);
       void invalidateSites();
     },
@@ -391,7 +554,8 @@ export function ApiHubPanel() {
       );
       setImportSite(null);
       setTargetApps(new Set());
-      setSelectedModels(new Set());
+      setSelectedModelsByApp({});
+      setNoDefaultByApp({});
       setModelSearch("");
       void invalidateSites();
     },
@@ -409,6 +573,15 @@ export function ApiHubPanel() {
 
   const detail = detailQuery.data;
   const groupedModels = useMemo(() => modelsByGroup(detail), [detail]);
+  const activeSelectedModels = useMemo(
+    () => new Set(selectedModelsByApp[activeTargetApp] ?? []),
+    [activeTargetApp, selectedModelsByApp],
+  );
+  const activeNoDefaultSelected = Boolean(noDefaultByApp[activeTargetApp]);
+  const activeCollapsedGroups = useMemo(
+    () => new Set(collapsedGroupsByApp[activeTargetApp] ?? []),
+    [activeTargetApp, collapsedGroupsByApp],
+  );
   const filteredGroupedModels = useMemo(() => {
     const keyword = modelSearch.trim().toLowerCase();
     if (!keyword) return groupedModels;
@@ -423,16 +596,33 @@ export function ApiHubPanel() {
       }))
       .filter(({ models }) => models.length > 0);
   }, [groupedModels, modelSearch]);
-  const selectedModelList = useMemo(
-    () => Array.from(selectedModels).map(parseSelectionKey),
-    [selectedModels],
-  );
+  const selectionsByApp = useMemo(() => {
+    const selections: Partial<Record<AppId, ApiHubModelSelection[]>> = {};
+    const noDefaultGroup = selectNoDefaultGroup(groupedModels);
+    for (const app of targetApps) {
+      const appSelected = selectedModelsByApp[app] ?? [];
+      const appSelections = appSelected.map((key) => ({
+        ...parseSelectionKey(key),
+        app,
+      }));
+      if (noDefaultByApp[app]) {
+        const modelGroup =
+          appSelected.length > 0
+            ? parseSelectionKey(appSelected[0]).group
+            : noDefaultGroup;
+        appSelections.unshift({
+          group: modelGroup,
+          model: "",
+          app,
+        });
+      }
+      selections[app] = appSelections;
+    }
+    return selections;
+  }, [groupedModels, noDefaultByApp, selectedModelsByApp, targetApps]);
   const importSelectionList = useMemo(
-    () =>
-      selectedModelList.length > 0
-        ? selectedModelList
-        : groupedModels.map(({ group }) => ({ group: group.name, model: "" })),
-    [groupedModels, selectedModelList],
+    () => Array.from(targetApps).flatMap((app) => selectionsByApp[app] ?? []),
+    [selectionsByApp, targetApps],
   );
   const missingTokenGroups = useMemo(() => {
     if (!detail) return [];
@@ -473,21 +663,66 @@ export function ApiHubPanel() {
   };
 
   const toggleApp = (app: AppId, checked: boolean) => {
+    if (checked) {
+      const hasSelection =
+        (selectedModelsByApp[app]?.length ?? 0) > 0 ||
+        Boolean(noDefaultByApp[app]);
+      if (!hasSelection) return;
+      setTargetApps((prev) => {
+        const next = new Set(prev);
+        next.add(app);
+        return next;
+      });
+      return;
+    }
     setTargetApps((prev) => {
       const next = new Set(prev);
-      if (checked) next.add(app);
+      next.delete(app);
+      return next;
+    });
+    setSelectedModelsByApp((prev) => ({
+      ...prev,
+      [app]: [],
+    }));
+    setNoDefaultByApp((prev) => ({
+      ...prev,
+      [app]: false,
+    }));
+  };
+
+  const toggleNoDefault = (app: AppId, checked: boolean) => {
+    setNoDefaultByApp((prev) => ({
+      ...prev,
+      [app]: checked,
+    }));
+    setTargetApps((prev) => {
+      const next = new Set(prev);
+      const selectedModelCount = selectedModelsByApp[app]?.length ?? 0;
+      if (checked || selectedModelCount > 0) next.add(app);
       else next.delete(app);
       return next;
     });
   };
 
   const toggleModel = (selection: ApiHubModelSelection, checked: boolean) => {
-    setSelectedModels((prev) => {
-      const next = new Set(prev);
-      const key = selectionKey(selection);
-      if (checked) next.add(key);
-      else next.delete(key);
-      return next;
+    const app = activeTargetApp;
+    const key = selectionKey(selection);
+    const next = new Set(selectedModelsByApp[app] ?? []);
+    if (checked) next.add(key);
+    else next.delete(key);
+    const nextList = Array.from(next);
+    setSelectedModelsByApp((prev) => {
+      return {
+        ...prev,
+        [app]: nextList,
+      };
+    });
+    setTargetApps((prevApps) => {
+      const nextApps = new Set(prevApps);
+      const hasNoDefault = Boolean(noDefaultByApp[app]);
+      if (nextList.length > 0 || hasNoDefault) nextApps.add(app);
+      else nextApps.delete(app);
+      return nextApps;
     });
   };
 
@@ -517,9 +752,23 @@ export function ApiHubPanel() {
     setImportSite(site);
     setActiveTargetApp("claude");
     setTargetApps(new Set());
-    setSelectedModels(new Set());
+    setSelectedModelsByApp({});
+    setNoDefaultByApp({});
+    setCollapsedGroupsByApp({});
     setModelSearch("");
     setMarkAsImported(true);
+  };
+
+  const toggleGroupCollapsed = (app: AppId, groupName: string) => {
+    setCollapsedGroupsByApp((prev) => {
+      const current = new Set(prev[app] ?? []);
+      if (current.has(groupName)) current.delete(groupName);
+      else current.add(groupName);
+      return {
+        ...prev,
+        [app]: Array.from(current),
+      };
+    });
   };
 
   const readImportFile = async (file: File) => {
@@ -536,6 +785,12 @@ export function ApiHubPanel() {
     }
   };
 
+  const queueConfirmAction = useCallback((next: PendingConfirm) => {
+    window.setTimeout(() => {
+      setPendingConfirm(next);
+    }, 0);
+  }, []);
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -544,14 +799,7 @@ export function ApiHubPanel() {
   };
 
   const handleClear = () => {
-    const ok = window.confirm(
-      t("apiHub.clearConfirm", {
-        defaultValue: "确认清空 Api-Hub 站点缓存？已导入到 providers 的供应商不会删除。",
-      }),
-    );
-    if (ok) {
-      clearMutation.mutate();
-    }
+    queueConfirmAction({ action: "clear" });
   };
 
   const handleImportApps = () => {
@@ -573,24 +821,59 @@ export function ApiHubPanel() {
   };
 
   const handleDeleteSite = (site: ApiHubSiteRow) => {
-    const ok = window.confirm(`确认删除 Api-Hub 站点记录：${site.site_name}？`);
-    if (ok) {
-      deleteSiteMutation.mutate(site.id);
-    }
+    queueConfirmAction({ action: "delete", site });
   };
 
   const handleCleanupSite = (site: ApiHubSiteRow) => {
-    const ok = window.confirm(
-      `确认清理 ${site.site_name} 已导入到各应用的供应商记录？`,
-    );
-    if (ok) {
-      cleanupSiteMutation.mutate(site.id);
+    queueConfirmAction({ action: "cleanup", site });
+  };
+
+  const confirmTitle = pendingConfirm
+    ? pendingConfirm.action === "clear"
+      ? "清空 Api-Hub 缓存"
+      : pendingConfirm.action === "delete"
+        ? "删除站点记录"
+        : "清理站点"
+    : "";
+  const confirmMessage = pendingConfirm
+    ? pendingConfirm.action === "clear"
+      ? t("apiHub.clearConfirm", {
+          defaultValue:
+            "确认清空 Api-Hub 站点缓存？已导入到 providers 的供应商不会删除。",
+        })
+      : pendingConfirm.action === "delete" && pendingConfirm.site
+        ? `确认删除 Api-Hub 站点记录：${pendingConfirm.site.site_name}？`
+        : pendingConfirm.site
+          ? `确认清理 ${pendingConfirm.site.site_name} 已导入到各应用的供应商记录？`
+          : ""
+    : "";
+  const confirmText =
+    pendingConfirm?.action === "clear"
+      ? t("common.clear")
+      : pendingConfirm?.action === "delete"
+        ? "删除"
+        : "清理";
+  const handleConfirmAction = () => {
+    if (!pendingConfirm) return;
+    const current = pendingConfirm;
+    setPendingConfirm(null);
+    if (current.action === "clear") {
+      clearMutation.mutate();
+      return;
     }
+    if (!current.site) return;
+    if (current.action === "delete") {
+      deleteSiteMutation.mutate(current.site.id);
+      return;
+    }
+    cleanupSiteMutation.mutate(current.site.id);
   };
 
   const isImportingJson = importJsonMutation.isPending;
   const isBatchBusy =
-    alignMutation.isPending || syncSitesMutation.isPending || clearMutation.isPending;
+    alignMutation.isPending ||
+    syncSitesMutation.isPending ||
+    clearMutation.isPending;
   const canImportApps =
     targetApps.size > 0 &&
     importSelectionList.length > 0 &&
@@ -756,11 +1039,21 @@ export function ApiHubPanel() {
                 />
               </TableHead>
               <TableHead>{sortableHeader("site_name", "站点")}</TableHead>
-              <TableHead>{sortableHeader("site_type", "协议", "协议排序")}</TableHead>
-              <TableHead>{sortableHeader("group_count", "分组 / 模型", "分组模型排序")}</TableHead>
-              <TableHead>{sortableHeader("token_count", "APIKey", "APIKey排序")}</TableHead>
-              <TableHead>{sortableHeader("imported_apps", "导入状态", "导入状态排序")}</TableHead>
-              <TableHead>{sortableHeader("last_synced_at", "最近同步", "最近同步排序")}</TableHead>
+              <TableHead>
+                {sortableHeader("site_type", "协议", "协议排序")}
+              </TableHead>
+              <TableHead>
+                {sortableHeader("group_count", "分组 / 模型", "分组模型排序")}
+              </TableHead>
+              <TableHead>
+                {sortableHeader("token_count", "APIKey", "APIKey排序")}
+              </TableHead>
+              <TableHead>
+                {sortableHeader("imported_apps", "导入状态", "导入状态排序")}
+              </TableHead>
+              <TableHead>
+                {sortableHeader("last_synced_at", "最近同步", "最近同步排序")}
+              </TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -819,7 +1112,10 @@ export function ApiHubPanel() {
                       variant="outline"
                       className={cn(
                         "whitespace-nowrap",
-                        siteTypeClass(site.site_type, Boolean(site.last_sync_error)),
+                        siteTypeClass(
+                          site.site_type,
+                          Boolean(site.last_sync_error),
+                        ),
                       )}
                     >
                       {site.site_type || "unknown"}
@@ -856,73 +1152,97 @@ export function ApiHubPanel() {
                         const isDeleting =
                           deleteSiteMutation.isPending &&
                           deleteSiteMutation.variables === site.id;
+                        const hasGroups = site.group_count > 0;
+                        const hasModels = site.model_count > 0;
+                        const isSynced =
+                          Boolean(site.last_synced_at) &&
+                          !Boolean(site.last_sync_error);
+                        const alignedGroups =
+                          site.aligned_group_count ?? site.token_count;
+                        const isAligned =
+                          site.is_aligned ??
+                          (site.group_count > 0 &&
+                            alignedGroups >= site.group_count);
+                        const canImportSite =
+                          hasGroups && hasModels && isSynced && isAligned;
+                        const importDisabledReason = !hasGroups
+                          ? "0 分组，无法导入"
+                          : !hasModels
+                            ? "0 模型，无法导入"
+                            : !isSynced
+                              ? "未同步，无法导入"
+                              : !isAligned
+                                ? "未对齐，无法导入"
+                                : "";
                         return (
                           <>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => syncMutation.mutate(site.id)}
-                        disabled={isSyncing}
-                      >
-                        {isSyncing ? (
-                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                        ) : (
-                          <RefreshCw className="mr-1.5 h-4 w-4" />
-                        )}
-                        {isSyncing ? "同步中" : "同步"}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => alignMutation.mutate([site.id])}
-                        disabled={isAligning}
-                      >
-                        {isAligning ? (
-                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                        ) : (
-                          <KeyRound className="mr-1.5 h-4 w-4" />
-                        )}
-                        {isAligning ? "对齐中" : "对齐"}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleCleanupSite(site)}
-                        disabled={isCleaning}
-                      >
-                        {isCleaning ? (
-                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                        ) : (
-                          <Eraser className="mr-1.5 h-4 w-4" />
-                        )}
-                        清理站点
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => openImportDialog(site)}
-                      >
-                        <PackagePlus className="mr-1.5 h-4 w-4" />
-                        导入应用
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleDeleteSite(site)}
-                        disabled={isDeleting}
-                        className="text-red-600 hover:text-red-700"
-                      >
-                        {isDeleting ? (
-                          <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="mr-1.5 h-4 w-4" />
-                        )}
-                        删除记录
-                      </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => syncMutation.mutate(site.id)}
+                              disabled={isSyncing}
+                            >
+                              {isSyncing ? (
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="mr-1.5 h-4 w-4" />
+                              )}
+                              {isSyncing ? "同步中" : "同步"}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => alignMutation.mutate([site.id])}
+                              disabled={isAligning}
+                            >
+                              {isAligning ? (
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                              ) : (
+                                <KeyRound className="mr-1.5 h-4 w-4" />
+                              )}
+                              {isAligning ? "对齐中" : "对齐"}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleCleanupSite(site)}
+                              disabled={isCleaning}
+                            >
+                              {isCleaning ? (
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Eraser className="mr-1.5 h-4 w-4" />
+                              )}
+                              清理站点
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => openImportDialog(site)}
+                              disabled={!canImportSite}
+                              title={canImportSite ? "导入应用" : importDisabledReason}
+                            >
+                              <PackagePlus className="mr-1.5 h-4 w-4" />
+                              导入应用
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleDeleteSite(site)}
+                              disabled={isDeleting}
+                              className="text-red-600 hover:text-red-700"
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="mr-1.5 h-4 w-4" />
+                              )}
+                              删除记录
+                            </Button>
                           </>
                         );
                       })()}
@@ -972,7 +1292,9 @@ export function ApiHubPanel() {
           if (!open) {
             setImportSite(null);
             setTargetApps(new Set());
-            setSelectedModels(new Set());
+            setSelectedModelsByApp({});
+            setNoDefaultByApp({});
+            setCollapsedGroupsByApp({});
             setModelSearch("");
             setMarkAsImported(true);
           }
@@ -1008,9 +1330,7 @@ export function ApiHubPanel() {
                 <Tabs
                   value={activeTargetApp}
                   onValueChange={(value) => {
-                    const app = value as AppId;
-                    setActiveTargetApp(app);
-                    toggleApp(app, true);
+                    setActiveTargetApp(value as AppId);
                   }}
                 >
                   <TabsList className="flex w-full flex-wrap justify-start">
@@ -1018,10 +1338,7 @@ export function ApiHubPanel() {
                       <TabsTrigger
                         key={app.id}
                         value={app.id}
-                        onClick={() => {
-                          setActiveTargetApp(app.id);
-                          toggleApp(app.id, true);
-                        }}
+                        onClick={() => setActiveTargetApp(app.id)}
                         className={cn(
                           "min-w-0 flex-1 gap-2 px-2",
                           targetApps.has(app.id) ? "opacity-100" : "",
@@ -1035,28 +1352,42 @@ export function ApiHubPanel() {
                     ))}
                   </TabsList>
                 </Tabs>
-                <Label className="flex items-center justify-between rounded-md border border-border-default px-3 py-2">
-                  <span className="text-sm">
-                    导入到 {APP_LABELS.get(activeTargetApp)}
-                  </span>
-                  <Checkbox
-                    aria-label={`导入到 ${APP_LABELS.get(activeTargetApp)}`}
-                    checked={targetApps.has(activeTargetApp)}
-                    onCheckedChange={(checked) =>
-                      toggleApp(activeTargetApp, checked === true)
-                    }
-                  />
-                </Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Label className="flex items-center justify-between rounded-md border border-border-default px-3 py-2">
+                    <span className="text-sm">
+                      导入到 {APP_LABELS.get(activeTargetApp)}
+                    </span>
+                    <Checkbox
+                      aria-label={`导入到 ${APP_LABELS.get(activeTargetApp)}`}
+                      checked={targetApps.has(activeTargetApp)}
+                      onCheckedChange={(checked) =>
+                        toggleApp(activeTargetApp, checked === true)
+                      }
+                    />
+                  </Label>
+                  <Label
+                    className="flex items-center justify-between rounded-md border border-border-default px-3 py-2"
+                  >
+                    <span className="text-sm">无默认模型供应商导入</span>
+                    <Checkbox
+                      aria-label={`${APP_LABELS.get(activeTargetApp)} 无默认模型供应商导入`}
+                      checked={activeNoDefaultSelected}
+                      onCheckedChange={(checked) =>
+                        toggleNoDefault(activeTargetApp, checked === true)
+                      }
+                    />
+                  </Label>
+                </div>
               </section>
 
               <section className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">可选模型</h3>
                   <span className="text-xs text-muted-foreground">
-                    已选 {selectedModels.size} 个模型
-                    {selectedModels.size === 0
-                      ? "，将按分组导入且不写默认模型"
-                      : ""}
+                    当前应用已选{" "}
+                    {activeSelectedModels.size +
+                      (noDefaultByApp[activeTargetApp] ? 1 : 0)}{" "}
+                    项
                   </span>
                 </div>
                 <div className="relative">
@@ -1082,45 +1413,66 @@ export function ApiHubPanel() {
                     </div>
                   ) : (
                     filteredGroupedModels.map(({ group, models }) => (
-                      <div key={group.name} className="border-b border-border-default last:border-0">
-                        <div className="flex items-center justify-between bg-muted/40 px-3 py-2">
-                          <div className="font-semibold text-foreground">
-                            {group.name}
+                      <div
+                        key={group.name}
+                        className="border-b border-border-default last:border-0"
+                      >
+                        <button
+                          type="button"
+                          className="flex w-full items-center justify-between bg-muted/40 px-3 py-2 text-left hover:bg-muted/60"
+                          onClick={() =>
+                            toggleGroupCollapsed(activeTargetApp, group.name)
+                          }
+                          aria-label={`${group.name} 分组折叠`}
+                        >
+                          <div className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
+                            {activeCollapsedGroups.has(group.name) ? (
+                              <ChevronRight className="h-4 w-4 shrink-0" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 shrink-0" />
+                            )}
+                            <span className="truncate">{group.name}</span>
                           </div>
                           <div className="flex items-center gap-3 text-xs text-muted-foreground">
                             <span>{formatGroupRatio(group.ratio)}</span>
                             <span>{models.length} 个模型</span>
                           </div>
-                        </div>
-                        <div className="divide-y divide-border-default">
-                          {models.map((model) => {
-                            const selection = {
-                              group: group.name,
-                              model: model.name,
-                            };
-                            const key = selectionKey(selection);
-                            return (
-                              <Label
-                                key={key}
-                                className="flex min-w-0 items-center gap-3 px-3 py-2 text-sm hover:bg-muted/30"
-                              >
-                                <Checkbox
-                                  aria-label={`${group.name} / ${model.name}`}
-                                  checked={selectedModels.has(key)}
-                                  onCheckedChange={(checked) =>
-                                    toggleModel(selection, checked === true)
-                                  }
-                                />
-                                <span className="min-w-28 shrink-0 text-muted-foreground">
-                                  {group.name}
-                                </span>
-                                <span className="truncate font-medium text-foreground">
-                                  {model.name}
-                                </span>
-                              </Label>
-                            );
-                          })}
-                        </div>
+                        </button>
+                        {!activeCollapsedGroups.has(group.name) ? (
+                          <div className="divide-y divide-border-default">
+                            {models
+                              .map((model) => ({
+                                selection: {
+                                  group: group.name,
+                                  model: model.name,
+                                },
+                                label: model.name,
+                              }))
+                              .map(({ selection, label }) => {
+                                const key = selectionKey(selection);
+                                return (
+                                  <Label
+                                    key={key}
+                                    className="flex min-w-0 items-center gap-3 px-3 py-2 text-sm hover:bg-muted/30"
+                                  >
+                                    <Checkbox
+                                      aria-label={`${group.name} / ${label}`}
+                                      checked={activeSelectedModels.has(key)}
+                                      onCheckedChange={(checked) =>
+                                        toggleModel(selection, checked === true)
+                                      }
+                                    />
+                                    <span className="min-w-28 shrink-0 text-muted-foreground">
+                                      {group.name}
+                                    </span>
+                                    <span className="truncate font-medium text-foreground">
+                                      {label}
+                                    </span>
+                                  </Label>
+                                );
+                              })}
+                          </div>
+                        ) : null}
                       </div>
                     ))
                   )}
@@ -1133,14 +1485,16 @@ export function ApiHubPanel() {
                   {targetApps.size === 0 ? (
                     <span>选择目标应用后显示预览。</span>
                   ) : (
-                    importSelectionList.slice(0, 20).flatMap((selection) =>
-                      Array.from(targetApps).map((app) => (
-                        <div key={`${app}-${selection.group}-${selection.model}`}>
-                          {detail.site.site_name} · {selection.group} ·{" "}
-                          {selection.model || "不写默认模型"} → {app}
-                        </div>
-                      )),
-                    )
+                    importSelectionList.slice(0, 20).map((selection) => (
+                      <div
+                        key={`${selection.app}-${selection.group}-${selection.model}`}
+                      >
+                        {selection.model
+                          ? `${detail.site.site_name} · ${selection.group} · ${selection.model}`
+                          : `${detail.site.site_name} · 不写默认模型`}{" "}
+                        → {selection.app}
+                      </div>
+                    ))
                   )}
                 </div>
               </section>
@@ -1189,6 +1543,15 @@ export function ApiHubPanel() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        isOpen={pendingConfirm !== null}
+        title={confirmTitle}
+        message={confirmMessage}
+        confirmText={confirmText}
+        cancelText={t("common.cancel")}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={handleConfirmAction}
+      />
     </div>
   );
 }

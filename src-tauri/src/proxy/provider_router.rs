@@ -252,6 +252,7 @@ impl ProviderRouter {
     pub async fn reset_provider_breaker(&self, provider_id: &str, app_type: &str) {
         let circuit_key = format!("{app_type}:{provider_id}");
         self.reset_circuit_breaker(&circuit_key).await;
+        self.reset_api_key_error_count(&circuit_key).await;
     }
 
     /// 仅释放 HalfOpen permit，不影响健康统计（neutral 接口）

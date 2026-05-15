@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use tauri::Emitter;
 
 use crate::database::Database;
@@ -9,6 +10,8 @@ use crate::error::AppError;
 
 use super::adapter::{build_adapter, is_known_site_type};
 use super::types::{ProgressPayload, SyncReport};
+
+pub(crate) const API_HUB_BATCH_CONCURRENCY: usize = 4;
 
 pub async fn sync_site(db: Arc<Database>, site_id: &str) -> Result<SyncReport, AppError> {
     let site = db.api_hub_get_site_record(site_id)?;
@@ -63,44 +66,57 @@ pub async fn sync_sites_with_progress(
     site_ids: Vec<String>,
 ) -> Result<(), AppError> {
     let total = site_ids.len();
-    for (index, site_id) in site_ids.iter().enumerate() {
-        let site_name = db
-            .api_hub_get_site_record(site_id)
-            .map(|site| site.site_name)
-            .unwrap_or_else(|_| site_id.clone());
-        emit_progress(
-            &app,
-            "api_hub_sync_progress",
-            ProgressPayload {
-                site_id: site_id.clone(),
-                site_name: site_name.clone(),
-                index: index + 1,
-                total,
-                step: Some("sync".to_string()),
-                status: "running".to_string(),
-                error: None,
-            },
-        );
+    stream::iter(site_ids.into_iter().enumerate())
+        .for_each_concurrent(API_HUB_BATCH_CONCURRENCY, |(index, site_id)| {
+            let app = app.clone();
+            let db = db.clone();
+            async move {
+                let site_name = db
+                    .api_hub_get_site_record(&site_id)
+                    .map(|site| site.site_name)
+                    .unwrap_or_else(|_| site_id.clone());
+                emit_progress(
+                    &app,
+                    "api_hub_sync_progress",
+                    ProgressPayload {
+                        site_id: site_id.clone(),
+                        site_name: site_name.clone(),
+                        index: index + 1,
+                        total,
+                        step: Some("sync".to_string()),
+                        status: "running".to_string(),
+                        error: None,
+                    },
+                );
 
-        let report = sync_site(db.clone(), site_id).await?;
-        emit_progress(
-            &app,
-            "api_hub_sync_progress",
-            ProgressPayload {
-                site_id: site_id.clone(),
-                site_name,
-                index: index + 1,
-                total,
-                step: Some("sync".to_string()),
-                status: if report.error.is_some() {
-                    "failed".to_string()
-                } else {
-                    "success".to_string()
-                },
-                error: report.error,
-            },
-        );
-    }
+                let result = sync_site(db.clone(), &site_id).await;
+                let (status, error) = match result {
+                    Ok(report) => {
+                        if report.error.is_some() {
+                            ("failed".to_string(), report.error)
+                        } else {
+                            ("success".to_string(), None)
+                        }
+                    }
+                    Err(err) => ("failed".to_string(), Some(err.to_string())),
+                };
+
+                emit_progress(
+                    &app,
+                    "api_hub_sync_progress",
+                    ProgressPayload {
+                        site_id,
+                        site_name,
+                        index: index + 1,
+                        total,
+                        step: Some("sync".to_string()),
+                        status,
+                        error,
+                    },
+                );
+            }
+        })
+        .await;
     Ok(())
 }
 

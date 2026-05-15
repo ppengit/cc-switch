@@ -46,6 +46,17 @@ pub async fn add_to_failover_queue(
         .map_err(|e| e.to_string())?;
 
     state
+        .db
+        .reset_provider_health(&provider_id, &app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    state
+        .proxy_service
+        .reset_provider_circuit_breaker(&provider_id, &app_type)
+        .await?;
+
+    state
         .proxy_service
         .sync_failover_active_target(&app_type)
         .await

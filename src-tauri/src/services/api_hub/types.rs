@@ -70,6 +70,8 @@ pub struct SiteRow {
     pub last_sync_error: Option<String>,
     pub sort_index: i32,
     pub group_count: i64,
+    pub aligned_group_count: i64,
+    pub is_aligned: bool,
     pub model_count: i64,
     pub token_count: i64,
 }
@@ -228,6 +230,8 @@ fn default_true() -> bool {
 pub struct ModelSelection {
     pub group: String,
     pub model: String,
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// 导入到应用的请求

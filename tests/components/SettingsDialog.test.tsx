@@ -1,7 +1,12 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import "@testing-library/jest-dom";
-import { createContext, useContext, type ComponentProps } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  type ComponentProps,
+} from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 
@@ -176,10 +181,14 @@ vi.mock("@/components/ui/tabs", () => {
         </button>
       );
     },
-    TabsContent: ({ value, children }: any) => {
+    TabsContent: ({ value, forceMount, children }: any) => {
       const ctx = useContext(TabsContext);
-      if (ctx.value !== value) return null;
-      return <div data-testid={`tab-${value}`}>{children}</div>;
+      if (!forceMount && ctx.value !== value) return null;
+      return (
+        <div data-testid={`tab-${value}`} hidden={ctx.value !== value}>
+          {children}
+        </div>
+      );
     },
   };
 });
@@ -238,7 +247,19 @@ vi.mock("@/components/settings/AboutSection", () => ({
 }));
 
 vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => <div>api-hub-panel</div>,
+  ApiHubPanel: () => {
+    const [value, setValue] = useState("");
+    return (
+      <div>
+        <span>api-hub-panel</span>
+        <input
+          aria-label="api-hub-state-probe"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/components/settings/WebdavSyncSection", () => ({
@@ -348,9 +369,7 @@ describe("SettingsPage Component", () => {
     fireEvent.click(screen.getByText("settings.advanced.data.title"));
 
     // 有文件时，点击导入按钮执行 importConfig
-    fireEvent.click(
-      screen.getByRole("button", { name: /settings\.import/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /settings\.import/ }));
     expect(importExportMock.importConfig).toHaveBeenCalled();
 
     fireEvent.click(
@@ -380,6 +399,19 @@ describe("SettingsPage Component", () => {
     fireEvent.click(screen.getByText("settings.tabApiHub"));
 
     expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
+  });
+
+  it("should keep Api-Hub panel state when switching settings tabs", () => {
+    renderSettingsPage();
+
+    fireEvent.click(screen.getByText("settings.tabApiHub"));
+    const probe = screen.getByLabelText("api-hub-state-probe");
+    fireEvent.change(probe, { target: { value: "new-api" } });
+
+    fireEvent.click(screen.getByText("settings.tabGeneral"));
+    fireEvent.click(screen.getByText("settings.tabApiHub"));
+
+    expect(screen.getByLabelText("api-hub-state-probe")).toHaveValue("new-api");
   });
 
   it("should pass onImportSuccess callback to useImportExport hook", async () => {

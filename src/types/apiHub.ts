@@ -12,6 +12,8 @@ export interface ApiHubSiteRow {
   last_sync_error?: string | null;
   sort_index: number;
   group_count: number;
+  aligned_group_count?: number;
+  is_aligned?: boolean;
   model_count: number;
   token_count: number;
 }
@@ -103,6 +105,7 @@ export interface ApiHubAlignOptions {
 export interface ApiHubModelSelection {
   group: string;
   model: string;
+  app?: AppId;
 }
 
 export interface ApiHubImportToAppsReq {

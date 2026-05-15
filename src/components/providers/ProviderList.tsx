@@ -913,8 +913,6 @@ const getModelDisplayByApp = (provider: Provider, appId: AppId) => {
 };
 
 const EMPTY_MODEL_FILTER_VALUE = "__empty__";
-const ALL_MODEL_FILTER_VALUE = "__all__";
-
 const splitModelDisplay = (modelDisplay: string): string[] => {
   if (!modelDisplay || modelDisplay === "-") return [];
   return modelDisplay
@@ -1165,7 +1163,9 @@ export function ProviderList({
     useState<StatusSortDirection>(null);
   const [modelSortDirection, setModelSortDirection] =
     useState<ModelSortDirection>("asc");
-  const [modelFilter, setModelFilter] = useState(ALL_MODEL_FILTER_VALUE);
+  const [modelFilters, setModelFilters] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [isBulkOperating, setIsBulkOperating] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
@@ -1654,10 +1654,12 @@ export function ProviderList({
     }
     return Array.from(values.entries())
       .map(([model, count]) => ({ model, count }))
-      .sort((a, b) => a.model.localeCompare(b.model, undefined, {
-        numeric: true,
-        sensitivity: "base",
-      }))
+      .sort((a, b) =>
+        a.model.localeCompare(b.model, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      )
       .concat(
         emptyCount > 0
           ? [
@@ -1671,25 +1673,31 @@ export function ProviderList({
   }, [providerRowViews]);
 
   useEffect(() => {
-    if (modelFilter === ALL_MODEL_FILTER_VALUE) return;
-    const exists = modelFilterOptions.some((option) => option.model === modelFilter);
-    if (!exists) {
-      setModelFilter(ALL_MODEL_FILTER_VALUE);
-    }
-  }, [modelFilter, modelFilterOptions]);
+    if (modelFilters.size === 0) return;
+    const validModels = new Set(
+      modelFilterOptions.map((option) => option.model),
+    );
+    setModelFilters((prev) => {
+      const next = new Set<string>();
+      prev.forEach((model) => {
+        if (validModels.has(model)) next.add(model);
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [modelFilterOptions, modelFilters.size]);
 
   const filteredRows = useMemo(() => {
-    if (modelFilter === ALL_MODEL_FILTER_VALUE) {
+    if (modelFilters.size === 0) {
       return providerRowViews;
     }
     return providerRowViews.filter((row) => {
       const models = splitModelDisplay(row.modelDisplay);
-      if (modelFilter === EMPTY_MODEL_FILTER_VALUE) {
-        return models.length === 0;
+      if (modelFilters.has(EMPTY_MODEL_FILTER_VALUE) && models.length === 0) {
+        return true;
       }
-      return models.includes(modelFilter);
+      return models.some((model) => modelFilters.has(model));
     });
-  }, [modelFilter, providerRowViews]);
+  }, [modelFilters, providerRowViews]);
 
   useEffect(() => {
     const visibleIds = new Set(filteredRows.map((row) => row.provider.id));
@@ -1884,8 +1892,33 @@ export function ProviderList({
     selectedProviderIds.has(row.provider.id),
   );
 
-  const canDragRows =
-    statusSortDirection === null && modelFilter === ALL_MODEL_FILTER_VALUE;
+  const canDragRows = statusSortDirection === null && modelFilters.size === 0;
+
+  const toggleModelFilter = useCallback((model: string, checked: boolean) => {
+    setModelFilters((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(model);
+      else next.delete(model);
+      return next;
+    });
+  }, []);
+
+  const modelFilterSummary = useMemo(() => {
+    if (modelFilters.size === 0) {
+      return t("provider.allModels", { defaultValue: "全部模型" });
+    }
+    const labels = Array.from(modelFilters).map((model) =>
+      model === EMPTY_MODEL_FILTER_VALUE
+        ? t("provider.emptyModel", { defaultValue: "未填写模型" })
+        : model,
+    );
+    return labels.length <= 2
+      ? labels.join(" / ")
+      : t("provider.modelFilterSelected", {
+          defaultValue: `已选 ${labels.length} 个模型`,
+          count: labels.length,
+        });
+  }, [modelFilters, t]);
 
   useEffect(() => {
     if (!deferredSearchTerm || searchMatches.length === 0) {
@@ -2778,32 +2811,6 @@ export function ProviderList({
           {interactionModeLabel}
         </Badge>
 
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span className="whitespace-nowrap">
-            {t("provider.modelFilter", { defaultValue: "模型" })}
-          </span>
-          <select
-            aria-label={t("provider.modelFilterAriaLabel", {
-              defaultValue: "模型名称筛选",
-            })}
-            value={modelFilter}
-            onChange={(event) => setModelFilter(event.target.value)}
-            className="h-7 max-w-[13rem] rounded-md border border-border-default bg-background px-2 text-xs text-foreground"
-          >
-            <option value={ALL_MODEL_FILTER_VALUE}>
-              {t("provider.allModels", { defaultValue: "全部模型" })}
-            </option>
-            {modelFilterOptions.map((option) => (
-              <option key={option.model} value={option.model}>
-                {option.model === EMPTY_MODEL_FILTER_VALUE
-                  ? t("provider.emptyModel", { defaultValue: "未填写模型" })
-                  : option.model}{" "}
-                ({option.count})
-              </option>
-            ))}
-          </select>
-        </label>
-
         <Button
           size="sm"
           variant="outline"
@@ -2919,6 +2926,77 @@ export function ProviderList({
         </Button>
 
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={t("provider.modelFilterAriaLabel", {
+                  defaultValue: "模型名称筛选",
+                })}
+                className="h-8 max-w-[15rem] justify-between text-xs"
+              >
+                <span className="truncate">
+                  {t("provider.modelFilter", { defaultValue: "模型" })}:{" "}
+                  {modelFilterSummary}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-72 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("provider.modelFilter", { defaultValue: "模型" })}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setModelFilters(new Set())}
+                  disabled={modelFilters.size === 0}
+                >
+                  {t("common.clear", { defaultValue: "清空" })}
+                </Button>
+              </div>
+              <ScrollArea className="max-h-72">
+                <div className="space-y-1">
+                  {modelFilterOptions.map((option) => {
+                    const label =
+                      option.model === EMPTY_MODEL_FILTER_VALUE
+                        ? t("provider.emptyModel", {
+                            defaultValue: "未填写模型",
+                          })
+                        : option.model;
+                    return (
+                      <label
+                        key={option.model}
+                        className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/60"
+                      >
+                        <Checkbox
+                          aria-label={`${label} (${option.count})`}
+                          checked={modelFilters.has(option.model)}
+                          onCheckedChange={(checked) =>
+                            toggleModelFilter(option.model, checked === true)
+                          }
+                        />
+                        <span className="min-w-0 flex-1 truncate">{label}</span>
+                        <span className="shrink-0 font-mono text-muted-foreground">
+                          {option.count}
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {modelFilterOptions.length === 0 ? (
+                    <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+                      {t("provider.noModels", { defaultValue: "暂无模型" })}
+                    </div>
+                  ) : null}
+                </div>
+              </ScrollArea>
+            </PopoverContent>
+          </Popover>
           <div className="relative w-full max-w-[28rem]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -3198,7 +3276,9 @@ export function ProviderList({
                               "按模型名称重排供应商，启用项保持在前；会更新序号和故障转移队列顺序",
                           })}
                         >
-                          {t("provider.modelName", { defaultValue: "模型名称" })}
+                          {t("provider.modelName", {
+                            defaultValue: "模型名称",
+                          })}
                           {modelSortDirection === "asc" ? (
                             <ArrowUp className="h-3.5 w-3.5" />
                           ) : (

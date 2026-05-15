@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "pnpm tauri dev",
     "build": "pnpm tauri build",
+    "build:local:nsis": "powershell -ExecutionPolicy Bypass -NoProfile -File ./scripts/build-local-nsis.ps1",
     "tauri": "tauri",
     "dev:renderer": "vite",
     "build:renderer": "vite build",

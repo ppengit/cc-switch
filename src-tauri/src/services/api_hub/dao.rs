@@ -320,6 +320,8 @@ impl Database {
                 last_sync_error: row.get(8)?,
                 sort_index: row.get(9)?,
                 group_count: 0,
+                aligned_group_count: 0,
+                is_aligned: false,
                 model_count: row.get(10)?,
                 token_count: row.get(11)?,
             })
@@ -330,6 +332,21 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         for item in &mut items {
             item.group_count = api_hub_count_groups_with_models_on_conn(&conn, &item.id)?;
+            let aligned = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM api_hub_tokens
+                     WHERE site_id = ?1
+                       AND group_name IS NOT NULL
+                       AND name = group_name
+                       AND key IS NOT NULL
+                       AND TRIM(key) <> ''",
+                    params![item.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0);
+            item.aligned_group_count = aligned;
+            item.is_aligned = item.group_count > 0 && aligned >= item.group_count;
         }
         sort_sites(
             &mut items,

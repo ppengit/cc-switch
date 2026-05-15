@@ -24,6 +24,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
   resetProviderState();
   server.resetHandlers();
   vi.clearAllMocks();
