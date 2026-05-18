@@ -5,9 +5,62 @@
 use crate::app_config::AppType;
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
+use crate::proxy::types::AppProxyConfig;
 use crate::store::AppState;
 use std::str::FromStr;
 use tauri::Emitter;
+
+fn effective_auto_failover_enabled(config: &AppProxyConfig) -> bool {
+    config.enabled && config.auto_failover_enabled
+}
+
+async fn disable_auto_failover_and_restore_single_target(
+    state: &AppState,
+    app_type: &str,
+    app_enum: &AppType,
+) -> Result<Option<String>, String> {
+    let queue = state
+        .db
+        .get_failover_queue(app_type)
+        .map_err(|e| e.to_string())?;
+    let restored_provider_id = queue.first().map(|item| item.provider_id.clone());
+
+    let takeover_enabled = state
+        .db
+        .get_proxy_config_for_app(app_type)
+        .await
+        .map(|config| config.enabled)
+        .map_err(|e| e.to_string())?;
+    let proxy_running = state.proxy_service.is_running().await;
+
+    if let Some(provider_id) = restored_provider_id.as_deref() {
+        if takeover_enabled && proxy_running {
+            state
+                .proxy_service
+                .hot_switch_provider(app_type, provider_id)
+                .await?;
+        } else {
+            state
+                .db
+                .set_current_provider(app_type, provider_id)
+                .map_err(|e| e.to_string())?;
+            crate::settings::set_current_provider(app_enum, Some(provider_id))
+                .map_err(|e| e.to_string())?;
+        }
+    } else {
+        let _ = state.db.clear_current_provider(app_type);
+        let _ = crate::settings::set_current_provider(app_enum, None);
+    }
+
+    if !(takeover_enabled && proxy_running) {
+        state
+            .proxy_service
+            .sync_failover_active_target(app_type)
+            .await?;
+    }
+
+    Ok(restored_provider_id)
+}
 
 /// 获取故障转移队列
 #[tauri::command]
@@ -77,11 +130,7 @@ pub async fn remove_from_failover_queue(
 
     state
         .proxy_service
-        .clear_provider_runtime_state(&provider_id, &app_type)
-        .await?;
-    state
-        .proxy_service
-        .sync_failover_active_target(&app_type)
+        .reconcile_failover_after_provider_removal(&provider_id, &app_type)
         .await?;
 
     let event_data = serde_json::json!({
@@ -104,7 +153,7 @@ pub async fn get_auto_failover_enabled(
         .db
         .get_proxy_config_for_app(&app_type)
         .await
-        .map(|config| config.auto_failover_enabled)
+        .map(|config| effective_auto_failover_enabled(&config))
         .map_err(|e| e.to_string())
 }
 
@@ -227,20 +276,17 @@ pub async fn set_auto_failover_enabled(
         });
         let _ = app.emit("provider-switched", event_data);
     } else {
-        // 关闭故障转移：把队列首位回填为 current_provider，避免回到关闭模式时无可用目标。
-        let queue = state
-            .db
-            .get_failover_queue(&app_type)
-            .map_err(|e| e.to_string())?;
-        if let Some(first) = queue.first() {
-            let _ = state.db.set_current_provider(&app_type, &first.provider_id);
-            let _ = crate::settings::set_current_provider(&app_enum, Some(&first.provider_id));
-        }
+        let restored_provider_id =
+            disable_auto_failover_and_restore_single_target(&state, &app_type, &app_enum).await?;
 
-        state
-            .proxy_service
-            .sync_failover_active_target(&app_type)
-            .await?;
+        if let Some(provider_id) = restored_provider_id {
+            let event_data = serde_json::json!({
+                "appType": app_type,
+                "providerId": provider_id,
+                "source": "failoverDisabled"
+            });
+            let _ = app.emit("provider-switched", event_data);
+        }
     }
 
     // 刷新托盘菜单，确保状态同步
@@ -251,4 +297,298 @@ pub async fn set_auto_failover_enabled(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{disable_auto_failover_and_restore_single_target, effective_auto_failover_enabled};
+    use crate::app_config::AppType;
+    use crate::proxy::CircuitState;
+    use crate::proxy::ProviderRouter;
+    use crate::proxy::types::AppProxyConfig;
+    use crate::proxy::types::ProxyConfig;
+    use crate::store::AppState;
+    use crate::{Database, Provider};
+    use serde_json::json;
+    use serial_test::serial;
+    use std::env;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    async fn unused_local_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local ephemeral port");
+        listener.local_addr().expect("read local addr").port()
+    }
+
+    fn sample_config(enabled: bool, auto_failover_enabled: bool) -> AppProxyConfig {
+        AppProxyConfig {
+            app_type: "claude".to_string(),
+            enabled,
+            auto_failover_enabled,
+            max_retries: 3,
+            streaming_first_byte_timeout: 60,
+            streaming_idle_timeout: 120,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 4,
+            circuit_success_threshold: 2,
+            circuit_timeout_seconds: 60,
+            circuit_error_rate_threshold: 0.6,
+            circuit_min_requests: 10,
+        }
+    }
+
+    #[test]
+    fn effective_auto_failover_enabled_requires_takeover() {
+        assert!(!effective_auto_failover_enabled(&sample_config(
+            false, true
+        )));
+        assert!(!effective_auto_failover_enabled(&sample_config(
+            false, false
+        )));
+        assert!(!effective_auto_failover_enabled(&sample_config(
+            true, false
+        )));
+        assert!(effective_auto_failover_enabled(&sample_config(true, true)));
+    }
+
+    #[tokio::test]
+    async fn add_to_failover_queue_resets_health_and_breaker_state() {
+        let db = Arc::new(Database::memory().expect("init db"));
+        let router = ProviderRouter::new(db.clone());
+
+        let provider = Provider::with_id(
+            "provider-a".to_string(),
+            "Provider A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+
+        db.update_provider_health("provider-a", "claude", false, Some("boom".into()))
+            .await
+            .expect("seed unhealthy state");
+        router
+            .record_result(
+                "provider-a",
+                "claude",
+                false,
+                false,
+                Some("Invalid API Key".into()),
+            )
+            .await
+            .expect("seed breaker state");
+        let before = router
+            .get_circuit_breaker_stats("provider-a", "claude")
+            .await
+            .expect("breaker stats before");
+        assert_eq!(before.state, CircuitState::Closed);
+        assert_eq!(before.consecutive_failures, 1);
+        assert_eq!(before.failed_requests, 1);
+
+        db.add_to_failover_queue("claude", "provider-a")
+            .expect("add to failover queue");
+        db.reset_provider_health("provider-a", "claude")
+            .await
+            .expect("queue add should reset health");
+        router.reset_provider_breaker("provider-a", "claude").await;
+
+        let health = db
+            .get_provider_health("provider-a", "claude")
+            .await
+            .expect("health after reset");
+        assert!(health.is_healthy);
+        assert_eq!(health.consecutive_failures, 0);
+
+        let after = router
+            .get_circuit_breaker_stats("provider-a", "claude")
+            .await
+            .expect("breaker stats after");
+        assert_eq!(after.state, CircuitState::Closed);
+        assert_eq!(after.consecutive_failures, 0);
+        assert_eq!(after.consecutive_successes, 0);
+        assert_eq!(after.total_requests, 0);
+        assert_eq!(after.failed_requests, 0);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn disable_auto_failover_while_takeover_enabled_restores_current_provider_and_active_target()
+     {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let port = unused_local_port().await;
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("seed proxy config");
+
+        let mut provider_a = Provider::with_id(
+            "claude-a".to_string(),
+            "Claude A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://a.example"
+                }
+            }),
+            None,
+        );
+        provider_a.sort_index = Some(20);
+        let mut provider_b = Provider::with_id(
+            "claude-b".to_string(),
+            "Claude B".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://b.example"
+                }
+            }),
+            None,
+        );
+        provider_b.sort_index = Some(10);
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("claude", &provider_a.id)
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", &provider_b.id)
+            .expect("queue provider b");
+        db.set_current_provider("claude", &provider_a.id)
+            .expect("seed db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+            .expect("seed local current provider");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable failover");
+
+        db.clear_current_provider("claude")
+            .expect("clear db current provider for failover mode");
+        crate::settings::set_current_provider(&AppType::Claude, None)
+            .expect("clear local current provider for failover mode");
+
+        state
+            .proxy_service
+            .sync_failover_active_target("claude")
+            .await
+            .expect("sync queue head before disabling failover");
+
+        let status_before = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status before disabling failover");
+        assert!(
+            status_before
+                .active_targets
+                .iter()
+                .any(|target| target.app_type == "claude" && target.provider_id == provider_b.id),
+            "precondition: failover mode should point active target at queue head"
+        );
+
+        disable_auto_failover_and_restore_single_target(&state, "claude", &AppType::Claude)
+            .await
+            .expect("disable failover and restore single-target takeover");
+
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&state.db, &AppType::Claude)
+                .expect("get effective current provider"),
+            Some(provider_b.id.clone()),
+            "disabling failover while takeover stays enabled must restore queue head as current provider"
+        );
+
+        let status_after = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status after disabling failover");
+        assert!(
+            status_after
+                .active_targets
+                .iter()
+                .any(|target| target.app_type == "claude" && target.provider_id == provider_b.id),
+            "single-target takeover mode must keep the restored current provider as active target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
 }

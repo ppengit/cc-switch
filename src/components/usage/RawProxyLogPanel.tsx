@@ -51,6 +51,11 @@ const collapseLifecycleEvents = (events: ProxyRawLogEntry["events"]) => {
   });
 };
 
+const normalizeRouteMode = (value?: string | null) => {
+  const trimmed = (value || "").trim();
+  return trimmed || undefined;
+};
+
 export function RawProxyLogPanel({
   appType,
   refreshIntervalMs,
@@ -100,6 +105,12 @@ export function RawProxyLogPanel({
     t(`usage.proxyEvent.${event}`, {
       defaultValue: event,
     });
+  const getRouteModeLabel = (routeMode?: string) =>
+    routeMode
+      ? t(`usage.routeModeValue.${routeMode}`, {
+          defaultValue: routeMode,
+        })
+      : "-";
 
   return (
     <div className="space-y-3">
@@ -152,7 +163,13 @@ export function RawProxyLogPanel({
                   {t("usage.provider", { defaultValue: "供应商" })}
                 </TableHead>
                 <TableHead className="text-center whitespace-nowrap">
+                  {t("usage.routeMode", { defaultValue: "路由" })}
+                </TableHead>
+                <TableHead className="text-center whitespace-nowrap">
                   {t("usage.model", { defaultValue: "模型" })}
+                </TableHead>
+                <TableHead className="text-center whitespace-nowrap">
+                  {t("usage.upstreamUrl", { defaultValue: "上游地址" })}
                 </TableHead>
                 <TableHead className="text-center whitespace-nowrap">
                   {t("usage.status", { defaultValue: "状态" })}
@@ -169,7 +186,7 @@ export function RawProxyLogPanel({
               {logs.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={10}
                     className="py-10 text-center text-sm text-muted-foreground"
                   >
                     {t("usage.rawProxyLogsEmpty", {
@@ -182,6 +199,7 @@ export function RawProxyLogPanel({
                   const requestModel = normalizeModel(log.requestModel);
                   const upstreamModel = normalizeModel(log.upstreamModel);
                   const displayModel = upstreamModel ?? requestModel;
+                  const routeMode = normalizeRouteMode(log.routeMode);
                   const showRequestModel =
                     !!requestModel &&
                     !!displayModel &&
@@ -231,6 +249,11 @@ export function RawProxyLogPanel({
                           {log.providerName}
                         </div>
                       </TableCell>
+                      <TableCell className="text-center whitespace-nowrap text-xs">
+                        <Badge variant="outline">
+                          {getRouteModeLabel(routeMode)}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-center font-mono text-xs max-w-[220px]">
                         <div
                           className="truncate"
@@ -249,6 +272,11 @@ export function RawProxyLogPanel({
                               : {requestModel}
                             </div>
                           ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell className="max-w-[260px] text-center font-mono text-xs">
+                        <div className="truncate" title={log.upstreamUrl || ""}>
+                          {log.upstreamUrl || "-"}
                         </div>
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap text-xs">

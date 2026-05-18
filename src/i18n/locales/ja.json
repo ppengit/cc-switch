@@ -1360,6 +1360,8 @@
     "rawProxyLogDetail": "プロキシ生ログ詳細",
     "rawProxyLogsPageInfo": "{{total}} 件中 {{start}}-{{end}} 件",
     "event": "イベント",
+    "routeMode": "ルート",
+    "upstreamUrl": "上流 URL",
     "liveRequests": "アクティブリクエスト",
     "error": "エラー",
     "proxyEvent": {
@@ -1367,6 +1369,11 @@
       "routed": "ルーティング",
       "finished": "完了",
       "failed": "失敗"
+    },
+    "routeModeValue": {
+      "takeover": "接管",
+      "failover": "フェイルオーバー",
+      "direct": "直結"
     }
   },
   "usageScript": {

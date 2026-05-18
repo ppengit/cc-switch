@@ -1360,6 +1360,8 @@
     "rawProxyLogDetail": "Proxy Raw Log Detail",
     "rawProxyLogsPageInfo": "{{start}}-{{end}} of {{total}}",
     "event": "Event",
+    "routeMode": "Route",
+    "upstreamUrl": "Upstream URL",
     "liveRequests": "Live Requests",
     "error": "Error",
     "proxyEvent": {
@@ -1367,6 +1369,11 @@
       "routed": "Routed",
       "finished": "Finished",
       "failed": "Failed"
+    },
+    "routeModeValue": {
+      "takeover": "Takeover",
+      "failover": "Failover",
+      "direct": "Direct"
     }
   },
   "usageScript": {

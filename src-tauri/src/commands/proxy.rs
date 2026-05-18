@@ -7,6 +7,13 @@ use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
 
+fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
+    if !config.enabled {
+        config.auto_failover_enabled = false;
+    }
+    config
+}
+
 /// 启动代理服务器（仅启动服务，不接管 Live 配置）
 #[tauri::command]
 pub async fn start_proxy_server(
@@ -131,7 +138,7 @@ pub async fn update_proxy_config_for_app(
     config: AppProxyConfig,
 ) -> Result<(), String> {
     let db = &state.db;
-    db.update_proxy_config_for_app(config)
+    db.update_proxy_config_for_app(sanitize_app_proxy_config(config))
         .await
         .map_err(|e| e.to_string())
 }
@@ -422,6 +429,59 @@ pub async fn update_circuit_breaker_config(
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_app_proxy_config;
+    use crate::proxy::types::AppProxyConfig;
+
+    #[test]
+    fn sanitize_app_proxy_config_disables_failover_when_takeover_is_off() {
+        let config = AppProxyConfig {
+            app_type: "claude".to_string(),
+            enabled: false,
+            auto_failover_enabled: true,
+            max_retries: 3,
+            streaming_first_byte_timeout: 60,
+            streaming_idle_timeout: 120,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 4,
+            circuit_success_threshold: 2,
+            circuit_timeout_seconds: 60,
+            circuit_error_rate_threshold: 0.6,
+            circuit_min_requests: 10,
+        };
+
+        let sanitized = sanitize_app_proxy_config(config);
+        assert!(!sanitized.enabled);
+        assert!(
+            !sanitized.auto_failover_enabled,
+            "saving app proxy config must not persist failover=true while takeover=false"
+        );
+    }
+
+    #[test]
+    fn sanitize_app_proxy_config_keeps_failover_when_takeover_is_on() {
+        let config = AppProxyConfig {
+            app_type: "codex".to_string(),
+            enabled: true,
+            auto_failover_enabled: true,
+            max_retries: 3,
+            streaming_first_byte_timeout: 60,
+            streaming_idle_timeout: 120,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 4,
+            circuit_success_threshold: 2,
+            circuit_timeout_seconds: 60,
+            circuit_error_rate_threshold: 0.6,
+            circuit_min_requests: 10,
+        };
+
+        let sanitized = sanitize_app_proxy_config(config);
+        assert!(sanitized.enabled);
+        assert!(sanitized.auto_failover_enabled);
+    }
 }
 
 /// 获取熔断器统计信息（仅当代理服务器运行时）

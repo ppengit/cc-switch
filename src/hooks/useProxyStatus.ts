@@ -13,6 +13,8 @@ import type {
 } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
+const TAKEOVER_APPS = ["claude", "codex", "gemini"] as const;
+
 /**
  * 代理服务状态管理
  */
@@ -80,7 +82,17 @@ export function useProxyStatus() {
       queryClient.removeQueries({ queryKey: ["providerHealth"] });
       // 彻底删除所有熔断器统计缓存（代理停止后熔断器状态已重置）
       queryClient.removeQueries({ queryKey: ["circuitBreakerStats"] });
-      // 注意：故障转移队列和开关状态会保留，不需要刷新
+      for (const appType of TAKEOVER_APPS) {
+        queryClient.invalidateQueries({
+          queryKey: ["autoFailoverEnabled", appType],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["appProxyConfig", appType],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["providers", appType],
+        });
+      }
     },
     onError: (error: Error) => {
       const detail =
@@ -128,6 +140,22 @@ export function useProxyStatus() {
 
       queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
       queryClient.invalidateQueries({ queryKey: ["proxyTakeoverStatus"] });
+      queryClient.invalidateQueries({
+        queryKey: ["autoFailoverEnabled", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["appProxyConfig", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["failoverQueue", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["providers", variables.appType],
+      });
+      if (!variables.enabled) {
+        queryClient.invalidateQueries({ queryKey: ["providerHealth"] });
+        queryClient.invalidateQueries({ queryKey: ["circuitBreakerStats"] });
+      }
     },
     onError: (error: Error) => {
       const detail =

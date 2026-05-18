@@ -172,7 +172,11 @@ describe("ProviderForm create mode", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     if (options?.confirmSoftIssues) {
-      fireEvent.click(await screen.findByRole("button", { name: "仍要保存" }));
+      const confirmButton = await screen.findByRole("button", {
+        name: "仍要保存",
+      });
+      await waitFor(() => expect(confirmButton).toBeEnabled());
+      fireEvent.click(confirmButton);
     }
   };
 

@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
+import { useAppProxyConfig } from "@/lib/query/proxy";
 
 interface FailoverToggleProps {
   className?: string;
@@ -24,9 +25,11 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
   const { t } = useTranslation();
   const { data: isEnabled = false, isLoading } =
     useAutoFailoverEnabled(activeApp);
+  const { data: appProxyConfig } = useAppProxyConfig(activeApp);
   const setEnabled = useSetAutoFailoverEnabled();
   const { takeoverStatus, isRunning } = useProxyStatus();
-  const takeoverEnabled = Boolean(takeoverStatus?.[activeApp]);
+  const takeoverEnabled =
+    Boolean(takeoverStatus?.[activeApp]) || Boolean(appProxyConfig?.enabled);
   const canEnableFailover = takeoverEnabled && isRunning;
 
   const handleToggle = (checked: boolean) => {

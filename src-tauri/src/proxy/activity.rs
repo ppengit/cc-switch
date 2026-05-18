@@ -27,6 +27,8 @@ struct ActiveRequestMeta {
     started_at: Instant,
     request_model: Option<String>,
     upstream_model: Option<String>,
+    route_mode: Option<String>,
+    upstream_url: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -60,6 +62,8 @@ impl ProxyActivityState {
             provider_name: event.provider_name.clone(),
             request_model: event.request_model.clone(),
             upstream_model: event.upstream_model.clone(),
+            route_mode: event.route_mode.clone(),
+            upstream_url: event.upstream_url.clone(),
             status_code: event.status_code,
             error: event.error.clone(),
             active_request_count: event.active_request_count,
@@ -170,6 +174,12 @@ impl ProxyActivityState {
             if event.upstream_model.is_some() {
                 entry.upstream_model = event.upstream_model.clone();
             }
+            if event.route_mode.is_some() {
+                entry.route_mode = event.route_mode.clone();
+            }
+            if event.upstream_url.is_some() {
+                entry.upstream_url = event.upstream_url.clone();
+            }
             entry.status_code = event.status_code.or(entry.status_code);
             if event.error.is_some() {
                 entry.error = event.error.clone();
@@ -196,6 +206,8 @@ impl ProxyActivityState {
                 provider_name: event.provider_name.clone(),
                 request_model: event.request_model.clone(),
                 upstream_model: event.upstream_model.clone(),
+                route_mode: event.route_mode.clone(),
+                upstream_url: event.upstream_url.clone(),
                 status_code: event.status_code,
                 error: event.error.clone(),
                 active_request_count: event.active_request_count,
@@ -216,6 +228,29 @@ impl ProxyActivityState {
         request_model: Option<String>,
         upstream_model: Option<String>,
     ) -> ProxyActivityEvent {
+        self.route_request_with_metadata(
+            request_id,
+            app_type,
+            provider_id,
+            provider_name,
+            request_model,
+            upstream_model,
+            None,
+            None,
+        )
+    }
+
+    fn route_request_with_metadata(
+        &mut self,
+        request_id: &str,
+        app_type: &str,
+        provider_id: &str,
+        provider_name: &str,
+        request_model: Option<String>,
+        upstream_model: Option<String>,
+        route_mode: Option<String>,
+        upstream_url: Option<String>,
+    ) -> ProxyActivityEvent {
         if let Some(existing) = self.requests.get(request_id).cloned() {
             if existing.app_type == app_type && existing.provider_id == provider_id {
                 if let Some(meta) = self.requests.get_mut(request_id) {
@@ -225,6 +260,12 @@ impl ProxyActivityState {
                     }
                     if upstream_model.is_some() {
                         meta.upstream_model = upstream_model.clone();
+                    }
+                    if route_mode.is_some() {
+                        meta.route_mode = route_mode.clone();
+                    }
+                    if upstream_url.is_some() {
+                        meta.upstream_url = upstream_url.clone();
                     }
                 }
 
@@ -237,6 +278,12 @@ impl ProxyActivityState {
                     }
                     if upstream_model.is_some() {
                         target.upstream_model = upstream_model.clone();
+                    }
+                    if route_mode.is_some() {
+                        target.route_mode = route_mode.clone();
+                    }
+                    if upstream_url.is_some() {
+                        target.upstream_url = upstream_url.clone();
                     }
                     target.last_request_model = Self::derive_display_model(
                         target.request_model.as_ref(),
@@ -253,6 +300,8 @@ impl ProxyActivityState {
                     provider_name: provider_name.to_string(),
                     request_model,
                     upstream_model,
+                    route_mode,
+                    upstream_url,
                     status_code: None,
                     error: None,
                     active_request_count,
@@ -278,6 +327,8 @@ impl ProxyActivityState {
                 inflight_requests: 0,
                 request_model: None,
                 upstream_model: None,
+                route_mode: None,
+                upstream_url: None,
                 last_request_model: None,
                 last_request_at: now.clone(),
             });
@@ -285,6 +336,8 @@ impl ProxyActivityState {
         entry.inflight_requests += 1;
         entry.request_model = request_model.clone();
         entry.upstream_model = upstream_model.clone();
+        entry.route_mode = route_mode.clone();
+        entry.upstream_url = upstream_url.clone();
         entry.last_request_model =
             Self::derive_display_model(entry.request_model.as_ref(), entry.upstream_model.as_ref());
         entry.last_request_at = now;
@@ -298,6 +351,8 @@ impl ProxyActivityState {
                 started_at: Instant::now(),
                 request_model: request_model.clone(),
                 upstream_model: upstream_model.clone(),
+                route_mode: route_mode.clone(),
+                upstream_url: upstream_url.clone(),
             },
         );
 
@@ -310,6 +365,8 @@ impl ProxyActivityState {
             provider_name: provider_name.to_string(),
             request_model,
             upstream_model,
+            route_mode,
+            upstream_url,
             status_code: None,
             error: None,
             active_request_count,
@@ -336,6 +393,8 @@ impl ProxyActivityState {
             provider_name: provider_name.to_string(),
             request_model,
             upstream_model: None,
+            route_mode: None,
+            upstream_url: None,
             status_code: None,
             error: None,
             active_request_count,
@@ -358,6 +417,8 @@ impl ProxyActivityState {
         let provider_name = meta.provider_name.clone();
         let request_model = meta.request_model.clone();
         let upstream_model = meta.upstream_model.clone();
+        let route_mode = meta.route_mode.clone();
+        let upstream_url = meta.upstream_url.clone();
 
         self.decrement_target(&meta.app_type, &meta.provider_id);
 
@@ -370,6 +431,8 @@ impl ProxyActivityState {
             provider_name,
             request_model,
             upstream_model,
+            route_mode,
+            upstream_url,
             status_code,
             error,
             active_request_count,
@@ -404,6 +467,8 @@ impl ProxyActivityState {
             provider_name: existing.provider_name.clone(),
             request_model: existing.request_model.clone(),
             upstream_model: existing.upstream_model.clone(),
+            route_mode: existing.route_mode.clone(),
+            upstream_url: existing.upstream_url.clone(),
             status_code,
             error,
             active_request_count,
@@ -433,6 +498,8 @@ impl ProxyActivityState {
                 target.provider_name = meta.provider_name.clone();
                 target.request_model = meta.request_model.clone();
                 target.upstream_model = meta.upstream_model.clone();
+                target.route_mode = meta.route_mode.clone();
+                target.upstream_url = meta.upstream_url.clone();
                 target.last_request_model = Self::derive_display_model(
                     target.request_model.as_ref(),
                     target.upstream_model.as_ref(),
@@ -476,6 +543,8 @@ impl ProxyActivityState {
             provider_name,
             request_model: None,
             upstream_model: None,
+            route_mode: None,
+            upstream_url: None,
             status_code: None,
             error: None,
             active_request_count,
@@ -532,6 +601,34 @@ pub async fn route_request(
             provider_name,
             request_model,
             upstream_model,
+        )
+    };
+    emit_activity_event(app_handle, &event);
+}
+
+pub async fn route_request_with_metadata(
+    activity: &Arc<RwLock<ProxyActivityState>>,
+    app_handle: Option<&tauri::AppHandle>,
+    request_id: &str,
+    app_type: &str,
+    provider_id: &str,
+    provider_name: &str,
+    request_model: Option<String>,
+    upstream_model: Option<String>,
+    route_mode: Option<String>,
+    upstream_url: Option<String>,
+) {
+    let event = {
+        let mut state = activity.write().await;
+        state.route_request_with_metadata(
+            request_id,
+            app_type,
+            provider_id,
+            provider_name,
+            request_model,
+            upstream_model,
+            route_mode,
+            upstream_url,
         )
     };
     emit_activity_event(app_handle, &event);

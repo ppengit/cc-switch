@@ -3,16 +3,16 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
-    activity::{finish_request, route_request, ProxyActivityState},
+    ProxyError,
+    activity::{ProxyActivityState, finish_request, route_request},
     handler_config::UsageParserConfig,
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
     usage::parser::TokenUsage,
-    ProxyError,
 };
-use axum::http::{header::HeaderMap, HeaderName};
+use axum::http::{HeaderName, header::HeaderMap};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
@@ -20,8 +20,8 @@ use serde_json::Value;
 use std::{
     io::Read,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -240,12 +240,14 @@ pub async fn handle_non_streaming(
     parser_config: &UsageParserConfig,
 ) -> Result<Response, ProxyError> {
     // 整包超时：仅在故障转移开启且配置值非零时生效
-    let body_timeout =
-        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
-            Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
-        } else {
-            Duration::ZERO
-        };
+    let body_timeout = if ctx.app_config.enabled
+        && ctx.app_config.auto_failover_enabled
+        && ctx.app_config.non_streaming_timeout > 0
+    {
+        Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+    } else {
+        Duration::ZERO
+    };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
     strip_hop_by_hop_response_headers(&mut response_headers);

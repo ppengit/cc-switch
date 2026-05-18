@@ -181,11 +181,15 @@ vi.mock("@/components/ui/tabs", () => {
         </button>
       );
     },
-    TabsContent: ({ value, forceMount, children }: any) => {
+    TabsContent: ({ value, forceMount, className, children }: any) => {
       const ctx = useContext(TabsContext);
       if (!forceMount && ctx.value !== value) return null;
       return (
-        <div data-testid={`tab-${value}`} hidden={ctx.value !== value}>
+        <div
+          data-testid={`tab-${value}`}
+          hidden={ctx.value !== value}
+          className={className}
+        >
           {children}
         </div>
       );
@@ -380,6 +384,15 @@ describe("SettingsPage Component", () => {
     // 清除选择按钮
     fireEvent.click(screen.getByRole("button", { name: "common.clear" }));
     expect(importExportMock.clearSelection).toHaveBeenCalled();
+  });
+
+  it("keeps Api-Hub mounted without letting inactive content join other settings tabs", () => {
+    renderSettingsPage();
+
+    const apiHubTab = screen.getByTestId("tab-apiHub");
+    expect(apiHubTab).toHaveAttribute("hidden");
+    expect(apiHubTab).toHaveClass("data-[state=inactive]:hidden");
+    expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
   });
 
   it("should render Api-Hub tab between usage and about tabs", () => {

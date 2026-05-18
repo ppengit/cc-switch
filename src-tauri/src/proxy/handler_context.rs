@@ -5,11 +5,10 @@
 use crate::app_config::AppType;
 use crate::provider::Provider;
 use crate::proxy::{
-    extract_session_id,
+    ProxyError, extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
-    ProxyError,
 };
 use axum::http::HeaderMap;
 use std::time::Instant;
@@ -214,8 +213,10 @@ impl RequestContext {
     /// - 故障转移开启：超时配置正常生效（0 表示禁用超时）
     /// - 故障转移关闭：超时配置不生效（全部传入 0）
     pub fn create_forwarder(&self, state: &ProxyState) -> RequestForwarder {
+        let effective_auto_failover_enabled =
+            self.app_config.enabled && self.app_config.auto_failover_enabled;
         let (non_streaming_timeout, first_byte_timeout, idle_timeout) =
-            if self.app_config.auto_failover_enabled {
+            if effective_auto_failover_enabled {
                 // 故障转移开启：使用配置的值（0 = 禁用超时）
                 (
                     self.app_config.non_streaming_timeout as u64,
@@ -252,7 +253,7 @@ impl RequestContext {
             self.copilot_optimizer_config.clone(),
             state.switch_epoch.clone(),
             self.request_epoch,
-            self.app_config.auto_failover_enabled,
+            effective_auto_failover_enabled,
         )
     }
 
@@ -276,7 +277,7 @@ impl RequestContext {
     /// - 故障转移关闭：返回 0（禁用超时检查）
     #[inline]
     pub fn streaming_timeout_config(&self) -> StreamingTimeoutConfig {
-        if self.app_config.auto_failover_enabled {
+        if self.app_config.enabled && self.app_config.auto_failover_enabled {
             // 故障转移开启：使用配置的值（0 = 禁用超时）
             StreamingTimeoutConfig {
                 first_byte_timeout: self.app_config.streaming_first_byte_timeout as u64,

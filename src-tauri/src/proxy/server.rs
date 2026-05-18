@@ -9,20 +9,20 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
-    activity::ProxyActivityState, failover_switch::FailoverSwitchManager, handlers,
+    ProxyError, activity::ProxyActivityState, failover_switch::FailoverSwitchManager, handlers,
     log_codes::srv as log_srv, provider_router::ProviderRouter,
-    providers::gemini_shadow::GeminiShadowStore, types::*, ProxyError,
+    providers::gemini_shadow::GeminiShadowStore, types::*,
 };
 use crate::database::Database;
 use axum::{
+    Router,
     extract::DefaultBodyLimit,
     routing::{get, post},
-    Router,
 };
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{RwLock, oneshot};
 use tokio::task::JoinHandle;
 
 /// 代理服务器状态（共享）
@@ -440,6 +440,20 @@ impl ProxyServer {
         self.state
             .provider_router
             .get_circuit_breaker_stats(provider_id, app_type)
+            .await
+    }
+
+    #[cfg(test)]
+    pub async fn record_provider_result_for_test(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) -> Result<(), crate::error::AppError> {
+        self.state
+            .provider_router
+            .record_result(provider_id, app_type, false, success, error_msg)
             .await
     }
 }

@@ -245,14 +245,18 @@ describe("ApiHubPanel", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "清理站点" }));
-    fireEvent.click(await screen.findByRole("button", { name: "清理" }));
+    const cleanupButton = await screen.findByRole("button", { name: "清理" });
+    await waitFor(() => expect(cleanupButton).toBeEnabled());
+    fireEvent.click(cleanupButton);
 
     await waitFor(() => {
       expect(cleanupCalls).toEqual([{ siteId: "site-1" }]);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "删除记录" }));
-    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    const deleteButton = await screen.findByRole("button", { name: "删除" });
+    await waitFor(() => expect(deleteButton).toBeEnabled());
+    fireEvent.click(deleteButton);
 
     await waitFor(() => {
       expect(deleteCalls).toEqual([{ siteId: "site-1" }]);

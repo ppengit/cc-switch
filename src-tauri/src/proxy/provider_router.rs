@@ -10,7 +10,7 @@ use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerC
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
@@ -54,15 +54,16 @@ impl ProviderRouter {
         let mut circuit_open_count = 0usize;
 
         // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
-        let auto_failover_enabled = match self.db.get_proxy_config_for_app(app_type).await {
-            Ok(config) => config.auto_failover_enabled,
-            Err(e) => {
-                log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
-                false
-            }
-        };
+        let (app_proxy_enabled, auto_failover_enabled) =
+            match self.db.get_proxy_config_for_app(app_type).await {
+                Ok(config) => (config.enabled, config.auto_failover_enabled),
+                Err(e) => {
+                    log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
+                    (false, false)
+                }
+            };
 
-        if auto_failover_enabled {
+        if app_proxy_enabled && auto_failover_enabled {
             // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
             let all_providers = self.db.get_all_providers(app_type)?;
 
@@ -91,7 +92,10 @@ impl ProviderRouter {
                 }
             }
         } else {
-            // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
+            // 故障转移关闭：仅使用当前供应商。
+            // 但如果该供应商已经因为认证错误或熔断策略被打开断路器，
+            // 不能继续把新请求路由给它，否则会在单供应商模式下无限重复打到
+            // 一个已知不可用的 key。
             let current_id = AppType::from_str(app_type)
                 .ok()
                 .and_then(|app_enum| {
@@ -104,7 +108,13 @@ impl ProviderRouter {
             if let Some(current_id) = current_id {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
                     total_providers = 1;
-                    result.push(current);
+                    let circuit_key = format!("{app_type}:{}", current.id);
+                    let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+                    if breaker.is_available().await {
+                        result.push(current);
+                    } else {
+                        circuit_open_count = 1;
+                    }
                 }
             }
         }
@@ -182,6 +192,28 @@ impl ProviderRouter {
 
         if disabled {
             on_disabled(app_type.to_string(), provider_id.to_string()).await;
+            if let Ok(Some(app)) = self
+                .db
+                .get_proxy_config_for_app(app_type)
+                .await
+                .map(|config| {
+                    if config.enabled && config.auto_failover_enabled {
+                        Some(())
+                    } else {
+                        None
+                    }
+                })
+            {
+                let _ = app;
+                if let Some(app_handle) = &self.app_handle {
+                    if let Some(app_state) = app_handle.try_state::<crate::store::AppState>() {
+                        let _ = app_state
+                            .proxy_service
+                            .reconcile_failover_after_provider_removal(provider_id, app_type)
+                            .await;
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -513,6 +545,7 @@ mod tests {
 
         // 启用自动故障转移（使用新的 proxy_config API）
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         db.update_proxy_config_for_app(config).await.unwrap();
 
@@ -545,6 +578,7 @@ mod tests {
         db.add_to_failover_queue("claude", "b").unwrap();
 
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         db.update_proxy_config_for_app(config).await.unwrap();
 
@@ -553,6 +587,37 @@ mod tests {
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auto_failover_flag_without_app_takeover_uses_current_provider_not_queue() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.set_current_provider("codex", "a").unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = false;
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router.select_providers("codex").await.unwrap();
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers[0].id, "a",
+            "failover must not route through queue when app takeover is disabled"
+        );
     }
 
     #[tokio::test]
@@ -582,6 +647,7 @@ mod tests {
 
         // 启用自动故障转移（使用新的 proxy_config API）
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         db.update_proxy_config_for_app(config).await.unwrap();
 
@@ -620,6 +686,7 @@ mod tests {
 
         // 启用自动故障转移
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         db.update_proxy_config_for_app(config).await.unwrap();
 
@@ -667,6 +734,7 @@ mod tests {
         db.add_to_failover_queue("claude", "auth-bad").unwrap();
 
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         config.circuit_failure_threshold = 8;
         config.circuit_min_requests = 100;
@@ -735,6 +803,7 @@ mod tests {
         db.add_to_failover_queue("claude", "auth-reset").unwrap();
 
         let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
         config.auto_failover_enabled = true;
         config.circuit_failure_threshold = 8;
         config.circuit_min_requests = 100;
@@ -779,6 +848,162 @@ mod tests {
                 .unwrap()
                 .state,
             crate::proxy::circuit_breaker::CircuitState::Closed
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_disable_advances_failover_active_target_when_proxy_is_running() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(crate::proxy::types::ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("claude", "a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", "b")
+            .expect("queue provider b");
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover");
+
+        let state = crate::store::AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .set_active_target_only("claude", "a", "Provider A")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+
+        for _ in 0..3 {
+            router
+                .record_result_with_disable_hook(
+                    "a",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                    {
+                        let state = &state;
+                        move |app_type, provider_id| async move {
+                            state
+                                .proxy_service
+                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
+                                .await
+                                .expect("reconcile after disable");
+                        }
+                    },
+                )
+                .await
+                .expect("record auth failure");
+        }
+
+        assert!(!db.is_in_failover_queue("claude", "a").unwrap());
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status");
+        let active = status
+            .active_targets
+            .iter()
+            .find(|target| target.app_type == "claude")
+            .expect("claude active target should remain");
+        assert_eq!(
+            active.provider_id, "b",
+            "disabling queue head must immediately promote next failover target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn single_provider_mode_stops_selecting_auth_disabled_current_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let provider = Provider::with_id(
+            "auth-bad".to_string(),
+            "Auth Bad".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", "auth-bad")
+            .expect("set db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some("auth-bad"))
+            .expect("set local current");
+
+        let mut config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get proxy config");
+        config.enabled = true;
+        config.auto_failover_enabled = false;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("save proxy config");
+
+        let router = ProviderRouter::new(db.clone());
+
+        for _ in 0..3 {
+            router
+                .record_result(
+                    "auth-bad",
+                    "codex",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .expect("record auth failure");
+        }
+
+        let error = router
+            .select_providers("codex")
+            .await
+            .expect_err("auth-disabled current provider must not be selected again");
+        assert!(
+            matches!(error, AppError::AllProvidersCircuitOpen),
+            "expected current auth-disabled provider to be treated as unavailable, got {error:?}"
         );
     }
 

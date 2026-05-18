@@ -4,12 +4,12 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use toml_edit::{DocumentMut, Item};
 
 use crate::app_config::AppType;
 use crate::app_config_templates::{
-    default_template_files_for, parse_stored_template_files, AppConfigTemplateFile,
+    AppConfigTemplateFile, default_template_files_for, parse_stored_template_files,
 };
 use crate::codex_config::{
     get_codex_auth_path, get_codex_config_path, write_codex_live_atomic_with_stable_provider,
@@ -22,7 +22,7 @@ use crate::services::mcp::McpService;
 use crate::store::AppState;
 
 use super::gemini_auth::{
-    detect_gemini_auth_type, ensure_google_oauth_security_flag, GeminiAuthType,
+    GeminiAuthType, detect_gemini_auth_type, ensure_google_oauth_security_flag,
 };
 use super::normalize_claude_models_in_value;
 
@@ -545,7 +545,9 @@ pub(crate) fn write_live_with_common_config(
         );
     }
 
-    write_live_snapshot(app_type, &effective_provider)
+    write_live_snapshot(app_type, &effective_provider)?;
+    db.set_live_owner_provider_id(app_type.as_str(), Some(&provider.id))?;
+    Ok(())
 }
 
 pub(crate) fn write_proxy_takeover_live(
@@ -563,7 +565,9 @@ pub(crate) fn write_proxy_takeover_live(
         settings,
         None,
     );
-    write_live_snapshot(app_type, &provider)
+    write_live_snapshot(app_type, &provider)?;
+    db.set_live_owner_provider_id(app_type.as_str(), None)?;
+    Ok(())
 }
 
 pub(crate) fn strip_common_config_from_live_settings(
@@ -944,8 +948,8 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
         }
         AppType::Gemini => {
             use crate::gemini_config::{
-                env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
-                read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
+                GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
+                get_gemini_settings_path, read_gemini_env, read_gemini_env_text,
             };
 
             // Read .env file (environment variables)
@@ -1082,8 +1086,8 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         }
         AppType::Gemini => {
             use crate::gemini_config::{
-                env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
-                read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
+                GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
+                get_gemini_settings_path, read_gemini_env, read_gemini_env_text,
             };
 
             // Read .env file (environment variables)
@@ -1151,9 +1155,9 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 /// Write Gemini live configuration with authentication handling
 pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     use crate::gemini_config::{
-        env_text_matches_map, get_gemini_settings_path, json_to_env,
-        validate_gemini_settings_strict, write_gemini_env_atomic, write_gemini_env_text_atomic,
-        GEMINI_RENDERED_ENV_TEXT_FIELD,
+        GEMINI_RENDERED_ENV_TEXT_FIELD, env_text_matches_map, get_gemini_settings_path,
+        json_to_env, validate_gemini_settings_strict, write_gemini_env_atomic,
+        write_gemini_env_text_atomic,
     };
 
     // One-time auth type detection to avoid repeated detection

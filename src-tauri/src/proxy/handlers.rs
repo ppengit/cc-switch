@@ -8,6 +8,7 @@
 //! - Claude 的格式转换逻辑保留在此文件（用于 OpenRouter 旧接口回退）
 
 use super::{
+    ProxyError,
     activity::{finish_request, observe_request, route_request},
     error_mapper::{get_error_message, map_proxy_error_to_status},
     handler_config::{
@@ -21,21 +22,20 @@ use super::{
         transform_gemini, transform_responses,
     },
     response_processor::{
-        create_logged_passthrough_stream, extract_stream_event_model, process_response,
-        read_decoded_body, strip_entity_headers_for_rebuilt_body,
-        strip_hop_by_hop_response_headers, ActivityModelUpdate, SseUsageCollector,
+        ActivityModelUpdate, SseUsageCollector, create_logged_passthrough_stream,
+        extract_stream_event_model, process_response, read_decoded_body,
+        strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
     types::*,
     usage::parser::TokenUsage,
-    ProxyError,
 };
 use crate::app_config::AppType;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -322,12 +322,14 @@ async fn handle_claude_transform(
     }
 
     // 非流式响应转换 (OpenAI/Responses → Anthropic)
-    let body_timeout =
-        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
-            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
-        } else {
-            std::time::Duration::ZERO
-        };
+    let body_timeout = if ctx.app_config.enabled
+        && ctx.app_config.auto_failover_enabled
+        && ctx.app_config.non_streaming_timeout > 0
+    {
+        std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+    } else {
+        std::time::Duration::ZERO
+    };
     let (mut response_headers, _status, body_bytes) =
         match read_decoded_body(response, ctx.tag, body_timeout).await {
             Ok(payload) => payload,

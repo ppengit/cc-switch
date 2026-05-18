@@ -2,7 +2,7 @@
 //!
 //! 提供键值对形式的通用设置存储。
 
-use crate::database::{lock_conn, Database};
+use crate::database::{Database, lock_conn};
 use crate::error::AppError;
 use rusqlite::params;
 
@@ -19,6 +19,10 @@ impl Database {
 
     fn provider_default_template_key(app_type: &str) -> String {
         format!("provider_default_template_{app_type}")
+    }
+
+    fn live_owner_provider_key(app_type: &str) -> String {
+        format!("live_owner_provider_{app_type}")
     }
 
     /// 获取设置值
@@ -62,6 +66,32 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// 获取最近一次由 cc-switch 直连写入 live 的供应商 ID。
+    ///
+    /// 仅用于排除“同 endpoint 多供应商”场景下的错误回填/回写。
+    pub fn get_live_owner_provider_id(&self, app_type: &str) -> Result<Option<String>, AppError> {
+        self.get_setting(&Self::live_owner_provider_key(app_type))
+    }
+
+    /// 设置最近一次由 cc-switch 直连写入 live 的供应商 ID。
+    ///
+    /// 传入 `None` 时清空锚点。
+    pub fn set_live_owner_provider_id(
+        &self,
+        app_type: &str,
+        provider_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let key = Self::live_owner_provider_key(app_type);
+        if let Some(value) = provider_id {
+            self.set_setting(&key, value)
+        } else {
+            let conn = lock_conn!(self.conn);
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        }
     }
 
     // --- 通用配置片段 (Common Config Snippet) ---

@@ -1360,6 +1360,8 @@
     "rawProxyLogDetail": "代理原始日志详情",
     "rawProxyLogsPageInfo": "第 {{start}}-{{end}} 条，共 {{total}} 条",
     "event": "事件",
+    "routeMode": "路由",
+    "upstreamUrl": "上游地址",
     "liveRequests": "活动请求",
     "error": "错误",
     "proxyEvent": {
@@ -1367,6 +1369,11 @@
       "routed": "开始路由",
       "finished": "完成",
       "failed": "失败"
+    },
+    "routeModeValue": {
+      "takeover": "接管",
+      "failover": "故障转移",
+      "direct": "直连"
     }
   },
   "usageScript": {

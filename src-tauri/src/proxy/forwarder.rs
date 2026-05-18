@@ -4,7 +4,7 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{clear_provider, route_request, ProxyActivityState},
+    activity::{clear_provider, route_request, route_request_with_metadata, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -1094,6 +1094,12 @@ impl RequestForwarder {
         } else {
             adapter.build_url(&base_url, &effective_endpoint)
         };
+        let route_mode = if self.auto_failover_enabled_at_start {
+            "failover"
+        } else {
+            "takeover"
+        };
+        let activity_upstream_url = sanitize_activity_upstream_url(&url);
 
         // 转换请求体（如果需要）
         let request_body = if needs_transform {
@@ -1136,7 +1142,7 @@ impl RequestForwarder {
         } else {
             None
         };
-        route_request(
+        route_request_with_metadata(
             &self.proxy_activity,
             self.app_handle.as_ref(),
             &self.request_id,
@@ -1145,6 +1151,8 @@ impl RequestForwarder {
             &provider.name,
             activity_request_model,
             effective_request_model.clone(),
+            Some(route_mode.to_string()),
+            Some(activity_upstream_url),
         )
         .await;
         let force_identity_encoding = needs_transform
@@ -2100,6 +2108,52 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
+fn sanitize_activity_upstream_url(raw_url: &str) -> String {
+    let sensitive_query_keys = [
+        "key",
+        "api_key",
+        "apikey",
+        "access_token",
+        "token",
+        "auth",
+        "authorization",
+    ];
+
+    let Ok(mut url) = url::Url::parse(raw_url) else {
+        return raw_url
+            .split_once('?')
+            .map(|(path, _)| format!("{path}?***"))
+            .unwrap_or_else(|| raw_url.to_string());
+    };
+
+    if !url.username().is_empty() {
+        let _ = url.set_username("");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(None);
+    }
+
+    if url.query().is_some() {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(key, value)| {
+                let sanitized_value = if sensitive_query_keys
+                    .iter()
+                    .any(|sensitive| key.eq_ignore_ascii_case(sensitive))
+                {
+                    "***".to_string()
+                } else {
+                    value.into_owned()
+                };
+                (key.into_owned(), sanitized_value)
+            })
+            .collect();
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+
+    url.to_string()
+}
+
 fn build_codex_oauth_session_headers(
     session_id: &str,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
@@ -2369,6 +2423,24 @@ mod tests {
         assert_eq!(
             url,
             "https://api.xn--chy-js0fk50c.top/v1/chat/completions?request_id=req-1"
+        );
+    }
+
+    #[test]
+    fn sanitize_activity_upstream_url_redacts_sensitive_query_and_userinfo() {
+        assert_eq!(
+            sanitize_activity_upstream_url(
+                "https://user:secret@api.example.com/v1/models/gemini:generateContent?key=abc&alt=sse",
+            ),
+            "https://api.example.com/v1/models/gemini:generateContent?key=***&alt=sse"
+        );
+    }
+
+    #[test]
+    fn sanitize_activity_upstream_url_handles_unparseable_urls_conservatively() {
+        assert_eq!(
+            sanitize_activity_upstream_url("/v1/responses?api_key=abc&foo=bar"),
+            "/v1/responses?***"
         );
     }
 

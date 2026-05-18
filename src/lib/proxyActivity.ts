@@ -90,6 +90,8 @@ export function normalizeActiveRequestTargets(
             provider_name: target.provider_name,
             request_model: target.request_model ?? existing.request_model,
             upstream_model: target.upstream_model ?? existing.upstream_model,
+            route_mode: target.route_mode ?? existing.route_mode,
+            upstream_url: target.upstream_url ?? existing.upstream_url,
             last_request_model:
               target.last_request_model ?? existing.last_request_model,
             last_request_at: target.last_request_at,

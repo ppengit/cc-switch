@@ -334,9 +334,11 @@ describe("WebdavSyncSection", () => {
     fireEvent.click(
       screen.getByRole("switch", { name: "settings.webdavSync.autoSync" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "confirm.autoSync.confirm" }),
-    );
+    const confirmButton = screen.getByRole("button", {
+      name: "confirm.autoSync.confirm",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    fireEvent.click(confirmButton);
     await waitFor(() => {
       expect(
         screen.getByRole("switch", { name: "settings.webdavSync.autoSync" }),

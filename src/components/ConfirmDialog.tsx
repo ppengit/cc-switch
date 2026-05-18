@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Info } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 interface ConfirmDialogProps {
@@ -34,10 +35,31 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [confirmReady, setConfirmReady] = useState(false);
 
   const IconComponent = variant === "info" ? Info : AlertTriangle;
   const iconClass =
     variant === "info" ? "h-5 w-5 text-blue-500" : "h-5 w-5 text-destructive";
+
+  useEffect(() => {
+    if (!isOpen) {
+      setConfirmReady(false);
+      return;
+    }
+
+    let frame2 = 0;
+    const frame1 = window.requestAnimationFrame(() => {
+      frame2 = window.requestAnimationFrame(() => {
+        setConfirmReady(true);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame1);
+      if (frame2) window.cancelAnimationFrame(frame2);
+    };
+  }, [isOpen]);
 
   return (
     <Dialog
@@ -48,7 +70,14 @@ export function ConfirmDialog({
         }
       }}
     >
-      <DialogContent className="max-w-sm" zIndex={zIndex}>
+      <DialogContent
+        className="max-w-sm"
+        zIndex={zIndex}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          cancelButtonRef.current?.focus();
+        }}
+      >
         <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
           <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
             <IconComponent className={iconClass} />
@@ -59,11 +88,12 @@ export function ConfirmDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
-          <Button variant="outline" onClick={onCancel}>
+          <Button ref={cancelButtonRef} variant="outline" onClick={onCancel}>
             {cancelText || t("common.cancel")}
           </Button>
           <Button
             variant={variant === "info" ? "default" : "destructive"}
+            disabled={!confirmReady}
             onClick={onConfirm}
           >
             {confirmText || t("common.confirm")}

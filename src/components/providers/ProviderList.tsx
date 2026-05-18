@@ -2766,7 +2766,7 @@ export function ProviderList({
 
   return (
     <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-default bg-card/60 px-3 py-2">
+      <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 rounded-xl border border-border-default bg-card/95 px-3 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
         {showBulkMembershipActions ? (
           <>
             <Button
@@ -3030,8 +3030,8 @@ export function ProviderList({
               className="h-8 pr-28 pl-9 text-sm"
             />
             {searchTerm && searchMatches.length > 0 ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-30 overflow-hidden rounded-lg border border-border-default bg-background/98 shadow-lg backdrop-blur">
-                <ScrollArea className="max-h-72">
+              <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-lg border border-border-default bg-background/98 shadow-lg backdrop-blur">
+                <ScrollArea className="max-h-[min(22rem,calc(100vh-14rem))]">
                   <div className="divide-y divide-border-default">
                     {searchMatches.map((match, index) => {
                       const row = displayRows[match.rowIndex];
@@ -3143,7 +3143,7 @@ export function ProviderList({
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col rounded-xl border border-border-default bg-card/40">
-        <div className="flex items-center justify-between gap-2 border-b border-border-default px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-border-default bg-card/95 px-3 py-2 text-[11px] text-muted-foreground backdrop-blur">
           <div className="flex min-w-0 items-center gap-2">
             <span>
               {t("provider.searchScopeHint", {

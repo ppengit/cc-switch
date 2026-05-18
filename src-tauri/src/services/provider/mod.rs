@@ -684,7 +684,7 @@ base_url = "http://localhost:8080"
                 &provider_a.id,
                 &provider_b.id,
             )
-                .expect("delete current provider");
+            .expect("delete current provider");
             assert!(
                 !rotate_result
                     .warnings
@@ -720,6 +720,599 @@ base_url = "http://localhost:8080"
                     .and_then(|env| env.get("ANTHROPIC_BASE_URL")),
                 Some(&json!("https://b.example")),
                 "live base URL should come from provider b"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn delete_current_provider_rotates_normally_when_failover_flag_is_stale_but_takeover_off() {
+        with_test_home(|state, _| {
+            let mut provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+                None,
+            );
+            provider_a.sort_index = Some(20);
+            let mut provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://b.example"
+                    }
+                }),
+                None,
+            );
+            provider_b.sort_index = Some(10);
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+                .expect("set local current provider");
+            state
+                .db
+                .add_to_failover_queue(AppType::Claude.as_str(), &provider_b.id)
+                .expect("seed stale failover queue");
+
+            let mut proxy_config = futures::executor::block_on(
+                state.db.get_proxy_config_for_app(AppType::Claude.as_str()),
+            )
+            .expect("get proxy config");
+            proxy_config.enabled = false;
+            proxy_config.auto_failover_enabled = true;
+            futures::executor::block_on(state.db.update_proxy_config_for_app(proxy_config))
+                .expect("seed stale failover flag");
+
+            write_json_file(
+                &get_claude_settings_path(),
+                &json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "live-token-from-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+            )
+            .expect("seed live settings for provider a");
+
+            ProviderService::delete(state, AppType::Claude, &provider_a.id)
+                .expect("delete stale-current provider");
+
+            assert!(
+                state
+                    .db
+                    .get_provider_by_id(&provider_a.id, AppType::Claude.as_str())
+                    .expect("query provider a")
+                    .is_none(),
+                "deleted provider should be removed from DB"
+            );
+            assert_eq!(
+                crate::settings::get_effective_current_provider(&state.db, &AppType::Claude)
+                    .expect("get effective current"),
+                Some(provider_b.id.clone()),
+                "stale failover flag without takeover must rotate to the next normal current provider"
+            );
+
+            let saved_b = state
+                .db
+                .get_provider_by_id(&provider_b.id, AppType::Claude.as_str())
+                .expect("query provider b")
+                .expect("provider b should remain");
+            assert_eq!(
+                saved_b.settings_config, provider_b.settings_config,
+                "normal delete rotation must not backfill deleted provider live settings into provider b"
+            );
+        });
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn delete_current_provider_in_failover_mode_promotes_next_queue_target() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let port = reserve_free_tcp_port();
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("seed proxy config");
+
+        let mut provider_a = Provider::with_id(
+            "claude-a".into(),
+            "Claude A".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://a.example"
+                }
+            }),
+            None,
+        );
+        provider_a.sort_index = Some(20);
+        let mut provider_b = Provider::with_id(
+            "claude-b".into(),
+            "Claude B".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://b.example"
+                }
+            }),
+            None,
+        );
+        provider_b.sort_index = Some(10);
+
+        db.save_provider(AppType::Claude.as_str(), &provider_a)
+            .expect("seed provider a");
+        db.save_provider(AppType::Claude.as_str(), &provider_b)
+            .expect("seed provider b");
+        db.add_to_failover_queue(AppType::Claude.as_str(), &provider_a.id)
+            .expect("queue provider a");
+        db.add_to_failover_queue(AppType::Claude.as_str(), &provider_b.id)
+            .expect("queue provider b");
+        db.set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+            .expect("seed db current");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+            .expect("seed local current");
+
+        let mut proxy_config = db
+            .get_proxy_config_for_app(AppType::Claude.as_str())
+            .await
+            .expect("get proxy config");
+        proxy_config.enabled = true;
+        proxy_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(proxy_config)
+            .await
+            .expect("enable failover");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .set_active_target_only(AppType::Claude.as_str(), &provider_a.id, &provider_a.name)
+            .await;
+
+        ProviderService::delete(&state, AppType::Claude, &provider_a.id)
+            .expect("delete failover head");
+
+        assert!(
+            db.get_provider_by_id(&provider_a.id, AppType::Claude.as_str())
+                .expect("query deleted provider")
+                .is_none()
+        );
+
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status");
+        let active = status
+            .active_targets
+            .iter()
+            .find(|target| target.app_type == "claude")
+            .expect("claude active target");
+        assert_eq!(
+            active.provider_id, provider_b.id,
+            "deleting the current failover provider must promote the next queue target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn switch_skips_backfill_when_live_endpoint_belongs_to_another_provider() {
+        with_test_home(|state, _| {
+            let provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+                None,
+            );
+            let provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://b.example"
+                    }
+                }),
+                None,
+            );
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+                .expect("set local current provider");
+
+            write_json_file(
+                &get_claude_settings_path(),
+                &json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "deleted-provider-token",
+                        "ANTHROPIC_BASE_URL": "https://deleted.example"
+                    }
+                }),
+            )
+            .expect("seed stale live settings");
+
+            let result = ProviderService::switch(state, AppType::Claude, &provider_b.id)
+                .expect("switch to provider b");
+
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning == "backfill_skipped_endpoint_mismatch:claude-a"),
+                "switch should report that stale live settings were not backfilled"
+            );
+
+            let saved_a = state
+                .db
+                .get_provider_by_id(&provider_a.id, AppType::Claude.as_str())
+                .expect("query provider a")
+                .expect("provider a should remain");
+            assert_eq!(
+                saved_a.settings_config, provider_a.settings_config,
+                "stale live settings from another endpoint must not overwrite current provider a"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_skips_backfill_when_live_endpoint_is_missing() {
+        with_test_home(|state, _| {
+            let provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+                None,
+            );
+            let provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://b.example"
+                    }
+                }),
+                None,
+            );
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+                .expect("set local current provider");
+
+            write_json_file(
+                &get_claude_settings_path(),
+                &json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "orphan-live-token"
+                    }
+                }),
+            )
+            .expect("seed live settings without endpoint");
+
+            let result = ProviderService::switch(state, AppType::Claude, &provider_b.id)
+                .expect("switch to provider b");
+
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning == "backfill_skipped_endpoint_mismatch:claude-a"),
+                "switch should report that endpoint-less live settings were not backfilled"
+            );
+
+            let saved_a = state
+                .db
+                .get_provider_by_id(&provider_a.id, AppType::Claude.as_str())
+                .expect("query provider a")
+                .expect("provider a should remain");
+            assert_eq!(
+                saved_a.settings_config, provider_a.settings_config,
+                "live settings without an endpoint must not overwrite provider credentials"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn switch_does_not_backfill_when_live_endpoint_matches_but_token_belongs_to_other_provider() {
+        with_test_home(|state, _| {
+            let provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://shared.example"
+                    }
+                }),
+                None,
+            );
+            let provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://shared.example"
+                    }
+                }),
+                None,
+            );
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_a.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+                .expect("set local current provider");
+
+            write_json_file(
+                &get_claude_settings_path(),
+                &json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "stale-a-token",
+                        "ANTHROPIC_BASE_URL": "https://shared.example"
+                    }
+                }),
+            )
+            .expect("seed same-endpoint live settings");
+
+            let result = ProviderService::switch(state, AppType::Claude, &provider_b.id)
+                .expect("switch to provider b");
+
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning == "backfill_skipped_endpoint_mismatch:claude-a"),
+                "same-endpoint live settings must not be treated as belonging to provider a just because base_url matches"
+            );
+
+            let saved_a = state
+                .db
+                .get_provider_by_id(&provider_a.id, AppType::Claude.as_str())
+                .expect("query provider a")
+                .expect("provider a should remain");
+            assert_eq!(
+                saved_a.settings_config, provider_a.settings_config,
+                "same-endpoint but different token live settings must not overwrite provider a"
+            );
+
+            let saved_b = state
+                .db
+                .get_provider_by_id(&provider_b.id, AppType::Claude.as_str())
+                .expect("query provider b")
+                .expect("provider b should remain");
+            assert_eq!(
+                saved_b.settings_config, provider_b.settings_config,
+                "same-endpoint live settings must not leak provider a token into provider b"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn delete_non_current_provider_moves_live_owner_to_current_when_repairing_live() {
+        with_test_home(|state, _| {
+            let provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://shared.example"
+                    }
+                }),
+                None,
+            );
+            let provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://shared.example"
+                    }
+                }),
+                None,
+            );
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_b.id)
+                .expect("set db current provider");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_b.id))
+                .expect("set local current provider");
+            state
+                .db
+                .set_live_owner_provider_id(AppType::Claude.as_str(), Some(&provider_a.id))
+                .expect("seed live owner anchor");
+
+            ProviderService::delete(state, AppType::Claude, &provider_a.id)
+                .expect("delete stale-owner provider");
+
+            let live = read_json_file::<Value>(&get_claude_settings_path())
+                .expect("read repaired live settings");
+            assert_eq!(
+                live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                    .and_then(Value::as_str),
+                Some("token-b"),
+                "deleting the provider that owns live config must restore the current provider token"
+            );
+            assert_eq!(
+                live.pointer("/env/ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str),
+                Some("https://shared.example"),
+                "deleting the provider that owns live config must restore the current provider endpoint"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_live_owner_provider_id(AppType::Claude.as_str())
+                    .expect("read live owner anchor"),
+                Some(provider_b.id.clone()),
+                "deleting the provider that owns live config must move the owner anchor to the restored current provider"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn delete_non_current_provider_repairs_live_when_live_still_points_to_deleted_provider() {
+        with_test_home(|state, _| {
+            let provider_a = Provider::with_id(
+                "claude-a".into(),
+                "Claude A".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-a",
+                        "ANTHROPIC_BASE_URL": "https://a.example"
+                    }
+                }),
+                None,
+            );
+            let provider_b = Provider::with_id(
+                "claude-b".into(),
+                "Claude B".into(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token-b",
+                        "ANTHROPIC_BASE_URL": "https://b.example"
+                    }
+                }),
+                None,
+            );
+
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+            state
+                .db
+                .set_current_provider(AppType::Claude.as_str(), &provider_b.id)
+                .expect("set db current provider b");
+            crate::settings::set_current_provider(&AppType::Claude, Some(&provider_b.id))
+                .expect("set local current provider b");
+
+            write_json_file(&get_claude_settings_path(), &provider_a.settings_config)
+                .expect("seed stale live settings for provider a");
+            state
+                .db
+                .set_live_owner_provider_id(AppType::Claude.as_str(), Some(&provider_a.id))
+                .expect("seed live owner provider a");
+
+            ProviderService::delete(state, AppType::Claude, &provider_a.id)
+                .expect("delete non-current stale live owner");
+
+            let live = read_json_file::<Value>(&get_claude_settings_path())
+                .expect("read repaired live settings");
+            assert_eq!(
+                live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                    .and_then(Value::as_str),
+                Some("token-b"),
+                "deleting a non-current provider that still owns live config must restore current provider token"
+            );
+            assert_eq!(
+                live.pointer("/env/ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str),
+                Some("https://b.example"),
+                "deleting a non-current provider that still owns live config must restore current provider endpoint"
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_live_owner_provider_id(AppType::Claude.as_str())
+                    .expect("read live owner"),
+                Some(provider_b.id.clone()),
+                "live owner anchor should move to the restored current provider"
             );
         });
     }
@@ -1131,6 +1724,133 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    fn normalize_endpoint_for_compare(value: &str) -> String {
+        let mut value = value.trim().trim_end_matches('/').to_ascii_lowercase();
+        if value.ends_with("/v1") {
+            value.truncate(value.len() - 3);
+        }
+        value
+    }
+
+    fn live_settings_belong_to_provider_with_anchor(
+        db: &crate::database::Database,
+        app_type: &AppType,
+        live_settings: &Value,
+        provider: &Provider,
+    ) -> bool {
+        let live_endpoint = Self::endpoint_from_settings(app_type, live_settings);
+        let provider_endpoint = Self::endpoint_from_settings(app_type, &provider.settings_config);
+
+        let (Some(live), Some(provider_endpoint)) =
+            (live_endpoint.as_deref(), provider_endpoint.as_deref())
+        else {
+            return false;
+        };
+
+        if !Self::endpoints_match(live, provider_endpoint) {
+            return false;
+        }
+
+        let normalized = Self::normalize_endpoint_for_compare(provider_endpoint);
+        let same_endpoint_providers = match db.get_all_providers(app_type.as_str()) {
+            Ok(providers) => providers
+                .values()
+                .filter(|candidate| {
+                    Self::endpoint_from_settings(app_type, &candidate.settings_config)
+                        .map(|endpoint| {
+                            Self::normalize_endpoint_for_compare(&endpoint) == normalized
+                        })
+                        .unwrap_or(false)
+                })
+                .map(|candidate| candidate.id.clone())
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                log::warn!(
+                    "读取 {} 供应商列表失败，归属判断退化为 endpoint-only: {error}",
+                    app_type.as_str()
+                );
+                Vec::new()
+            }
+        };
+
+        if same_endpoint_providers.len() <= 1 {
+            return true;
+        }
+
+        match db.get_live_owner_provider_id(app_type.as_str()) {
+            Ok(Some(owner_id)) => owner_id == provider.id,
+            Ok(None) => false,
+            Err(error) => {
+                log::warn!(
+                    "读取 {} live owner 锚点失败，共享 endpoint 回填已拒绝: {error}",
+                    app_type.as_str()
+                );
+                false
+            }
+        }
+    }
+
+    fn endpoints_match(left: &str, right: &str) -> bool {
+        let left = Self::normalize_endpoint_for_compare(left);
+        let right = Self::normalize_endpoint_for_compare(right);
+        !left.is_empty() && left == right
+    }
+
+    fn codex_base_url_from_settings(settings: &Value) -> Option<String> {
+        let config = settings.get("config").and_then(|v| v.as_str())?;
+        let doc = config.parse::<toml_edit::DocumentMut>().ok()?;
+
+        if let Some(provider_id) = doc.get("model_provider").and_then(|v| v.as_str()) {
+            if let Some(base_url) = doc
+                .get("model_providers")
+                .and_then(|v| v.get(provider_id))
+                .and_then(|v| v.get("base_url"))
+                .and_then(|v| v.as_str())
+            {
+                return Some(base_url.to_string());
+            }
+        }
+
+        if let Some(base_url) = doc.get("base_url").and_then(|v| v.as_str()) {
+            return Some(base_url.to_string());
+        }
+
+        doc.get("model_providers")
+            .and_then(|v| v.as_table_like())
+            .and_then(|providers| {
+                providers.iter().find_map(|(_, provider)| {
+                    provider
+                        .get("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+            })
+    }
+
+    fn endpoint_from_settings(app_type: &AppType, settings: &Value) -> Option<String> {
+        match app_type {
+            AppType::Claude => settings
+                .pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            AppType::Codex => Self::codex_base_url_from_settings(settings),
+            AppType::Gemini => settings
+                .pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => None,
+        }
+    }
+
+    pub(crate) fn live_settings_can_backfill_provider(
+        db: &crate::database::Database,
+        app_type: &AppType,
+        live_settings: &Value,
+        provider: &Provider,
+    ) -> bool {
+        Self::live_settings_belong_to_provider_with_anchor(db, app_type, live_settings, provider)
+    }
+
     /// List all providers for an app type
     pub fn list(
         state: &AppState,
@@ -1421,6 +2141,9 @@ impl ProviderService {
     /// 对于累加模式应用（OpenCode, OpenClaw, Hermes），可以随时删除任意供应商，
     /// 同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        let live_owner_was_deleted_provider =
+            Self::clear_live_owner_anchor_if_matches(state, &app_type, id)?;
+
         // Additive mode apps - no current provider concept
         if app_type.is_additive_mode() {
             // Single DB read shared across all additive-mode sub-paths below.
@@ -1469,15 +2192,17 @@ impl ProviderService {
             return Ok(());
         }
 
-        // Switch-mode apps (Claude/Codex/Gemini): branch on auto_failover_enabled.
-        let auto_failover_enabled =
+        // Switch-mode apps (Claude/Codex/Gemini): only treat it as failover mode when
+        // both app takeover and auto-failover are enabled. Historical configs may leave
+        // auto_failover_enabled=true after local proxy is off; that must behave as normal mode.
+        let failover_mode_active =
             futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
-                .map(|c| c.auto_failover_enabled)
+                .map(|c| c.enabled && c.auto_failover_enabled)
                 .unwrap_or(false);
 
         // 故障转移开启：不存在"当前供应商"概念。
         // 直接从队列移除（若在）、清理活动面板/熔断器、删 DB。
-        if auto_failover_enabled {
+        if failover_mode_active {
             // 1. 从故障转移队列移除（即使不在队列中也是 idempotent）
             state.db.remove_from_failover_queue(app_type.as_str(), id)?;
 
@@ -1485,7 +2210,7 @@ impl ProviderService {
             futures::executor::block_on(
                 state
                     .proxy_service
-                    .clear_provider_runtime_state(id, app_type.as_str()),
+                    .reconcile_failover_after_provider_removal(id, app_type.as_str()),
             )
             .map_err(AppError::Message)?;
 
@@ -1508,6 +2233,18 @@ impl ProviderService {
             local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id);
 
         if !is_current_target {
+            Self::repair_live_after_deleting_stale_owner(
+                state,
+                &app_type,
+                id,
+                live_owner_was_deleted_provider,
+            )?;
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .clear_provider_runtime_state(id, app_type.as_str()),
+            )
+            .map_err(AppError::Message)?;
             return state.db.delete_provider(app_type.as_str(), id);
         }
 
@@ -1551,6 +2288,63 @@ impl ProviderService {
         state.db.delete_provider(app_type.as_str(), id)
     }
 
+    fn clear_live_owner_anchor_if_matches(
+        state: &AppState,
+        app_type: &AppType,
+        provider_id: &str,
+    ) -> Result<bool, AppError> {
+        if state
+            .db
+            .get_live_owner_provider_id(app_type.as_str())?
+            .as_deref()
+            == Some(provider_id)
+        {
+            state
+                .db
+                .set_live_owner_provider_id(app_type.as_str(), None)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn repair_live_after_deleting_stale_owner(
+        state: &AppState,
+        app_type: &AppType,
+        deleted_id: &str,
+        live_owner_was_deleted_provider: bool,
+    ) -> Result<(), AppError> {
+        if !live_owner_was_deleted_provider {
+            return Ok(());
+        }
+
+        if state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(app_type)
+        {
+            return Ok(());
+        }
+
+        let Some(current_id) =
+            crate::settings::get_effective_current_provider(&state.db, app_type)?
+        else {
+            return Ok(());
+        };
+
+        if current_id == deleted_id {
+            return Ok(());
+        }
+
+        let Some(current_provider) = state
+            .db
+            .get_provider_by_id(&current_id, app_type.as_str())?
+        else {
+            return Ok(());
+        };
+
+        write_live_with_common_config(state.db.as_ref(), app_type, &current_provider)?;
+        Ok(())
+    }
+
     fn delete_and_rotate_current(
         state: &AppState,
         app_type: AppType,
@@ -1565,7 +2359,6 @@ impl ProviderService {
         if state.db.get_current_provider(app_type.as_str())?.as_deref() == Some(deleted_id) {
             state.db.clear_current_provider(app_type.as_str())?;
         }
-
         Self::switch_with_options(
             state,
             app_type,
@@ -1804,20 +2597,36 @@ impl ProviderService {
                         if let Ok(live_config) = read_live_settings(app_type.clone()) {
                             if let Some(mut current_provider) = providers.get(&current_id).cloned()
                             {
-                                current_provider.settings_config =
-                                    strip_common_config_from_live_settings(
-                                        state.db.as_ref(),
-                                        &app_type,
-                                        &current_provider,
-                                        live_config,
+                                if Self::live_settings_can_backfill_provider(
+                                    state.db.as_ref(),
+                                    &app_type,
+                                    &live_config,
+                                    &current_provider,
+                                ) {
+                                    current_provider.settings_config =
+                                        strip_common_config_from_live_settings(
+                                            state.db.as_ref(),
+                                            &app_type,
+                                            &current_provider,
+                                            live_config,
+                                        );
+                                    if let Err(e) =
+                                        state.db.save_provider(app_type.as_str(), &current_provider)
+                                    {
+                                        log::warn!("Backfill failed: {e}");
+                                        result
+                                            .warnings
+                                            .push(format!("backfill_failed:{current_id}"));
+                                    }
+                                } else {
+                                    log::warn!(
+                                        "跳过 {} 当前供应商 {} 的 Live 回填：Live endpoint 与供应商 endpoint 不匹配",
+                                        app_type.as_str(),
+                                        current_id
                                     );
-                                if let Err(e) =
-                                    state.db.save_provider(app_type.as_str(), &current_provider)
-                                {
-                                    log::warn!("Backfill failed: {e}");
-                                    result
-                                        .warnings
-                                        .push(format!("backfill_failed:{current_id}"));
+                                    result.warnings.push(format!(
+                                        "backfill_skipped_endpoint_mismatch:{current_id}"
+                                    ));
                                 }
                             }
                         }
@@ -1833,11 +2642,16 @@ impl ProviderService {
 
             // Update database is_current (as default for new devices)
             state.db.set_current_provider(app_type.as_str(), id)?;
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .reset_provider_recovery_state(id, app_type.as_str()),
+            )
+            .map_err(AppError::Message)?;
         }
 
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
         write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
-
         // Hermes is additive, so "switching" doesn't overwrite a live config file
         // — we instead update the top-level `model:` section to point at this
         // provider's first declared model. Without this, clicking "switch" would
