@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, Settings } from "@/types";
+import type { AppProxyConfig } from "@/types/proxy";
 import {
   addSkillRepoState,
   addProvider,
@@ -10,8 +11,11 @@ import {
   deleteSession,
   deleteSkillBackupState,
   getAppConfigTemplate,
+  getAppProxyConfigState,
   getAutoFailoverEnabled,
+  getAvailableProvidersForFailoverState,
   getDiscoverableSkillsState,
+  getFailoverQueueState,
   getInstalledSkillsState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
@@ -30,10 +34,13 @@ import {
   getSessionMessages,
   getSettings,
   getProviders,
+  getSwitchLiveSettings,
   importMcpFromAppsState,
   importSkillsFromAppsState,
   installSkillFromDiscoveryState,
   installSkillsFromZipState,
+  isLiveTakeoverActiveState,
+  isProxyRunningState,
   listProviders,
   listSessions,
   getWebdavRemoteInfoState,
@@ -44,16 +51,22 @@ import {
   recordWebdavTestConnection,
   recordWebdavUpload,
   removeSkillRepoState,
+  removeFromFailoverQueueState,
   removeProviderFromLiveConfigState,
   restoreSkillBackupState,
   setAppConfigTemplateState,
+  setAppProxyConfigState,
   setAutoFailoverEnabledState,
   setCurrentProviderId,
   setAppConfigDirOverrideState,
   deleteMcpServer,
   setMcpServerEnabled,
   setProviderDefaultTemplateState,
+  setProxyTakeoverForAppState,
   setSettings,
+  startProxyServerState,
+  stopProxyServerState,
+  syncCurrentProvidersLiveState,
   toggleMcpAppState,
   toggleSkillAppState,
   uninstallSkillState,
@@ -62,6 +75,7 @@ import {
   upsertMcpServerState,
   updateProvider,
   updateSortOrder,
+  addToFailoverQueueState,
 } from "./state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -625,10 +639,16 @@ export const handlers = [
     success("/mock/export-settings.json"),
   ),
 
-  // Sync current providers live (no-op success)
   http.post(`${TAURI_ENDPOINT}/sync_current_providers_live`, () =>
-    success({ success: true }),
+    success(syncCurrentProvidersLiveState()),
   ),
+
+  http.post(`${TAURI_ENDPOINT}/read_live_provider_settings`, async ({ request }) => {
+    const { app } = await withJson<{ app: "claude" | "codex" | "gemini" }>(
+      request,
+    );
+    return success(getSwitchLiveSettings(app));
+  }),
 
   http.post(`${TAURI_ENDPOINT}/get_app_config_template`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
@@ -693,6 +713,20 @@ export const handlers = [
   ),
 
   // Proxy status (for SettingsPage / ProxyPanel hooks)
+  http.post(`${TAURI_ENDPOINT}/start_proxy_server`, () =>
+    success(startProxyServerState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/stop_proxy_server`, () => {
+    stopProxyServerState(false);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/stop_proxy_with_restore`, () => {
+    stopProxyServerState(true);
+    return success(true);
+  }),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_status`, () =>
     success(getProxyStatusState()),
   ),
@@ -701,9 +735,54 @@ export const handlers = [
     success(getProxyTakeoverStatusState()),
   ),
 
+  http.post(
+    `${TAURI_ENDPOINT}/set_proxy_takeover_for_app`,
+    async ({ request }) => {
+      const { appType, enabled } = await withJson<{
+        appType: AppId;
+        enabled: boolean;
+      }>(request);
+      setProxyTakeoverForAppState(appType, enabled);
+      return success(true);
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/is_proxy_running`, () =>
+    success(isProxyRunningState()),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/get_proxy_raw_logs`, () => success([])),
 
-  http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
+  http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () =>
+    success(isLiveTakeoverActiveState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getAppProxyConfigState(appType));
+  }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/update_proxy_config_for_app`,
+    async ({ request }) => {
+      const { config } = await withJson<{ config: AppProxyConfig }>(request);
+      setAppProxyConfigState(config);
+      return success(true);
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/switch_proxy_provider`, async ({ request }) => {
+    const { appType, providerId } = await withJson<{
+      appType: AppId;
+      providerId: string;
+    }>(request);
+    const providers = listProviders(appType);
+    if (!providers[providerId]) {
+      return HttpResponse.json(false, { status: 404 });
+    }
+    setCurrentProviderId(appType, providerId);
+    return success(true);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/stream_check_provider`, async ({ request }) => {
     const { providerId } = await withJson<{ providerId?: string }>(request);
@@ -735,14 +814,35 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/save_stream_check_config`, () => success(true)),
 
   // Failover / circuit breaker defaults
-  http.post(`${TAURI_ENDPOINT}/get_failover_queue`, () => success([])),
-  http.post(`${TAURI_ENDPOINT}/get_available_providers_for_failover`, () =>
-    success([]),
+  http.post(`${TAURI_ENDPOINT}/get_failover_queue`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success(getFailoverQueueState(appType));
+  }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_available_providers_for_failover`,
+    async ({ request }) => {
+      const { appType } = await withJson<{ appType: AppId }>(request);
+      return success(getAvailableProvidersForFailoverState(appType));
+    },
   ),
-  http.post(`${TAURI_ENDPOINT}/add_to_failover_queue`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/add_to_failover_queue`, async ({ request }) => {
+    const { appType, providerId } = await withJson<{
+      appType: AppId;
+      providerId: string;
+    }>(request);
+    if (!addToFailoverQueueState(appType, providerId)) {
+      return HttpResponse.json(false, { status: 404 });
+    }
+    return success(true);
+  }),
+  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, async ({ request }) => {
+    const { appType, providerId } = await withJson<{
+      appType: AppId;
+      providerId: string;
+    }>(request);
+    removeFromFailoverQueueState(appType, providerId);
+    return success(true);
+  }),
   http.post(`${TAURI_ENDPOINT}/reorder_failover_queue`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/set_failover_item_enabled`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, async ({ request }) => {

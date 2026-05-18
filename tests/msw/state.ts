@@ -20,7 +20,12 @@ import type {
   Settings,
   WebDavSyncSettings,
 } from "@/types";
-import type { ProxyStatus } from "@/types/proxy";
+import type {
+  AppProxyConfig,
+  FailoverQueueItem,
+  ProxyServerInfo,
+  ProxyStatus,
+} from "@/types/proxy";
 
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
@@ -33,6 +38,10 @@ type ProxyTakeoverStatusByApp = Record<
   "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes",
   boolean
 >;
+type SwitchModeAppId = "claude" | "codex" | "gemini";
+type AppProxyConfigByApp = Record<AppId, AppProxyConfig>;
+type FailoverQueueByApp = Record<AppId, FailoverQueueItem[]>;
+type SwitchLiveSettingsByApp = Record<SwitchModeAppId, unknown>;
 type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
 type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
 type AutoFailoverEnabledByApp = Record<AppId, boolean>;
@@ -42,6 +51,26 @@ type ManagedAuthStatusByProvider = Record<
   ManagedAuthStatus
 >;
 type WebdavRemoteInfoState = RemoteSnapshotInfo | { empty: true };
+
+const APP_IDS = [
+  "claude",
+  "claude-desktop",
+  "codex",
+  "gemini",
+  "opencode",
+  "openclaw",
+  "hermes",
+] as const satisfies readonly AppId[];
+
+const isAppId = (value: string): value is AppId =>
+  (APP_IDS as readonly string[]).includes(value);
+
+const requireAppId = (value: string): AppId => {
+  if (!isAppId(value)) {
+    throw new Error(`Unknown app type: ${value}`);
+  }
+  return value;
+};
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -148,6 +177,71 @@ const createDefaultProxyTakeoverStatus = (): ProxyTakeoverStatusByApp => ({
   opencode: false,
   openclaw: false,
   hermes: false,
+});
+
+const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
+  appType,
+  enabled: false,
+  autoFailoverEnabled: false,
+  maxRetries: 3,
+  streamingFirstByteTimeout: 30,
+  streamingIdleTimeout: 60,
+  nonStreamingTimeout: 120,
+  circuitFailureThreshold: 3,
+  circuitSuccessThreshold: 2,
+  circuitTimeoutSeconds: 60,
+  circuitErrorRateThreshold: 50,
+  circuitMinRequests: 5,
+});
+
+const createDefaultAppProxyConfigs = (): AppProxyConfigByApp => ({
+  claude: createDefaultAppProxyConfig("claude"),
+  "claude-desktop": createDefaultAppProxyConfig("claude-desktop"),
+  codex: createDefaultAppProxyConfig("codex"),
+  gemini: createDefaultAppProxyConfig("gemini"),
+  opencode: createDefaultAppProxyConfig("opencode"),
+  openclaw: createDefaultAppProxyConfig("openclaw"),
+  hermes: createDefaultAppProxyConfig("hermes"),
+});
+
+const createDefaultFailoverQueues = (): FailoverQueueByApp => ({
+  claude: [],
+  "claude-desktop": [],
+  codex: [],
+  gemini: [],
+  opencode: [],
+  openclaw: [],
+  hermes: [],
+});
+
+const createProxyLiveSettings = (appType: SwitchModeAppId, port = 0) => {
+  const baseUrl = `http://127.0.0.1:${port}`;
+  if (appType === "codex") {
+    return {
+      auth: { OPENAI_API_KEY: "PROXY_MANAGED" },
+      config: `model_provider = "cc-switch"\n[model_providers.cc-switch]\nbase_url = "${baseUrl}/codex"\n`,
+    };
+  }
+  if (appType === "gemini") {
+    return {
+      env: {
+        GEMINI_API_KEY: "PROXY_MANAGED",
+        GOOGLE_GEMINI_BASE_URL: baseUrl,
+      },
+    };
+  }
+  return {
+    env: {
+      ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+      ANTHROPIC_BASE_URL: baseUrl,
+    },
+  };
+};
+
+const createDefaultSwitchLiveSettings = (): SwitchLiveSettingsByApp => ({
+  claude: createProxyLiveSettings("claude"),
+  codex: createProxyLiveSettings("codex"),
+  gemini: createProxyLiveSettings("gemini"),
 });
 
 const createDefaultManagedAuthStatus = (): ManagedAuthStatusByProvider => ({
@@ -332,6 +426,9 @@ let providerDefaultTemplatesByApp = createDefaultProviderTemplates();
 let appConfigTemplatesByApp = createDefaultAppConfigTemplates();
 let autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
 let proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
+let appProxyConfigsByApp = createDefaultAppProxyConfigs();
+let failoverQueuesByApp = createDefaultFailoverQueues();
+let switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
 let managedAuthStatusByProvider = createDefaultManagedAuthStatus();
 let installedSkillsState = createDefaultInstalledSkills();
 let unmanagedSkillsState = createDefaultUnmanagedSkills();
@@ -495,6 +592,9 @@ export const resetProviderState = () => {
   appConfigTemplatesByApp = createDefaultAppConfigTemplates();
   autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
   proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
+  appProxyConfigsByApp = createDefaultAppProxyConfigs();
+  failoverQueuesByApp = createDefaultFailoverQueues();
+  switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
   managedAuthStatusByProvider = createDefaultManagedAuthStatus();
   installedSkillsState = createDefaultInstalledSkills();
   unmanagedSkillsState = createDefaultUnmanagedSkills();
@@ -937,6 +1037,245 @@ export const setProxyStatusState = (status: Partial<ProxyStatus>) => {
   };
 };
 
+const isSwitchModeApp = (appType: AppId): appType is SwitchModeAppId =>
+  appType === "claude" || appType === "codex" || appType === "gemini";
+
+const syncProxyLiveTemplate = (appType: SwitchModeAppId) => {
+  switchLiveSettingsByApp[appType] = createProxyLiveSettings(
+    appType,
+    proxyStatusState.port || 15721,
+  );
+};
+
+const failoverQueueItemFromProvider = (
+  provider: Provider,
+): FailoverQueueItem => ({
+  providerId: provider.id,
+  providerName: provider.name,
+  providerNotes: provider.notes,
+  sortIndex: provider.sortIndex,
+});
+
+const refreshActiveTargetForApp = (appType: AppId) => {
+  const queue = failoverQueuesByApp[appType] ?? [];
+  const first = queue[0];
+  const activeTargets = (proxyStatusState.active_targets ?? []).filter(
+    (target) => target.app_type !== appType,
+  );
+
+  proxyStatusState = {
+    ...proxyStatusState,
+    active_targets: first
+      ? [
+          ...activeTargets,
+          {
+            app_type: appType,
+            provider_id: first.providerId,
+            provider_name: first.providerName,
+          },
+        ]
+      : activeTargets,
+    current_provider: first?.providerName ?? proxyStatusState.current_provider,
+    current_provider_id: first?.providerId ?? proxyStatusState.current_provider_id,
+  };
+};
+
+export const startProxyServerState = (): ProxyServerInfo => {
+  proxyStatusState = {
+    ...proxyStatusState,
+    running: true,
+    address: proxyStatusState.address || "127.0.0.1",
+    port: proxyStatusState.port || 15721,
+  };
+  return {
+    address: proxyStatusState.address,
+    port: proxyStatusState.port,
+    started_at: new Date().toISOString(),
+  };
+};
+
+export const stopProxyServerState = (restore = false) => {
+  proxyStatusState = {
+    ...proxyStatusState,
+    running: false,
+    active_targets: [],
+    active_request_count: 0,
+    active_request_targets: [],
+  };
+  if (restore) {
+    proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
+    appProxyConfigsByApp = Object.fromEntries(
+      Object.entries(appProxyConfigsByApp).map(([appType, config]) => [
+        appType,
+        { ...config, enabled: false, autoFailoverEnabled: false },
+      ]),
+    ) as AppProxyConfigByApp;
+    autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
+  }
+};
+
+export const isProxyRunningState = () => proxyStatusState.running;
+
+export const getAppProxyConfigState = (appType: AppId) =>
+  JSON.parse(
+    JSON.stringify(
+      appProxyConfigsByApp[appType] ?? createDefaultAppProxyConfig(appType),
+    ),
+  ) as AppProxyConfig;
+
+export const setAppProxyConfigState = (config: AppProxyConfig) => {
+  const appType = requireAppId(config.appType);
+  appProxyConfigsByApp[appType] = JSON.parse(
+    JSON.stringify(config),
+  ) as AppProxyConfig;
+  proxyTakeoverStatusByApp = {
+    ...proxyTakeoverStatusByApp,
+    [appType]: config.enabled,
+  };
+  autoFailoverEnabledByApp[appType] =
+    config.enabled && config.autoFailoverEnabled;
+  if (isSwitchModeApp(appType) && config.enabled) {
+    syncProxyLiveTemplate(appType);
+  }
+};
+
+export const setProxyTakeoverForAppState = (
+  appType: AppId,
+  enabled: boolean,
+) => {
+  proxyTakeoverStatusByApp = {
+    ...proxyTakeoverStatusByApp,
+    [appType]: enabled,
+  };
+  appProxyConfigsByApp[appType] = {
+    ...(appProxyConfigsByApp[appType] ?? createDefaultAppProxyConfig(appType)),
+    enabled,
+    autoFailoverEnabled: enabled
+      ? (appProxyConfigsByApp[appType]?.autoFailoverEnabled ?? false)
+      : false,
+  };
+  autoFailoverEnabledByApp[appType] =
+    enabled && (autoFailoverEnabledByApp[appType] ?? false);
+  if (isSwitchModeApp(appType) && enabled) {
+    syncProxyLiveTemplate(appType);
+  }
+};
+
+export const isLiveTakeoverActiveState = () =>
+  Object.values(proxyTakeoverStatusByApp).some(Boolean);
+
+export const getSwitchLiveSettings = (appType: SwitchModeAppId) =>
+  JSON.parse(JSON.stringify(switchLiveSettingsByApp[appType]));
+
+export const setSwitchLiveSettings = (
+  appType: SwitchModeAppId,
+  settings: unknown,
+) => {
+  switchLiveSettingsByApp[appType] = JSON.parse(JSON.stringify(settings));
+};
+
+export const getFailoverQueueState = (appType: AppId) =>
+  JSON.parse(
+    JSON.stringify(failoverQueuesByApp[appType] ?? []),
+  ) as FailoverQueueItem[];
+
+export const getAvailableProvidersForFailoverState = (appType: AppId) => {
+  const queued = new Set(
+    (failoverQueuesByApp[appType] ?? []).map((item) => item.providerId),
+  );
+  return Object.values(getProviders(appType)).filter(
+    (provider) => !queued.has(provider.id),
+  );
+};
+
+export const addToFailoverQueueState = (
+  appType: AppId,
+  providerId: string,
+) => {
+  const provider = providers[appType]?.[providerId];
+  if (!provider) return false;
+  const queue = failoverQueuesByApp[appType] ?? [];
+  if (!queue.some((item) => item.providerId === providerId)) {
+    failoverQueuesByApp[appType] = [
+      ...queue,
+      failoverQueueItemFromProvider(provider),
+    ].sort(
+      (a, b) =>
+        (a.sortIndex ?? Number.MAX_SAFE_INTEGER) -
+          (b.sortIndex ?? Number.MAX_SAFE_INTEGER) ||
+        a.providerId.localeCompare(b.providerId),
+    );
+  }
+  providers[appType][providerId] = {
+    ...provider,
+    inFailoverQueue: true,
+  };
+  refreshActiveTargetForApp(appType);
+  return true;
+};
+
+export const removeFromFailoverQueueState = (
+  appType: AppId,
+  providerId: string,
+) => {
+  failoverQueuesByApp[appType] = (failoverQueuesByApp[appType] ?? []).filter(
+    (item) => item.providerId !== providerId,
+  );
+  const provider = providers[appType]?.[providerId];
+  if (provider) {
+    providers[appType][providerId] = {
+      ...provider,
+      inFailoverQueue: false,
+    };
+  }
+  refreshActiveTargetForApp(appType);
+};
+
+export const setAutoFailoverEnabledState = (
+  appType: AppId,
+  enabled: boolean,
+) => {
+  if (enabled && (failoverQueuesByApp[appType] ?? []).length === 0) {
+    const currentProviderId = current[appType];
+    if (currentProviderId) {
+      addToFailoverQueueState(appType, currentProviderId);
+    }
+  }
+
+  autoFailoverEnabledByApp[appType] = enabled;
+  appProxyConfigsByApp[appType] = {
+    ...(appProxyConfigsByApp[appType] ?? createDefaultAppProxyConfig(appType)),
+    autoFailoverEnabled: enabled,
+  };
+
+  if (enabled) {
+    current[appType] = "";
+  }
+  refreshActiveTargetForApp(appType);
+};
+
+export const syncCurrentProvidersLiveState = () => {
+  (["claude", "codex", "gemini"] as const).forEach((appType) => {
+    if (appProxyConfigsByApp[appType]?.enabled) {
+      syncProxyLiveTemplate(appType);
+      return;
+    }
+
+    const currentId = current[appType];
+    const provider = currentId ? providers[appType]?.[currentId] : undefined;
+    if (provider) {
+      switchLiveSettingsByApp[appType] = JSON.parse(
+        JSON.stringify(provider.settingsConfig ?? {}),
+      );
+    }
+  });
+
+  return {
+    success: true,
+    message: "Live configuration synchronized",
+  };
+};
+
 export const getProviders = (appType: AppId) =>
   cloneProviders(providers)[appType] ?? {};
 
@@ -979,13 +1318,6 @@ export const setAppConfigTemplateState = (
 
 export const getAutoFailoverEnabled = (appType: AppId) =>
   autoFailoverEnabledByApp[appType] ?? false;
-
-export const setAutoFailoverEnabledState = (
-  appType: AppId,
-  enabled: boolean,
-) => {
-  autoFailoverEnabledByApp[appType] = enabled;
-};
 
 export const getProxyTakeoverStatusState = () =>
   JSON.parse(JSON.stringify(proxyTakeoverStatusByApp)) as ProxyTakeoverStatusByApp;

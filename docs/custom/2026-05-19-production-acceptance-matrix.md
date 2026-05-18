@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；仍需继续扩展更多 app 类型真实表单链路和故障转移真实操作验收 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、过滤 | 选择态和搜索态错乱、删除后 UI 不一致 | 已补真实 App + SessionManagerPage 页面级验收，仍需继续扩展批量删除 / 重命名 / 导出 / 恢复终端 |
 | Prompts | `PromptPanel` | 打开、返回、新建入口 | 与顶层视图切换耦合 | 顶层入口已验收，面板内部交互待补 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -111,6 +111,18 @@
 - 验证命令：`pnpm vitest run tests/integration/App.real-providers.test.tsx`
 - 当前结果：`8 passed, 0 failed`
 
+### App + ProviderList 代理接管 / 故障转移 live 漂移验收
+
+- 覆盖文件：`tests/integration/App.real-providers.test.tsx`、`tests/msw/state.ts`、`tests/msw/handlers.ts`
+- 覆盖范围：真实 `App`、真实 `ProviderList`、真实 failover hooks、真实 `settingsApi.syncCurrentProvidersLive()` 前端调用链；MSW / Tauri mock 补齐 proxy server、proxy takeover、app proxy config、failover queue、live settings 观测点。
+- 覆盖交互：预置本地代理运行、Claude 接管开启、故障转移开启；从真实供应商列表行内开关把 `Claude Alpha` / `Claude Beta` / `Claude Gamma` 加入故障转移队列，再逐个移出，模拟所有供应商不可用后队列清空。
+- 配置验证：先把 Claude live settings 人为置为 `https://claude-alpha.example.com`，模拟用户反馈的漂移状态；随后通过 `settingsApi.syncCurrentProvidersLive()` 触发 `sync_current_providers_live`，断言 `ANTHROPIC_BASE_URL` 恢复为 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 为 `PROXY_MANAGED`，且不等于任一供应商 base URL。
+- 红绿记录：临时把 `syncCurrentProvidersLiveState()` 改回旧错误语义后，新增用例按预期失败，收到 `https://claude-alpha.example.com`；恢复代理接管优先同步 live 模板后，同一用例通过。
+- 最小验证命令：`pnpm vitest run tests/integration/App.real-providers.test.tsx -t "keeps Claude live config on proxy takeover after failover queue becomes empty" --fileParallelism=false --reporter=verbose`
+- 最小验证结果：错误语义下 `1 failed`；恢复正确语义后 `1 passed, 8 skipped, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`2 files passed, 21 tests passed, 0 failed`
+
 ### App + Add / Edit ProviderForm 真实页面验收
 
 - 新增验收文件：`tests/integration/App.real-provider-forms.test.tsx`
@@ -165,7 +177,7 @@
 - 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`2 files passed, 20 tests passed, 0 failed`
 - 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
-- 当前结果：退出码 `0`
+- 当前结果：`60 files passed, 346 tests passed, 0 failed`
 - 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归

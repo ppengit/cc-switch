@@ -6,13 +6,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
 import {
   getCurrentProviderId,
+  getFailoverQueueState,
   getLiveProviderIds,
   getProviders,
+  getSwitchLiveSettings,
   resetProviderState,
+  setAutoFailoverEnabledState,
   setCurrentProviderId,
   setLiveProviderIds,
   setProviderDefaultTemplateState,
   setProviders,
+  setProxyTakeoverForAppState,
+  setSettings,
+  setSwitchLiveSettings,
+  startProxyServerState,
 } from "../msw/state";
 
 vi.mock("@/contexts/UpdateContext", () => ({
@@ -327,6 +334,22 @@ const expectAdditiveState = (
   if (expected === "enabled") {
     expect(within(row).getByTitle("禁用")).toBeInTheDocument();
     expect(within(row).getByText("使用中")).toBeInTheDocument();
+  } else {
+    expect(within(row).getByTitle("启用")).toBeInTheDocument();
+    expect(within(row).getByText("禁用")).toBeInTheDocument();
+  }
+};
+
+const expectFailoverState = (
+  providerName: string,
+  expected: "enabled" | "disabled",
+) => {
+  const row = findProviderRow(providerName);
+  if (expected === "enabled") {
+    expect(within(row).getByTitle("禁用")).toBeInTheDocument();
+    expect(
+      within(row).queryByText("启用") ?? within(row).getByText("当前代理"),
+    ).toBeInTheDocument();
   } else {
     expect(within(row).getByTitle("启用")).toBeInTheDocument();
     expect(within(row).getByText("禁用")).toBeInTheDocument();
@@ -709,4 +732,93 @@ describe("App with real ProviderList", () => {
       },
     );
   }, 15_000);
+
+  it("keeps Claude live config on proxy takeover after failover queue becomes empty", async () => {
+    const user = userEvent.setup();
+
+    setProviders("claude", {
+      "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+      "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+      "claude-gamma": claudeProvider("claude-gamma", "Claude Gamma", 2),
+    });
+    setCurrentProviderId("claude", "claude-beta");
+    setSettings({
+      enableLocalProxy: true,
+      enableFailoverToggle: true,
+      proxyConfirmed: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("claude", true);
+    setAutoFailoverEnabledState("claude", true);
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await expectProviderVisible("Claude Alpha");
+    expect(screen.getByText("Claude Beta")).toBeInTheDocument();
+    expect(screen.getByText("Claude Gamma")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-beta",
+      ]);
+      expectFailoverState("Claude Beta", "enabled");
+      expectFailoverState("Claude Alpha", "disabled");
+      expectFailoverState("Claude Gamma", "disabled");
+    });
+
+    await user.click(within(findProviderRow("Claude Alpha")).getByTitle("启用"));
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-alpha",
+        "claude-beta",
+      ]),
+    );
+
+    await user.click(within(findProviderRow("Claude Gamma")).getByTitle("启用"));
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-alpha",
+        "claude-beta",
+        "claude-gamma",
+      ]),
+    );
+
+    for (const providerName of ["Claude Alpha", "Claude Beta", "Claude Gamma"]) {
+      await user.click(within(findProviderRow(providerName)).getByTitle("禁用"));
+      await waitFor(() =>
+        expectFailoverState(providerName, "disabled"),
+      );
+    }
+
+    await waitFor(() => {
+      expect(getFailoverQueueState("claude")).toEqual([]);
+    });
+
+    setSwitchLiveSettings(
+      "claude",
+      getProviders("claude")["claude-alpha"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("claude") as any).env.ANTHROPIC_BASE_URL,
+    ).toBe("https://claude-alpha.example.com");
+
+    const { settingsApi } = await import("@/lib/api/settings");
+    await settingsApi.syncCurrentProvidersLive();
+
+    const live = getSwitchLiveSettings("claude") as {
+      env?: Record<string, string>;
+    };
+    expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
+    expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-alpha.example.com",
+    );
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-beta.example.com",
+    );
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-gamma.example.com",
+    );
+  }, 20_000);
 });
