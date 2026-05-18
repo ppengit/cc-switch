@@ -167,6 +167,20 @@
 - 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-webdav.test.tsx`
 - 当前结果：`2 passed, 0 failed`
 
+### SettingsPage + Proxy / Failover 真实页面验收
+
+- 新增验收文件：`tests/integration/SettingsPage.real-proxy-failover.test.tsx`
+- 覆盖范围：真实 `SettingsPage`、真实 `ProxyTabContent`、真实 `ProxyPanel`、真实 `FailoverQueueManager`、真实 `AutoFailoverConfigPanel`；只 mock 与代理 / 故障转移链路无关的重型设置区块。
+- 覆盖交互：默认打开 `proxy` 页签，展开本地代理配置，开启本地代理功能，确认并启动代理服务，接管 Claude，展开故障转移配置，确认总开关，切到 Claude 队列，开启自动故障转移，添加 `Claude Beta` 到队列，再从队列删除 `Claude Beta`。
+- 配置验证：接管后立即断言 Claude live settings 保持代理模板；开启故障转移、自动故障转移、添加 / 删除队列供应商后再次断言 `ANTHROPIC_BASE_URL` 仍为 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 仍为 `PROXY_MANAGED`，不会漂移成任一供应商 base URL。
+- 测试夹具：MSW 补齐 `get_global_proxy_config` / `update_global_proxy_config`，新增全局代理配置状态；测试环境补齐 `scrollTo`、Pointer Capture、`scrollIntoView` 等 jsdom 缺失的浏览器 API，保证 Radix Select 真实下拉交互可执行。
+- 产品修复：`FailoverQueueManager` 为自动故障转移开关、供应商下拉框、添加队列按钮补充明确可访问名称，真实用户操作和页面级验收都能稳定定位这些控件。
+- 红绿记录：首次运行暴露 `get_global_proxy_config` 未模拟、内部 `tablist` 查询歧义、自动故障转移开关无可访问名称、Radix Select 在 jsdom 下缺少浏览器 API、队列删除按钮定位歧义；逐项补齐后同一真实页面用例通过。
+- 最小验证命令：`pnpm vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
+- 最小验证结果：`1 file passed, 1 test passed, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-providers.test.tsx tests/components/GlobalProxySettings.test.tsx tests/hooks/useFailoverQueue.test.tsx tests/hooks/useProxyStatus.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`5 files passed, 16 tests passed, 0 failed`
+
 ### 组合回归
 
 - 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`
@@ -181,7 +195,7 @@
 - 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`2 files passed, 20 tests passed, 0 failed`
 - 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
-- 当前结果：`60 files passed, 348 tests passed, 0 failed`
+- 当前结果：`61 files passed, 349 tests passed, 0 failed`
 - 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归

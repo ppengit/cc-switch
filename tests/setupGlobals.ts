@@ -7,6 +7,50 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   } as unknown as typeof globalThis.ResizeObserver;
 }
 
+if (typeof globalThis.window !== "undefined") {
+  Object.defineProperty(globalThis.window, "scrollTo", {
+    value: () => {},
+    writable: true,
+    configurable: true,
+  });
+}
+
+if (typeof globalThis.Element !== "undefined") {
+  const elementPrototype = globalThis.Element.prototype;
+
+  if (typeof elementPrototype.hasPointerCapture !== "function") {
+    Object.defineProperty(elementPrototype, "hasPointerCapture", {
+      value: () => false,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof elementPrototype.setPointerCapture !== "function") {
+    Object.defineProperty(elementPrototype, "setPointerCapture", {
+      value: () => {},
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof elementPrototype.releasePointerCapture !== "function") {
+    Object.defineProperty(elementPrototype, "releasePointerCapture", {
+      value: () => {},
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof elementPrototype.scrollIntoView !== "function") {
+    Object.defineProperty(elementPrototype, "scrollIntoView", {
+      value: () => {},
+      writable: true,
+      configurable: true,
+    });
+  }
+}
+
 const storage = new Map<string, string>();
 
 if (

@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { McpServer, Provider, SessionMeta, Settings } from "@/types";
-import type { AppProxyConfig } from "@/types/proxy";
+import type { AppProxyConfig, GlobalProxyConfig } from "@/types/proxy";
 import {
   addSkillRepoState,
   addProvider,
@@ -16,6 +16,7 @@ import {
   getAvailableProvidersForFailoverState,
   getDiscoverableSkillsState,
   getFailoverQueueState,
+  getGlobalProxyConfigState,
   getInstalledSkillsState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
@@ -61,6 +62,7 @@ import {
   setAppProxyConfigState,
   setAutoFailoverEnabledState,
   setCurrentProviderId,
+  setGlobalProxyConfigState,
   setAppConfigDirOverrideState,
   deleteMcpServer,
   setMcpServerEnabled,
@@ -815,6 +817,16 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () =>
     success(isLiveTakeoverActiveState()),
   ),
+
+  http.post(`${TAURI_ENDPOINT}/get_global_proxy_config`, () =>
+    success(getGlobalProxyConfigState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/update_global_proxy_config`, async ({ request }) => {
+    const { config } = await withJson<{ config: GlobalProxyConfig }>(request);
+    setGlobalProxyConfigState(config);
+    return success(true);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
     const { appType } = await withJson<{ appType: AppId }>(request);

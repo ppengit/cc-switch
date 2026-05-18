@@ -149,6 +149,9 @@ export function FailoverQueueManager({
           checked={isFailoverEnabled}
           onCheckedChange={handleToggleFailover}
           disabled={disabled || setFailoverEnabled.isPending}
+          aria-label={t("proxy.failover.autoSwitch", {
+            defaultValue: "自动故障转移",
+          })}
         />
       </div>
 
@@ -170,7 +173,13 @@ export function FailoverQueueManager({
           onValueChange={setSelectedProviderId}
           disabled={disabled || isProvidersLoading}
         >
-          <SelectTrigger className="flex-1">
+          <SelectTrigger
+            className="flex-1"
+            aria-label={t(
+              "proxy.failoverQueue.selectProvider",
+              "选择供应商添加到队列",
+            )}
+          >
             <SelectValue
               placeholder={t(
                 "proxy.failoverQueue.selectProvider",
@@ -204,6 +213,9 @@ export function FailoverQueueManager({
           disabled={disabled || !selectedProviderId || addToQueue.isPending}
           size="icon"
           variant="outline"
+          aria-label={t("proxy.failoverQueue.addProvider", {
+            defaultValue: "添加供应商到故障转移队列",
+          })}
         >
           {addToQueue.isPending ? (
             <Loader2 className="h-4 w-4 animate-spin" />

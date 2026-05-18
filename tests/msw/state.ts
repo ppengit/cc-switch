@@ -23,6 +23,7 @@ import type {
 import type {
   AppProxyConfig,
   FailoverQueueItem,
+  GlobalProxyConfig,
   ProxyServerInfo,
   ProxyStatus,
 } from "@/types/proxy";
@@ -238,6 +239,13 @@ const createDefaultFailoverQueues = (): FailoverQueueByApp => ({
   hermes: [],
 });
 
+const createDefaultGlobalProxyConfig = (): GlobalProxyConfig => ({
+  proxyEnabled: false,
+  listenAddress: "127.0.0.1",
+  listenPort: 15721,
+  enableLogging: true,
+});
+
 const createProxyLiveSettings = (appType: SwitchModeAppId, port = 0) => {
   const baseUrl = `http://127.0.0.1:${port}`;
   if (appType === "codex") {
@@ -451,6 +459,7 @@ let appConfigTemplatesByApp = createDefaultAppConfigTemplates();
 let autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
 let proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
 let appProxyConfigsByApp = createDefaultAppProxyConfigs();
+let globalProxyConfigState = createDefaultGlobalProxyConfig();
 let failoverQueuesByApp = createDefaultFailoverQueues();
 let switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
 let managedAuthStatusByProvider = createDefaultManagedAuthStatus();
@@ -622,6 +631,7 @@ export const resetProviderState = () => {
   autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
   proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
   appProxyConfigsByApp = createDefaultAppProxyConfigs();
+  globalProxyConfigState = createDefaultGlobalProxyConfig();
   failoverQueuesByApp = createDefaultFailoverQueues();
   switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
   managedAuthStatusByProvider = createDefaultManagedAuthStatus();
@@ -1148,6 +1158,20 @@ export const stopProxyServerState = (restore = false) => {
 };
 
 export const isProxyRunningState = () => proxyStatusState.running;
+
+export const getGlobalProxyConfigState = () =>
+  JSON.parse(JSON.stringify(globalProxyConfigState)) as GlobalProxyConfig;
+
+export const setGlobalProxyConfigState = (config: GlobalProxyConfig) => {
+  globalProxyConfigState = JSON.parse(
+    JSON.stringify(config),
+  ) as GlobalProxyConfig;
+  proxyStatusState = {
+    ...proxyStatusState,
+    address: config.listenAddress,
+    port: config.listenPort,
+  };
+};
 
 export const getAppProxyConfigState = (appType: AppId) =>
   JSON.parse(
