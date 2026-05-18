@@ -41,7 +41,7 @@
 | Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离 | app 切换后工具栏按钮错位 | OpenClaw 专属入口已验收，内部配置写入待补 |
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换 | app 切换后入口错乱 | Hermes 专属入口已验收，Memory 内部保存待补 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
-| 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已有 hook/组件/设置页测试，待补真实页签验收 |
+| 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
 | 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` | 活动条显示、请求模型和上游模型显示、详情跳转 | 活动计数错乱、模型展示错配 | 已有部分测试，待继续扩展 |
 
 ## 已识别的测试失真来源
@@ -167,6 +167,17 @@
 - 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-webdav.test.tsx`
 - 当前结果：`2 passed, 0 failed`
 
+### SettingsPage + ImportExport 真实页面验收
+
+- 新增验收文件：`tests/integration/SettingsPage.real-import-export.test.tsx`
+- 覆盖范围：真实 `SettingsPage`、真实 `Tabs`、真实 `Accordion`、真实 `ImportExportSection`、真实 `useImportExport`；只 mock 与导入导出无关的重型设置区块。
+- 覆盖交互：默认打开高级页签，展开数据管理 accordion，从真实按钮选择导入文件，确认文件名显示，执行导入，展示成功消息和 backup id，清空已选文件和成功状态，再通过真实导出按钮选择保存路径并导出。
+- 错误恢复：模拟导入命令返回失败，验证页面展示后端错误消息，toast 收到同一错误，点击清空后错误消息和文件名都消失，选择文件按钮恢复可用。
+- 配置 / 请求验证：直接观测 `open_file_dialog`、`import_config_from_file`、`save_file_dialog`、`export_config_to_file`、`sync_current_providers_live` 的请求参数；确认导入成功后触发 `onImportSuccess`，并且导出默认文件名符合 `cc-switch-export-YYYYMMDD_HHMMSS.sql`。
+- 红绿记录：本批次没有改生产代码，新增真实页面验收首次运行即通过，说明当前实现已满足这条真实入口链路；该项原缺口是覆盖层级不足，而非已知生产缺陷。
+- 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-import-export.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`1 file passed, 2 tests passed, 0 failed`
+
 ### SettingsPage + Proxy / Failover 真实页面验收
 
 - 新增验收文件：`tests/integration/SettingsPage.real-proxy-failover.test.tsx`
@@ -195,7 +206,7 @@
 - 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`2 files passed, 20 tests passed, 0 failed`
 - 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
-- 当前结果：`61 files passed, 349 tests passed, 0 failed`
+- 当前结果：`62 files passed, 351 tests passed, 0 failed`
 - 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归
