@@ -24,7 +24,7 @@ use crate::store::AppState;
 use super::gemini_auth::{
     GeminiAuthType, detect_gemini_auth_type, ensure_google_oauth_security_flag,
 };
-use super::normalize_claude_models_in_value;
+use super::{SyncCurrentProviderOptions, normalize_claude_models_in_value};
 
 pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     let mut v = settings.clone();
@@ -1446,19 +1446,11 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
             // Additive mode: sync ALL providers
             sync_all_providers_to_live(state, &app_type)?;
         } else {
-            // Switch mode: sync only current provider
-            let current_id =
-                match crate::settings::get_effective_current_provider(&state.db, &app_type)? {
-                    Some(id) => id,
-                    None => continue,
-                };
-
-            let providers = state.db.get_all_providers(app_type.as_str())?;
-            if let Some(provider) = providers.get(&current_id) {
-                write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
-            }
-            // Note: get_effective_current_provider already validates existence,
-            // so providers.get() should always succeed here
+            super::ProviderService::sync_current_provider_for_app_with_options(
+                state,
+                app_type.clone(),
+                SyncCurrentProviderOptions { sync_mcp: false },
+            )?;
         }
     }
 

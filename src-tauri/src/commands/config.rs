@@ -703,8 +703,9 @@ pub async fn set_app_config_template(
             .await
             .map(|config| config.enabled)
             .unwrap_or(false);
+        let proxy_running = state.proxy_service.is_running().await;
 
-        if takeover_enabled {
+        if takeover_enabled && proxy_running {
             state
                 .proxy_service
                 .sync_live_access_template_for_app(&app_type)

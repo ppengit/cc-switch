@@ -420,6 +420,7 @@ fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{get_claude_settings_path, read_json_file};
     use crate::database::Database;
     use serde_json::json;
     use serial_test::serial;
@@ -951,6 +952,135 @@ mod tests {
         assert_eq!(
             active.provider_id, "b",
             "disabling queue head must immediately promote next failover target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_disable_last_failover_provider_keeps_takeover_live_when_queue_becomes_empty() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(crate::proxy::types::ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider = Provider::with_id(
+            "solo".to_string(),
+            "Solo Provider".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-solo",
+                    "ANTHROPIC_BASE_URL": "https://solo.example",
+                    "ANTHROPIC_MODEL": "model-solo"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.add_to_failover_queue("claude", "solo")
+            .expect("queue provider");
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover");
+
+        let state = crate::store::AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Claude, &provider)
+            .await
+            .expect("seed takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("claude", "solo", "Solo Provider")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+
+        for _ in 0..3 {
+            router
+                .record_result_with_disable_hook(
+                    "solo",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                    {
+                        let state = &state;
+                        move |app_type, provider_id| async move {
+                            state
+                                .proxy_service
+                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
+                                .await
+                                .expect("reconcile after disable");
+                        }
+                    },
+                )
+                .await
+                .expect("record auth failure");
+        }
+
+        assert!(
+            !db.is_in_failover_queue("claude", "solo").unwrap(),
+            "last provider should be removed from failover queue after auth disable"
+        );
+
+        let live: serde_json::Value =
+            read_json_file(&get_claude_settings_path()).expect("read claude live");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(serde_json::Value::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "disabling the last failover provider must not revert Claude live to the provider direct base_url while takeover remains enabled"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(serde_json::Value::as_str),
+            Some("PROXY_MANAGED"),
+            "takeover token placeholder must remain after the queue becomes empty"
+        );
+
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status");
+        assert!(
+            status
+                .active_targets
+                .iter()
+                .all(|target| target.app_type != "claude"),
+            "empty queue after auth disable should clear active target"
         );
 
         if state.proxy_service.is_running().await {
