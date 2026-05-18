@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Loader2,
@@ -105,13 +105,15 @@ export function SettingsPage({
 
   const [activeTab, setActiveTab] = useState<string>("general");
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setActiveTab(defaultTab);
       resetStatus();
     }
-  }, [open, resetStatus, defaultTab]);
+    wasOpenRef.current = open;
+  }, [defaultTab, open, resetStatus]);
 
   useEffect(() => {
     if (requiresRestart) {
@@ -492,6 +494,8 @@ export function SettingsPage({
             <TabsContent
               value="apiHub"
               forceMount
+              hidden={activeTab !== "apiHub"}
+              aria-hidden={activeTab !== "apiHub"}
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2 data-[state=inactive]:hidden"
             >
               <ApiHubPanel />

@@ -2278,7 +2278,17 @@ impl ProviderService {
         let (Some(live), Some(provider_endpoint)) =
             (live_endpoint.as_deref(), provider_endpoint.as_deref())
         else {
-            return false;
+            return match db.get_live_owner_provider_id(app_type.as_str()) {
+                Ok(Some(owner_id)) => owner_id == provider.id,
+                Ok(None) => live_endpoint.is_none() && provider_endpoint.is_none(),
+                Err(error) => {
+                    log::warn!(
+                        "读取 {} live owner 锚点失败，endpoint 缺失回填已拒绝: {error}",
+                        app_type.as_str()
+                    );
+                    false
+                }
+            };
         };
 
         if !Self::endpoints_match(live, provider_endpoint) {
@@ -3300,10 +3310,8 @@ impl ProviderService {
             .as_ref()
             .map(|config| config.auto_failover_enabled)
             .unwrap_or(false);
-        let is_proxy_running = futures::executor::block_on(state.proxy_service.is_running());
-        let proxy_live_active = takeover_enabled
-            && is_proxy_running
-            && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini);
+        let proxy_live_active =
+            takeover_enabled && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini);
 
         let providers = state.db.get_all_providers(app_type.as_str())?;
 

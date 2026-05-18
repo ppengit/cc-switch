@@ -76,6 +76,7 @@ export function AppSwitcher({
           <button
             key={app}
             type="button"
+            aria-label={appDisplayName[app]}
             onClick={() => handleSwitch(app)}
             className={cn(
               "group inline-flex items-center px-3 h-8 rounded-md text-sm font-medium transition-all duration-200",

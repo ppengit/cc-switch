@@ -2,11 +2,23 @@ import type { AppId } from "@/lib/api/types";
 import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api/auth";
 import type { AppConfigTemplateFile } from "@/lib/api/config";
 import type {
+  DiscoverableSkill,
+  ImportSkillSelection,
+  InstalledSkill,
+  SkillBackupEntry,
+  SkillRepo,
+  SkillUpdateInfo,
+  SkillsShDiscoverableSkill,
+  UnmanagedSkill,
+} from "@/lib/api/skills";
+import type {
   McpServer,
   Provider,
+  RemoteSnapshotInfo,
   SessionMessage,
   SessionMeta,
   Settings,
+  WebDavSyncSettings,
 } from "@/types";
 import type { ProxyStatus } from "@/types/proxy";
 
@@ -17,13 +29,19 @@ type LiveProviderIdsByApp = Record<
   "opencode" | "openclaw" | "hermes",
   string[]
 >;
+type ProxyTakeoverStatusByApp = Record<
+  "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes",
+  boolean
+>;
 type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
 type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
 type AutoFailoverEnabledByApp = Record<AppId, boolean>;
+type McpServersState = Record<string, McpServer>;
 type ManagedAuthStatusByProvider = Record<
   ManagedAuthProvider,
   ManagedAuthStatus
 >;
+type WebdavRemoteInfoState = RemoteSnapshotInfo | { empty: true };
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -123,6 +141,15 @@ const createDefaultAutoFailoverEnabled = (): AutoFailoverEnabledByApp => ({
   hermes: false,
 });
 
+const createDefaultProxyTakeoverStatus = (): ProxyTakeoverStatusByApp => ({
+  claude: false,
+  codex: false,
+  gemini: false,
+  opencode: false,
+  openclaw: false,
+  hermes: false,
+});
+
 const createDefaultManagedAuthStatus = (): ManagedAuthStatusByProvider => ({
   github_copilot: {
     provider: "github_copilot",
@@ -140,6 +167,160 @@ const createDefaultManagedAuthStatus = (): ManagedAuthStatusByProvider => ({
   },
 });
 
+const createSkillApps = (
+  overrides: Partial<InstalledSkill["apps"]> = {},
+): InstalledSkill["apps"] => ({
+  claude: false,
+  codex: false,
+  gemini: false,
+  opencode: false,
+  openclaw: false,
+  hermes: false,
+  ...overrides,
+});
+
+const createDefaultInstalledSkills = (): InstalledSkill[] => [
+  {
+    id: "skill-alpha",
+    name: "Skill Alpha",
+    description: "Managed skill fixture",
+    directory: "skill-alpha",
+    repoOwner: "mock-owner",
+    repoName: "mock-skills",
+    repoBranch: "main",
+    readmeUrl: "https://github.com/mock-owner/mock-skills/tree/main/skill-alpha",
+    apps: createSkillApps({ claude: true }),
+    installedAt: 1_700_010_000,
+    updatedAt: 1_700_010_100,
+    contentHash: "hash-alpha",
+  },
+];
+
+const createDefaultUnmanagedSkills = (): UnmanagedSkill[] => [
+  {
+    directory: "legacy-skill",
+    name: "Legacy Skill",
+    description: "Skill discovered in existing app folders",
+    foundIn: ["claude", "codex"],
+    path: "/mock/.claude/skills/legacy-skill",
+  },
+];
+
+const createDefaultDiscoverableSkills = (): DiscoverableSkill[] => [
+  {
+    key: "repo-skill:mock-owner:mock-skills",
+    name: "Repo Skill",
+    description: "Installable skill from a configured repo",
+    directory: "repo-skill",
+    repoOwner: "mock-owner",
+    repoName: "mock-skills",
+    repoBranch: "main",
+    readmeUrl: "https://github.com/mock-owner/mock-skills/tree/main/repo-skill",
+  },
+];
+
+const createDefaultSkillRepos = (): SkillRepo[] => [
+  {
+    owner: "mock-owner",
+    name: "mock-skills",
+    branch: "main",
+    enabled: true,
+  },
+];
+
+const createDefaultSkillBackups = (): SkillBackupEntry[] => [
+  {
+    backupId: "backup-alpha",
+    backupPath: "/mock/backups/skill-alpha",
+    createdAt: 1_700_020_000,
+    skill: {
+      id: "skill-restored",
+      name: "Restored Skill",
+      description: "Backup skill fixture",
+      directory: "restored-skill",
+      repoOwner: "mock-owner",
+      repoName: "mock-skills",
+      repoBranch: "main",
+      apps: createSkillApps(),
+      installedAt: 1_700_000_000,
+      updatedAt: 1_700_000_100,
+      contentHash: "hash-restored",
+    },
+  },
+];
+
+const createDefaultSkillUpdates = (): SkillUpdateInfo[] => [
+  {
+    id: "skill-alpha",
+    name: "Skill Alpha",
+    currentHash: "hash-alpha",
+    remoteHash: "hash-alpha-new",
+  },
+];
+
+const createDefaultSkillsShResults = (): SkillsShDiscoverableSkill[] => [
+  {
+    key: "skillssh-result:remote-owner:remote-skills",
+    name: "Remote Skill",
+    directory: "remote-skill",
+    repoOwner: "remote-owner",
+    repoName: "remote-skills",
+    repoBranch: "main",
+    installs: 42,
+    readmeUrl: "https://github.com/remote-owner/remote-skills/tree/main/remote-skill",
+  },
+];
+
+const createDefaultMcpServers = (): McpServersState => ({
+  sample: {
+    id: "sample",
+    name: "Sample Claude Server",
+    description: "Claude server fixture",
+    apps: {
+      claude: true,
+      codex: false,
+      gemini: false,
+      opencode: false,
+      openclaw: false,
+      hermes: false,
+    },
+    server: {
+      type: "stdio",
+      command: "claude-server",
+    },
+  },
+  httpServer: {
+    id: "httpServer",
+    name: "HTTP Codex Server",
+    description: "Codex server fixture",
+    apps: {
+      claude: false,
+      codex: true,
+      gemini: false,
+      opencode: false,
+      openclaw: false,
+      hermes: false,
+    },
+    server: {
+      type: "http",
+      url: "http://localhost:3000",
+    },
+  },
+});
+
+const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
+  deviceName: "Mock Device",
+  createdAt: "2026-05-19T00:00:00Z",
+  snapshotId: "snapshot-1",
+  version: 2,
+  protocolVersion: 2,
+  dbCompatVersion: 6,
+  compatible: true,
+  artifacts: ["db.sql", "skills.zip"],
+  layout: "current",
+  remotePath: "/cc-switch-sync/v2/db-v6/default",
+});
+
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
 let liveProviderIds: LiveProviderIdsByApp = {
@@ -150,7 +331,29 @@ let liveProviderIds: LiveProviderIdsByApp = {
 let providerDefaultTemplatesByApp = createDefaultProviderTemplates();
 let appConfigTemplatesByApp = createDefaultAppConfigTemplates();
 let autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
+let proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
 let managedAuthStatusByProvider = createDefaultManagedAuthStatus();
+let installedSkillsState = createDefaultInstalledSkills();
+let unmanagedSkillsState = createDefaultUnmanagedSkills();
+let discoverableSkillsState = createDefaultDiscoverableSkills();
+let skillReposState = createDefaultSkillRepos();
+let skillBackupsState = createDefaultSkillBackups();
+let skillUpdatesState = createDefaultSkillUpdates();
+let skillsShResultsState = createDefaultSkillsShResults();
+let lastZipInstallRequest: { filePath: string; currentApp: AppId } | null =
+  null;
+let mcpServersState = createDefaultMcpServers();
+let lastWebdavSaveRequest: {
+  settings: WebDavSyncSettings;
+  passwordTouched: boolean;
+} | null = null;
+let webdavTestRequests: Array<{
+  settings: WebDavSyncSettings;
+  preserveEmptyPassword: boolean;
+}> = [];
+let webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
+let webdavUploadCount = 0;
+let webdavDownloadCount = 0;
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -159,6 +362,7 @@ let settingsState: Settings = {
   codexConfigDir: "/default/codex",
   language: "zh",
 };
+let lastSettingsSaveRequest: Settings | null = null;
 let appConfigDirOverride: string | null = null;
 const createDefaultProxyStatus = (): ProxyStatus => ({
   running: false,
@@ -290,7 +494,22 @@ export const resetProviderState = () => {
   providerDefaultTemplatesByApp = createDefaultProviderTemplates();
   appConfigTemplatesByApp = createDefaultAppConfigTemplates();
   autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
+  proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
   managedAuthStatusByProvider = createDefaultManagedAuthStatus();
+  installedSkillsState = createDefaultInstalledSkills();
+  unmanagedSkillsState = createDefaultUnmanagedSkills();
+  discoverableSkillsState = createDefaultDiscoverableSkills();
+  skillReposState = createDefaultSkillRepos();
+  skillBackupsState = createDefaultSkillBackups();
+  skillUpdatesState = createDefaultSkillUpdates();
+  skillsShResultsState = createDefaultSkillsShResults();
+  lastZipInstallRequest = null;
+  mcpServersState = createDefaultMcpServers();
+  lastWebdavSaveRequest = null;
+  webdavTestRequests = [];
+  webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
+  webdavUploadCount = 0;
+  webdavDownloadCount = 0;
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
   settingsState = {
@@ -301,6 +520,7 @@ export const resetProviderState = () => {
     codexConfigDir: "/default/codex",
     language: "zh",
   };
+  lastSettingsSaveRequest = null;
   appConfigDirOverride = null;
   proxyStatusState = createDefaultProxyStatus();
   mcpConfigs = {
@@ -348,6 +568,363 @@ export const resetProviderState = () => {
     openclaw: {},
     hermes: {},
   };
+};
+
+export const getLastWebdavSaveRequest = () =>
+  lastWebdavSaveRequest
+    ? (JSON.parse(JSON.stringify(lastWebdavSaveRequest)) as {
+        settings: WebDavSyncSettings;
+        passwordTouched: boolean;
+      })
+    : null;
+
+export const getWebdavTestRequests = () =>
+  JSON.parse(JSON.stringify(webdavTestRequests)) as Array<{
+    settings: WebDavSyncSettings;
+    preserveEmptyPassword: boolean;
+  }>;
+
+export const getWebdavSyncCounts = () => ({
+  upload: webdavUploadCount,
+  download: webdavDownloadCount,
+});
+
+export const setWebdavRemoteInfoState = (info: WebdavRemoteInfoState) => {
+  webdavRemoteInfoState = JSON.parse(JSON.stringify(info)) as WebdavRemoteInfoState;
+};
+
+export const recordWebdavSaveSettings = (
+  settings: WebDavSyncSettings,
+  passwordTouched: boolean,
+) => {
+  lastWebdavSaveRequest = {
+    settings: JSON.parse(JSON.stringify(settings)) as WebDavSyncSettings,
+    passwordTouched,
+  };
+  setSettings({
+    webdavSync: {
+      ...settings,
+      password: "",
+    },
+  });
+};
+
+export const recordWebdavTestConnection = (
+  settings: WebDavSyncSettings,
+  preserveEmptyPassword: boolean,
+) => {
+  webdavTestRequests.push({
+    settings: JSON.parse(JSON.stringify(settings)) as WebDavSyncSettings,
+    preserveEmptyPassword,
+  });
+};
+
+export const getWebdavRemoteInfoState = () =>
+  JSON.parse(JSON.stringify(webdavRemoteInfoState)) as WebdavRemoteInfoState;
+
+export const recordWebdavUpload = () => {
+  webdavUploadCount += 1;
+};
+
+export const recordWebdavDownload = () => {
+  webdavDownloadCount += 1;
+};
+
+export const getInstalledSkillsState = () =>
+  JSON.parse(JSON.stringify(installedSkillsState)) as InstalledSkill[];
+
+export const setInstalledSkillsState = (skills: InstalledSkill[]) => {
+  installedSkillsState = JSON.parse(JSON.stringify(skills)) as InstalledSkill[];
+};
+
+export const getUnmanagedSkillsState = () =>
+  JSON.parse(JSON.stringify(unmanagedSkillsState)) as UnmanagedSkill[];
+
+export const setUnmanagedSkillsState = (skills: UnmanagedSkill[]) => {
+  unmanagedSkillsState = JSON.parse(JSON.stringify(skills)) as UnmanagedSkill[];
+};
+
+export const getDiscoverableSkillsState = () =>
+  JSON.parse(JSON.stringify(discoverableSkillsState)) as DiscoverableSkill[];
+
+export const setDiscoverableSkillsState = (skills: DiscoverableSkill[]) => {
+  discoverableSkillsState = JSON.parse(
+    JSON.stringify(skills),
+  ) as DiscoverableSkill[];
+};
+
+export const getSkillReposState = () =>
+  JSON.parse(JSON.stringify(skillReposState)) as SkillRepo[];
+
+export const setSkillReposState = (repos: SkillRepo[]) => {
+  skillReposState = JSON.parse(JSON.stringify(repos)) as SkillRepo[];
+};
+
+export const getSkillBackupsState = () =>
+  JSON.parse(JSON.stringify(skillBackupsState)) as SkillBackupEntry[];
+
+export const setSkillBackupsState = (backups: SkillBackupEntry[]) => {
+  skillBackupsState = JSON.parse(
+    JSON.stringify(backups),
+  ) as SkillBackupEntry[];
+};
+
+export const getSkillUpdatesState = () =>
+  JSON.parse(JSON.stringify(skillUpdatesState)) as SkillUpdateInfo[];
+
+export const setSkillUpdatesState = (updates: SkillUpdateInfo[]) => {
+  skillUpdatesState = JSON.parse(JSON.stringify(updates)) as SkillUpdateInfo[];
+};
+
+export const getSkillsShResultsState = () =>
+  JSON.parse(JSON.stringify(skillsShResultsState)) as SkillsShDiscoverableSkill[];
+
+export const setSkillsShResultsState = (
+  skills: SkillsShDiscoverableSkill[],
+) => {
+  skillsShResultsState = JSON.parse(
+    JSON.stringify(skills),
+  ) as SkillsShDiscoverableSkill[];
+};
+
+export const toggleSkillAppState = (
+  id: string,
+  app: AppId,
+  enabled: boolean,
+) => {
+  installedSkillsState = installedSkillsState.map((skill) =>
+    skill.id === id
+      ? {
+          ...skill,
+          apps: {
+            ...skill.apps,
+            [app]: enabled,
+          },
+        }
+      : skill,
+  );
+};
+
+export const importSkillsFromAppsState = (
+  imports: ImportSkillSelection[],
+) => {
+  const imported = imports
+    .map((selection) => {
+      const unmanaged = unmanagedSkillsState.find(
+        (skill) => skill.directory === selection.directory,
+      );
+      if (!unmanaged) return null;
+      return {
+        id: `imported-${unmanaged.directory}`,
+        name: unmanaged.name,
+        description: unmanaged.description,
+        directory: unmanaged.directory,
+        apps: {
+          ...createSkillApps(),
+          ...selection.apps,
+        },
+        installedAt: Date.now(),
+        updatedAt: Date.now(),
+      } satisfies InstalledSkill;
+    })
+    .filter(Boolean) as InstalledSkill[];
+
+  const importedIds = new Set(imported.map((skill) => skill.id));
+  installedSkillsState = [
+    ...installedSkillsState.filter((skill) => !importedIds.has(skill.id)),
+    ...imported,
+  ];
+  const importedDirectories = new Set(imports.map((item) => item.directory));
+  unmanagedSkillsState = unmanagedSkillsState.filter(
+    (skill) => !importedDirectories.has(skill.directory),
+  );
+  return JSON.parse(JSON.stringify(imported)) as InstalledSkill[];
+};
+
+export const installSkillFromDiscoveryState = (
+  skill: DiscoverableSkill,
+  currentApp: AppId,
+) => {
+  const installed: InstalledSkill = {
+    id: skill.directory,
+    name: skill.name,
+    description: skill.description,
+    directory: skill.directory,
+    repoOwner: skill.repoOwner,
+    repoName: skill.repoName,
+    repoBranch: skill.repoBranch,
+    readmeUrl: skill.readmeUrl,
+    apps: createSkillApps({ [currentApp]: true }),
+    installedAt: Date.now(),
+    updatedAt: Date.now(),
+    contentHash: `hash-${skill.directory}`,
+  };
+  installedSkillsState = [
+    ...installedSkillsState.filter((item) => item.id !== installed.id),
+    installed,
+  ];
+  return JSON.parse(JSON.stringify(installed)) as InstalledSkill;
+};
+
+export const uninstallSkillState = (id: string) => {
+  const existing = installedSkillsState.find((skill) => skill.id === id);
+  installedSkillsState = installedSkillsState.filter((skill) => skill.id !== id);
+  if (existing) {
+    skillBackupsState = [
+      {
+        backupId: `backup-${id}`,
+        backupPath: `/mock/backups/${id}`,
+        createdAt: Math.floor(Date.now() / 1000),
+        skill: existing,
+      },
+      ...skillBackupsState,
+    ];
+  }
+  return { backupPath: existing ? `/mock/backups/${id}` : undefined };
+};
+
+export const restoreSkillBackupState = (
+  backupId: string,
+  currentApp: AppId,
+) => {
+  const backup = skillBackupsState.find((entry) => entry.backupId === backupId);
+  if (!backup) return null;
+  const restored: InstalledSkill = {
+    ...backup.skill,
+    apps: createSkillApps({ [currentApp]: true }),
+    installedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  installedSkillsState = [
+    ...installedSkillsState.filter((skill) => skill.id !== restored.id),
+    restored,
+  ];
+  skillBackupsState = skillBackupsState.filter(
+    (entry) => entry.backupId !== backupId,
+  );
+  return JSON.parse(JSON.stringify(restored)) as InstalledSkill;
+};
+
+export const deleteSkillBackupState = (backupId: string) => {
+  skillBackupsState = skillBackupsState.filter(
+    (entry) => entry.backupId !== backupId,
+  );
+  return true;
+};
+
+export const installSkillsFromZipState = (
+  filePath: string,
+  currentApp: AppId,
+) => {
+  lastZipInstallRequest = { filePath, currentApp };
+  const installed: InstalledSkill = {
+    id: "zip-skill",
+    name: "Zip Skill",
+    description: `Installed from ${filePath}`,
+    directory: "zip-skill",
+    apps: createSkillApps({ [currentApp]: true }),
+    installedAt: Date.now(),
+    updatedAt: Date.now(),
+    contentHash: "hash-zip",
+  };
+  installedSkillsState = [
+    ...installedSkillsState.filter((skill) => skill.id !== installed.id),
+    installed,
+  ];
+  return [JSON.parse(JSON.stringify(installed)) as InstalledSkill];
+};
+
+export const getLastZipInstallRequest = () =>
+  lastZipInstallRequest
+    ? ({ ...lastZipInstallRequest } as { filePath: string; currentApp: AppId })
+    : null;
+
+export const addSkillRepoState = (repo: SkillRepo) => {
+  skillReposState = [
+    ...skillReposState.filter(
+      (item) => !(item.owner === repo.owner && item.name === repo.name),
+    ),
+    JSON.parse(JSON.stringify(repo)) as SkillRepo,
+  ];
+};
+
+export const removeSkillRepoState = (owner: string, name: string) => {
+  skillReposState = skillReposState.filter(
+    (repo) => !(repo.owner === owner && repo.name === name),
+  );
+};
+
+export const updateSkillState = (id: string) => {
+  const update = skillUpdatesState.find((item) => item.id === id);
+  installedSkillsState = installedSkillsState.map((skill) =>
+    skill.id === id
+      ? {
+          ...skill,
+          contentHash: update?.remoteHash ?? skill.contentHash,
+          updatedAt: Date.now(),
+        }
+      : skill,
+  );
+  skillUpdatesState = skillUpdatesState.filter((item) => item.id !== id);
+  return (
+    installedSkillsState.find((skill) => skill.id === id) ??
+    createDefaultInstalledSkills()[0]
+  );
+};
+
+export const getMcpServersState = () =>
+  JSON.parse(JSON.stringify(mcpServersState)) as McpServersState;
+
+export const setMcpServersState = (servers: McpServersState) => {
+  mcpServersState = JSON.parse(JSON.stringify(servers)) as McpServersState;
+};
+
+export const toggleMcpAppState = (
+  serverId: string,
+  app: AppId,
+  enabled: boolean,
+) => {
+  const server = mcpServersState[serverId];
+  if (!server) return;
+  mcpServersState[serverId] = {
+    ...server,
+    apps: {
+      ...server.apps,
+      [app]: enabled,
+    },
+  };
+};
+
+export const upsertMcpServerState = (server: McpServer) => {
+  mcpServersState[server.id] = JSON.parse(JSON.stringify(server)) as McpServer;
+};
+
+export const deleteMcpServerState = (id: string) => {
+  delete mcpServersState[id];
+};
+
+export const importMcpFromAppsState = () => {
+  if (!mcpServersState.importedMcp) {
+    mcpServersState.importedMcp = {
+      id: "importedMcp",
+      name: "Imported MCP",
+      description: "Imported from app config",
+      apps: {
+        claude: true,
+        codex: true,
+        gemini: false,
+        opencode: false,
+        openclaw: false,
+        hermes: false,
+      },
+      server: {
+        type: "stdio",
+        command: "imported-mcp",
+      },
+    };
+    return 1;
+  }
+  return 0;
 };
 
 export const getProxyStatusState = () =>
@@ -408,6 +985,18 @@ export const setAutoFailoverEnabledState = (
   enabled: boolean,
 ) => {
   autoFailoverEnabledByApp[appType] = enabled;
+};
+
+export const getProxyTakeoverStatusState = () =>
+  JSON.parse(JSON.stringify(proxyTakeoverStatusByApp)) as ProxyTakeoverStatusByApp;
+
+export const setProxyTakeoverStatusState = (
+  status: Partial<ProxyTakeoverStatusByApp>,
+) => {
+  proxyTakeoverStatusByApp = {
+    ...proxyTakeoverStatusByApp,
+    ...JSON.parse(JSON.stringify(status)),
+  };
 };
 
 export const getManagedAuthStatus = (provider: ManagedAuthProvider) =>
@@ -491,8 +1080,18 @@ export const listProviders = (appType: AppId) =>
 export const getSettings = () =>
   JSON.parse(JSON.stringify(settingsState)) as Settings;
 
+export const getLastSettingsSaveRequest = () =>
+  lastSettingsSaveRequest
+    ? (JSON.parse(JSON.stringify(lastSettingsSaveRequest)) as Settings)
+    : null;
+
 export const setSettings = (data: Partial<Settings>) => {
   settingsState = { ...settingsState, ...data };
+};
+
+export const recordSettingsSave = (settings: Settings) => {
+  lastSettingsSaveRequest = JSON.parse(JSON.stringify(settings)) as Settings;
+  setSettings(settings);
 };
 
 export const getAppConfigDirOverride = () => appConfigDirOverride;
