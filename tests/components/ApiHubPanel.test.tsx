@@ -1,6 +1,6 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import { ApiHubPanel } from "@/components/settings/ApiHubPanel";
 import { server } from "../msw/server";
@@ -35,6 +35,10 @@ describe("ApiHubPanel", () => {
   beforeEach(() => {
     vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
     toastSuccessMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("shows row loading only for the site reported by batch progress events", async () => {
@@ -111,14 +115,16 @@ describe("ApiHubPanel", () => {
       screen.queryByRole("button", { name: "同步中" }),
     ).not.toBeInTheDocument();
 
-    emitTauriEvent("api_hub_sync_progress", {
-      site_id: "site-1",
-      site_name: "Demo Hub",
-      index: 1,
-      total: 2,
-      step: "sync",
-      status: "running",
-      error: null,
+    act(() => {
+      emitTauriEvent("api_hub_sync_progress", {
+        site_id: "site-1",
+        site_name: "Demo Hub",
+        index: 1,
+        total: 2,
+        step: "sync",
+        status: "running",
+        error: null,
+      });
     });
 
     await waitFor(() => {
@@ -131,14 +137,16 @@ describe("ApiHubPanel", () => {
       "同步对齐",
     );
 
-    emitTauriEvent("api_hub_sync_progress", {
-      site_id: "site-1",
-      site_name: "Demo Hub",
-      index: 1,
-      total: 2,
-      step: "sync",
-      status: "success",
-      error: null,
+    act(() => {
+      emitTauriEvent("api_hub_sync_progress", {
+        site_id: "site-1",
+        site_name: "Demo Hub",
+        index: 1,
+        total: 2,
+        step: "sync",
+        status: "success",
+        error: null,
+      });
     });
 
     await waitFor(() => {
@@ -162,14 +170,16 @@ describe("ApiHubPanel", () => {
       screen.queryByRole("button", { name: "对齐中" }),
     ).not.toBeInTheDocument();
 
-    emitTauriEvent("api_hub_align_progress", {
-      site_id: "site-2",
-      site_name: "Second Hub",
-      index: 2,
-      total: 2,
-      step: "align",
-      status: "running",
-      error: null,
+    act(() => {
+      emitTauriEvent("api_hub_align_progress", {
+        site_id: "site-2",
+        site_name: "Second Hub",
+        index: 2,
+        total: 2,
+        step: "align",
+        status: "running",
+        error: null,
+      });
     });
 
     await waitFor(() => {

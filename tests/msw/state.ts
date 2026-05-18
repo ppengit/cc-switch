@@ -1082,6 +1082,7 @@ export const updateProvider = (
 export const deleteProvider = (appType: AppId, providerId: string) => {
   if (!providers[appType]) return;
   delete providers[appType][providerId];
+  removeProviderFromLiveConfigState(appType, providerId);
   if (current[appType] === providerId) {
     const fallback = Object.keys(providers[appType])[0] ?? "";
     current[appType] = fallback;

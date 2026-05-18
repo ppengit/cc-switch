@@ -1028,6 +1028,7 @@ export function ProviderList({
   onSwitch,
   onEdit,
   onDelete,
+  onRemoveFromConfig,
   onDuplicate,
   onConfigureUsage,
   onOpenWebsite,
@@ -2707,6 +2708,10 @@ export function ProviderList({
     if (isAdditiveMode) {
       try {
         if (row.isInConfig) {
+          if (onRemoveFromConfig) {
+            onRemoveFromConfig(row.provider);
+            return;
+          }
           await providersApi.removeFromLiveConfig(row.provider.id, appId);
           queryClient.setQueryData(
             ["proxyStatus"],

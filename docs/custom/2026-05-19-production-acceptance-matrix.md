@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收，仍需继续扩展模板 / 批量写入 / 删除确认 / 更多 app 类型真实表单链路 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；仍需继续扩展更多 app 类型真实表单链路和故障转移真实操作验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、过滤 | 选择态和搜索态错乱、删除后 UI 不一致 | 已补真实 App + SessionManagerPage 页面级验收，仍需继续扩展批量删除 / 重命名 / 导出 / 恢复终端 |
 | Prompts | `PromptPanel` | 打开、返回、新建入口 | 与顶层视图切换耦合 | 顶层入口已验收，面板内部交互待补 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -52,6 +52,7 @@
 2. 把 `ApiHubPanel` 等问题组件本体 mock 掉，导致串页、错位、状态保持类问题无法暴露。
 3. 只测单个组件，不测顶层入口切换，导致页面组合后的真实结构问题漏检。
 4. 只验证请求调用成功，不验证返回后页面状态是否保持一致。
+5. 测试文件修改全局 prototype 或注册 Tauri 事件监听后未恢复，导致单文件通过但组合运行时污染后续真实页面验收。
 
 ## 本批次执行顺序
 
@@ -104,9 +105,11 @@
 - 覆盖范围：真实 `App`、真实 `AppSwitcher`、真实 `ProviderList` 和真实 provider hooks；只 mock 与本链路无关的重型子页面和弹窗外壳。
 - 覆盖交互：Claude / Codex 跨应用切换后供应商列表不串页；当前供应商状态按 app 隔离；搜索只定位不过滤且切换 app 后重置；切换当前供应商只影响当前 app；编辑 / 用量配置弹窗收到当前 app 的 provider；复制供应商只新增到当前 app。
 - 覆盖 live 配置：OpenCode / OpenClaw / Hermes 三类 additive 应用分别使用不同 live provider ids，真实切换页面后验证“使用中 / 禁用”状态只来自当前 app 的 live 配置，不会把其它 app 的 live 状态带入当前页。
+- 新增覆盖：OpenCode additive provider 批量“写入配置 / 移出配置”只变更当前 app 的 live ids，不删除 provider，不影响 OpenClaw / Hermes；单项移出 live 配置必须先弹确认，取消不改状态，确认后仅移出 live ids；删除 provider 必须先弹确认，取消不改状态，确认后删除 provider 并清理 additive live ids；Codex provider 配置模板从真实 App 页面批量套用时只更新模板字段，保留每个供应商已有 API key / base URL，不影响 Claude。
+- 修复内容：`ProviderList` 接入 `onRemoveFromConfig`，表格版 additive provider 单项移出恢复走 App 级确认链路；MSW `deleteProvider` 与生产语义对齐，删除 provider 时同步清理 additive live ids。
 - 测试夹具：补齐 `list_recent_sessions`、OMO 当前供应商、Claude Desktop 状态、OpenClaw model catalog / default model、Hermes model config、当前配置文件读写、流式检查、`remove_provider_from_live_config`、`open_provider_terminal` 等 MSW 默认响应，保证真实 `ProviderList` 页面运行时不会被无关未处理请求干扰。
 - 验证命令：`pnpm vitest run tests/integration/App.real-providers.test.tsx`
-- 当前结果：`4 passed, 0 failed`
+- 当前结果：`8 passed, 0 failed`
 
 ### App + Add / Edit ProviderForm 真实页面验收
 
@@ -153,7 +156,17 @@
 
 - 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`
 - 当前结果：`13 files passed, 83 tests passed, 0 failed`
-- 已知测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、`ApiHubPanel` 一条进度事件测试的 React `act(...)` warning、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
+- 已知测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
+
+### 测试隔离与完整前端串行回归
+
+- 发现问题：`ApiHubPanel.test.tsx` 会 mock `HTMLInputElement.prototype.click`，但全局清理只执行 `vi.clearAllMocks()`，不会恢复 prototype；Tauri event mock 也没有跨测试清理 listener。结果是单文件测试通过，但 `ApiHubPanel.test.tsx` 与 `App.real-providers.test.tsx` 组合运行时，真实供应商页面搜索 / 切换用例可能超时，削弱模拟操作验收可信度。
+- 修复内容：`ApiHubPanel.test.tsx` 增加 `afterEach(() => vi.restoreAllMocks())`；`tests/msw/tauriMocks.ts` 增加 `resetTauriEventListeners()`；`tests/setupTests.ts` 每个测试后清理 Tauri listeners；Api-Hub 进度事件模拟用 `act(...)` 包裹，消除对应 React warning。
+- 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`2 files passed, 20 tests passed, 0 failed`
+- 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
+- 当前结果：退出码 `0`
+- 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归
 

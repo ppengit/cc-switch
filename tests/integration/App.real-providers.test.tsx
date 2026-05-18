@@ -6,10 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
 import {
   getCurrentProviderId,
+  getLiveProviderIds,
   getProviders,
   resetProviderState,
   setCurrentProviderId,
   setLiveProviderIds,
+  setProviderDefaultTemplateState,
   setProviders,
 } from "../msw/state";
 
@@ -67,9 +69,10 @@ vi.mock("@/components/UsageScriptModal", () => ({
 }));
 
 vi.mock("@/components/ConfirmDialog", () => ({
-  ConfirmDialog: ({ isOpen, title, onConfirm, onCancel }: any) =>
+  ConfirmDialog: ({ isOpen, title, message, onConfirm, onCancel }: any) =>
     isOpen ? (
       <div role="dialog" aria-label={title}>
+        <p>{message}</p>
         <button onClick={onConfirm}>confirm</button>
         <button onClick={onCancel}>cancel</button>
       </div>
@@ -501,4 +504,209 @@ describe("App with real ProviderList", () => {
     expectAdditiveState("OpenCode Live", "enabled");
     expectAdditiveState("OpenCode Idle", "disabled");
   });
+
+  it("bulk writes and removes OpenCode live-config membership without deleting providers or touching other apps", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "OpenCode");
+    await expectProviderVisible("OpenCode Live");
+    expectAdditiveState("OpenCode Live", "enabled");
+    expectAdditiveState("OpenCode Idle", "disabled");
+
+    await user.click(
+      within(findProviderRow("OpenCode Idle")).getByRole("checkbox", {
+        name: "选择",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "写入配置" }));
+
+    await waitFor(() => {
+      expect(getLiveProviderIds("opencode")).toEqual([
+        "opencode-live",
+        "opencode-idle",
+      ]);
+      expectAdditiveState("OpenCode Idle", "enabled");
+    });
+
+    expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-idle"]);
+    expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
+    expect(getProviders("opencode")["opencode-idle"]).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "移出配置" }));
+
+    await waitFor(() => {
+      expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+      expectAdditiveState("OpenCode Idle", "disabled");
+    });
+
+    expect(getProviders("opencode")["opencode-idle"]).toBeDefined();
+    expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-idle"]);
+    expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
+  }, 15_000);
+
+  it("requires confirmation before removing a single additive provider from live config", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "OpenCode");
+    await expectProviderVisible("OpenCode Live");
+    expectAdditiveState("OpenCode Live", "enabled");
+
+    await user.click(within(findProviderRow("OpenCode Live")).getByTitle("禁用"));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "confirm.removeProvider",
+    });
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getProviders("opencode")["opencode-live"]).toBeDefined();
+
+    await user.click(within(dialog).getByText("cancel"));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "confirm.removeProvider" }),
+      ).toBeNull();
+    });
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getProviders("opencode")["opencode-live"]).toBeDefined();
+
+    await user.click(within(findProviderRow("OpenCode Live")).getByTitle("禁用"));
+    await user.click(
+      within(
+        await screen.findByRole("dialog", { name: "confirm.removeProvider" }),
+      ).getByText("confirm"),
+    );
+
+    await waitFor(() => {
+      expect(getLiveProviderIds("opencode")).toEqual([]);
+      expectAdditiveState("OpenCode Live", "disabled");
+    });
+    expect(getProviders("opencode")["opencode-live"]).toBeDefined();
+  }, 15_000);
+
+  it("requires confirmation before deleting a provider and clears additive live membership", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "OpenCode");
+    await expectProviderVisible("OpenCode Live");
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+
+    await user.click(
+      within(findProviderRow("OpenCode Live")).getByRole("button", {
+        name: "删除",
+      }),
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "confirm.deleteProvider",
+    });
+    expect(getProviders("opencode")["opencode-live"]).toBeDefined();
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+
+    await user.click(within(dialog).getByText("cancel"));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "confirm.deleteProvider" }),
+      ).toBeNull();
+    });
+    expect(getProviders("opencode")["opencode-live"]).toBeDefined();
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+
+    await user.click(
+      within(findProviderRow("OpenCode Live")).getByRole("button", {
+        name: "删除",
+      }),
+    );
+    await user.click(
+      within(
+        await screen.findByRole("dialog", { name: "confirm.deleteProvider" }),
+      ).getByText("confirm"),
+    );
+
+    await waitFor(() => {
+      expect(getProviders("opencode")["opencode-live"]).toBeUndefined();
+    });
+    expect(getLiveProviderIds("opencode")).toEqual([]);
+    expect(getProviders("opencode")["opencode-idle"]).toBeDefined();
+    expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-idle"]);
+    expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
+  }, 15_000);
+
+  it("applies the provider template from the real App page without overwriting Codex credentials or other apps", async () => {
+    const user = userEvent.setup();
+
+    setProviderDefaultTemplateState(
+      "codex",
+      JSON.stringify(
+        {
+          auth: { OPENAI_API_KEY: "template-key" },
+          config: [
+            'model_provider = "custom"',
+            'model = "gpt-5.5"',
+            "",
+            "[model_providers.custom]",
+            'name = "custom"',
+            'base_url = "https://template.example/v1"',
+            'wire_api = "responses"',
+            "requires_openai_auth = true",
+          ].join("\n"),
+        },
+        null,
+        2,
+      ),
+    );
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Codex");
+    await expectProviderVisible("Codex Alpha");
+
+    await user.click(
+      screen.getByRole("button", { name: "供应商配置模板" }),
+    );
+    await screen.findByDisplayValue(/https:\/\/template\.example\/v1/);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "应用到当前应用全部 (2)",
+      }),
+    );
+
+    await waitFor(() => {
+      const codexProviders = getProviders("codex");
+      expect(codexProviders["codex-alpha"].settingsConfig).toMatchObject({
+        auth: { OPENAI_API_KEY: "codex-alpha-key" },
+      });
+      expect(codexProviders["codex-beta"].settingsConfig).toMatchObject({
+        auth: { OPENAI_API_KEY: "codex-beta-key" },
+      });
+    });
+
+    const alphaConfig = getProviders("codex")["codex-alpha"].settingsConfig
+      ?.config as string;
+    const betaConfig = getProviders("codex")["codex-beta"].settingsConfig
+      ?.config as string;
+    expect(alphaConfig).toContain('base_url = "https://codex-alpha.example.com/v1"');
+    expect(betaConfig).toContain('base_url = "https://codex-beta.example.com/v1"');
+    expect(alphaConfig).toContain('model = "gpt-5.5"');
+    expect(betaConfig).toContain('model = "gpt-5.5"');
+    expect(alphaConfig).not.toContain("https://template.example/v1");
+    expect(betaConfig).not.toContain("https://template.example/v1");
+
+    expect(getProviders("claude")["claude-alpha"].settingsConfig).toMatchObject(
+      {
+        env: {
+          ANTHROPIC_AUTH_TOKEN: "claude-alpha-token",
+          ANTHROPIC_BASE_URL: "https://claude-alpha.example.com",
+        },
+      },
+    );
+  }, 15_000);
 });
