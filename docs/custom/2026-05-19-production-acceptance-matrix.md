@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 页面级验收，仍需继续扩展模板 / 批量写入 / 删除确认 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收，仍需继续扩展模板 / 批量写入 / 删除确认 / 更多 app 类型真实表单链路 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、过滤 | 选择态和搜索态错乱、删除后 UI 不一致 | 已补真实 App + SessionManagerPage 页面级验收，仍需继续扩展批量删除 / 重命名 / 导出 / 恢复终端 |
 | Prompts | `PromptPanel` | 打开、返回、新建入口 | 与顶层视图切换耦合 | 顶层入口已验收，面板内部交互待补 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -108,6 +108,18 @@
 - 验证命令：`pnpm vitest run tests/integration/App.real-providers.test.tsx`
 - 当前结果：`4 passed, 0 failed`
 
+### App + Add / Edit ProviderForm 真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-provider-forms.test.tsx`
+- 覆盖范围：真实 `App`、真实 `ProviderList`、真实 `AddProviderDialog`、真实 `EditProviderDialog`、真实 `ProviderForm`；只 mock 与供应商表单链路无关的 Skills / MCP / Sessions / OpenClaw / Hermes / Settings 等重型页面。
+- 覆盖交互：从真实顶栏新增入口打开 OpenCode 新增供应商弹窗，填写 provider key、display name、base URL、API key 后提交；再从真实列表编辑 DB-only OpenCode provider，将 provider key 改名并提交。
+- 配置验证：新增供应商后验证 `providers["opencode-new"]` 存在，`settingsConfig.options.baseURL` / `apiKey` 写入正确，且 additive live ids 包含新增 provider；编辑 provider key 后验证旧 id 删除、新 id 存在，并通过 `originalId` 语义避免残留旧记录。
+- 隔离验证：OpenCode 的 additive live ids 只影响 OpenCode，不串到 OpenClaw / Hermes；编辑 DB-only provider 时不改变既有 live provider membership。
+- 测试夹具：MSW 新增 additive app 判断、`addProviderToLiveConfig`、`removeProviderFromLiveConfigState`，并让 `add_provider` 支持 `addToLive`、`switch_provider` 更新 additive live ids、`update_provider` 传递 `originalId`。
+- 红绿记录：首次运行暴露 `add_provider` 后 live ids 未模拟写入，补齐 MSW 后通过；编辑 live provider key 的用例改为 DB-only provider，因为生产规则会锁定 live config 中的 provider key，避免 orphan live 配置。
+- 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx`
+- 当前结果：`2 passed, 0 failed`
+
 ### App + SessionManagerPage 真实页面验收
 
 - 新增验收文件：`tests/integration/App.real-sessions.test.tsx`
@@ -139,9 +151,9 @@
 
 ### 组合回归
 
-- 验证命令：`pnpm vitest run tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`
-- 当前结果：`12 passed, 81 tests passed, 0 failed`
-- 已知测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、`ApiHubPanel` 一条进度事件测试的 React `act(...)` warning、`App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
+- 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`
+- 当前结果：`13 files passed, 83 tests passed, 0 failed`
+- 已知测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、`ApiHubPanel` 一条进度事件测试的 React `act(...)` warning、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归
 

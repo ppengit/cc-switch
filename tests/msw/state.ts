@@ -1041,8 +1041,38 @@ export const addProvider = (appType: AppId, provider: Provider) => {
   providers[appType][provider.id] = provider;
 };
 
-export const updateProvider = (appType: AppId, provider: Provider) => {
+const isLiveProviderApp = (
+  appType: AppId,
+): appType is "opencode" | "openclaw" | "hermes" =>
+  appType === "opencode" || appType === "openclaw" || appType === "hermes";
+
+export const addProviderToLiveConfig = (appType: AppId, providerId: string) => {
+  if (!isLiveProviderApp(appType)) return;
+  if (!liveProviderIds[appType].includes(providerId)) {
+    liveProviderIds[appType] = [...liveProviderIds[appType], providerId];
+  }
+};
+
+export const removeProviderFromLiveConfigState = (
+  appType: AppId,
+  providerId: string,
+) => {
+  if (!isLiveProviderApp(appType)) return;
+  liveProviderIds[appType] = liveProviderIds[appType].filter(
+    (id) => id !== providerId,
+  );
+};
+
+export const updateProvider = (
+  appType: AppId,
+  provider: Provider,
+  originalId?: string,
+) => {
   if (!providers[appType]) return;
+  const previousId = originalId || provider.id;
+  if (previousId !== provider.id) {
+    delete providers[appType][previousId];
+  }
   providers[appType][provider.id] = {
     ...providers[appType][provider.id],
     ...provider,

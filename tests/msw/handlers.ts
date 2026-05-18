@@ -4,6 +4,7 @@ import type { McpServer, Provider, Settings } from "@/types";
 import {
   addSkillRepoState,
   addProvider,
+  addProviderToLiveConfig,
   deleteProvider,
   deleteMcpServerState,
   deleteSession,
@@ -43,6 +44,7 @@ import {
   recordWebdavTestConnection,
   recordWebdavUpload,
   removeSkillRepoState,
+  removeProviderFromLiveConfigState,
   restoreSkillBackupState,
   setAppConfigTemplateState,
   setAutoFailoverEnabledState,
@@ -145,27 +147,39 @@ export const handlers = [
     if (!providers[id]) {
       return HttpResponse.json(false, { status: 404 });
     }
-    setCurrentProviderId(app, id);
+    if (app === "opencode" || app === "openclaw" || app === "hermes") {
+      addProviderToLiveConfig(app, id);
+    } else {
+      setCurrentProviderId(app, id);
+    }
     return success(true);
   }),
 
   http.post(`${TAURI_ENDPOINT}/add_provider`, async ({ request }) => {
-    const { provider, app } = await withJson<{
+    const { provider, app, addToLive } = await withJson<{
       provider: Provider & { id?: string };
       app: AppId;
+      addToLive?: boolean;
     }>(request);
 
     const newId = provider.id ?? `mock-${Date.now()}`;
     addProvider(app, { ...provider, id: newId });
+    if (
+      addToLive !== false &&
+      (app === "opencode" || app === "openclaw" || app === "hermes")
+    ) {
+      addProviderToLiveConfig(app, newId);
+    }
     return success(true);
   }),
 
   http.post(`${TAURI_ENDPOINT}/update_provider`, async ({ request }) => {
-    const { provider, app } = await withJson<{
+    const { provider, app, originalId } = await withJson<{
       provider: Provider;
       app: AppId;
+      originalId?: string;
     }>(request);
-    updateProvider(app, provider);
+    updateProvider(app, provider, originalId);
     return success(true);
   }),
 
@@ -177,7 +191,11 @@ export const handlers = [
 
   http.post(
     `${TAURI_ENDPOINT}/remove_provider_from_live_config`,
-    () => success(true),
+    async ({ request }) => {
+      const { id, app } = await withJson<{ id: string; app: AppId }>(request);
+      removeProviderFromLiveConfigState(app, id);
+      return success(true);
+    },
   ),
 
   http.post(`${TAURI_ENDPOINT}/open_provider_terminal`, () => success(true)),
