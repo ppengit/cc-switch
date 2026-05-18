@@ -4,7 +4,15 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionMessage, SessionMeta } from "@/types";
-import { resetProviderState, setSessionFixtures } from "../msw/state";
+import {
+  getLastDeleteSessionsRequest,
+  getLastSessionExportRequest,
+  getLastSessionTerminalLaunchRequest,
+  getLastSessionTitleMappingRequest,
+  listSessions,
+  resetProviderState,
+  setSessionFixtures,
+} from "../msw/state";
 
 vi.mock("@/contexts/UpdateContext", () => ({
   useUpdate: () => ({
@@ -391,4 +399,121 @@ describe("App with real SessionManagerPage", () => {
     expect(screen.getByText("Claude Beta Session")).toBeInTheDocument();
     expect(screen.queryByText("Codex Alpha Session")).not.toBeInTheDocument();
   });
+
+  it("renames, resumes, and exports the selected session through the real App entry", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await openSessions(user);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Claude Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /修改名称/i }));
+    const renameDialog = screen.getByRole("dialog", { name: "修改会话标题" });
+    const titleInput = within(renameDialog).getByLabelText("会话名称/标题");
+    await user.clear(titleInput);
+    await user.type(titleInput, "Renamed Claude Alpha");
+    await user.click(within(renameDialog).getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Renamed Claude Alpha" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Claude Alpha Session")).not.toBeInTheDocument();
+    expect(getLastSessionTitleMappingRequest()).toEqual({
+      action: "set",
+      appType: "claude",
+      sessionId: "claude-alpha",
+      sourcePath: "/mock/claude/claude-alpha.jsonl",
+      customTitle: "Renamed Claude Alpha",
+    });
+
+    await user.click(screen.getByRole("button", { name: /恢复会话/i }));
+    await waitFor(() =>
+      expect(getLastSessionTerminalLaunchRequest()).toEqual({
+        command: "claude resume claude-alpha",
+        cwd: "/mock/claude",
+        customConfig: undefined,
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /导出会话/i }));
+    await waitFor(() =>
+      expect(getLastSessionExportRequest()).toMatchObject({
+        providerId: "claude",
+        sessionId: "claude-alpha",
+        title: "Renamed Claude Alpha",
+        sourcePath: "/mock/claude/claude-alpha.jsonl",
+      }),
+    );
+  }, 15_000);
+
+  it("batch deletes only the current app sessions from the real App entry", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await openSessions(user);
+    await waitFor(() =>
+      expect(screen.getByText("Claude Beta Session")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "批量管理" }));
+    await user.click(screen.getByRole("button", { name: "全选当前" }));
+    await user.click(screen.getByRole("button", { name: "批量删除" }));
+
+    const dialog = screen.getByRole("dialog", { name: "批量删除会话" });
+    expect(within(dialog).getByText(/2/)).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "删除所选会话" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("Claude Alpha Session")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Claude Beta Session")).not.toBeInTheDocument();
+    expect(screen.getByText("sessionManager.noSessions")).toBeInTheDocument();
+
+    expect(getLastDeleteSessionsRequest()).toEqual([
+      {
+        providerId: "claude",
+        sessionId: "claude-alpha",
+        sourcePath: "/mock/claude/claude-alpha.jsonl",
+      },
+      {
+        providerId: "claude",
+        sessionId: "claude-beta",
+        sourcePath: "/mock/claude/claude-beta.jsonl",
+      },
+    ]);
+    expect(listSessions().map((item) => item.sessionId).sort()).toEqual([
+      "codex-alpha",
+      "codex-beta",
+    ]);
+
+    await backToProviders(user);
+    await clickAppSwitcherButton(user, "Codex");
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toHaveAttribute(
+        "data-app-id",
+        "codex",
+      ),
+    );
+    await openSessions(user);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Codex Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Codex Beta Session")).toBeInTheDocument();
+    expect(screen.queryByText("Claude Alpha Session")).not.toBeInTheDocument();
+  }, 15_000);
 });

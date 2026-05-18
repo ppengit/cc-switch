@@ -51,6 +51,30 @@ type ManagedAuthStatusByProvider = Record<
   ManagedAuthStatus
 >;
 type WebdavRemoteInfoState = RemoteSnapshotInfo | { empty: true };
+type SessionDeleteRequestItem = {
+  providerId: string;
+  sessionId: string;
+  sourcePath: string;
+};
+type SessionTitleMappingRequest =
+  | {
+      action: "set";
+      appType: string;
+      sessionId: string;
+      sourcePath: string | null;
+      customTitle: string;
+    }
+  | {
+      action: "clear";
+      appType: string;
+      sessionId: string;
+      sourcePath: string | null;
+    };
+type SessionTerminalLaunchRequest = {
+  command: string;
+  cwd?: string | null;
+  customConfig?: string | null;
+};
 
 const APP_IDS = [
   "claude",
@@ -531,6 +555,11 @@ const createDefaultSessionMessages = (): Record<string, SessionMessage[]> => ({
 
 let sessionsState = createDefaultSessions();
 let sessionMessagesState = createDefaultSessionMessages();
+let lastDeleteSessionsRequest: SessionDeleteRequestItem[] | null = null;
+let lastSessionTitleMappingRequest: SessionTitleMappingRequest | null = null;
+let lastSessionTerminalLaunchRequest: SessionTerminalLaunchRequest | null =
+  null;
+let lastSessionExportRequest: SessionMeta | null = null;
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
@@ -612,6 +641,10 @@ export const resetProviderState = () => {
   webdavDownloadCount = 0;
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
+  lastDeleteSessionsRequest = null;
+  lastSessionTitleMappingRequest = null;
+  lastSessionTerminalLaunchRequest = null;
+  lastSessionExportRequest = null;
   settingsState = {
     showInTray: true,
     minimizeToTrayOnClose: true,
@@ -1537,6 +1570,100 @@ export const deleteSession = (
   delete sessionMessagesState[sessionMessageKey(providerId, sourcePath)];
   return true;
 };
+
+export const recordDeleteSessionsRequest = (
+  items: SessionDeleteRequestItem[],
+) => {
+  lastDeleteSessionsRequest = JSON.parse(
+    JSON.stringify(items),
+  ) as SessionDeleteRequestItem[];
+};
+
+export const getLastDeleteSessionsRequest = () =>
+  lastDeleteSessionsRequest
+    ? (JSON.parse(
+        JSON.stringify(lastDeleteSessionsRequest),
+      ) as SessionDeleteRequestItem[])
+    : null;
+
+export const setSessionTitleMappingState = (options: {
+  appType: string;
+  sessionId: string;
+  sourcePath?: string | null;
+  customTitle: string;
+}) => {
+  const request: SessionTitleMappingRequest = {
+    action: "set",
+    appType: options.appType,
+    sessionId: options.sessionId,
+    sourcePath: options.sourcePath ?? null,
+    customTitle: options.customTitle,
+  };
+  lastSessionTitleMappingRequest = request;
+  sessionsState = sessionsState.map((session) =>
+    session.providerId === options.appType &&
+    session.sessionId === options.sessionId &&
+    (!options.sourcePath || session.sourcePath === options.sourcePath)
+      ? { ...session, title: options.customTitle }
+      : session,
+  );
+  return true;
+};
+
+export const clearSessionTitleMappingState = (options: {
+  appType: string;
+  sessionId: string;
+  sourcePath?: string | null;
+}) => {
+  const request: SessionTitleMappingRequest = {
+    action: "clear",
+    appType: options.appType,
+    sessionId: options.sessionId,
+    sourcePath: options.sourcePath ?? null,
+  };
+  lastSessionTitleMappingRequest = request;
+  sessionsState = sessionsState.map((session) =>
+    session.providerId === options.appType &&
+    session.sessionId === options.sessionId &&
+    (!options.sourcePath || session.sourcePath === options.sourcePath)
+      ? { ...session, title: undefined }
+      : session,
+  );
+  return true;
+};
+
+export const getLastSessionTitleMappingRequest = () =>
+  lastSessionTitleMappingRequest
+    ? (JSON.parse(
+        JSON.stringify(lastSessionTitleMappingRequest),
+      ) as SessionTitleMappingRequest)
+    : null;
+
+export const recordSessionTerminalLaunch = (
+  request: SessionTerminalLaunchRequest,
+) => {
+  lastSessionTerminalLaunchRequest = {
+    command: request.command,
+    cwd: request.cwd,
+    customConfig: request.customConfig,
+  };
+  return true;
+};
+
+export const getLastSessionTerminalLaunchRequest = () =>
+  lastSessionTerminalLaunchRequest
+    ? ({ ...lastSessionTerminalLaunchRequest } as SessionTerminalLaunchRequest)
+    : null;
+
+export const recordSessionMarkdownExport = (session: SessionMeta) => {
+  lastSessionExportRequest = JSON.parse(JSON.stringify(session)) as SessionMeta;
+  return `/mock/exports/${session.providerId}-${session.sessionId}.md`;
+};
+
+export const getLastSessionExportRequest = () =>
+  lastSessionExportRequest
+    ? (JSON.parse(JSON.stringify(lastSessionExportRequest)) as SessionMeta)
+    : null;
 
 export const setSessionFixtures = (
   sessions: SessionMeta[],

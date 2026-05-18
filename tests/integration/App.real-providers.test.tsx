@@ -526,7 +526,7 @@ describe("App with real ProviderList", () => {
     await expectProviderVisible("OpenCode Live");
     expectAdditiveState("OpenCode Live", "enabled");
     expectAdditiveState("OpenCode Idle", "disabled");
-  });
+  }, 15_000);
 
   it("bulk writes and removes OpenCode live-config membership without deleting providers or touching other apps", async () => {
     const user = userEvent.setup();

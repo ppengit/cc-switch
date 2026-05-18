@@ -34,7 +34,7 @@
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
 | 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
-| 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、过滤 | 选择态和搜索态错乱、删除后 UI 不一致 | 已补真实 App + SessionManagerPage 页面级验收，仍需继续扩展批量删除 / 重命名 / 导出 / 恢复终端 |
+| 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建入口 | 与顶层视图切换耦合 | 顶层入口已验收，面板内部交互待补 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
@@ -139,10 +139,13 @@
 
 - 新增验收文件：`tests/integration/App.real-sessions.test.tsx`
 - 覆盖范围：真实 `App`、真实顶栏返回 / 入口、真实 `SessionManagerPage`、真实 sessions hooks；只 mock 与会话链路无关的供应商页和其它重型面板。
-- 覆盖交互：从真实工具栏进入会话页；会话页返回供应商页后切换 app，再重新进入会话页；Claude / Codex 会话列表、详情标题和消息按当前 app 隔离；搜索只作用于当前 app；切换 app 后搜索态重置；删除确认只删除当前 app 的目标会话，不影响另一 app 会话。
+- 覆盖交互：从真实工具栏进入会话页；会话页返回供应商页后切换 app，再重新进入会话页；Claude / Codex 会话列表、详情标题和消息按当前 app 隔离；搜索只作用于当前 app；切换 app 后搜索态重置；删除确认只删除当前 app 的目标会话，不影响另一 app 会话；批量管理 -> 全选当前 -> 批量删除 -> 确认，只删除当前 app 的会话；修改名称弹窗保存后更新当前会话标题；恢复会话触发终端启动请求；导出会话触发 Markdown 导出请求。
+- 配置 / 请求验证：`set_session_title_mapping` 记录 `appType`、`sessionId`、`sourcePath`、`customTitle` 并更新 MSW 会话状态；`delete_sessions` 记录批量删除 items 并验证 Codex 会话仍保留；`launch_session_terminal` 记录 `command` / `cwd`；`export_session_markdown` 记录导出的 `SessionMeta`，确保导出对象包含重命名后的标题。
+- 测试夹具：MSW / Tauri mock 补齐 `set_session_title_mapping`、`clear_session_title_mapping`、`launch_session_terminal`、`export_session_markdown`，并新增标题映射、批量删除、终端恢复、Markdown 导出的请求观测点。
+- 红绿记录：新增真实页面用例后，首次运行因缺少 `set_session_title_mapping` 处理器和批量删除请求观测点失败；补齐 MSW 会话命令模拟和状态记录后，同一文件重跑通过。
 - 真实结构说明：当前产品在 `sessions` 视图下顶栏不显示 `AppSwitcher`，只能通过返回供应商页后切换应用再进入会话页；验收用例按这个真实可操作路径执行。
-- 验证命令：`pnpm vitest run tests/integration/App.real-sessions.test.tsx`
-- 当前结果：`3 passed, 0 failed`
+- 验证命令：`pnpm vitest run tests/integration/App.real-sessions.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`5 passed, 0 failed`
 
 ### App + Skills / MCP 真实页面验收
 
@@ -174,10 +177,11 @@
 
 - 发现问题：`ApiHubPanel.test.tsx` 会 mock `HTMLInputElement.prototype.click`，但全局清理只执行 `vi.clearAllMocks()`，不会恢复 prototype；Tauri event mock 也没有跨测试清理 listener。结果是单文件测试通过，但 `ApiHubPanel.test.tsx` 与 `App.real-providers.test.tsx` 组合运行时，真实供应商页面搜索 / 切换用例可能超时，削弱模拟操作验收可信度。
 - 修复内容：`ApiHubPanel.test.tsx` 增加 `afterEach(() => vi.restoreAllMocks())`；`tests/msw/tauriMocks.ts` 增加 `resetTauriEventListeners()`；`tests/setupTests.ts` 每个测试后清理 Tauri listeners；Api-Hub 进度事件模拟用 `act(...)` 包裹，消除对应 React warning。
+- 本批次补充：`App.real-providers.test.tsx` 中 OpenCode / OpenClaw / Hermes additive live 配置隔离用例在完整串行回归中超过默认 5 秒阈值，补充显式 `15_000` 超时，与同文件其它真实页面长链路用例保持一致，避免验收套件因默认阈值产生假失败。
 - 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`2 files passed, 20 tests passed, 0 failed`
 - 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
-- 当前结果：`60 files passed, 346 tests passed, 0 failed`
+- 当前结果：`60 files passed, 348 tests passed, 0 failed`
 - 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归

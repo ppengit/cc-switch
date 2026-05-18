@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
-import type { McpServer, Provider, Settings } from "@/types";
+import type { McpServer, Provider, SessionMeta, Settings } from "@/types";
 import type { AppProxyConfig } from "@/types/proxy";
 import {
   addSkillRepoState,
@@ -45,6 +45,9 @@ import {
   listSessions,
   getWebdavRemoteInfoState,
   recordSettingsSave,
+  recordDeleteSessionsRequest,
+  recordSessionMarkdownExport,
+  recordSessionTerminalLaunch,
   resetProviderState,
   recordWebdavDownload,
   recordWebdavSaveSettings,
@@ -63,6 +66,7 @@ import {
   setMcpServerEnabled,
   setProviderDefaultTemplateState,
   setProxyTakeoverForAppState,
+  setSessionTitleMappingState,
   setSettings,
   startProxyServerState,
   stopProxyServerState,
@@ -73,6 +77,7 @@ import {
   updateSkillState,
   upsertMcpServer,
   upsertMcpServerState,
+  clearSessionTitleMappingState,
   updateProvider,
   updateSortOrder,
   addToFailoverQueueState,
@@ -283,6 +288,8 @@ export const handlers = [
       }[];
     }>(request);
 
+    recordDeleteSessionsRequest(items);
+
     return success(
       items.map((item) => ({
         providerId: item.providerId,
@@ -295,6 +302,58 @@ export const handlers = [
         ),
       })),
     );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/set_session_title_mapping`, async ({ request }) => {
+    const { appType, sessionId, sourcePath, customTitle } = await withJson<{
+      appType: string;
+      sessionId: string;
+      sourcePath?: string | null;
+      customTitle: string;
+    }>(request);
+    return success(
+      setSessionTitleMappingState({
+        appType,
+        sessionId,
+        sourcePath,
+        customTitle,
+      }),
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/clear_session_title_mapping`, async ({ request }) => {
+    const { appType, sessionId, sourcePath } = await withJson<{
+      appType: string;
+      sessionId: string;
+      sourcePath?: string | null;
+    }>(request);
+    return success(
+      clearSessionTitleMappingState({
+        appType,
+        sessionId,
+        sourcePath,
+      }),
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/launch_session_terminal`, async ({ request }) => {
+    const { command, cwd, customConfig } = await withJson<{
+      command: string;
+      cwd?: string | null;
+      customConfig?: string | null;
+    }>(request);
+    return success(
+      recordSessionTerminalLaunch({
+        command,
+        cwd,
+        customConfig,
+      }),
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/export_session_markdown`, async ({ request }) => {
+    const { session } = await withJson<{ session: SessionMeta }>(request);
+    return success(recordSessionMarkdownExport(session));
   }),
 
   // MCP APIs
