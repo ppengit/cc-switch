@@ -1402,6 +1402,14 @@ pub(crate) fn sync_current_provider_for_app_to_live(
     state: &AppState,
     app_type: &AppType,
 ) -> Result<(), AppError> {
+    sync_current_provider_for_app_to_live_with_options(state, app_type, true)
+}
+
+pub(crate) fn sync_current_provider_for_app_to_live_with_options(
+    state: &AppState,
+    app_type: &AppType,
+    sync_mcp: bool,
+) -> Result<(), AppError> {
     if app_type.is_additive_mode() {
         sync_all_providers_to_live(state, app_type)?;
     } else {
@@ -1417,7 +1425,9 @@ pub(crate) fn sync_current_provider_for_app_to_live(
         }
     }
 
-    McpService::sync_all_enabled(state)?;
+    if sync_mcp {
+        McpService::sync_all_enabled(state)?;
+    }
 
     Ok(())
 }

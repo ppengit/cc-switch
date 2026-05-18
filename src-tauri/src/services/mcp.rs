@@ -145,9 +145,12 @@ impl McpService {
         if Self::is_proxy_takeover_enabled(state, app) {
             if Self::has_syncable_provider(state, app)? {
                 if let Err(err) =
-                    crate::services::provider::ProviderService::sync_current_provider_for_app(
+                    crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
                         state,
                         app.clone(),
+                        crate::services::provider::SyncCurrentProviderOptions {
+                            sync_mcp: false,
+                        },
                     )
                 {
                     log::warn!(
@@ -167,9 +170,12 @@ impl McpService {
         }
 
         let provider_synced = if Self::has_syncable_provider(state, app)? {
-            match crate::services::provider::ProviderService::sync_current_provider_for_app(
+            match crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
                 state,
                 app.clone(),
+                crate::services::provider::SyncCurrentProviderOptions {
+                    sync_mcp: false,
+                },
             ) {
                 Ok(()) => true,
                 Err(err) => {
@@ -294,9 +300,12 @@ impl McpService {
             if Self::is_proxy_takeover_enabled(state, &app) {
                 if Self::has_syncable_provider(state, &app)? {
                     if let Err(err) =
-                        crate::services::provider::ProviderService::sync_current_provider_for_app(
+                        crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
                             state,
                             app.clone(),
+                            crate::services::provider::SyncCurrentProviderOptions {
+                                sync_mcp: false,
+                            },
                         )
                     {
                         log::warn!(

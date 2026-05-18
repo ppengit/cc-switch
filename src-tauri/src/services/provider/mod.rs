@@ -33,7 +33,8 @@ pub(crate) use live::{
     build_direct_live_settings_with_mcp, build_effective_settings_without_template,
     build_proxy_takeover_settings, normalize_provider_common_config_for_storage,
     provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config,
+    sync_current_provider_for_app_to_live, sync_current_provider_for_app_to_live_with_options,
+    write_live_with_common_config,
 };
 
 // Internal re-exports
@@ -56,6 +57,11 @@ pub struct SwitchResult {
 #[derive(Clone, Copy)]
 struct SwitchOptions {
     backfill_current_live: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SyncCurrentProviderOptions {
+    pub(crate) sync_mcp: bool,
 }
 
 #[cfg(test)]
@@ -505,6 +511,133 @@ base_url = "http://localhost:8080"
                 .and_then(|v| v.as_str()),
             Some("model-updated"),
             "takeover live config should show the current provider model name"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_current_provider_for_app_repairs_to_takeover_live_when_failover_enabled_and_proxy_running()
+     {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        let provider_a = Provider::with_id(
+            "claude-a".into(),
+            "Claude A".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://api.a.example",
+                    "ANTHROPIC_MODEL": "model-a"
+                }
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "claude-b".into(),
+            "Claude B".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://api.b.example",
+                    "ANTHROPIC_MODEL": "model-b"
+                }
+            }),
+            None,
+        );
+        let provider_c = Provider::with_id(
+            "claude-c".into(),
+            "Claude C".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-c",
+                    "ANTHROPIC_BASE_URL": "https://api.c.example",
+                    "ANTHROPIC_MODEL": "model-c"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.save_provider("claude", &provider_c)
+            .expect("save provider c");
+
+        db.set_current_provider("claude", "claude-a")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("claude-a"))
+            .expect("set local current provider");
+
+        db.add_to_failover_queue("claude", "claude-a")
+            .expect("add queue a");
+        db.add_to_failover_queue("claude", "claude-b")
+            .expect("add queue b");
+        db.add_to_failover_queue("claude", "claude-c")
+            .expect("add queue c");
+
+        let reserved_port = reserve_free_tcp_port();
+        db.update_proxy_config(ProxyConfig {
+            listen_port: reserved_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy listen port");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        // Simulate drift: live file accidentally points to a direct provider endpoint.
+        write_json_file(
+            &get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://api.b.example",
+                    "ANTHROPIC_MODEL": "model-b"
+                }
+            }),
+        )
+        .expect("seed drifted direct live config");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+
+        ProviderService::sync_current_provider_for_app(&state, AppType::Claude)
+            .expect("sync current provider in takeover+failover mode");
+
+        let live: Value = read_json_file(&get_claude_settings_path()).expect("read live config");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{reserved_port}").as_str()),
+            "sync should repair drifted direct live endpoint back to proxy takeover endpoint"
+        );
+        assert_ne!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://api.a.example"),
+            "sync must not write current provider direct endpoint while failover takeover is active"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "sync should preserve takeover token placeholder"
         );
     }
 
@@ -2771,25 +2904,60 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<(), AppError> {
+        Self::sync_current_provider_for_app_with_options(
+            state,
+            app_type,
+            SyncCurrentProviderOptions { sync_mcp: true },
+        )
+    }
+
+    pub(crate) fn sync_current_provider_for_app_with_options(
+        state: &AppState,
+        app_type: AppType,
+        options: SyncCurrentProviderOptions,
+    ) -> Result<(), AppError> {
         if app_type.is_additive_mode() {
-            return sync_current_provider_for_app_to_live(state, &app_type);
+            return if options.sync_mcp {
+                sync_current_provider_for_app_to_live(state, &app_type)
+            } else {
+                sync_current_provider_for_app_to_live_with_options(
+                    state,
+                    &app_type,
+                    options.sync_mcp,
+                )
+            };
         }
 
-        let current_id =
-            match crate::settings::get_effective_current_provider(&state.db, &app_type)? {
-                Some(id) => id,
-                None => return Ok(()),
-            };
+        let app_proxy_config =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str())).ok();
+        let takeover_enabled = app_proxy_config
+            .as_ref()
+            .map(|config| config.enabled)
+            .unwrap_or(false);
+        let auto_failover_enabled = app_proxy_config
+            .as_ref()
+            .map(|config| config.auto_failover_enabled)
+            .unwrap_or(false);
 
         let providers = state.db.get_all_providers(app_type.as_str())?;
-        let Some(provider) = providers.get(&current_id) else {
+
+        let provider_from_current =
+            crate::settings::get_effective_current_provider(&state.db, &app_type)?
+                .and_then(|id| providers.get(&id).cloned());
+        let provider_from_failover_queue = if takeover_enabled && auto_failover_enabled {
+            state
+                .db
+                .get_failover_queue(app_type.as_str())?
+                .into_iter()
+                .next()
+                .and_then(|queue_item| providers.get(&queue_item.provider_id).cloned())
+        } else {
+            None
+        };
+        let provider = provider_from_current.or(provider_from_failover_queue);
+        let Some(provider) = provider.as_ref() else {
             return Ok(());
         };
-
-        let takeover_enabled =
-            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
-                .map(|config| config.enabled)
-                .unwrap_or(false);
 
         let has_live_backup =
             futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
@@ -2801,7 +2969,7 @@ impl ProviderService {
             .proxy_service
             .detect_takeover_in_live_config_for_app(&app_type);
 
-        if takeover_enabled && (has_live_backup || live_taken_over) {
+        if takeover_enabled && (auto_failover_enabled || has_live_backup || live_taken_over) {
             futures::executor::block_on(
                 state
                     .proxy_service
@@ -2818,10 +2986,17 @@ impl ProviderService {
                     AppError::Message(format!("同步 {} Live 配置失败: {e}", app_type.as_str()))
                 })?;
             }
+            if options.sync_mcp && matches!(app_type, AppType::Claude) {
+                McpService::sync_all_enabled(state)?;
+            }
             return Ok(());
         }
 
-        sync_current_provider_for_app_to_live(state, &app_type)
+        if options.sync_mcp {
+            sync_current_provider_for_app_to_live(state, &app_type)
+        } else {
+            sync_current_provider_for_app_to_live_with_options(state, &app_type, options.sync_mcp)
+        }
     }
 
     pub fn migrate_legacy_common_config_usage(
