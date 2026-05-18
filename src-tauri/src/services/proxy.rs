@@ -139,9 +139,14 @@ impl ProxyService {
         Ok(())
     }
 
-    fn apply_claude_takeover_fields(config: &mut Value, proxy_url: &str) {
+    fn apply_claude_takeover_fields(
+        config: &mut Value,
+        proxy_url: &str,
+        model_source: Option<&Value>,
+    ) {
         // 必须在 remove/insert 前 snapshot：避免读到自己刚写入的接管别名。
-        let takeover_model_fields = Self::build_claude_takeover_model_fields(config);
+        let takeover_model_fields =
+            Self::build_claude_takeover_model_fields(model_source.unwrap_or(config));
 
         if !config.is_object() {
             *config = json!({});
@@ -490,7 +495,11 @@ impl ProxyService {
 
         match app_type {
             AppType::Claude => {
-                Self::apply_claude_takeover_fields(&mut effective_settings, &proxy_url);
+                Self::apply_claude_takeover_fields(
+                    &mut effective_settings,
+                    &proxy_url,
+                    Some(&provider.settings_config),
+                );
                 self.write_claude_live(&effective_settings)?;
             }
             AppType::Codex => {
@@ -531,7 +540,13 @@ impl ProxyService {
 
         match app_type {
             AppType::Claude => {
-                Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
+                Self::apply_claude_takeover_fields(
+                    &mut live_config,
+                    &proxy_url,
+                    current_provider
+                        .as_ref()
+                        .map(|provider| &provider.settings_config),
+                );
                 self.write_claude_live(&live_config)?;
             }
             AppType::Codex => {
@@ -1567,7 +1582,7 @@ impl ProxyService {
     /// 接管指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
     async fn takeover_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
-        let current_provider = if matches!(app_type, AppType::Codex) {
+        let current_provider = if matches!(app_type, AppType::Claude | AppType::Codex) {
             self.current_provider_for_app(app_type).await?
         } else {
             None
@@ -1583,7 +1598,13 @@ impl ProxyService {
 
         match app_type {
             AppType::Claude => {
-                Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
+                Self::apply_claude_takeover_fields(
+                    &mut live_config,
+                    &proxy_url,
+                    current_provider
+                        .as_ref()
+                        .map(|provider| &provider.settings_config),
+                );
                 self.write_claude_live(&live_config)?;
                 log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
             }
@@ -1611,11 +1632,14 @@ impl ProxyService {
     /// 接管指定应用的 Live 配置（尽力而为：配置不存在/读取失败则跳过）
     async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
-        let current_provider = if matches!(app_type, AppType::Codex) {
+        let current_provider = if matches!(app_type, AppType::Claude | AppType::Codex) {
             match self.current_provider_for_app(app_type).await {
                 Ok(provider) => provider,
                 Err(err) => {
-                    log::warn!("读取 Codex 当前供应商失败，接管配置将保留模板模型字段: {err}");
+                    log::warn!(
+                        "读取 {} 当前供应商失败，接管配置将保留模板模型字段: {err}",
+                        app_type.as_str()
+                    );
                     None
                 }
             }
@@ -1633,7 +1657,13 @@ impl ProxyService {
         match app_type {
             AppType::Claude => {
                 if let Ok(mut live_config) = live_config {
-                    Self::apply_claude_takeover_fields(&mut live_config, &proxy_url);
+                    Self::apply_claude_takeover_fields(
+                        &mut live_config,
+                        &proxy_url,
+                        current_provider
+                            .as_ref()
+                            .map(|provider| &provider.settings_config),
+                    );
                     let _ = self.write_claude_live(&live_config);
                 }
             }
@@ -1834,7 +1864,9 @@ impl ProxyService {
                 Ok(config) => Self::is_gemini_live_effectively_taken_over(&config, &proxy_url),
                 Err(_) => false,
             },
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => false,
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
+                false
+            }
         })
     }
 

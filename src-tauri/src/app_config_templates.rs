@@ -56,6 +56,7 @@ pub fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFi
             label: "settings.json".to_string(),
             content: format!("{{\n  \"env\": {{\n    \"ANTHROPIC_BASE_URL\": \"{{proxyBaseUrl}}\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"{{proxyToken}}\",\n    \"ANTHROPIC_MODEL\": \"{DEFAULT_CLAUDE_MODEL}\",\n    \"ANTHROPIC_DEFAULT_HAIKU_MODEL\": \"{DEFAULT_CLAUDE_HAIKU_MODEL}\",\n    \"ANTHROPIC_DEFAULT_SONNET_MODEL\": \"{DEFAULT_CLAUDE_SONNET_MODEL}\",\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"{DEFAULT_CLAUDE_OPUS_MODEL}\",\n    \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\": \"1\"\n  }}\n}}\n"),
         }],
+        AppType::ClaudeDesktop => vec![],
         AppType::Codex => vec![
             AppConfigTemplateFile {
                 key: "auth".to_string(),

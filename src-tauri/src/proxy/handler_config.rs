@@ -48,7 +48,9 @@ fn openai_stream_usage_event_filter(data: &str) -> bool {
 }
 
 fn codex_stream_usage_event_filter(data: &str) -> bool {
-    data.contains("\"response.completed\"") || data.contains("\"usage\"")
+    data.contains("\"response.created\"")
+        || data.contains("\"response.completed\"")
+        || data.contains("\"usage\"")
 }
 
 fn gemini_stream_usage_event_filter(data: &str) -> bool {

@@ -13,11 +13,17 @@ import type { ProxyStatus } from "@/types/proxy";
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
-type LiveProviderIdsByApp = Record<"opencode" | "openclaw" | "hermes", string[]>;
+type LiveProviderIdsByApp = Record<
+  "opencode" | "openclaw" | "hermes",
+  string[]
+>;
 type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
 type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
 type AutoFailoverEnabledByApp = Record<AppId, boolean>;
-type ManagedAuthStatusByProvider = Record<ManagedAuthProvider, ManagedAuthStatus>;
+type ManagedAuthStatusByProvider = Record<
+  ManagedAuthProvider,
+  ManagedAuthStatus
+>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -89,6 +95,7 @@ const createDefaultCurrent = (): CurrentProviderState => ({
 
 const createDefaultProviderTemplates = (): ProviderDefaultTemplatesByApp => ({
   claude: null,
+  "claude-desktop": null,
   codex: null,
   gemini: null,
   opencode: null,
@@ -98,6 +105,7 @@ const createDefaultProviderTemplates = (): ProviderDefaultTemplatesByApp => ({
 
 const createDefaultAppConfigTemplates = (): AppConfigTemplatesByApp => ({
   claude: [],
+  "claude-desktop": [],
   codex: [],
   gemini: [],
   opencode: [],
@@ -107,6 +115,7 @@ const createDefaultAppConfigTemplates = (): AppConfigTemplatesByApp => ({
 
 const createDefaultAutoFailoverEnabled = (): AutoFailoverEnabledByApp => ({
   claude: false,
+  "claude-desktop": false,
   codex: false,
   gemini: false,
   opencode: false,
@@ -356,9 +365,9 @@ export const getProviders = (appType: AppId) =>
 
 export const getCurrentProviderId = (appType: AppId) => current[appType] ?? "";
 
-export const getLiveProviderIds = (appType: "opencode" | "openclaw" | "hermes") => [
-  ...liveProviderIds[appType],
-];
+export const getLiveProviderIds = (
+  appType: "opencode" | "openclaw" | "hermes",
+) => [...liveProviderIds[appType]];
 
 export const setLiveProviderIds = (
   appType: "opencode" | "openclaw" | "hermes",

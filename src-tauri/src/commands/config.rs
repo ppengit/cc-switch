@@ -307,6 +307,7 @@ fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
                 get_claude_mcp_path(),
             ),
         ],
+        AppType::ClaudeDesktop => vec![],
         AppType::Codex => vec![
             (
                 "auth".to_string(),
@@ -635,6 +636,9 @@ pub async fn import_mcp_from_app_live(
         AppType::Gemini => crate::services::McpService::import_from_gemini(state.inner()),
         AppType::OpenCode => crate::services::McpService::import_from_opencode(state.inner()),
         AppType::Hermes => crate::services::McpService::import_from_hermes(state.inner()),
+        AppType::ClaudeDesktop => {
+            return Err("Claude Desktop 当前不支持 MCP 回显导入".to_string());
+        }
         AppType::OpenClaw => {
             return Err("OpenClaw 当前不支持 MCP 回显导入".to_string());
         }

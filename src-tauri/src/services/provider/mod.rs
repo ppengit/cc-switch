@@ -484,12 +484,27 @@ base_url = "http://localhost:8080"
             Some(expected_proxy_base_url.as_str()),
             "proxy base URL should stay intact"
         );
+        let live_env = live
+            .get("env")
+            .and_then(|env| env.as_object())
+            .expect("live env");
+        assert!(
+            live_env.get("ANTHROPIC_MODEL").is_none(),
+            "fallback model override should be removed in takeover mode"
+        );
         assert_eq!(
-            live.get("env")
-                .and_then(|env| env.get("ANTHROPIC_MODEL"))
+            live_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
                 .and_then(|v| v.as_str()),
             Some("claude-sonnet-4-6"),
-            "takeover live config should use the app access template default model"
+            "takeover live config should expose a stable Sonnet role model"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
+                .and_then(|v| v.as_str()),
+            Some("model-updated"),
+            "takeover live config should show the current provider model name"
         );
     }
 
@@ -1860,7 +1875,7 @@ impl ProviderService {
 
     fn endpoint_from_settings(app_type: &AppType, settings: &Value) -> Option<String> {
         match app_type {
-            AppType::Claude => settings
+            AppType::Claude | AppType::ClaudeDesktop => settings
                 .pointer("/env/ANTHROPIC_BASE_URL")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
@@ -2509,7 +2524,7 @@ impl ProviderService {
         }
 
         if matches!(app_type, AppType::ClaudeDesktop) {
-            return Self::switch_normal(state, app_type, id, &providers);
+            return Self::switch_normal(state, app_type, id, &providers, options);
         }
 
         // Check if proxy takeover mode is active AND proxy server is actually running

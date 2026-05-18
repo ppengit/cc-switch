@@ -4,7 +4,7 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{clear_provider, route_request, route_request_with_metadata, ProxyActivityState},
+    activity::{clear_provider, route_request_with_metadata, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -2486,7 +2486,6 @@ fn is_streaming_request(endpoint: &str, body: &Value, headers: &axum::http::Head
         .unwrap_or(false)
 }
 
-#[cfg(test)]
 fn should_force_identity_encoding(
     endpoint: &str,
     body: &Value,
@@ -2619,10 +2618,13 @@ mod tests {
             router: Arc::new(ProviderRouter::new(db.clone())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
+            proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
             current_provider_id_at_start: String::new(),
+            request_id: "test-request".to_string(),
+            request_model: "test-model".to_string(),
             session_id: String::new(),
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),
@@ -2631,6 +2633,9 @@ mod tests {
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
+            switch_epoch: Arc::new(RwLock::new(HashMap::new())),
+            request_epoch: 0,
+            auto_failover_enabled_at_start: false,
         }
     }
 
