@@ -2,6 +2,7 @@ mod app_config;
 mod app_config_templates;
 mod app_store;
 mod auto_launch;
+mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
@@ -66,6 +67,7 @@ use tauri::image::Image;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, LogicalSize, Manager, WebviewWindow};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const DEFAULT_MAIN_WINDOW_WIDTH: f64 = 1680.0;
 const DEFAULT_MAIN_WINDOW_HEIGHT: f64 = 1040.0;
@@ -290,6 +292,7 @@ pub fn run() {
                         tray::apply_tray_policy(window.app_handle(), false);
                     }
                 } else {
+                    api.prevent_close();
                     window.app_handle().exit(0);
                 }
             }
@@ -298,6 +301,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(window_state_flags())
+                .build(),
+        )
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -513,6 +521,19 @@ pub fn run() {
             for app_type in
                 crate::app_config::AppType::all().filter(|t| !t.is_additive_mode())
             {
+                if !crate::services::provider::should_import_default_config_on_startup(
+                    &app_state,
+                    &app_type,
+                )
+                .unwrap_or(false)
+                {
+                    log::debug!(
+                        "○ {} already has providers; live import skipped",
+                        app_type.as_str()
+                    );
+                    continue;
+                }
+
                 match crate::services::provider::import_default_config(
                     &app_state,
                     app_type.clone(),
@@ -776,6 +797,7 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
+                .tooltip("CC Switch") // 鼠标悬停提示
                 .on_tray_icon_event(|tray, event| match event {
                     TrayIconEvent::DoubleClick {
                         button: MouseButton::Left,
@@ -1074,6 +1096,9 @@ pub fn run() {
             commands::remove_provider_from_live_config,
             commands::switch_provider,
             commands::import_default_config,
+            commands::get_claude_desktop_status,
+            commands::get_claude_desktop_default_routes,
+            commands::import_claude_desktop_providers_from_claude,
             commands::get_claude_config_status,
             commands::get_config_status,
             commands::get_claude_code_config_path,
@@ -1133,6 +1158,7 @@ pub fn run() {
             // subscription quota
             commands::get_subscription_quota,
             commands::get_codex_oauth_quota,
+            commands::get_codex_oauth_models,
             commands::get_coding_plan_quota,
             commands::get_balance,
             // New MCP via config.json (SSOT)
@@ -1224,6 +1250,7 @@ pub fn run() {
             commands::get_auto_launch_status,
             // Proxy server management
             commands::start_proxy_server,
+            commands::stop_proxy_server,
             commands::stop_proxy_with_restore,
             commands::get_proxy_takeover_status,
             commands::set_proxy_takeover_for_app,
@@ -1269,6 +1296,7 @@ pub fn run() {
             commands::set_auto_failover_enabled,
             // Usage statistics
             commands::get_usage_summary,
+            commands::get_usage_summary_by_app,
             commands::get_usage_trends,
             commands::get_provider_stats,
             commands::get_model_stats,
@@ -1411,6 +1439,7 @@ pub fn run() {
 
             let app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
+                save_window_state_before_exit(&app_handle);
                 cleanup_before_exit(&app_handle).await;
                 log::info!("清理完成，退出应用");
 
@@ -1744,4 +1773,22 @@ fn show_database_init_error_dialog(
             exit_text.to_string(),
         ))
         .blocking_show()
+}
+
+// ============================================================
+// 在应用主动退出前显式持久化窗口状态
+// ============================================================
+
+fn window_state_flags() -> StateFlags {
+    StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED
+}
+
+/// 当前应用的退出路径会拦截 `ExitRequested` 并最终直接 `std::process::exit(0)`，
+/// 这里需要在真正结束进程前手动落盘，避免 window-state 插件的默认退出钩子被绕过。
+pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
+    if let Err(err) = app_handle.save_window_state(window_state_flags()) {
+        log::error!("退出前保存窗口状态失败: {err}");
+    } else {
+        log::info!("已在退出前保存窗口状态");
+    }
 }

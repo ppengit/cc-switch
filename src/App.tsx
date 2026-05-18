@@ -70,6 +70,7 @@ import { SettingsPage } from "@/components/settings/SettingsPage";
 import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
+import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
 import {
   getActivityDisplayModel,
@@ -132,6 +133,7 @@ const HEADER_HEIGHT = 64; // px
 const STORAGE_KEY = "cc-switch-last-app";
 const VALID_APPS: AppId[] = [
   "claude",
+  "claude-desktop",
   "codex",
   "gemini",
   "opencode",
@@ -178,6 +180,8 @@ function App() {
   const queryClient = useQueryClient();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
+  const sharedFeatureApp: AppId =
+    activeApp === "claude-desktop" ? "claude" : activeApp;
   const [currentView, setCurrentView] = useState<View>(getInitialView);
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -194,6 +198,7 @@ function App() {
   const contentTopOffset = dragBarHeight + HEADER_HEIGHT;
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
     claude: true,
+    "claude-desktop": true,
     codex: true,
     gemini: true,
     opencode: true,
@@ -203,6 +208,7 @@ function App() {
 
   const getFirstVisibleApp = (): AppId => {
     if (visibleApps.claude) return "claude";
+    if (visibleApps["claude-desktop"]) return "claude-desktop";
     if (visibleApps.codex) return "codex";
     if (visibleApps.gemini) return "gemini";
     if (visibleApps.opencode) return "opencode";
@@ -221,16 +227,16 @@ function App() {
   useEffect(() => {
     if (
       currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini" &&
-      activeApp !== "hermes"
+      sharedFeatureApp !== "claude" &&
+      sharedFeatureApp !== "codex" &&
+      sharedFeatureApp !== "opencode" &&
+      sharedFeatureApp !== "openclaw" &&
+      sharedFeatureApp !== "gemini" &&
+      sharedFeatureApp !== "hermes"
     ) {
       setCurrentView("providers");
     }
-  }, [activeApp, currentView]);
+  }, [sharedFeatureApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [editingProviderEnabled, setEditingProviderEnabled] = useState(true);
@@ -334,14 +340,14 @@ function App() {
       currentView === "openclawAgents");
   const { data: openclawHealthWarnings = [] } =
     useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = true;
+  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
   const hasSessionSupport =
-    activeApp === "claude" ||
-    activeApp === "codex" ||
-    activeApp === "opencode" ||
-    activeApp === "openclaw" ||
-    activeApp === "gemini" ||
-    activeApp === "hermes";
+    sharedFeatureApp === "claude" ||
+    sharedFeatureApp === "codex" ||
+    sharedFeatureApp === "opencode" ||
+    sharedFeatureApp === "openclaw" ||
+    sharedFeatureApp === "gemini" ||
+    sharedFeatureApp === "hermes";
 
   const {
     addProvider,
@@ -392,10 +398,11 @@ function App() {
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let active = true;
 
     const setupListener = async () => {
       try {
-        unsubscribe = await providersApi.onSwitched(
+        const off = await providersApi.onSwitched(
           async (event: ProviderSwitchEvent) => {
             if (event.appType === activeApp) {
               await refetch();
@@ -416,24 +423,31 @@ function App() {
             }
           },
         );
+        if (!active) {
+          off();
+          return;
+        }
+        unsubscribe = off;
       } catch (error) {
         console.error("[App] Failed to subscribe provider switch event", error);
       }
     };
 
-    setupListener();
+    void setupListener();
     return () => {
+      active = false;
       unsubscribe?.();
     };
   }, [activeApp, queryClient, refetch]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let active = true;
 
     const setupListener = async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        unsubscribe = await listen("universal-provider-synced", async () => {
+        const off = await listen("universal-provider-synced", async () => {
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
           try {
             await providersApi.updateTrayMenu();
@@ -441,6 +455,11 @@ function App() {
             console.error("[App] Failed to update tray menu", error);
           }
         });
+        if (!active) {
+          off();
+          return;
+        }
+        unsubscribe = off;
       } catch (error) {
         console.error(
           "[App] Failed to subscribe universal-provider-synced event",
@@ -449,8 +468,9 @@ function App() {
       }
     };
 
-    setupListener();
+    void setupListener();
     return () => {
+      active = false;
       unsubscribe?.();
     };
   }, [queryClient]);
@@ -502,9 +522,10 @@ function App() {
   // Listen for proxy-official-warning: warn when takeover is enabled with an official provider
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let active = true;
 
     const setup = async () => {
-      unsubscribe = await listen("proxy-official-warning", (event) => {
+      const off = await listen("proxy-official-warning", (event) => {
         const { providerName } = event.payload as {
           appType: string;
           providerName: string;
@@ -517,10 +538,16 @@ function App() {
           { duration: 8000 },
         );
       });
+      if (!active) {
+        off();
+        return;
+      }
+      unsubscribe = off;
     };
 
     void setup();
     return () => {
+      active = false;
       unsubscribe?.();
     };
   }, [t]);
@@ -1177,7 +1204,7 @@ function App() {
               ref={promptPanelRef}
               open={true}
               onOpenChange={() => setCurrentView("providers")}
-              appId={activeApp}
+              appId={sharedFeatureApp}
             />
           );
         case "hermesMemory":
@@ -1187,14 +1214,18 @@ function App() {
             <UnifiedSkillsPanel
               ref={unifiedSkillsPanelRef}
               onOpenDiscovery={() => setCurrentView("skillsDiscovery")}
-              currentApp={activeApp === "openclaw" ? "claude" : activeApp}
+              currentApp={
+                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
+              }
             />
           );
         case "skillsDiscovery":
           return (
             <SkillsPage
               ref={skillsPageRef}
-              initialApp={activeApp === "openclaw" ? "claude" : activeApp}
+              initialApp={
+                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
+              }
             />
           );
         case "mcp":
@@ -1216,7 +1247,12 @@ function App() {
           );
 
         case "sessions":
-          return <SessionManagerPage key={activeApp} appId={activeApp} />;
+          return (
+            <SessionManagerPage
+              key={sharedFeatureApp}
+              appId={sharedFeatureApp}
+            />
+          );
         case "workspace":
           return <WorkspaceFilesPanel />;
         case "openclawEnv":
@@ -1431,7 +1467,9 @@ function App() {
                 <h1 className="text-lg font-semibold">
                   {currentView === "settings" && t("settings.title")}
                   {currentView === "prompts" &&
-                    t("prompts.title", { appName: t(`apps.${activeApp}`) })}
+                    t("prompts.title", {
+                      appName: t(`apps.${sharedFeatureApp}`),
+                    })}
                   {currentView === "skills" && t("skills.title")}
                   {currentView === "skillsDiscovery" && t("skills.title")}
                   {currentView === "mcp" && t("mcp.unifiedPanel.title")}
@@ -1513,12 +1551,17 @@ function App() {
                   className="flex shrink-0 items-center gap-1.5"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
-                  {settingsData?.enableLocalProxy && (
-                    <ProxyToggle activeApp={activeApp} />
+                  {activeApp === "claude-desktop" ? (
+                    <ClaudeDesktopRouteToggle />
+                  ) : (
+                    settingsData?.enableLocalProxy && (
+                      <ProxyToggle activeApp={activeApp} />
+                    )
                   )}
-                  {settingsData?.enableFailoverToggle && (
-                    <FailoverToggle activeApp={activeApp} />
-                  )}
+                  {activeApp !== "claude-desktop" &&
+                    settingsData?.enableFailoverToggle && (
+                      <FailoverToggle activeApp={activeApp} />
+                    )}
                 </div>
               )}
             <div

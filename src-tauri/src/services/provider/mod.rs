@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::app_config::AppType;
+use crate::database::{validate_cost_multiplier, validate_pricing_source};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -22,7 +23,8 @@ use crate::store::AppState;
 // Re-export sub-module functions for external access
 pub use live::{
     import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
-    import_opencode_providers_from_live, read_live_settings, sync_current_to_live,
+    import_opencode_providers_from_live, read_live_settings,
+    should_import_default_config_on_startup, sync_current_to_live,
 };
 
 // Internal re-exports (pub(crate))
@@ -273,6 +275,35 @@ mod tests {
             err.to_string().contains("auth"),
             "expected auth error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn validate_provider_settings_rejects_negative_cost_multiplier() {
+        let mut provider = Provider::with_id(
+            "claude".into(),
+            "Claude".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token",
+                    "ANTHROPIC_BASE_URL": "https://claude.example"
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            cost_multiplier: Some("-1".to_string()),
+            ..ProviderMeta::default()
+        });
+
+        let err = ProviderService::validate_provider_settings(&AppType::Claude, &provider)
+            .expect_err("negative multiplier should be rejected");
+        assert!(matches!(
+            err,
+            AppError::Localized {
+                key: "error.invalidMultiplier",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2477,6 +2508,10 @@ impl ProviderService {
             return Self::switch_normal(state, app_type, id, &providers, options);
         }
 
+        if matches!(app_type, AppType::ClaudeDesktop) {
+            return Self::switch_normal(state, app_type, id, &providers);
+        }
+
         // Check if proxy takeover mode is active AND proxy server is actually running
         // Both conditions must be true to use hot-switch mode
         // Use blocking wait since this is a sync function
@@ -2810,6 +2845,7 @@ impl ProviderService {
 
         match app_type {
             AppType::Claude => Self::extract_claude_common_config(&provider.settings_config),
+            AppType::ClaudeDesktop => Ok(String::new()),
             AppType::Codex => Self::extract_codex_common_config(&provider.settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
@@ -2825,6 +2861,7 @@ impl ProviderService {
     ) -> Result<String, AppError> {
         match app_type {
             AppType::Claude => Self::extract_claude_common_config(settings_config),
+            AppType::ClaudeDesktop => Ok(String::new()),
             AppType::Codex => Self::extract_codex_common_config(settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
@@ -2842,12 +2879,15 @@ impl ProviderService {
             // Auth
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
-            // Models (4 fields + 1 legacy)
+            // Models and Claude Code model-menu display names
             "ANTHROPIC_MODEL",
             "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
             // Endpoint
             "ANTHROPIC_BASE_URL",
         ];
@@ -3034,6 +3074,13 @@ impl ProviderService {
         import_default_config(state, app_type)
     }
 
+    pub fn should_import_default_config_on_startup(
+        state: &AppState,
+        app_type: &AppType,
+    ) -> Result<bool, AppError> {
+        should_import_default_config_on_startup(state, app_type)
+    }
+
     /// Read current live settings (re-export)
     pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
         read_live_settings(app_type)
@@ -3177,6 +3224,9 @@ impl ProviderService {
                     ));
                 }
             }
+            AppType::ClaudeDesktop => {
+                crate::claude_desktop_config::validate_provider(provider)?;
+            }
             AppType::Codex => {
                 let settings = provider.settings_config.as_object().ok_or_else(|| {
                     AppError::localized(
@@ -3257,6 +3307,12 @@ impl ProviderService {
 
         // Validate and clean UsageScript configuration (common for all app types)
         if let Some(meta) = &provider.meta {
+            if let Some(multiplier) = meta.cost_multiplier.as_deref() {
+                validate_cost_multiplier(multiplier)?;
+            }
+            if let Some(source) = meta.pricing_model_source.as_deref() {
+                validate_pricing_source(source)?;
+            }
             if let Some(usage_script) = &meta.usage_script {
                 validate_usage_script(usage_script)?;
             }
@@ -3310,6 +3366,11 @@ impl ProviderService {
                     .to_string();
 
                 Ok((api_key, base_url))
+            }
+            AppType::ClaudeDesktop => {
+                let credentials =
+                    crate::claude_desktop_config::direct_gateway_credentials(provider)?;
+                Ok((credentials.api_key, credentials.base_url))
             }
             AppType::Codex => {
                 let auth = provider

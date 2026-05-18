@@ -11,6 +11,7 @@
 use crate::app_config::AppType;
 
 pub(crate) const LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON: &str = r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}"#;
+pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
 
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
@@ -24,7 +25,7 @@ pub(crate) struct OfficialProviderSeed {
     pub settings_config_json: &'static str,
 }
 
-/// Claude / Codex / Gemini 三个应用的官方预设。
+/// Claude / Claude Desktop / Codex / Gemini 的官方预设。
 ///
 /// id 固定，便于幂等检查；name 直接用英文原名（与前端预设一致），不做 i18n。
 pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
@@ -37,6 +38,16 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         icon_color: "#D4915D",
         // 显式写入官方 API 地址和空 token，并启用 Claude Code 默认权限与中文输出偏好。
         settings_config_json: r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7[1m]","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""},"permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true,"effortLevel":"xhigh","language":"chinese"}"#,
+    },
+    OfficialProviderSeed {
+        id: CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID,
+        app_type: AppType::ClaudeDesktop,
+        name: "Claude Desktop Official",
+        website_url: "https://claude.ai/download",
+        icon: "anthropic",
+        icon_color: "#D4915D",
+        // 空 env 只是占位；切换该 provider 时会恢复 Claude Desktop 1P 模式
+        settings_config_json: r#"{"env":{}}"#,
     },
     OfficialProviderSeed {
         id: "codex-official",
@@ -101,5 +112,16 @@ mod tests {
                 "language": "chinese"
             })
         );
+    }
+
+    #[test]
+    fn official_seeds_include_claude_desktop() {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID)
+            .expect("claude desktop official seed");
+
+        assert_eq!(seed.app_type, AppType::ClaudeDesktop);
+        assert!(is_official_seed_id(CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID));
     }
 }

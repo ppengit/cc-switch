@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use toml_edit::{DocumentMut, Item};
+use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
 use crate::app_config_templates::{
@@ -333,6 +333,234 @@ fn render_access_template(
         .to_string()
 }
 
+fn toml_value_is_subset(target: &toml_edit::Value, source: &toml_edit::Value) -> bool {
+    match (target, source) {
+        (toml_edit::Value::String(target), toml_edit::Value::String(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Integer(target), toml_edit::Value::Integer(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Float(target), toml_edit::Value::Float(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Boolean(target), toml_edit::Value::Boolean(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Datetime(target), toml_edit::Value::Datetime(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Array(target), toml_edit::Value::Array(source)) => {
+            toml_array_contains_subset(target, source)
+        }
+        (toml_edit::Value::InlineTable(target), toml_edit::Value::InlineTable(source)) => {
+            source.iter().all(|(key, source_item)| {
+                target
+                    .get(key)
+                    .is_some_and(|target_item| toml_value_is_subset(target_item, source_item))
+            })
+        }
+        _ => false,
+    }
+}
+
+fn toml_array_contains_subset(target: &toml_edit::Array, source: &toml_edit::Array) -> bool {
+    let mut matched = vec![false; target.len()];
+    let target_items: Vec<&toml_edit::Value> = target.iter().collect();
+
+    source.iter().all(|source_item| {
+        if let Some((index, _)) = target_items
+            .iter()
+            .enumerate()
+            .find(|(index, target_item)| {
+                !matched[*index] && toml_value_is_subset(target_item, source_item)
+            })
+        {
+            matched[index] = true;
+            true
+        } else {
+            false
+        }
+    })
+}
+
+fn toml_remove_array_items(target: &mut toml_edit::Array, source: &toml_edit::Array) {
+    for source_item in source.iter() {
+        let index = {
+            let target_items: Vec<&toml_edit::Value> = target.iter().collect();
+            target_items
+                .iter()
+                .enumerate()
+                .find(|(_, target_item)| toml_value_is_subset(target_item, source_item))
+                .map(|(index, _)| index)
+        };
+
+        if let Some(index) = index {
+            target.remove(index);
+        }
+    }
+}
+
+fn toml_item_is_subset(target: &Item, source: &Item) -> bool {
+    if let Some(source_table) = source.as_table_like() {
+        let Some(target_table) = target.as_table_like() else {
+            return false;
+        };
+        return source_table.iter().all(|(key, source_item)| {
+            target_table
+                .get(key)
+                .is_some_and(|target_item| toml_item_is_subset(target_item, source_item))
+        });
+    }
+
+    match (target.as_value(), source.as_value()) {
+        (Some(target_value), Some(source_value)) => {
+            toml_value_is_subset(target_value, source_value)
+        }
+        _ => false,
+    }
+}
+
+fn merge_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            merge_toml_table_like(target_table, source_table);
+            return;
+        }
+    }
+
+    *target = source.clone();
+}
+
+fn merge_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
+    for (key, source_item) in source.iter() {
+        match target.get_mut(key) {
+            Some(target_item) => merge_toml_item(target_item, source_item),
+            None => {
+                target.insert(key, source_item.clone());
+            }
+        }
+    }
+}
+
+fn remove_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            remove_toml_table_like(target_table, source_table);
+            if target_table.is_empty() {
+                *target = Item::None;
+            }
+            return;
+        }
+    }
+
+    if let Some(source_value) = source.as_value() {
+        let mut remove_item = false;
+
+        if let Some(target_value) = target.as_value_mut() {
+            match (target_value, source_value) {
+                (toml_edit::Value::Array(target_arr), toml_edit::Value::Array(source_arr)) => {
+                    toml_remove_array_items(target_arr, source_arr);
+                    remove_item = target_arr.is_empty();
+                }
+                (target_value, source_value)
+                    if toml_value_is_subset(target_value, source_value) =>
+                {
+                    remove_item = true;
+                }
+                _ => {}
+            }
+        }
+
+        if remove_item {
+            *target = Item::None;
+        }
+    }
+}
+
+fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
+    let keys: Vec<String> = source.iter().map(|(key, _)| key.to_string()).collect();
+
+    for key in keys {
+        let mut remove_key = false;
+        if let (Some(target_item), Some(source_item)) = (target.get_mut(&key), source.get(&key)) {
+            remove_toml_item(target_item, source_item);
+            remove_key = target_item.is_none()
+                || target_item
+                    .as_table_like()
+                    .is_some_and(|table_like| table_like.is_empty());
+        }
+
+        if remove_key {
+            target.remove(&key);
+        }
+    }
+}
+
+fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet: &str) -> bool {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    match app_type {
+        AppType::Claude => match serde_json::from_str::<Value>(trimmed) {
+            Ok(source) if source.is_object() => json_is_subset(settings, &source),
+            _ => false,
+        },
+        AppType::Codex => {
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            if config_toml.trim().is_empty() {
+                return false;
+            }
+
+            let target_doc = match config_toml.parse::<DocumentMut>() {
+                Ok(doc) => doc,
+                Err(_) => return false,
+            };
+            let source_doc = match trimmed.parse::<DocumentMut>() {
+                Ok(doc) => doc,
+                Err(_) => return false,
+            };
+
+            toml_item_is_subset(target_doc.as_item(), source_doc.as_item())
+        }
+        AppType::Gemini => match serde_json::from_str::<Value>(trimmed) {
+            Ok(Value::Object(source_map)) => {
+                let Some(target_map) = settings.get("env").and_then(Value::as_object) else {
+                    return false;
+                };
+                source_map.iter().all(|(key, source_value)| {
+                    target_map
+                        .get(key)
+                        .is_some_and(|target_value| json_is_subset(target_value, source_value))
+                })
+            }
+            _ => false,
+        },
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => false,
+    }
+}
+
+pub(crate) fn provider_uses_common_config(
+    app_type: &AppType,
+    provider: &Provider,
+    snippet: Option<&str>,
+) -> bool {
+    match provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.common_config_enabled)
+    {
+        Some(explicit) => explicit && snippet.is_some_and(|value| !value.trim().is_empty()),
+        None => {
+            snippet.is_some_and(|value| {
+                settings_contain_common_config(app_type, &provider.settings_config, value)
+            })
+        }
+    }
+}
+
 pub(crate) fn build_proxy_takeover_settings(
     db: &Database,
     app_type: &AppType,
@@ -455,7 +683,7 @@ pub(crate) fn build_proxy_takeover_settings(
 
             Ok(result)
         }
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
             Err(AppError::Message("该应用不支持代理接管".to_string()))
         }
     }
@@ -469,12 +697,150 @@ pub(crate) fn build_effective_settings_without_template(
     Ok(provider.settings_config.clone())
 }
 
+pub(crate) fn remove_common_config_from_settings(
+    app_type: &AppType,
+    settings: &Value,
+    snippet: &str,
+) -> Result<Value, AppError> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return Ok(settings.clone());
+    }
+
+    match app_type {
+        AppType::Claude => {
+            let source = serde_json::from_str::<Value>(trimmed)
+                .map_err(|e| AppError::Message(format!("Invalid Claude common config: {e}")))?;
+            let mut result = settings.clone();
+            json_deep_remove(&mut result, &source);
+            Ok(result)
+        }
+        AppType::Codex => {
+            let mut result = settings.clone();
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let mut target_doc = if config_toml.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                config_toml.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!(
+                        "Invalid Codex config.toml while removing common config: {e}"
+                    ))
+                })?
+            };
+            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
+                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
+            })?;
+
+            remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+            }
+            Ok(result)
+        }
+        AppType::Gemini => {
+            let source = serde_json::from_str::<Value>(trimmed)
+                .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
+            let mut result = settings.clone();
+            if let Some(env) = result.get_mut("env") {
+                json_deep_remove(env, &source);
+            }
+            Ok(result)
+        }
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
+            Ok(settings.clone())
+        }
+    }
+}
+
+fn apply_common_config_to_settings(
+    app_type: &AppType,
+    settings: &Value,
+    snippet: &str,
+) -> Result<Value, AppError> {
+    let trimmed = snippet.trim();
+    if trimmed.is_empty() {
+        return Ok(settings.clone());
+    }
+
+    match app_type {
+        AppType::Claude => {
+            let source = serde_json::from_str::<Value>(trimmed)
+                .map_err(|e| AppError::Message(format!("Invalid Claude common config: {e}")))?;
+            let mut result = settings.clone();
+            json_deep_merge(&mut result, &source);
+            Ok(result)
+        }
+        AppType::Codex => {
+            let mut result = settings.clone();
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let mut target_doc = if config_toml.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                config_toml.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!(
+                        "Invalid Codex config.toml while applying common config: {e}"
+                    ))
+                })?
+            };
+            let source_doc = trimmed.parse::<DocumentMut>().map_err(|e| {
+                AppError::Message(format!("Invalid Codex common config snippet: {e}"))
+            })?;
+
+            merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("config".to_string(), Value::String(target_doc.to_string()));
+            }
+            Ok(result)
+        }
+        AppType::Gemini => {
+            let source = serde_json::from_str::<Value>(trimmed)
+                .map_err(|e| AppError::Message(format!("Invalid Gemini common config: {e}")))?;
+            let mut result = settings.clone();
+            if let Some(env) = result.get_mut("env") {
+                json_deep_merge(env, &source);
+            } else if let Some(obj) = result.as_object_mut() {
+                obj.insert("env".to_string(), source);
+            }
+            Ok(result)
+        }
+        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
+            Ok(settings.clone())
+        }
+    }
+}
+
+pub(crate) fn build_effective_settings_with_common_config(
+    db: &Database,
+    app_type: &AppType,
+    provider: &Provider,
+) -> Result<Value, AppError> {
+    let snippet = db.get_config_snippet(app_type.as_str())?;
+    let mut settings = build_effective_settings_without_template(db, app_type, provider)?;
+
+    if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
+        if let Some(snippet_text) = snippet.as_deref() {
+            match apply_common_config_to_settings(app_type, &settings, snippet_text) {
+                Ok(applied) => settings = applied,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to apply common config for {} provider '{}': {err}",
+                        app_type.as_str(),
+                        provider.id
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(settings)
+}
+
 pub(crate) fn build_direct_live_settings_with_mcp(
     db: &Database,
     app_type: &AppType,
     provider: &Provider,
 ) -> Result<Value, AppError> {
-    let mut settings = build_effective_settings_without_template(db, app_type, provider)?;
+    let mut settings = build_effective_settings_with_common_config(db, app_type, provider)?;
 
     match app_type {
         AppType::Codex => {
@@ -521,7 +887,11 @@ pub(crate) fn build_direct_live_settings_with_mcp(
                 config_obj.insert("mcpServers".to_string(), mcp_value);
             }
         }
-        AppType::Claude | AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {}
+        AppType::Claude
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::ClaudeDesktop => {}
     }
 
     Ok(settings)
@@ -543,6 +913,17 @@ pub(crate) fn write_live_with_common_config(
             &mut effective_provider.settings_config,
             quirks,
         );
+    }
+
+    if matches!(app_type, AppType::ClaudeDesktop) {
+        crate::claude_desktop_config::apply_provider(db, &effective_provider)?;
+        log::info!(
+            "Claude Desktop 3P profile '{}' written for provider '{}'",
+            crate::claude_desktop_config::PROFILE_ID,
+            effective_provider.id
+        );
+        db.set_live_owner_provider_id(app_type.as_str(), Some(&provider.id))?;
+        return Ok(());
     }
 
     write_live_snapshot(app_type, &effective_provider)?;
@@ -576,8 +957,40 @@ pub(crate) fn strip_common_config_from_live_settings(
     provider: &Provider,
     live_settings: Value,
 ) -> Value {
-    let _ = db;
-    restore_live_settings_for_provider_backfill(app_type, provider, live_settings)
+    let snippet = match db.get_config_snippet(app_type.as_str()) {
+        Ok(snippet) => snippet,
+        Err(err) => {
+            log::warn!(
+                "Failed to load common config for {} while backfilling '{}': {err}",
+                app_type.as_str(),
+                provider.id
+            );
+            return restore_live_settings_for_provider_backfill(app_type, provider, live_settings);
+        }
+    };
+
+    let backfill_settings = if provider_uses_common_config(app_type, provider, snippet.as_deref()) {
+        match snippet.as_deref() {
+            Some(snippet_text) => {
+                match remove_common_config_from_settings(app_type, &live_settings, snippet_text) {
+                    Ok(settings) => settings,
+                    Err(err) => {
+                        log::warn!(
+                            "Failed to strip common config for {} provider '{}': {err}",
+                            app_type.as_str(),
+                            provider.id
+                        );
+                        live_settings
+                    }
+                }
+            }
+            None => live_settings,
+        }
+    } else {
+        live_settings
+    };
+
+    restore_live_settings_for_provider_backfill(app_type, provider, backfill_settings)
 }
 
 fn restore_live_settings_for_provider_backfill(
@@ -604,10 +1017,39 @@ fn restore_live_settings_for_provider_backfill(
 }
 
 pub(crate) fn normalize_provider_common_config_for_storage(
-    _db: &Database,
-    _app_type: &AppType,
-    _provider: &mut Provider,
+    db: &Database,
+    app_type: &AppType,
+    provider: &mut Provider,
 ) -> Result<(), AppError> {
+    let uses_common_config = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.common_config_enabled)
+        .unwrap_or(false);
+
+    if !uses_common_config {
+        return Ok(());
+    }
+
+    let Some(snippet) = db.get_config_snippet(app_type.as_str())? else {
+        return Ok(());
+    };
+
+    if snippet.trim().is_empty() {
+        return Ok(());
+    }
+
+    match remove_common_config_from_settings(app_type, &provider.settings_config, &snippet) {
+        Ok(settings) => provider.settings_config = settings,
+        Err(err) => {
+            log::warn!(
+                "Failed to normalize common config before saving {} provider '{}': {err}",
+                app_type.as_str(),
+                provider.id
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -691,6 +1133,13 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             let path = get_claude_settings_path();
             let settings = sanitize_claude_settings_for_live(&provider.settings_config);
             write_json_file(&path, &settings)?;
+        }
+        AppType::ClaudeDesktop => {
+            return Err(AppError::localized(
+                "claude_desktop.live.requires_db_context",
+                "Claude Desktop 配置写入需要通过供应商切换流程执行",
+                "Claude Desktop configuration must be written through the provider switch flow",
+            ));
         }
         AppType::Codex => {
             let obj = provider
@@ -946,6 +1395,11 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             }
             read_json_file(&path)
         }
+        AppType::ClaudeDesktop => Err(AppError::localized(
+            "claude_desktop.live.read_unsupported",
+            "Claude Desktop 3P 配置不支持作为通用 live 配置导入，请使用“从 Claude 导入兼容供应商”。",
+            "Claude Desktop 3P configuration cannot be imported as a generic live config. Use 'Import compatible providers from Claude' instead.",
+        )),
         AppType::Gemini => {
             use crate::gemini_config::{
                 GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
@@ -1084,6 +1538,13 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             let _ = normalize_claude_models_in_value(&mut v);
             v
         }
+        AppType::ClaudeDesktop => {
+            return Err(AppError::localized(
+                "claude_desktop.import_unsupported",
+                "Claude Desktop 3P 配置不能通过通用导入读取，请使用“从 Claude 导入兼容供应商”。",
+                "Claude Desktop 3P config cannot be imported through the generic import flow. Use 'Import compatible providers from Claude' instead.",
+            ));
+        }
         AppType::Gemini => {
             use crate::gemini_config::{
                 GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
@@ -1148,8 +1609,25 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
     state
         .db
         .set_current_provider(app_type.as_str(), &provider.id)?;
+    crate::settings::set_current_provider(&app_type, Some(provider.id.as_str()))?;
 
     Ok(true) // 真正导入了
+}
+
+/// Decide whether startup should auto-import the current live config as `default`.
+///
+/// This is intentionally stricter than the manual import path:
+/// if the app already has any provider row at all (including official seeds),
+/// startup must skip auto-import to avoid recreating `default` on each launch.
+pub fn should_import_default_config_on_startup(
+    state: &AppState,
+    app_type: &AppType,
+) -> Result<bool, AppError> {
+    if app_type.is_additive_mode() {
+        return Ok(false);
+    }
+
+    Ok(!state.db.has_any_provider_for_app(app_type.as_str())?)
 }
 
 /// Write Gemini live configuration with authentication handling

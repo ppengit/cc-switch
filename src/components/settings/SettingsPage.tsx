@@ -483,13 +483,6 @@ export function SettingsPage({
             </TabsContent>
 
             <TabsContent
-              value="about"
-              className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
-            >
-              <AboutSection isPortable={isPortable} />
-            </TabsContent>
-
-            <TabsContent
               value="usage"
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
             >
@@ -502,6 +495,13 @@ export function SettingsPage({
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2 data-[state=inactive]:hidden"
             >
               <ApiHubPanel />
+            </TabsContent>
+
+            <TabsContent
+              value="about"
+              className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
+            >
+              <AboutSection isPortable={isPortable} />
             </TabsContent>
 
             {activeTab === "advanced" && settings && (

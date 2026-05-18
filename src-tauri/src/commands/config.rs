@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -12,6 +12,7 @@ use crate::codex_config;
 use crate::config::{self, get_claude_mcp_path, get_claude_settings_path, ConfigStatus};
 use crate::provider::Provider;
 use crate::settings;
+use crate::store::AppState;
 
 const DEFAULT_PROVIDER_TEMPLATE_MODEL: &str = "gpt-5.5";
 const DEFAULT_CLAUDE_TEMPLATE_MODEL: &str = "claude-sonnet-4-6";
@@ -181,9 +182,23 @@ fn validate_provider_default_template_payload(
 }
 
 #[tauri::command]
-pub async fn get_config_status(app: String) -> Result<ConfigStatus, String> {
+pub async fn get_config_status(
+    state: State<'_, AppState>,
+    app: String,
+) -> Result<ConfigStatus, String> {
     match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::Claude => Ok(config::get_claude_config_status()),
+        AppType::ClaudeDesktop => {
+            let status = crate::claude_desktop_config::get_status(
+                state.db.as_ref(),
+                state.proxy_service.is_running().await,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(ConfigStatus {
+                exists: status.configured,
+                path: status.config_library_path.unwrap_or_default(),
+            })
+        }
         AppType::Codex => {
             let auth_path = codex_config::get_codex_auth_path();
             let exists = auth_path.exists();
@@ -241,6 +256,9 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::Claude => config::get_claude_config_dir(),
+        AppType::ClaudeDesktop => {
+            crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
+        }
         AppType::Codex => codex_config::get_codex_config_dir(),
         AppType::Gemini => crate::gemini_config::get_gemini_dir(),
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
@@ -723,6 +741,9 @@ pub async fn set_provider_default_template(
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::Claude => config::get_claude_config_dir(),
+        AppType::ClaudeDesktop => {
+            crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
+        }
         AppType::Codex => codex_config::get_codex_config_dir(),
         AppType::Gemini => crate::gemini_config::get_gemini_dir(),
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),

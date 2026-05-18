@@ -1,5 +1,6 @@
 pub mod balance;
 pub mod api_hub;
+pub mod codex_oauth_models;
 pub mod coding_plan;
 pub mod config;
 pub mod env_checker;
@@ -16,6 +17,7 @@ pub mod session_usage_gemini;
 pub mod session_usage_hermes;
 pub mod skill;
 pub mod speedtest;
+pub mod sql_helpers;
 pub mod stream_check;
 pub mod subscription;
 pub mod usage_cache;
@@ -37,5 +39,5 @@ pub use usage_cache::UsageCache;
 #[allow(unused_imports)]
 pub use usage_stats::{
     DailyStats, LogFilters, ModelStats, PaginatedLogs, ProviderLimitStatus, ProviderStats,
-    RequestLogDetail, UsageSummary,
+    RequestLogDetail, UsageSummary, UsageSummaryByApp,
 };

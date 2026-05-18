@@ -1,14 +1,15 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { UsageSummaryCards } from "./UsageSummaryCards";
+import { UsageHero } from "./UsageHero";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
-import type {
-  AppTypeFilter,
-  RequestLog,
-  UsageRangeSelection,
+import {
+  KNOWN_APP_TYPES,
+  type AppTypeFilter,
+  type RequestLog,
+  type UsageRangeSelection,
 } from "@/types/usage";
 import { motion } from "framer-motion";
 import {
@@ -35,13 +36,7 @@ import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RawProxyLogPanel } from "@/components/usage/RawProxyLogPanel";
 
-const APP_FILTER_OPTIONS: AppTypeFilter[] = [
-  "all",
-  "claude",
-  "codex",
-  "gemini",
-  "hermes",
-];
+const APP_FILTER_OPTIONS: AppTypeFilter[] = ["all", ...KNOWN_APP_TYPES];
 
 interface UsageDashboardProps {
   onOpenRequestDetail?: (request: RequestLog) => void;
@@ -137,9 +132,9 @@ export function UsageDashboard({ onOpenRequestDetail }: UsageDashboardProps) {
         </div>
       </div>
 
-      <UsageSummaryCards
+      <UsageHero
         range={range}
-        appType={appType}
+        appType={appType === "all" ? undefined : appType}
         refreshIntervalMs={refreshIntervalMs}
       />
 

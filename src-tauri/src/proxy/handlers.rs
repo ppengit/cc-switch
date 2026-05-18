@@ -11,8 +11,10 @@ use super::{
     ProxyError,
     activity::{finish_request, observe_request, route_request},
     error_mapper::{get_error_message, map_proxy_error_to_status},
+    forwarder::ActiveConnectionGuard,
     handler_config::{
-        CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+        claude_stream_usage_event_filter, CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG,
+        GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
     providers::{
@@ -25,6 +27,7 @@ use super::{
         ActivityModelUpdate, SseUsageCollector, create_logged_passthrough_stream,
         extract_stream_event_model, process_response, read_decoded_body,
         strip_entity_headers_for_rebuilt_body, strip_hop_by_hop_response_headers,
+        usage_logging_enabled,
     },
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
@@ -32,7 +35,8 @@ use super::{
     usage::parser::TokenUsage,
 };
 use crate::app_config::AppType;
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use crate::database::PRICING_SOURCE_REQUEST;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -97,7 +101,51 @@ pub async fn handle_messages(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_messages_for_app(state, request, AppType::Claude, "Claude", "claude", None).await
+}
+
+pub async fn handle_claude_desktop_messages(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, ProxyError> {
+    validate_claude_desktop_gateway_auth(&state, request.headers())?;
+    handle_messages_for_app(
+        state,
+        request,
+        AppType::ClaudeDesktop,
+        "Claude Desktop",
+        "claude-desktop",
+        Some("/claude-desktop"),
+    )
+    .await
+}
+
+pub async fn handle_claude_desktop_models(
+    State(state): State<ProxyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ProxyError> {
+    validate_claude_desktop_gateway_auth(&state, &headers)?;
+    let providers = state
+        .provider_router
+        .select_providers("claude-desktop")
+        .await
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+    let provider = providers.first().ok_or(ProxyError::NoAvailableProvider)?;
+    let response = crate::claude_desktop_config::model_list_response(provider)
+        .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
+    Ok(Json(response))
+}
+
+async fn handle_messages_for_app(
+    state: ProxyState,
+    request: axum::extract::Request,
+    app_type: AppType,
+    tag: &'static str,
+    app_type_str: &'static str,
+    strip_prefix: Option<&'static str>,
+) -> Result<axum::response::Response, ProxyError> {
     let (parts, body) = request.into_parts();
+    let method = parts.method.clone();
     let uri = parts.uri;
     let headers = parts.headers;
     let extensions = parts.extensions;
@@ -110,13 +158,16 @@ pub async fn handle_messages(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Claude, "Claude", "claude").await?;
+        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
     observe_request_start(&state, &ctx).await;
 
-    let endpoint = uri
+    let raw_endpoint = uri
         .path_and_query()
         .map(|path_and_query| path_and_query.as_str())
         .unwrap_or(uri.path());
+    let endpoint = strip_prefix
+        .and_then(|prefix| raw_endpoint.strip_prefix(prefix))
+        .unwrap_or(raw_endpoint);
 
     let is_stream = body
         .get("stream")
@@ -125,9 +176,10 @@ pub async fn handle_messages(
 
     // 转发请求
     let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
+    let mut result = match forwarder
         .forward_with_retry(
-            &AppType::Claude,
+            &app_type,
+            method,
             endpoint,
             body.clone(),
             headers,
@@ -146,6 +198,7 @@ pub async fn handle_messages(
         }
     };
 
+    let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let api_format = result
         .claude_api_format
@@ -155,17 +208,59 @@ pub async fn handle_messages(
     let response = result.response;
 
     // 检查是否需要格式转换（OpenRouter 等中转服务）
-    let adapter = get_adapter(&AppType::Claude);
+    let adapter = get_adapter(&app_type);
     let needs_transform = adapter.needs_transform(&ctx.provider);
 
     // Claude 特有：格式转换处理
     if needs_transform {
-        return handle_claude_transform(response, &ctx, &state, &body, is_stream, &api_format)
-            .await;
+        return handle_claude_transform(
+            response,
+            &ctx,
+            &state,
+            &body,
+            is_stream,
+            &api_format,
+            connection_guard,
+        )
+        .await;
     }
 
     // 通用响应处理（透传模式）
-    process_response(response, &ctx, &state, &CLAUDE_PARSER_CONFIG).await
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &CLAUDE_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
+}
+
+fn validate_claude_desktop_gateway_auth(
+    state: &ProxyState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ProxyError> {
+    let expected = crate::claude_desktop_config::get_or_create_gateway_token(state.db.as_ref())
+        .map_err(|e| ProxyError::AuthError(e.to_string()))?;
+    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return Err(ProxyError::AuthError(
+            "Claude Desktop gateway 缺少 Authorization 头".to_string(),
+        ));
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| ProxyError::AuthError("Authorization 头格式无效".to_string()))?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .unwrap_or("")
+        .trim();
+    if token != expected {
+        return Err(ProxyError::AuthError(
+            "Claude Desktop gateway token 无效".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Claude 格式转换处理（独有逻辑）
@@ -178,6 +273,7 @@ async fn handle_claude_transform(
     original_body: &Value,
     is_stream: bool,
     api_format: &str,
+    connection_guard: Option<ActiveConnectionGuard>,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
     let is_codex_oauth = ctx
@@ -225,8 +321,8 @@ async fn handle_claude_transform(
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
 
-        // 创建使用量收集器
-        let usage_collector = {
+        // 创建使用量收集器；关闭 usage logging 时不要再解析转换后的 SSE。
+        let usage_collector = if usage_logging_enabled(state) {
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
             let request_model = ctx.request_model.clone();
@@ -234,6 +330,7 @@ async fn handle_claude_transform(
             let status_code = status.as_u16();
             let start_time = ctx.start_time;
             let request_id = ctx.request_id.clone();
+            let session_id = ctx.session_id.clone();
             let proxy_activity = state.proxy_activity.clone();
             let app_handle = state.app_handle.clone();
             let activity_update = ActivityModelUpdate::new(
@@ -245,9 +342,10 @@ async fn handle_claude_transform(
                 provider_name.clone(),
             );
 
-            SseUsageCollector::new(
+            Some(SseUsageCollector::new(
                 start_time,
                 Some(activity_update),
+                Some(claude_stream_usage_event_filter),
                 move |events, first_token_ms| {
                     let usage = TokenUsage::from_claude_stream_events(&events);
                     let resolved_model = usage
@@ -262,6 +360,7 @@ async fn handle_claude_transform(
                     let request_id = request_id.clone();
                     let proxy_activity = proxy_activity.clone();
                     let app_handle = app_handle.clone();
+                    let session_id = session_id.clone();
 
                     tokio::spawn(async move {
                         if let Some(usage) = usage {
@@ -276,6 +375,7 @@ async fn handle_claude_transform(
                                 first_token_ms,
                                 true,
                                 status_code,
+                                Some(session_id),
                             )
                             .await;
                         } else {
@@ -294,7 +394,9 @@ async fn handle_claude_transform(
                         .await;
                     });
                 },
-            )
+            ))
+        } else {
+            None
         };
 
         // 获取流式超时配置
@@ -303,8 +405,9 @@ async fn handle_claude_transform(
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
             "Claude/OpenRouter",
-            Some(usage_collector),
+            usage_collector,
             timeout_config,
+            connection_guard,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -445,6 +548,7 @@ async fn handle_claude_transform(
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
             let model = model.to_string();
+            let session_id = ctx.session_id.clone();
             async move {
                 log_usage(
                     &state,
@@ -457,6 +561,7 @@ async fn handle_claude_transform(
                     None,
                     false,
                     status.as_u16(),
+                    Some(session_id),
                 )
                 .await;
             }
@@ -512,6 +617,7 @@ pub async fn handle_chat_completions(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
     let uri = parts.uri;
     let headers = parts.headers;
     let extensions = parts.extensions;
@@ -534,9 +640,10 @@ pub async fn handle_chat_completions(
         .unwrap_or(false);
 
     let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
+    let mut result = match forwarder
         .forward_with_retry(
             &AppType::Codex,
+            method,
             &endpoint,
             body,
             headers,
@@ -555,10 +662,18 @@ pub async fn handle_chat_completions(
         }
     };
 
+    let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(response, &ctx, &state, &OPENAI_PARSER_CONFIG).await
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &OPENAI_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
 }
 
 /// 处理 /v1/responses 请求（OpenAI Responses API - Codex CLI 透传）
@@ -567,6 +682,7 @@ pub async fn handle_responses(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
     let uri = parts.uri;
     let headers = parts.headers;
     let extensions = parts.extensions;
@@ -589,9 +705,10 @@ pub async fn handle_responses(
         .unwrap_or(false);
 
     let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
+    let mut result = match forwarder
         .forward_with_retry(
             &AppType::Codex,
+            method,
             &endpoint,
             body,
             headers,
@@ -610,10 +727,18 @@ pub async fn handle_responses(
         }
     };
 
+    let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
 }
 
 /// 处理 /v1/responses/compact 请求（OpenAI Responses Compact API - Codex CLI 透传）
@@ -622,6 +747,7 @@ pub async fn handle_responses_compact(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
     let uri = parts.uri;
     let headers = parts.headers;
     let extensions = parts.extensions;
@@ -644,9 +770,10 @@ pub async fn handle_responses_compact(
         .unwrap_or(false);
 
     let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
+    let mut result = match forwarder
         .forward_with_retry(
             &AppType::Codex,
+            method,
             &endpoint,
             body,
             headers,
@@ -665,10 +792,18 @@ pub async fn handle_responses_compact(
         }
     };
 
+    let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(response, &ctx, &state, &CODEX_PARSER_CONFIG).await
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &CODEX_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
 }
 
 // ============================================================================
@@ -682,6 +817,7 @@ pub async fn handle_gemini(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
+    let method = parts.method.clone();
     let headers = parts.headers;
     let extensions = parts.extensions;
     let body_bytes = req_body
@@ -689,8 +825,14 @@ pub async fn handle_gemini(
         .await
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
-    let body: Value = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
+    // GET 类只读端点（/v1beta/models、/v1beta/models/<model> 等）没有请求体，
+    // 不能强制 parse 为 JSON —— 否则空 body 会被拒绝。
+    let body: Value = if body_bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body_bytes)
+            .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?
+    };
 
     // Gemini 的模型名称在 URI 中
     let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
@@ -710,9 +852,10 @@ pub async fn handle_gemini(
         .unwrap_or(false);
 
     let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
+    let mut result = match forwarder
         .forward_with_retry(
             &AppType::Gemini,
+            method,
             endpoint,
             body,
             headers,
@@ -731,10 +874,18 @@ pub async fn handle_gemini(
         }
     };
 
+    let connection_guard = result.connection_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await
+    process_response(
+        response,
+        &ctx,
+        &state,
+        &GEMINI_PARSER_CONFIG,
+        connection_guard,
+    )
+    .await
 }
 
 fn should_use_claude_transform_streaming(
@@ -880,14 +1031,19 @@ async fn log_usage(
     first_token_ms: Option<u64>,
     is_streaming: bool,
     status_code: u16,
+    session_id: Option<String>,
 ) {
     use super::usage::logger::UsageLogger;
+
+    if !usage_logging_enabled(state) {
+        return;
+    }
 
     let logger = UsageLogger::new(&state.db);
 
     let (multiplier, pricing_model_source) =
         logger.resolve_pricing_config(provider_id, app_type).await;
-    let pricing_model = if pricing_model_source == "request" {
+    let pricing_model = if pricing_model_source == PRICING_SOURCE_REQUEST {
         request_model
     } else {
         model
@@ -907,7 +1063,7 @@ async fn log_usage(
         latency_ms,
         first_token_ms,
         status_code,
-        None,
+        session_id,
         None, // provider_type
         is_streaming,
     ) {

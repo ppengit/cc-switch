@@ -174,18 +174,18 @@ pub async fn set_auto_failover_enabled(
     let app_enum =
         AppType::from_str(&app_type).map_err(|_| format!("无效的应用类型: {app_type}"))?;
 
+    let mut config = state
+        .db
+        .get_proxy_config_for_app(&app_type)
+        .await
+        .map_err(|e| e.to_string())?;
+
     if enabled {
         if !matches!(app_enum, AppType::Claude | AppType::Codex | AppType::Gemini) {
             return Err("该应用暂不支持代理故障转移".to_string());
         }
 
-        let proxy_config = state
-            .db
-            .get_proxy_config_for_app(&app_type)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !proxy_config.enabled || !state.proxy_service.is_running().await {
+        if !config.enabled || !state.proxy_service.is_running().await {
             return Err("请先开启该应用的代理接管；故障转移只在代理接管模式下生效".to_string());
         }
     }
@@ -197,6 +197,7 @@ pub async fn set_auto_failover_enabled(
     // - 若队列为空，则尝试把"当前供应商"自动加入队列作为 P1，避免用户在 UI 上陷入死锁（无法先加队列再开启）
     // - 故障转移模式下**不应该**存在"当前供应商"概念，因此本次开启会把
     //   settings.current_provider_xxx 与 DB.is_current 一并清空。
+    let mut auto_added_provider_id: Option<String> = None;
     let p1_provider_id = if enabled {
         let mut queue = state
             .db
@@ -215,6 +216,7 @@ pub async fn set_auto_failover_enabled(
                 .db
                 .add_to_failover_queue(&app_type, &current_id)
                 .map_err(|e| e.to_string())?;
+            auto_added_provider_id = Some(current_id);
 
             queue = state
                 .db
@@ -230,12 +232,20 @@ pub async fn set_auto_failover_enabled(
         String::new()
     };
 
-    // 读取当前配置
-    let mut config = state
-        .db
-        .get_proxy_config_for_app(&app_type)
-        .await
-        .map_err(|e| e.to_string())?;
+    // 开启前先切到 P1。只有切换成功后才写入 auto_failover_enabled=true，
+    // 避免 P1 不可切换（例如 official provider）时留下“开关已开但目标未切”的脏状态。
+    if enabled {
+        if let Err(e) = state
+            .proxy_service
+            .switch_proxy_target(&app_type, &p1_provider_id)
+            .await
+        {
+            if let Some(provider_id) = auto_added_provider_id {
+                let _ = state.db.remove_from_failover_queue(&app_type, &provider_id);
+            }
+            return Err(e);
+        }
+    }
 
     // 更新 auto_failover_enabled 字段
     config.auto_failover_enabled = enabled;

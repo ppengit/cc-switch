@@ -10,10 +10,10 @@ import {
   useAutoFailoverEnabled,
   useSetAutoFailoverEnabled,
 } from "@/lib/query/failover";
+import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
-import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAppProxyConfig } from "@/lib/query/proxy";
 
 interface FailoverToggleProps {
@@ -33,6 +33,7 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
   const canEnableFailover = takeoverEnabled && isRunning;
 
   const handleToggle = (checked: boolean) => {
+    if (checked && !canEnableFailover) return;
     setEnabled.mutate({ appType: activeApp, enabled: checked });
   };
 
@@ -48,15 +49,20 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
         app: appLabel,
         defaultValue: `${appLabel} 故障转移已启用\n按队列优先级（P1→P2→...）选择供应商`,
       })
-    : !canEnableFailover
-      ? t("failover.tooltip.requiresTakeover", {
+    : !takeoverEnabled
+      ? t("failover.tooltip.takeoverRequired", {
           app: appLabel,
-          defaultValue: `请先开启 ${appLabel} 的代理接管；故障转移只在代理接管模式下生效`,
+          defaultValue: `请先接管 ${appLabel}，再启用故障转移`,
         })
-    : t("failover.tooltip.disabled", {
-        app: appLabel,
-        defaultValue: `启用 ${appLabel} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个`,
-      });
+      : !canEnableFailover
+        ? t("failover.tooltip.requiresTakeover", {
+            app: appLabel,
+            defaultValue: `请先启动代理服务；故障转移只在代理接管运行时生效`,
+          })
+      : t("failover.tooltip.disabled", {
+          app: appLabel,
+          defaultValue: `启用 ${appLabel} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个`,
+        });
 
   return (
     <div
@@ -81,7 +87,9 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
       <Switch
         checked={isEnabled}
         onCheckedChange={handleToggle}
-        disabled={setEnabled.isPending || isLoading || (!isEnabled && !canEnableFailover)}
+        disabled={
+          setEnabled.isPending || isLoading || (!isEnabled && !canEnableFailover)
+        }
       />
     </div>
   );

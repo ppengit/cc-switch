@@ -21,6 +21,7 @@ vi.mock("sonner", () => ({
 }));
 
 const tMock = vi.fn((key: string) => key);
+const renderedTabContentValues = vi.hoisted(() => [] as string[]);
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: tMock }),
 }));
@@ -182,6 +183,7 @@ vi.mock("@/components/ui/tabs", () => {
       );
     },
     TabsContent: ({ value, forceMount, className, children }: any) => {
+      renderedTabContentValues.push(value);
       const ctx = useContext(TabsContext);
       if (!forceMount && ctx.value !== value) return null;
       return (
@@ -302,6 +304,7 @@ describe("SettingsPage Component", () => {
       },
     );
     lastUseImportExportOptions = undefined;
+    renderedTabContentValues.length = 0;
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     settingsApi = (await import("@/lib/api")).settingsApi;
@@ -412,6 +415,25 @@ describe("SettingsPage Component", () => {
     fireEvent.click(screen.getByText("settings.tabApiHub"));
 
     expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
+  });
+
+  it("keeps settings tab content order aligned with tab triggers", () => {
+    renderSettingsPage();
+
+    const expectedTabOrder = [
+      "general",
+      "proxy",
+      "auth",
+      "advanced",
+      "usage",
+      "apiHub",
+      "about",
+    ];
+    const declaredTabContentOrder = renderedTabContentValues.filter(
+      (value, index, values) => values.indexOf(value) === index,
+    );
+
+    expect(declaredTabContentOrder).toEqual(expectedTabOrder);
   });
 
   it("should keep Api-Hub panel state when switching settings tabs", () => {

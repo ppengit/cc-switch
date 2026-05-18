@@ -29,6 +29,7 @@ copilot-api
 .history
 CODEBUDDY.md
 .github
+mainWindow.js
 
 # Local Api-Hub imports and agent handoff notes may contain access tokens.
 /api-hub/

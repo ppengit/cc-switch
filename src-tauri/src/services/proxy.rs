@@ -14,7 +14,7 @@ use crate::services::provider::{
     build_effective_settings_without_template, build_proxy_takeover_settings,
     write_live_with_common_config,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Map, Value};
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -25,18 +25,27 @@ const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 /// 代理接管模式下历史版本可能残留的 Claude Live 模型覆盖字段。
 ///
-/// 新配置体系下，接管 Live 配置由“应用接入配置模板”生成，模板内的默认
-/// 模型字段是有效配置，不应在热切换时删除。这个列表仅保留给显式旧配置
-/// 清理逻辑使用，不参与正常接管渲染。
-const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 6] = [
+/// 原因：接管模式下 `*_MODEL` 必须由 CC Switch 写成稳定的 Claude 角色别名，
+/// 再由本地代理映射到当前供应商真实模型；`*_MODEL_NAME` 也需要同步接管，
+/// 否则 Claude Code 模型菜单会残留上一个供应商的显示名称。
+const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 9] = [
     "ANTHROPIC_MODEL",
     "ANTHROPIC_REASONING_MODEL", // legacy: 已废弃，但旧配置可能残留
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
     // Legacy key (已废弃)：历史版本使用该字段区分 small/fast 模型
     "ANTHROPIC_SMALL_FAST_MODEL",
 ];
+
+const CLAUDE_TAKEOVER_HAIKU_MODEL: &str = "claude-haiku-4-5";
+const CLAUDE_TAKEOVER_SONNET_MODEL: &str = "claude-sonnet-4-6";
+const CLAUDE_TAKEOVER_OPUS_MODEL: &str = "claude-opus-4-7";
+// 写给 Claude Code 时沿用文档示例的大写形式；解析侧大小写不敏感。
+const CLAUDE_ONE_M_MARKER_FOR_CLIENT: &str = "[1M]";
 
 #[derive(Clone)]
 pub struct ProxyService {
@@ -131,6 +140,9 @@ impl ProxyService {
     }
 
     fn apply_claude_takeover_fields(config: &mut Value, proxy_url: &str) {
+        // 必须在 remove/insert 前 snapshot：避免读到自己刚写入的接管别名。
+        let takeover_model_fields = Self::build_claude_takeover_model_fields(config);
+
         if !config.is_object() {
             *config = json!({});
         }
@@ -147,6 +159,14 @@ impl ProxyService {
             .as_object_mut()
             .expect("Claude env should be normalized to an object");
         env.insert("ANTHROPIC_BASE_URL".to_string(), json!(proxy_url));
+
+        for key in CLAUDE_MODEL_OVERRIDE_ENV_KEYS {
+            env.remove(key);
+        }
+
+        for (key, value) in takeover_model_fields {
+            env.insert(key.to_string(), Value::String(value));
+        }
 
         let token_keys = [
             "ANTHROPIC_AUTH_TOKEN",
@@ -169,6 +189,101 @@ impl ProxyService {
                 json!(PROXY_TOKEN_PLACEHOLDER),
             );
         }
+    }
+
+    fn build_claude_takeover_model_fields(config: &Value) -> Vec<(&'static str, String)> {
+        let Some(env) = config.get("env").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+
+        let default_model = Self::claude_env_string(env, "ANTHROPIC_MODEL");
+        let small_fast_model = Self::claude_env_string(env, "ANTHROPIC_SMALL_FAST_MODEL");
+        let haiku_model = Self::claude_env_string(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            .or(small_fast_model)
+            .or(default_model);
+        let sonnet_model = Self::claude_env_string(env, "ANTHROPIC_DEFAULT_SONNET_MODEL")
+            .or(default_model)
+            .or(small_fast_model);
+        let opus_model = Self::claude_env_string(env, "ANTHROPIC_DEFAULT_OPUS_MODEL")
+            .or(default_model)
+            .or(small_fast_model);
+
+        let mut fields = Vec::with_capacity(6);
+        Self::push_claude_takeover_role_fields(
+            &mut fields,
+            env,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            CLAUDE_TAKEOVER_HAIKU_MODEL,
+            false,
+            haiku_model,
+        );
+        Self::push_claude_takeover_role_fields(
+            &mut fields,
+            env,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            CLAUDE_TAKEOVER_SONNET_MODEL,
+            true,
+            sonnet_model,
+        );
+        Self::push_claude_takeover_role_fields(
+            &mut fields,
+            env,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            CLAUDE_TAKEOVER_OPUS_MODEL,
+            true,
+            opus_model,
+        );
+        fields
+    }
+
+    fn push_claude_takeover_role_fields(
+        fields: &mut Vec<(&'static str, String)>,
+        env: &Map<String, Value>,
+        model_key: &'static str,
+        name_key: &'static str,
+        takeover_model: &'static str,
+        supports_one_m: bool,
+        upstream_model: Option<&str>,
+    ) {
+        let Some(upstream_model) = upstream_model else {
+            return;
+        };
+
+        let mut client_model = takeover_model.to_string();
+        if supports_one_m && Self::has_claude_one_m_marker(upstream_model) {
+            client_model.push_str(CLAUDE_ONE_M_MARKER_FOR_CLIENT);
+        }
+        fields.push((model_key, client_model));
+
+        let display_name = Self::claude_env_string(env, name_key)
+            .map(str::to_string)
+            .unwrap_or_else(|| Self::strip_claude_one_m_marker(upstream_model));
+        if !display_name.is_empty() {
+            fields.push((name_key, display_name));
+        }
+    }
+
+    fn claude_env_string<'a>(env: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+        env.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    fn has_claude_one_m_marker(model: &str) -> bool {
+        model
+            .trim_end()
+            .to_ascii_lowercase()
+            .ends_with(crate::claude_desktop_config::ONE_M_CONTEXT_MARKER)
+    }
+
+    fn strip_claude_one_m_marker(model: &str) -> String {
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model)
+            .trim()
+            .to_string()
     }
 
     fn apply_codex_takeover_fields(config: &mut Value, proxy_codex_base_url: &str) {
@@ -387,7 +502,7 @@ impl ProxyService {
                 Self::apply_gemini_takeover_fields(&mut effective_settings, &proxy_url);
                 self.write_gemini_live(&effective_settings)?;
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
                 return Err("该应用不支持代理接管".to_string());
             }
         }
@@ -430,7 +545,9 @@ impl ProxyService {
                 Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
                 self.write_gemini_live(&live_config)?;
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => unreachable!(),
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
+                unreachable!()
+            }
         }
 
         Ok(())
@@ -921,10 +1038,7 @@ impl ProxyService {
             AppType::Claude => self.read_claude_live()?,
             AppType::Codex => self.read_codex_live()?,
             AppType::Gemini => self.read_gemini_live()?,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features
-                return Err("该应用不支持代理功能".to_string());
-            }
+            _ => return Err("该应用不支持代理功能".to_string()),
         };
 
         self.sync_live_config_to_provider(app_type, &live_config)
@@ -1174,9 +1288,7 @@ impl ProxyService {
                     }
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features, skip silently
-            }
+            _ => {}
         }
 
         Ok(())
@@ -1376,10 +1488,7 @@ impl ProxyService {
             AppType::Claude => ("claude", self.read_claude_live()?),
             AppType::Codex => ("codex", self.read_codex_live()?),
             AppType::Gemini => ("gemini", self.read_gemini_live()?),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features
-                return Err("该应用不支持代理功能".to_string());
-            }
+            _ => return Err("该应用不支持代理功能".to_string()),
         };
 
         let json_str = serde_json::to_string(&config)
@@ -1493,10 +1602,7 @@ impl ProxyService {
                 self.write_gemini_live(&live_config)?;
                 log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features
-                return Err("该应用不支持代理功能".to_string());
-            }
+            _ => return Err("该应用不支持代理功能".to_string()),
         }
 
         Ok(())
@@ -1552,9 +1658,7 @@ impl ProxyService {
                     let _ = self.write_gemini_live(&live_config);
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features, skip silently
-            }
+            _ => {}
         }
 
         Ok(())
@@ -1592,9 +1696,7 @@ impl ProxyService {
                     log::info!("Gemini Live 配置已恢复");
                 }
             }
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features, skip silently
-            }
+            _ => {}
         }
 
         Ok(())
@@ -1689,10 +1791,7 @@ impl ProxyService {
             AppType::Claude => self.write_claude_live(config),
             AppType::Codex => self.write_codex_live(config),
             AppType::Gemini => self.write_gemini_live(config),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features
-                Err("该应用不支持代理功能".to_string())
-            }
+            _ => Err("该应用不支持代理功能".to_string()),
         }
     }
 
@@ -1710,10 +1809,7 @@ impl ProxyService {
                 Ok(config) => Self::is_gemini_live_taken_over(&config),
                 Err(_) => false,
             },
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy takeover
-                false
-            }
+            _ => false,
         }
     }
 
@@ -1778,10 +1874,7 @@ impl ProxyService {
             AppType::Claude => self.cleanup_claude_takeover_placeholders_in_live(),
             AppType::Codex => self.cleanup_codex_takeover_placeholders_in_live(),
             AppType::Gemini => self.cleanup_gemini_takeover_placeholders_in_live(),
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                // These apps don't support proxy features
-                Ok(())
-            }
+            _ => Ok(()),
         }
     }
 
@@ -2124,11 +2217,17 @@ impl ProxyService {
                 .map_err(|e| format!("序列化 Claude 配置失败: {e}"))?,
             AppType::Codex => serde_json::to_string(&effective_settings)
                 .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?,
-            AppType::Gemini => serde_json::to_string(&effective_settings)
-                .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => {
-                return Err(format!("未知的应用类型: {app_type}"));
+            AppType::Gemini => {
+                // Gemini takeover 仅修改 .env；settings.json（含 mcpServers）保持原样。
+                let env_backup = if let Some(env) = effective_settings.get("env") {
+                    json!({ "env": env })
+                } else {
+                    json!({ "env": {} })
+                };
+                serde_json::to_string(&env_backup)
+                    .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
             }
+            _ => return Err(format!("未知的应用类型: {app_type}")),
         };
 
         self.db
@@ -2803,6 +2902,23 @@ impl ProxyService {
             .map_err(|e| format!("重置 Provider {provider_id} ({app_type}) 健康状态失败: {e}"))?;
         self.reset_provider_circuit_breaker(provider_id, app_type)
             .await?;
+        Ok(())
+    }
+
+    /// 热更新指定应用的熔断器配置
+    pub async fn update_circuit_breaker_config_for_app(
+        &self,
+        app_type: &str,
+        config: crate::proxy::CircuitBreakerConfig,
+    ) -> Result<(), String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server
+                .update_circuit_breaker_config_for_app(app_type, config)
+                .await;
+            log::info!("已热更新 {app_type} 运行中的熔断器配置");
+        } else {
+            log::debug!("{app_type} 熔断器配置将在下次代理启动时生效");
+        }
         Ok(())
     }
 
@@ -3982,7 +4098,12 @@ requires_openai_auth = true
                 "env": {
                     "ANTHROPIC_API_KEY": "b-key",
                     "ANTHROPIC_BASE_URL": "https://api.b.example",
-                    "ANTHROPIC_MODEL": "claude-new"
+                    "ANTHROPIC_MODEL": "claude-new",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "DeepSeek V4 Flash",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1M]",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "DeepSeek V4 Pro",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-ultra [1m]"
                 },
                 "permissions": { "allow": ["Read"] }
             }),
@@ -4008,7 +4129,9 @@ requires_openai_auth = true
                 "env": {
                     "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
                     "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
-                    "ANTHROPIC_MODEL": "stale-model"
+                    "ANTHROPIC_API_KEY": PROXY_TOKEN_PLACEHOLDER,
+                    "ANTHROPIC_MODEL": "stale-model",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Stale Sonnet"
                 },
                 "permissions": { "allow": ["Bash"] }
             }))
@@ -4041,9 +4164,54 @@ requires_openai_auth = true
         assert!(
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_MODEL"))
-                .and_then(|v| v.as_str())
-                == Some("claude-sonnet-4-6"),
-            "takeover mode should rewrite stale Claude model override to the access template default"
+                .is_none(),
+            "fallback model override should be removed in takeover mode"
+        );
+        let live_env = live
+            .get("env")
+            .and_then(|env| env.as_object())
+            .expect("live env");
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+                .and_then(|v| v.as_str()),
+            Some("claude-haiku-4-5"),
+            "takeover mode should expose a stable Haiku role model"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME")
+                .and_then(|v| v.as_str()),
+            Some("DeepSeek V4 Flash"),
+            "model menu should show the current provider Haiku display name"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet-4-6[1M]"),
+            "Sonnet role should carry the local 1M declaration for Claude Code"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
+                .and_then(|v| v.as_str()),
+            Some("DeepSeek V4 Pro"),
+            "stale model display names should be replaced during hot switch"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+                .and_then(|v| v.as_str()),
+            Some("claude-opus-4-7[1M]"),
+            "Opus role should preserve the current provider 1M capability marker"
+        );
+        assert_eq!(
+            live_env
+                .get("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")
+                .and_then(|v| v.as_str()),
+            Some("deepseek-v4-ultra"),
+            "implicit display names should strip the local 1M marker"
         );
 
         let backup = db
