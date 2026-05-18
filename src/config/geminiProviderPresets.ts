@@ -251,23 +251,6 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     iconColor: "#000000",
   },
   {
-    name: "LionCCAPI",
-    websiteUrl: "https://vibecodingapi.ai",
-    settingsConfig: {
-      env: {
-        GOOGLE_GEMINI_BASE_URL: "https://vibecodingapi.ai",
-        GEMINI_MODEL: "gemini-3.1-pro-preview",
-      },
-    },
-    baseURL: "https://vibecodingapi.ai",
-    model: "gemini-3.1-pro-preview",
-    description: "LionCCAPI",
-    category: "third_party",
-    isPartner: true,
-    partnerPromotionKey: "lionccapi",
-    icon: "lioncc",
-  },
-  {
     name: "E-FlowCode",
     websiteUrl: "https://e-flowcode.cc",
     apiKeyUrl: "https://e-flowcode.cc",
