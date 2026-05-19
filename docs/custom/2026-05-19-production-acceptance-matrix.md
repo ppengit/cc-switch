@@ -42,7 +42,7 @@
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
-| 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` / `ProviderList` | 活动条显示、请求模型和上游模型显示、详情跳转、供应商行活动状态 | 活动计数错乱、模型展示错配、活动请求状态跨 app 串页 | 已补真实 ProviderList 代理活动事件页面级验收；已有 Usage / Raw Proxy Log / 请求详情相关验收，仍需继续扩展顶栏活动条细节 |
+| 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` / `ProviderList` | 活动条显示、请求模型和上游模型显示、详情跳转、供应商行活动状态 | 活动计数错乱、模型展示错配、活动请求状态跨 app 串页 | 已补真实 ProviderList 代理活动事件页面级验收；已补真实 App 顶栏活动条页面级验收；已有 Usage / Raw Proxy Log / 请求详情相关验收，顶栏活动条当前不承担详情入口 |
 
 ## 已识别的测试失真来源
 
@@ -309,6 +309,22 @@
 - 全文件验证结果：`1 file passed, 13 tests passed, 0 failed`
 - 代理活动组合验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx tests/integration/SettingsPage.real-usage.test.tsx tests/integration/App.real-request-detail-panel.test.tsx tests/hooks/useProxyActivityBridge.test.tsx --fileParallelism=false --reporter=verbose`
 - 代理活动组合验证结果：`4 files passed, 20 tests passed, 0 failed`
+
+### App 顶栏代理活动条真实页面验收
+
+- 新增验收用例：`tests/integration/App.real-header-proxy-failover.test.tsx` 中 `renders the real live activity strip from proxy activity events and hides it after clear`
+- 覆盖范围：真实 `App` 顶栏、真实 `useProxyActivityBridge()`、真实 React Query `proxyStatus` 缓存和真实顶栏活动条渲染；MSW / Tauri mock 只负责派发 `proxy-activity-updated` 事件。
+- 活动计数验证：事件中故意传入 `active_request_count: 99`，同时传入 Claude `inflight_requests: 1` 和 Codex `inflight_requests: 2`，页面必须显示 `3 个请求处理中`，并且不能显示 `99 个请求处理中`，防止顶栏盲信后端汇总计数。
+- 展示内容验证：同一活动条必须同时展示 Claude / Codex 两个 app target、对应 provider、display model 和 `x1` / `x2` 数量；`title` 必须包含 `claude / Claude Alpha / claude-opus-upstream (req: claude-sonnet-request)` 和 `codex / Codex Beta / gpt-5.4`。
+- 清理事件验证：派发 `event: "cleared"` 且 `active_request_targets: []` 后，顶栏活动条必须隐藏，`Claude Alpha` / `Codex Beta` 活动项从页面移除。
+- 测试夹具：`tests/msw/tauriMocks.ts` 新增 `getTauriEventListenerCount()`，真实页面测试在派发事件前等待 `proxy-activity-updated` listener 注册完成，避免把异步监听注册时序误判成产品缺陷。
+- 红绿记录：临时把断言改为期待 `99 个请求处理中` 后，同一用例按预期失败；恢复为 `3 个请求处理中` 后通过，证明该验收能捕获活动条计数错误。
+- 单用例验证命令：`pnpm exec vitest run tests/integration/App.real-header-proxy-failover.test.tsx -t "renders the real live activity strip" --reporter=verbose`
+- 单用例验证结果：红灯 `1 failed`；恢复后 `1 passed, 1 skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/App.real-header-proxy-failover.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 2 tests passed, 0 failed`
+- 代理活动组合验证命令：`pnpm exec vitest run tests/integration/App.real-header-proxy-failover.test.tsx tests/integration/App.real-providers.test.tsx tests/hooks/useProxyActivityBridge.test.tsx tests/lib/proxyActivity.test.ts --fileParallelism=false --reporter=verbose`
+- 代理活动组合验证结果：`4 files passed, 22 tests passed, 0 failed`
 
 ### 组合回归
 

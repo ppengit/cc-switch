@@ -43,6 +43,9 @@ export const emitTauriEvent = (event: string, payload: unknown) => {
   handlers?.forEach((handler) => handler({ payload }));
 };
 
+export const getTauriEventListenerCount = (event: string) =>
+  listeners.get(event)?.size ?? 0;
+
 export const resetTauriEventListeners = () => {
   listeners.clear();
 };
