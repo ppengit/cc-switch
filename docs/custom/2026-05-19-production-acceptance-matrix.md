@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收；仍需继续扩展 Hermes 表单链路和故障转移 UI 面板验收 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收；仍需继续扩展故障转移 UI 面板验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -142,20 +142,24 @@
 
 - 新增验收文件：`tests/integration/App.real-provider-forms.test.tsx`
 - 覆盖范围：真实 `App`、真实 `ProviderList`、真实 `AddProviderDialog`、真实 `EditProviderDialog`、真实 `ProviderForm`；只 mock 与供应商表单链路无关的 Skills / MCP / Sessions / OpenClaw / Hermes / Settings 等重型页面。
-- 覆盖交互：从真实顶栏新增入口打开 OpenCode / OpenClaw 新增供应商弹窗，填写 provider key、display name、base URL、API key 后提交；再从真实列表编辑 DB-only OpenCode / OpenClaw provider，将 provider key 改名并提交。
-- 配置验证：新增 OpenCode 后验证 `providers["opencode-new"]` 存在，`settingsConfig.options.baseURL` / `apiKey` 写入正确，且 additive live ids 包含新增 provider；新增 OpenClaw 后验证 `providers["openclaw-new"]` 存在，`settingsConfig.baseUrl` 自动去尾斜杠，`apiKey`、`api: "openai-responses"` 和默认模型列表写入正确，且 additive live ids 只追加 OpenClaw provider。
-- 编辑验证：编辑 OpenCode / OpenClaw DB-only provider 后验证旧 id 删除、新 id 存在，并通过 `originalId` 语义避免残留旧记录；DB-only provider 编辑不会改写既有 live provider membership。
-- 隔离验证：OpenCode / OpenClaw 的 additive live ids 只影响当前 app，不串到 Hermes，也不会把 OpenClaw provider 写入 OpenCode 或 Hermes provider state。
+- 覆盖交互：从真实顶栏新增入口打开 OpenCode / OpenClaw / Hermes 新增供应商弹窗，填写 provider key、display name、base URL、API key 后提交；再从真实列表编辑 DB-only OpenCode / OpenClaw / Hermes provider，将 provider key 改名并提交。
+- 配置验证：新增 OpenCode 后验证 `providers["opencode-new"]` 存在，`settingsConfig.options.baseURL` / `apiKey` 写入正确，且 additive live ids 包含新增 provider；新增 OpenClaw 后验证 `providers["openclaw-new"]` 存在，`settingsConfig.baseUrl` 自动去尾斜杠，`apiKey`、`api: "openai-responses"` 和默认模型列表写入正确，且 additive live ids 只追加 OpenClaw provider；新增 Hermes 后验证 `providers["hermes-new"]` 存在，`settingsConfig.base_url` 自动去尾斜杠，`api_key`、`api_mode: "codex_responses"` 和默认模型列表写入正确，且 additive live ids 只追加 Hermes provider。
+- 编辑验证：编辑 OpenCode / OpenClaw / Hermes DB-only provider 后验证旧 id 删除、新 id 存在，并通过 `originalId` 语义避免残留旧记录；DB-only provider 编辑不会改写既有 live provider membership。
+- 隔离验证：OpenCode / OpenClaw / Hermes 的 additive live ids 只影响当前 app，不会把某个 app 的 provider 写入其它 app 的 provider state，也不会跨 app 改写 live ids。
 - 测试夹具：MSW 新增 additive app 判断、`addProviderToLiveConfig`、`removeProviderFromLiveConfigState`，并让 `add_provider` 支持 `addToLive`、`switch_provider` 更新 additive live ids、`update_provider` 传递 `originalId`。
 - 红绿记录：首次运行暴露 `add_provider` 后 live ids 未模拟写入，补齐 MSW 后通过；编辑 live provider key 的用例改为 DB-only provider，因为生产规则会锁定 live config 中的 provider key，避免 orphan live 配置。本轮追加 OpenClaw 后，临时把新增 OpenClaw 用例的 live ids 断言改错为只期待 `["openclaw-live"]`，同一用例按预期失败；恢复为 `["openclaw-live", "openclaw-new"]` 后 OpenClaw 目标用例通过。
 - 新增 OpenClaw 目标验证命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx -t OpenClaw --reporter=verbose`
 - 新增 OpenClaw 目标验证结果：`1 file passed, 2 tests passed, 2 skipped, 0 failed`
 - 红灯自检命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx -t "adds an OpenClaw provider" --reporter=verbose`
 - 红灯自检结果：临时错误断言下 `1 failed, 3 skipped`，失败信息为实际 live ids `["openclaw-live", "openclaw-new"]` 不等于错误期望 `["openclaw-live"]`。
+- 新增 Hermes 目标验证命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx -t Hermes --reporter=verbose`
+- 新增 Hermes 目标验证结果：`1 file passed, 2 tests passed, 4 skipped, 0 failed`
+- Hermes 红灯自检命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx -t "adds a Hermes provider" --reporter=verbose`
+- Hermes 红灯自检结果：临时错误断言下 `1 failed, 5 skipped`，失败信息为实际 live ids `["hermes-live", "hermes-new"]` 不等于错误期望 `["hermes-live"]`。
 - 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx`
-- 当前结果：已扩展为 OpenCode / OpenClaw 共 4 个真实页面用例；全文件验证 `1 file passed, 4 tests passed, 0 failed`。
-- 组合验证命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-openclaw-agents.test.tsx --fileParallelism=false --reporter=verbose`
-- 组合验证结果：`3 files passed, 19 tests passed, 0 failed`
+- 当前结果：已扩展为 OpenCode / OpenClaw / Hermes 共 6 个真实页面用例；全文件验证 `1 file passed, 6 tests passed, 0 failed`。
+- 组合验证命令：`pnpm exec vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-hermes-memory.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`3 files passed, 21 tests passed, 0 failed`
 - 类型验证命令：`pnpm typecheck`
 - 类型验证结果：`tsc --noEmit` 通过。
 - Diff 检查命令：`git diff --check`

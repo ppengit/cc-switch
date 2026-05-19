@@ -189,6 +189,32 @@ const openclawProvider = (
   },
 });
 
+const hermesProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_400_000 + sortIndex,
+  settingsConfig: {
+    name: id,
+    base_url: `https://${id}.example.com/v1`,
+    api_key: `${id}-key`,
+    api_mode: "codex_responses",
+    models: [
+      {
+        id: `openai/${id}-model`,
+        name: `${name} Model`,
+        context_length: 200000,
+      },
+    ],
+  },
+});
+
 const clickAppSwitcherButton = async (
   user: ReturnType<typeof userEvent.setup>,
   appName: string,
@@ -243,8 +269,11 @@ describe("App with real provider add/edit forms", () => {
       "openclaw-draft": openclawProvider("openclaw-draft", "OpenClaw Draft", 1),
     });
     setLiveProviderIds("openclaw", ["openclaw-live"]);
-    setProviders("hermes", {});
-    setLiveProviderIds("hermes", []);
+    setProviders("hermes", {
+      "hermes-live": hermesProvider("hermes-live", "Hermes Live", 0),
+      "hermes-draft": hermesProvider("hermes-draft", "Hermes Draft", 1),
+    });
+    setLiveProviderIds("hermes", ["hermes-live"]);
     window.localStorage.clear();
     window.sessionStorage.clear();
     Element.prototype.scrollIntoView = vi.fn();
@@ -386,7 +415,7 @@ describe("App with real provider add/edit forms", () => {
     expect(getProviders("opencode")["openclaw-new"]).toBeUndefined();
     expect(getProviders("hermes")["openclaw-new"]).toBeUndefined();
     expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
-    expect(getLiveProviderIds("hermes")).toEqual([]);
+    expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
   }, 20_000);
 
   it("edits an OpenClaw database-only provider without rewriting live membership for other apps", async () => {
@@ -436,8 +465,114 @@ describe("App with real provider add/edit forms", () => {
     });
 
     expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
-    expect(getLiveProviderIds("hermes")).toEqual([]);
+    expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
     expect(getProviders("opencode")["openclaw-renamed"]).toBeUndefined();
     expect(getProviders("hermes")["openclaw-renamed"]).toBeUndefined();
+  }, 20_000);
+
+  it("adds a Hermes provider from the real App dialog and appends only Hermes live config", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Hermes");
+    await waitFor(() =>
+      expect(screen.getByText("Hermes Live")).toBeInTheDocument(),
+    );
+
+    await clickHeaderAddButton(user);
+    await user.type(await getInputById("hermes-key"), "hermes-new");
+    await user.type(getProviderNameInput(), "Hermes New");
+    await user.clear(getApiKeyInput());
+    await user.type(getApiKeyInput(), "sk-hermes-new");
+    await user.clear(await getInputById("hermes-baseurl"));
+    await user.type(
+      await getInputById("hermes-baseurl"),
+      "https://hermes-new.example.com/v1/",
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => {
+      const providers = getProviders("hermes");
+      expect(providers["hermes-new"]).toBeDefined();
+      expect(providers["hermes-new"].name).toBe("Hermes New");
+      expect(providers["hermes-new"].settingsConfig).toMatchObject({
+        base_url: "https://hermes-new.example.com/v1",
+        api_key: "sk-hermes-new",
+        api_mode: "codex_responses",
+      });
+      expect(providers["hermes-new"].settingsConfig.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "openai/gpt-5.5",
+            name: "GPT-5.5",
+            context_length: 400000,
+          }),
+        ]),
+      );
+      expect(getLiveProviderIds("hermes")).toEqual([
+        "hermes-live",
+        "hermes-new",
+      ]);
+    });
+
+    expect(getProviders("opencode")["hermes-new"]).toBeUndefined();
+    expect(getProviders("openclaw")["hermes-new"]).toBeUndefined();
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-live"]);
+  }, 20_000);
+
+  it("edits a Hermes database-only provider without rewriting live membership for other apps", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Hermes");
+    await waitFor(() =>
+      expect(screen.getByText("Hermes Live")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      within(findProviderRow("Hermes Draft")).getByRole("button", {
+        name: "编辑",
+      }),
+    );
+    const keyInput = await getInputById("hermes-key");
+    expect(keyInput).toHaveValue("hermes-draft");
+
+    await user.clear(keyInput);
+    await user.type(keyInput, "hermes-renamed");
+    await user.clear(getProviderNameInput());
+    await user.type(getProviderNameInput(), "Hermes Renamed");
+    await user.clear(getApiKeyInput());
+    await user.type(getApiKeyInput(), "sk-hermes-renamed");
+    await user.clear(await getInputById("hermes-baseurl"));
+    await user.type(
+      await getInputById("hermes-baseurl"),
+      "https://hermes-renamed.example.com/v1/",
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => {
+      const providers = getProviders("hermes");
+      expect(providers["hermes-draft"]).toBeUndefined();
+      expect(providers["hermes-renamed"]).toBeDefined();
+      expect(providers["hermes-renamed"].name).toBe("Hermes Renamed");
+      expect(providers["hermes-renamed"].settingsConfig).toMatchObject({
+        base_url: "https://hermes-renamed.example.com/v1",
+        api_key: "sk-hermes-renamed",
+        api_mode: "codex_responses",
+      });
+      expect(getLiveProviderIds("hermes")).toEqual(["hermes-live"]);
+    });
+
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-live"]);
+    expect(getProviders("opencode")["hermes-renamed"]).toBeUndefined();
+    expect(getProviders("openclaw")["hermes-renamed"]).toBeUndefined();
   }, 20_000);
 });
