@@ -38,7 +38,7 @@
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
-| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离 | app 切换后工具栏按钮错位 | OpenClaw 专属入口已验收，内部配置写入待补 |
+| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离、Workspace 文件存在探测、打开目录、编辑保存、缺失文件创建 | app 切换后工具栏按钮错位、workspace 写错文件、保存后状态不刷新 | 已补真实 App + WorkspaceFilesPanel 页面级验收；`Env` / `Tools` / `AgentsDefaults` 内部配置写入待补 |
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
@@ -216,6 +216,19 @@
 - 验证命令：`pnpm vitest run tests/integration/App.real-hermes-memory.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`1 file passed, 2 tests passed, 0 failed`
 - 组合验证命令：`pnpm vitest run tests/integration/App.real-hermes-memory.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
+
+### App + WorkspaceFilesPanel 真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-openclaw-workspace.test.tsx`
+- 覆盖范围：真实 `App`、真实 OpenClaw 顶栏 Workspace 入口、真实 `WorkspaceFilesPanel`、真实 `WorkspaceFileEditor`；只 mock 与 Workspace 链路无关的重型页面和 Markdown 编辑器外壳。
+- 覆盖交互：从真实 OpenClaw 工具栏进入 Workspace；初始加载时逐个探测 workspace 文件存在状态；点击路径标题打开 `~/.openclaw/workspace/`；打开 `AGENTS.md` 进入编辑器并保存；关闭后重新打开同文件确认内容持久化；再打开原本不存在的 `SOUL.md`，写入内容并保存，验证缺失文件可由真实页面链路创建。
+- 配置 / 请求验证：MSW / Tauri mock 补齐 `read_workspace_file`、`write_workspace_file`、`open_workspace_directory`；直接观测 `filename`、`content`、`subdir` 请求参数，确认文件存在探测覆盖全部 9 个 workspace 文件，保存请求准确写入对应目标文件，不会误写到其它 workspace 文件。
+- 隔离验证：先修改 `AGENTS.md` 再创建 `SOUL.md`，验证两个文件分别独立持久化；重新打开 `AGENTS.md` 仍是更新后的 agent 指令，不会被新建 `SOUL.md` 覆盖。
+- 红绿记录：首次运行真实页面用例时，Workspace 页面可打开，但因缺少 `read_workspace_file` / `write_workspace_file` / `open_workspace_directory` handler，编辑器一直停在 loading 并失败；补齐 Workspace MSW 状态和 handler 后转绿。
+- 验证命令：`pnpm vitest run tests/integration/App.real-openclaw-workspace.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`1 file passed, 2 tests passed, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/integration/App.real-openclaw-workspace.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
 
 ### 组合回归

@@ -30,6 +30,7 @@ import {
   getHermesMemoryLimitsState,
   getHermesMemoryState,
   getInstalledSkillsState,
+  getWorkspaceFileState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
   getCurrentProviderId,
@@ -62,6 +63,7 @@ import {
   recordSettingsSave,
   recordDeleteSessionsRequest,
   recordOpenHermesWebUiState,
+  recordOpenWorkspaceDirectoryState,
   recordSessionMarkdownExport,
   recordSessionTerminalLaunch,
   resetProviderState,
@@ -81,6 +83,7 @@ import {
   setHermesMemoryState,
   setGlobalProxyConfigState,
   setAppConfigDirOverrideState,
+  setWorkspaceFileState,
   deleteMcpServer,
   setMcpServerEnabled,
   setProviderDefaultTemplateState,
@@ -256,6 +259,31 @@ export const handlers = [
         enabled: boolean;
       }>(request);
       setHermesMemoryEnabledState(kind, enabled);
+      return success(true);
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/read_workspace_file`, async ({ request }) => {
+    const { filename } = await withJson<{ filename: string }>(request);
+    return success(getWorkspaceFileState(filename));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/write_workspace_file`, async ({ request }) => {
+    const { filename, content } = await withJson<{
+      filename: string;
+      content: string;
+    }>(request);
+    setWorkspaceFileState(filename, content);
+    return success(true);
+  }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/open_workspace_directory`,
+    async ({ request }) => {
+      const { subdir } = await withJson<{ subdir: "workspace" | "memory" }>(
+        request,
+      );
+      recordOpenWorkspaceDirectoryState(subdir);
       return success(true);
     },
   ),

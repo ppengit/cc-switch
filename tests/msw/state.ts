@@ -53,6 +53,7 @@ type McpServersState = Record<string, McpServer>;
 type PromptState = Record<AppId, Record<string, Prompt>>;
 type CurrentPromptFileContentByApp = Record<AppId, string | null>;
 type HermesMemoryState = Record<HermesMemoryKind, string>;
+type WorkspaceFileState = Record<string, string | null>;
 type PromptUpsertRequest = { app: AppId; id: string; prompt: Prompt };
 type PromptEnableRequest = { app: AppId; id: string };
 type PromptDeleteRequest = { app: AppId; id: string };
@@ -522,6 +523,18 @@ const createDefaultHermesMemoryLimits = (): HermesMemoryLimits => ({
   userEnabled: false,
 });
 
+const createDefaultWorkspaceFiles = (): WorkspaceFileState => ({
+  "AGENTS.md": "# AGENTS.md\n\nInitial OpenClaw agent instructions.",
+  "SOUL.md": null,
+  "USER.md": "# USER.md\n\nWorkspace user notes.",
+  "IDENTITY.md": "# IDENTITY.md\n\nWorkspace identity notes.",
+  "TOOLS.md": "# TOOLS.md\n\nWorkspace tools notes.",
+  "MEMORY.md": "# MEMORY.md\n\nWorkspace memory notes.",
+  "HEARTBEAT.md": "# HEARTBEAT.md\n\nWorkspace heartbeat notes.",
+  "BOOTSTRAP.md": "# BOOTSTRAP.md\n\nWorkspace bootstrap notes.",
+  "BOOT.md": "# BOOT.md\n\nWorkspace boot notes.",
+});
+
 const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   deviceName: "Mock Device",
   createdAt: "2026-05-19T00:00:00Z",
@@ -567,6 +580,8 @@ let promptRequestCounts = createDefaultPromptRequestCounts();
 let hermesMemoryState = createDefaultHermesMemory();
 let hermesMemoryLimitsState = createDefaultHermesMemoryLimits();
 let lastOpenedHermesWebUiPath: string | null = null;
+let workspaceFilesState = createDefaultWorkspaceFiles();
+let lastOpenedWorkspaceDirectory: "workspace" | "memory" | null = null;
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
 let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
@@ -747,6 +762,8 @@ export const resetProviderState = () => {
   hermesMemoryState = createDefaultHermesMemory();
   hermesMemoryLimitsState = createDefaultHermesMemoryLimits();
   lastOpenedHermesWebUiPath = null;
+  workspaceFilesState = createDefaultWorkspaceFiles();
+  lastOpenedWorkspaceDirectory = null;
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
   lastPromptDeleteRequest = null;
@@ -1161,6 +1178,25 @@ export const recordOpenHermesWebUiState = (path: string | null) => {
 };
 
 export const getLastOpenedHermesWebUiPath = () => lastOpenedHermesWebUiPath;
+
+export const getWorkspaceFileState = (filename: string) =>
+  filename in workspaceFilesState ? workspaceFilesState[filename] : null;
+
+export const setWorkspaceFileState = (
+  filename: string,
+  content: string | null,
+) => {
+  workspaceFilesState[filename] = content;
+};
+
+export const recordOpenWorkspaceDirectoryState = (
+  subdir: "workspace" | "memory",
+) => {
+  lastOpenedWorkspaceDirectory = subdir;
+};
+
+export const getLastOpenedWorkspaceDirectory = () =>
+  lastOpenedWorkspaceDirectory;
 
 export const setCurrentPromptFileContentState = (
   app: AppId,
