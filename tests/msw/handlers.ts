@@ -1,7 +1,13 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { Prompt } from "@/lib/api/prompts";
-import type { McpServer, Provider, SessionMeta, Settings } from "@/types";
+import type {
+  HermesMemoryKind,
+  McpServer,
+  Provider,
+  SessionMeta,
+  Settings,
+} from "@/types";
 import type { AppProxyConfig, GlobalProxyConfig } from "@/types/proxy";
 import {
   addSkillRepoState,
@@ -21,6 +27,8 @@ import {
   getDiscoverableSkillsState,
   getFailoverQueueState,
   getGlobalProxyConfigState,
+  getHermesMemoryLimitsState,
+  getHermesMemoryState,
   getInstalledSkillsState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
@@ -53,6 +61,7 @@ import {
   getWebdavRemoteInfoState,
   recordSettingsSave,
   recordDeleteSessionsRequest,
+  recordOpenHermesWebUiState,
   recordSessionMarkdownExport,
   recordSessionTerminalLaunch,
   resetProviderState,
@@ -68,6 +77,8 @@ import {
   setAppProxyConfigState,
   setAutoFailoverEnabledState,
   setCurrentProviderId,
+  setHermesMemoryEnabledState,
+  setHermesMemoryState,
   setGlobalProxyConfigState,
   setAppConfigDirOverrideState,
   deleteMcpServer,
@@ -211,6 +222,42 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () =>
     success({ provider: null }),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/open_hermes_web_ui`, async ({ request }) => {
+    const { path } = await withJson<{ path?: string | null }>(request);
+    recordOpenHermesWebUiState(path ?? null);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_hermes_memory`, async ({ request }) => {
+    const { kind } = await withJson<{ kind: HermesMemoryKind }>(request);
+    return success(getHermesMemoryState(kind));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/set_hermes_memory`, async ({ request }) => {
+    const { kind, content } = await withJson<{
+      kind: HermesMemoryKind;
+      content: string;
+    }>(request);
+    setHermesMemoryState(kind, content);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_hermes_memory_limits`, () =>
+    success(getHermesMemoryLimitsState()),
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/set_hermes_memory_enabled`,
+    async ({ request }) => {
+      const { kind, enabled } = await withJson<{
+        kind: HermesMemoryKind;
+        enabled: boolean;
+      }>(request);
+      setHermesMemoryEnabledState(kind, enabled);
+      return success(true);
+    },
   ),
 
   http.post(`${TAURI_ENDPOINT}/switch_provider`, async ({ request }) => {

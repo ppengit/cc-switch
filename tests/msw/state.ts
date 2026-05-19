@@ -13,6 +13,8 @@ import type {
   UnmanagedSkill,
 } from "@/lib/api/skills";
 import type {
+  HermesMemoryKind,
+  HermesMemoryLimits,
   McpServer,
   Provider,
   RemoteSnapshotInfo,
@@ -50,6 +52,7 @@ type AutoFailoverEnabledByApp = Record<AppId, boolean>;
 type McpServersState = Record<string, McpServer>;
 type PromptState = Record<AppId, Record<string, Prompt>>;
 type CurrentPromptFileContentByApp = Record<AppId, string | null>;
+type HermesMemoryState = Record<HermesMemoryKind, string>;
 type PromptUpsertRequest = { app: AppId; id: string; prompt: Prompt };
 type PromptEnableRequest = { app: AppId; id: string };
 type PromptDeleteRequest = { app: AppId; id: string };
@@ -507,6 +510,18 @@ const createDefaultPromptRequestCounts = (): PromptRequestCounts => ({
   hermes: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
 });
 
+const createDefaultHermesMemory = (): HermesMemoryState => ({
+  memory: "# MEMORY.md\n\nRemember the current Hermes operating context.",
+  user: "# USER.md\n\nProfile: careful reviewer.",
+});
+
+const createDefaultHermesMemoryLimits = (): HermesMemoryLimits => ({
+  memory: 2200,
+  user: 1375,
+  memoryEnabled: true,
+  userEnabled: false,
+});
+
 const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   deviceName: "Mock Device",
   createdAt: "2026-05-19T00:00:00Z",
@@ -549,6 +564,9 @@ let mcpServersState = createDefaultMcpServers();
 let promptsState = createDefaultPrompts();
 let currentPromptFileContentByApp = createDefaultCurrentPromptFileContent();
 let promptRequestCounts = createDefaultPromptRequestCounts();
+let hermesMemoryState = createDefaultHermesMemory();
+let hermesMemoryLimitsState = createDefaultHermesMemoryLimits();
+let lastOpenedHermesWebUiPath: string | null = null;
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
 let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
@@ -726,6 +744,9 @@ export const resetProviderState = () => {
   promptsState = createDefaultPrompts();
   currentPromptFileContentByApp = createDefaultCurrentPromptFileContent();
   promptRequestCounts = createDefaultPromptRequestCounts();
+  hermesMemoryState = createDefaultHermesMemory();
+  hermesMemoryLimitsState = createDefaultHermesMemoryLimits();
+  lastOpenedHermesWebUiPath = null;
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
   lastPromptDeleteRequest = null;
@@ -1103,6 +1124,43 @@ export const getCurrentPromptFileContentState = (app: AppId) => {
 
 export const getCurrentPromptFileContentSnapshotState = (app: AppId) =>
   currentPromptFileContentByApp[app] ?? null;
+
+export const getHermesMemoryState = (kind: HermesMemoryKind) =>
+  hermesMemoryState[kind];
+
+export const setHermesMemoryState = (
+  kind: HermesMemoryKind,
+  content: string,
+) => {
+  hermesMemoryState[kind] = content;
+};
+
+export const getHermesMemoryLimitsState = () =>
+  JSON.parse(JSON.stringify(hermesMemoryLimitsState)) as HermesMemoryLimits;
+
+export const setHermesMemoryEnabledState = (
+  kind: HermesMemoryKind,
+  enabled: boolean,
+) => {
+  if (kind === "memory") {
+    hermesMemoryLimitsState = {
+      ...hermesMemoryLimitsState,
+      memoryEnabled: enabled,
+    };
+    return;
+  }
+
+  hermesMemoryLimitsState = {
+    ...hermesMemoryLimitsState,
+    userEnabled: enabled,
+  };
+};
+
+export const recordOpenHermesWebUiState = (path: string | null) => {
+  lastOpenedHermesWebUiPath = path;
+};
+
+export const getLastOpenedHermesWebUiPath = () => lastOpenedHermesWebUiPath;
 
 export const setCurrentPromptFileContentState = (
   app: AppId,

@@ -39,7 +39,7 @@
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
 | Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离 | app 切换后工具栏按钮错位 | OpenClaw 专属入口已验收，内部配置写入待补 |
-| Hermes | `HermesMemoryPanel` | Hermes 专属入口切换 | app 切换后入口错乱 | Hermes 专属入口已验收，Memory 内部保存待补 |
+| Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
 | 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` | 活动条显示、请求模型和上游模型显示、详情跳转 | 活动计数错乱、模型展示错配 | 已有部分测试，待继续扩展 |
@@ -204,6 +204,19 @@
 - 当前结果：`1 file passed, 2 tests passed, 0 failed`
 - 组合验证命令：`pnpm vitest run tests/integration/App.real-prompts.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/App.real-skills-mcp.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`3 files passed, 12 tests passed, 0 failed`
+
+### App + HermesMemoryPanel 真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-hermes-memory.test.tsx`
+- 覆盖范围：真实 `App`、真实 Hermes 顶栏 Memory 入口、真实 `HermesMemoryPanel`、真实 `useHermesMemory` / `useHermesMemoryLimits` / `useSaveHermesMemory` / `useToggleHermesMemoryEnabled` / `useOpenHermesWebUI`；只 mock 与 Hermes Memory 链路无关的重型页面和 Markdown 编辑器外壳。
+- 覆盖交互：从真实 Hermes 工具栏进入 Memory 页面；默认 `memory` 页签加载内容；关闭 memory 开关并显示禁用提示；编辑并保存 `MEMORY.md`；点击“在 Hermes Web UI 调整上限”；切到 `user` 页签后开启 user memory、编辑并保存 `USER.md`。
+- 隔离验证：保存 `USER.md` 后切回 `memory` 页签，确认仍显示 `MEMORY.md` 内容；再次切回 `user` 页签，确认保持刚保存的 `USER.md` 内容，避免两个 memory 文件在真实页面下串写或互相覆盖。
+- 配置 / 请求验证：MSW / Tauri mock 补齐 `get_hermes_memory`、`set_hermes_memory`、`get_hermes_memory_limits`、`set_hermes_memory_enabled`、`open_hermes_web_ui`；直接观测 `kind`、`content`、`path` 请求参数，验证 memory / user 写入目标准确，且保存后会重新请求对应 memory，不会把编辑器 UI 回滚到旧状态。
+- 红绿记录：首次运行真实页面用例时，因缺少 `get_hermes_memory` 等 Hermes command handler 卡在 loading 并失败；补齐 Hermes MSW 状态和 handler 后转绿。随后又暴露出 Framer Motion 视图切换下“标题已出现但页签未挂载完成”的时序问题，验收入口等待条件已收紧为 `memory` tab 真正可访问后再继续操作，避免假失败。
+- 验证命令：`pnpm vitest run tests/integration/App.real-hermes-memory.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`1 file passed, 2 tests passed, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/integration/App.real-hermes-memory.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
 
 ### 组合回归
 
