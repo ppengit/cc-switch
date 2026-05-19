@@ -1101,6 +1101,277 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn api_key_disable_last_codex_failover_provider_keeps_takeover_live_when_queue_becomes_empty()
+    {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider = Provider::with_id(
+            "codex-solo".to_string(),
+            "Codex Solo".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "token-solo"
+                },
+                "config": r#"model_provider = "codex-solo"
+model = "gpt-5.4"
+
+[model_providers.codex-solo]
+base_url = "https://codex-solo.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save provider");
+        db.add_to_failover_queue("codex", "codex-solo")
+            .expect("queue provider");
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover");
+
+        let state = AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider)
+            .await
+            .expect("seed Codex takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("codex", "codex-solo", "Codex Solo")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+
+        for _ in 0..3 {
+            router
+                .record_result_with_disable_hook(
+                    "codex-solo",
+                    "codex",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                    {
+                        let state = &state;
+                        move |app_type, provider_id| async move {
+                            state
+                                .proxy_service
+                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
+                                .await
+                                .expect("reconcile after disable");
+                        }
+                    },
+                )
+                .await
+                .expect("record auth failure");
+        }
+
+        assert!(
+            !db.is_in_failover_queue("codex", "codex-solo").unwrap(),
+            "last Codex provider should be removed from failover queue after auth disable"
+        );
+
+        let auth: Value =
+            read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "Codex takeover token placeholder must remain after the queue becomes empty"
+        );
+
+        let config_text =
+            fs::read_to_string(get_codex_config_path()).expect("read Codex config live");
+        assert!(
+            config_text.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "disabling the last Codex failover provider must keep config.toml on the local proxy base_url"
+        );
+        assert!(
+            !config_text.contains("https://codex-solo.example/v1"),
+            "disabling the last Codex failover provider must not write the provider direct baseUrl back to live"
+        );
+
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status");
+        assert!(
+            status
+                .active_targets
+                .iter()
+                .all(|target| target.app_type != "codex"),
+            "empty Codex queue after auth disable should clear active target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_disable_last_gemini_failover_provider_keeps_takeover_live_when_queue_becomes_empty()
+    {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider = Provider::with_id(
+            "gemini-solo".to_string(),
+            "Gemini Solo".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token-solo",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini-solo.example",
+                    "GEMINI_MODEL": "gemini-3-pro"
+                }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save provider");
+        db.add_to_failover_queue("gemini", "gemini-solo")
+            .expect("queue provider");
+
+        let mut config = db.get_proxy_config_for_app("gemini").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 8;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover");
+
+        let state = AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Gemini, &provider)
+            .await
+            .expect("seed Gemini takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("gemini", "gemini-solo", "Gemini Solo")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+
+        for _ in 0..3 {
+            router
+                .record_result_with_disable_hook(
+                    "gemini-solo",
+                    "gemini",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                    {
+                        let state = &state;
+                        move |app_type, provider_id| async move {
+                            state
+                                .proxy_service
+                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
+                                .await
+                                .expect("reconcile after disable");
+                        }
+                    },
+                )
+                .await
+                .expect("record auth failure");
+        }
+
+        assert!(
+            !db.is_in_failover_queue("gemini", "gemini-solo").unwrap(),
+            "last Gemini provider should be removed from failover queue after auth disable"
+        );
+
+        let env = read_gemini_env().expect("read Gemini env live");
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "disabling the last Gemini failover provider must keep .env on the local proxy base URL"
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("PROXY_MANAGED"),
+            "Gemini takeover token placeholder must remain after the queue becomes empty"
+        );
+        assert_ne!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://gemini-solo.example"),
+            "disabling the last Gemini failover provider must not write the provider direct baseUrl back to live"
+        );
+
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .expect("get proxy status");
+        assert!(
+            status
+                .active_targets
+                .iter()
+                .all(|target| target.app_type != "gemini"),
+            "empty Gemini queue after auth disable should clear active target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn all_circuit_open_failover_queue_keeps_takeover_live_on_proxy_endpoint() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
