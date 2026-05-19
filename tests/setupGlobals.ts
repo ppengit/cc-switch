@@ -7,12 +7,69 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   } as unknown as typeof globalThis.ResizeObserver;
 }
 
+const createMockDomRect = () => ({
+  x: 0,
+  y: 0,
+  top: 0,
+  left: 0,
+  bottom: 0,
+  right: 0,
+  width: 0,
+  height: 0,
+  toJSON: () => ({}),
+});
+
+if (typeof globalThis.Range !== "undefined") {
+  const rangePrototype = globalThis.Range.prototype as Range & {
+    getBoundingClientRect?: () => DOMRect;
+    getClientRects?: () => DOMRectList;
+  };
+
+  if (typeof rangePrototype.getBoundingClientRect !== "function") {
+    Object.defineProperty(rangePrototype, "getBoundingClientRect", {
+      value: () => createMockDomRect(),
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  if (typeof rangePrototype.getClientRects !== "function") {
+    Object.defineProperty(rangePrototype, "getClientRects", {
+      value: () => {
+        const rect = createMockDomRect();
+        const rectList = [rect] as unknown as DOMRectList & DOMRect[];
+        rectList.item = (index: number) => rectList[index] ?? null;
+        return rectList;
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+}
+
 if (typeof globalThis.window !== "undefined") {
   Object.defineProperty(globalThis.window, "scrollTo", {
     value: () => {},
     writable: true,
     configurable: true,
   });
+
+  if (typeof globalThis.window.matchMedia !== "function") {
+    Object.defineProperty(globalThis.window, "matchMedia", {
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+      writable: true,
+      configurable: true,
+    });
+  }
 }
 
 if (typeof globalThis.Element !== "undefined") {

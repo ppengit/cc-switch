@@ -115,7 +115,6 @@ pub async fn webdav_sync_upload(state: State<'_, AppState>) -> Result<Value, Str
 #[tauri::command]
 pub async fn webdav_sync_download(state: State<'_, AppState>) -> Result<Value, String> {
     let db = state.db.clone();
-    let db_for_sync = db.clone();
     let mut settings = require_enabled_webdav_settings()?;
     let _auto_sync_suppression = crate::services::webdav_auto_sync::AutoSyncSuppressionGuard::new();
 
@@ -125,11 +124,7 @@ pub async fn webdav_sync_download(state: State<'_, AppState>) -> Result<Value, S
     })?;
 
     // Post-download sync is best-effort: snapshot restore has already succeeded.
-    let warning = post_sync_warning_from_result(
-        tauri::async_runtime::spawn_blocking(move || run_post_import_sync(db_for_sync))
-            .await
-            .map_err(|e| e.to_string()),
-    );
+    let warning = post_sync_warning_from_result(Ok(run_post_import_sync(state.inner())));
     if let Some(msg) = warning.as_ref() {
         log::warn!("[WebDAV] post-download sync warning: {msg}");
     }

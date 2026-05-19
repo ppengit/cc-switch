@@ -1,6 +1,7 @@
 import type { AppId } from "@/lib/api/types";
 import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api/auth";
 import type { AppConfigTemplateFile } from "@/lib/api/config";
+import type { LogConfig } from "@/lib/api/settings";
 import type { Prompt } from "@/lib/api/prompts";
 import type {
   DiscoverableSkill,
@@ -17,6 +18,8 @@ import type {
   HermesMemoryLimits,
   McpServer,
   OpenClawEnvConfig,
+  OpenClawAgentsDefaults,
+  OpenClawToolsConfig,
   Provider,
   RemoteSnapshotInfo,
   SessionMessage,
@@ -24,6 +27,15 @@ import type {
   Settings,
   WebDavSyncSettings,
 } from "@/types";
+import type {
+  DailyStats,
+  DataSourceSummary,
+  ModelPricing,
+  ModelStats,
+  ProviderStats,
+  RequestLog,
+  UsageSummaryByApp,
+} from "@/types/usage";
 import type {
   AppProxyConfig,
   FailoverQueueItem,
@@ -39,10 +51,7 @@ type LiveProviderIdsByApp = Record<
   "opencode" | "openclaw" | "hermes",
   string[]
 >;
-type ProxyTakeoverStatusByApp = Record<
-  "claude" | "codex" | "gemini" | "opencode" | "openclaw" | "hermes",
-  boolean
->;
+type ProxyTakeoverStatusByApp = Record<AppId, boolean>;
 type SwitchModeAppId = "claude" | "codex" | "gemini";
 type AppProxyConfigByApp = Record<AppId, AppProxyConfig>;
 type FailoverQueueByApp = Record<AppId, FailoverQueueItem[]>;
@@ -94,6 +103,11 @@ type SessionTerminalLaunchRequest = {
   command: string;
   cwd?: string | null;
   customConfig?: string | null;
+};
+type DbBackupEntry = {
+  filename: string;
+  sizeBytes: number;
+  createdAt: string;
 };
 
 const APP_IDS = [
@@ -216,6 +230,7 @@ const createDefaultAutoFailoverEnabled = (): AutoFailoverEnabledByApp => ({
 
 const createDefaultProxyTakeoverStatus = (): ProxyTakeoverStatusByApp => ({
   claude: false,
+  "claude-desktop": false,
   codex: false,
   gemini: false,
   opencode: false,
@@ -545,6 +560,192 @@ const createDefaultOpenClawEnvConfig = (): OpenClawEnvConfig => ({
   },
 });
 
+const createDefaultOpenClawToolsConfig = (): OpenClawToolsConfig => ({
+  profile: "minimal",
+  allow: ["Read", "Write"],
+  deny: ["Delete"],
+});
+
+const createDefaultOpenClawAgentsDefaults = (): OpenClawAgentsDefaults => ({
+  model: {
+    primary: "provider-a/model-alpha",
+    fallbacks: ["provider-b/model-beta"],
+  },
+  workspace: "write",
+  timeoutSeconds: 90,
+  contextTokens: 32768,
+  maxConcurrent: 4,
+  customFlag: "preserve-me",
+});
+
+const createDefaultUsageSummaryByApp = (): UsageSummaryByApp[] => [
+  {
+    appType: "claude",
+    summary: {
+      totalRequests: 12,
+      totalCost: "1.234500",
+      totalInputTokens: 2000,
+      totalOutputTokens: 800,
+      totalCacheCreationTokens: 200,
+      totalCacheReadTokens: 400,
+      successRate: 91.7,
+      realTotalTokens: 3400,
+      cacheHitRate: 0.1538,
+    },
+  },
+  {
+    appType: "codex",
+    summary: {
+      totalRequests: 4,
+      totalCost: "0.400000",
+      totalInputTokens: 900,
+      totalOutputTokens: 300,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 100,
+      successRate: 100,
+      realTotalTokens: 1300,
+      cacheHitRate: 0.1,
+    },
+  },
+];
+
+const createDefaultUsageTrends = (): DailyStats[] => [
+  {
+    date: "2026-05-19T08:00:00Z",
+    requestCount: 3,
+    totalCost: "0.150000",
+    totalTokens: 1200,
+    totalInputTokens: 600,
+    totalOutputTokens: 400,
+    totalCacheCreationTokens: 50,
+    totalCacheReadTokens: 150,
+  },
+  {
+    date: "2026-05-19T09:00:00Z",
+    requestCount: 5,
+    totalCost: "0.280000",
+    totalTokens: 1600,
+    totalInputTokens: 700,
+    totalOutputTokens: 500,
+    totalCacheCreationTokens: 100,
+    totalCacheReadTokens: 300,
+  },
+];
+
+const createDefaultProviderStats = (): ProviderStats[] => [
+  {
+    providerId: "claude-alpha",
+    providerName: "Claude Alpha",
+    requestCount: 9,
+    totalTokens: 2400,
+    totalCost: "0.800000",
+    successRate: 88.9,
+    avgLatencyMs: 1250,
+  },
+];
+
+const createDefaultModelStats = (): ModelStats[] => [
+  {
+    model: "claude-haiku-4-5-20251001",
+    requestCount: 6,
+    totalTokens: 1900,
+    totalCost: "0.500000",
+    avgCostPerRequest: "0.083333",
+  },
+];
+
+const createDefaultRequestLogs = (): RequestLog[] => [
+  {
+    requestId: "req-1",
+    providerId: "claude-alpha",
+    providerName: "Claude Alpha",
+    appType: "claude",
+    model: "claude-haiku-4-5-20251001",
+    requestModel: "claude-haiku-4-5-20251001",
+    costMultiplier: "1",
+    inputTokens: 1200,
+    outputTokens: 300,
+    cacheReadTokens: 200,
+    cacheCreationTokens: 100,
+    inputCostUsd: "0.120000",
+    outputCostUsd: "0.090000",
+    cacheReadCostUsd: "0.010000",
+    cacheCreationCostUsd: "0.020000",
+    totalCostUsd: "0.240000",
+    isStreaming: true,
+    latencyMs: 1850,
+    firstTokenMs: 420,
+    durationMs: 2200,
+    statusCode: 200,
+    sessionId: "session-1",
+    sessionTitle: "Claude Session One",
+    projectPath: "/workspace/claude-one",
+    providerType: "custom",
+    createdAt: 1_747_645_600,
+    dataSource: "proxy",
+  },
+  {
+    requestId: "req-2",
+    providerId: "codex-alpha",
+    providerName: "Codex Alpha",
+    appType: "codex",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5@low",
+    costMultiplier: "1",
+    inputTokens: 800,
+    outputTokens: 120,
+    cacheReadTokens: 100,
+    cacheCreationTokens: 0,
+    inputCostUsd: "0.040000",
+    outputCostUsd: "0.030000",
+    cacheReadCostUsd: "0.005000",
+    cacheCreationCostUsd: "0.000000",
+    totalCostUsd: "0.075000",
+    isStreaming: false,
+    latencyMs: 980,
+    statusCode: 200,
+    sessionId: "session-2",
+    sessionTitle: "Codex Session",
+    projectPath: "/workspace/codex",
+    providerType: "custom",
+    createdAt: 1_747_649_200,
+    dataSource: "proxy",
+  },
+];
+
+const createDefaultRequestDetails = (): Record<string, RequestLog | null> => ({
+  "req-1": {
+    ...createDefaultRequestLogs()[0],
+    requestModel: "claude-3.7-thinking",
+    model: "claude-haiku-4-5-20251001",
+    errorMessage: "",
+  },
+  "req-2": {
+    ...createDefaultRequestLogs()[1],
+    requestModel: "gpt-5.5@low",
+    model: "gpt-5.5",
+  },
+});
+
+const createDefaultModelPricing = (): ModelPricing[] => [
+  {
+    modelId: "claude-haiku-4-5-20251001",
+    displayName: "Claude Haiku 4.5",
+    inputCostPerMillion: "3",
+    outputCostPerMillion: "15",
+    cacheReadCostPerMillion: "0.3",
+    cacheCreationCostPerMillion: "3.75",
+  },
+];
+
+const createDefaultUsageDataSources = (): DataSourceSummary[] => [
+  {
+    dataSource: "proxy",
+    requestCount: 16,
+    totalCostUsd: "1.634500",
+  },
+];
+
 const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   deviceName: "Mock Device",
   createdAt: "2026-05-19T00:00:00Z",
@@ -557,6 +758,14 @@ const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   layout: "current",
   remotePath: "/cc-switch-sync/v2/db-v6/default",
 });
+
+const createDefaultDbBackups = (): DbBackupEntry[] => [
+  {
+    filename: "db_backup_20260518_010203.db",
+    sizeBytes: 1_024,
+    createdAt: "2026-05-18T01:02:03Z",
+  },
+];
 
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
@@ -593,6 +802,26 @@ let lastOpenedHermesWebUiPath: string | null = null;
 let workspaceFilesState = createDefaultWorkspaceFiles();
 let lastOpenedWorkspaceDirectory: "workspace" | "memory" | null = null;
 let openClawEnvConfigState = createDefaultOpenClawEnvConfig();
+let openClawToolsConfigState = createDefaultOpenClawToolsConfig();
+let openClawAgentsDefaultsState: OpenClawAgentsDefaults | null =
+  createDefaultOpenClawAgentsDefaults();
+let usageSummaryByAppState = createDefaultUsageSummaryByApp();
+let usageTrendsState = createDefaultUsageTrends();
+let providerStatsState = createDefaultProviderStats();
+let modelStatsState = createDefaultModelStats();
+let requestLogsState = createDefaultRequestLogs();
+let requestDetailsState = createDefaultRequestDetails();
+let modelPricingState = createDefaultModelPricing();
+let usageDataSourcesState = createDefaultUsageDataSources();
+let streamCheckConfigState = {
+  timeoutSecs: 45,
+  maxRetries: 2,
+  degradedThresholdMs: 6000,
+  claudeModel: "claude-haiku-4-5-20251001",
+  codexModel: "gpt-5.5@low",
+  geminiModel: "gemini-3-flash-preview",
+  testPrompt: "Who are you?",
+};
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
 let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
@@ -607,6 +836,14 @@ let webdavTestRequests: Array<{
 let webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
 let webdavUploadCount = 0;
 let webdavDownloadCount = 0;
+let logConfigState: LogConfig = {
+  enabled: true,
+  level: "info",
+  rawProxyLogRetentionMinutes: 30,
+};
+let logConfigSaveHistory: LogConfig[] = [];
+let dbBackupsState = createDefaultDbBackups();
+let lastRestoredBackupFilename: string | null = null;
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -616,6 +853,17 @@ let settingsState: Settings = {
   language: "zh",
 };
 let lastSettingsSaveRequest: Settings | null = null;
+let lastAutoLaunchRequest: boolean | null = null;
+let lastClaudeOnboardingSkipAction: "apply" | "clear" | null = null;
+let externalOpenRequests: string[] = [];
+let lastWindowThemeRequest: string | null = null;
+let lastToolVersionsRequest: {
+  tools?: string[];
+  wslShellByTool?: Record<
+    string,
+    { wslShell?: string | null; wslShellFlag?: string | null }
+  >;
+} | null = null;
 let appConfigDirOverride: string | null = null;
 const createDefaultProxyStatus = (): ProxyStatus => ({
   running: false,
@@ -692,6 +940,13 @@ let lastSessionTitleMappingRequest: SessionTitleMappingRequest | null = null;
 let lastSessionTerminalLaunchRequest: SessionTerminalLaunchRequest | null =
   null;
 let lastSessionExportRequest: SessionMeta | null = null;
+let lastProviderTerminalLaunchRequest:
+  | {
+      providerId: string;
+      app: AppId;
+      cwd?: string | null;
+    }
+  | null = null;
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
@@ -776,6 +1031,25 @@ export const resetProviderState = () => {
   workspaceFilesState = createDefaultWorkspaceFiles();
   lastOpenedWorkspaceDirectory = null;
   openClawEnvConfigState = createDefaultOpenClawEnvConfig();
+  openClawToolsConfigState = createDefaultOpenClawToolsConfig();
+  openClawAgentsDefaultsState = createDefaultOpenClawAgentsDefaults();
+  usageSummaryByAppState = createDefaultUsageSummaryByApp();
+  usageTrendsState = createDefaultUsageTrends();
+  providerStatsState = createDefaultProviderStats();
+  modelStatsState = createDefaultModelStats();
+  requestLogsState = createDefaultRequestLogs();
+  requestDetailsState = createDefaultRequestDetails();
+  modelPricingState = createDefaultModelPricing();
+  usageDataSourcesState = createDefaultUsageDataSources();
+  streamCheckConfigState = {
+    timeoutSecs: 45,
+    maxRetries: 2,
+    degradedThresholdMs: 6000,
+    claudeModel: "claude-haiku-4-5-20251001",
+    codexModel: "gpt-5.5@low",
+    geminiModel: "gemini-3-flash-preview",
+    testPrompt: "Who are you?",
+  };
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
   lastPromptDeleteRequest = null;
@@ -784,12 +1058,21 @@ export const resetProviderState = () => {
   webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
   webdavUploadCount = 0;
   webdavDownloadCount = 0;
+  logConfigState = {
+    enabled: true,
+    level: "info",
+    rawProxyLogRetentionMinutes: 30,
+  };
+  logConfigSaveHistory = [];
+  dbBackupsState = createDefaultDbBackups();
+  lastRestoredBackupFilename = null;
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
   lastDeleteSessionsRequest = null;
   lastSessionTitleMappingRequest = null;
   lastSessionTerminalLaunchRequest = null;
   lastSessionExportRequest = null;
+  lastProviderTerminalLaunchRequest = null;
   settingsState = {
     showInTray: true,
     minimizeToTrayOnClose: true,
@@ -799,6 +1082,11 @@ export const resetProviderState = () => {
     language: "zh",
   };
   lastSettingsSaveRequest = null;
+  lastAutoLaunchRequest = null;
+  lastClaudeOnboardingSkipAction = null;
+  externalOpenRequests = [];
+  lastWindowThemeRequest = null;
+  lastToolVersionsRequest = null;
   appConfigDirOverride = null;
   proxyStatusState = createDefaultProxyStatus();
   mcpConfigs = {
@@ -866,6 +1154,95 @@ export const getWebdavSyncCounts = () => ({
   upload: webdavUploadCount,
   download: webdavDownloadCount,
 });
+
+export const getLogConfigState = () =>
+  JSON.parse(JSON.stringify(logConfigState)) as LogConfig;
+
+export const setLogConfigState = (config: LogConfig) => {
+  logConfigState = JSON.parse(JSON.stringify(config)) as LogConfig;
+};
+
+export const saveLogConfigState = (config: LogConfig) => {
+  const normalized: LogConfig = {
+    enabled: config.enabled,
+    level: config.level,
+    rawProxyLogRetentionMinutes: Math.min(
+      1440,
+      Math.max(1, Math.round(config.rawProxyLogRetentionMinutes)),
+    ),
+  };
+  logConfigState = JSON.parse(JSON.stringify(normalized)) as LogConfig;
+  logConfigSaveHistory.push(
+    JSON.parse(JSON.stringify(normalized)) as LogConfig,
+  );
+  return true;
+};
+
+export const getLogConfigSaveHistory = () =>
+  JSON.parse(JSON.stringify(logConfigSaveHistory)) as LogConfig[];
+
+export const getDbBackupsState = () =>
+  JSON.parse(JSON.stringify(dbBackupsState)) as DbBackupEntry[];
+
+export const setDbBackupsState = (backups: DbBackupEntry[]) => {
+  dbBackupsState = JSON.parse(JSON.stringify(backups)) as DbBackupEntry[];
+};
+
+export const createDbBackupState = () => {
+  const existing = new Set(dbBackupsState.map((backup) => backup.filename));
+  let index = dbBackupsState.length + 1;
+  let filename = `db_backup_20260519_100000_${index}.db`;
+  while (existing.has(filename)) {
+    index += 1;
+    filename = `db_backup_20260519_100000_${index}.db`;
+  }
+  dbBackupsState = [
+    {
+      filename,
+      sizeBytes: 2_048,
+      createdAt: "2026-05-19T10:00:00Z",
+    },
+    ...dbBackupsState,
+  ];
+  return filename;
+};
+
+export const restoreDbBackupState = (filename: string) => {
+  if (!dbBackupsState.some((backup) => backup.filename === filename)) {
+    throw new Error(`Backup not found: ${filename}`);
+  }
+  lastRestoredBackupFilename = filename;
+  return "db_backup_20260519_100500";
+};
+
+export const getLastRestoredBackupFilename = () => lastRestoredBackupFilename;
+
+export const renameDbBackupState = (oldFilename: string, newName: string) => {
+  const index = dbBackupsState.findIndex(
+    (backup) => backup.filename === oldFilename,
+  );
+  if (index < 0) {
+    throw new Error(`Backup not found: ${oldFilename}`);
+  }
+  const trimmed = newName.trim();
+  if (!trimmed) {
+    throw new Error("Backup name cannot be empty");
+  }
+  const filename = trimmed.endsWith(".db") ? trimmed : `${trimmed}.db`;
+  dbBackupsState[index] = {
+    ...dbBackupsState[index],
+    filename,
+  };
+  return filename;
+};
+
+export const deleteDbBackupState = (filename: string) => {
+  const next = dbBackupsState.filter((backup) => backup.filename !== filename);
+  if (next.length === dbBackupsState.length) {
+    throw new Error(`Backup not found: ${filename}`);
+  }
+  dbBackupsState = next;
+};
 
 export const setWebdavRemoteInfoState = (info: WebdavRemoteInfoState) => {
   webdavRemoteInfoState = JSON.parse(JSON.stringify(info)) as WebdavRemoteInfoState;
@@ -1219,6 +1596,114 @@ export const setOpenClawEnvConfigState = (env: OpenClawEnvConfig) => {
   ) as OpenClawEnvConfig;
 };
 
+export const getOpenClawToolsConfigState = () =>
+  JSON.parse(JSON.stringify(openClawToolsConfigState)) as OpenClawToolsConfig;
+
+export const setOpenClawToolsConfigState = (tools: OpenClawToolsConfig) => {
+  openClawToolsConfigState = JSON.parse(
+    JSON.stringify(tools),
+  ) as OpenClawToolsConfig;
+};
+
+export const getOpenClawAgentsDefaultsState = () =>
+  JSON.parse(
+    JSON.stringify(openClawAgentsDefaultsState),
+  ) as OpenClawAgentsDefaults;
+
+export const setOpenClawAgentsDefaultsState = (
+  defaults: OpenClawAgentsDefaults | null,
+) => {
+  openClawAgentsDefaultsState =
+    defaults === null
+      ? null
+      : (JSON.parse(JSON.stringify(defaults)) as OpenClawAgentsDefaults);
+};
+
+export const getUsageSummaryByAppState = () =>
+  JSON.parse(JSON.stringify(usageSummaryByAppState)) as UsageSummaryByApp[];
+
+export const setUsageSummaryByAppState = (value: UsageSummaryByApp[]) => {
+  usageSummaryByAppState = JSON.parse(
+    JSON.stringify(value),
+  ) as UsageSummaryByApp[];
+};
+
+export const getUsageTrendsState = () =>
+  JSON.parse(JSON.stringify(usageTrendsState)) as DailyStats[];
+
+export const setUsageTrendsState = (value: DailyStats[]) => {
+  usageTrendsState = JSON.parse(JSON.stringify(value)) as DailyStats[];
+};
+
+export const getProviderStatsState = () =>
+  JSON.parse(JSON.stringify(providerStatsState)) as ProviderStats[];
+
+export const setProviderStatsState = (value: ProviderStats[]) => {
+  providerStatsState = JSON.parse(JSON.stringify(value)) as ProviderStats[];
+};
+
+export const getModelStatsState = () =>
+  JSON.parse(JSON.stringify(modelStatsState)) as ModelStats[];
+
+export const setModelStatsState = (value: ModelStats[]) => {
+  modelStatsState = JSON.parse(JSON.stringify(value)) as ModelStats[];
+};
+
+export const getRequestLogsState = () =>
+  JSON.parse(JSON.stringify(requestLogsState)) as RequestLog[];
+
+export const setRequestLogsState = (value: RequestLog[]) => {
+  requestLogsState = JSON.parse(JSON.stringify(value)) as RequestLog[];
+};
+
+export const getRequestDetailState = (requestId: string) =>
+  requestDetailsState[requestId] === null
+    ? null
+    : requestDetailsState[requestId]
+      ? (JSON.parse(JSON.stringify(requestDetailsState[requestId])) as RequestLog)
+      : null;
+
+export const setRequestDetailState = (
+  requestId: string,
+  value: RequestLog | null,
+) => {
+  requestDetailsState[requestId] =
+    value === null ? null : (JSON.parse(JSON.stringify(value)) as RequestLog);
+};
+
+export const getModelPricingState = () =>
+  JSON.parse(JSON.stringify(modelPricingState)) as ModelPricing[];
+
+export const setModelPricingState = (value: ModelPricing[]) => {
+  modelPricingState = JSON.parse(JSON.stringify(value)) as ModelPricing[];
+};
+
+export const getUsageDataSourcesState = () =>
+  JSON.parse(JSON.stringify(usageDataSourcesState)) as DataSourceSummary[];
+
+export const setUsageDataSourcesState = (value: DataSourceSummary[]) => {
+  usageDataSourcesState = JSON.parse(
+    JSON.stringify(value),
+  ) as DataSourceSummary[];
+};
+
+export const getStreamCheckConfigState = () =>
+  JSON.parse(JSON.stringify(streamCheckConfigState)) as {
+    timeoutSecs: number;
+    maxRetries: number;
+    degradedThresholdMs: number;
+    claudeModel: string;
+    codexModel: string;
+    geminiModel: string;
+    testPrompt: string;
+  };
+
+export const setStreamCheckConfigState = (
+  value: typeof streamCheckConfigState,
+) => {
+  streamCheckConfigState = JSON.parse(JSON.stringify(value)) as typeof streamCheckConfigState;
+};
+
 export const setCurrentPromptFileContentState = (
   app: AppId,
   content: string | null,
@@ -1338,6 +1823,30 @@ export const updateSkillState = (id: string) => {
   );
 };
 
+export const migrateSkillStorageState = (
+  target: "cc_switch" | "unified",
+) => {
+  const current = settingsState.skillStorageLocation ?? "cc_switch";
+  if (current === target) {
+    return {
+      migratedCount: 0,
+      skippedCount: 0,
+      errors: [],
+    };
+  }
+
+  settingsState = {
+    ...settingsState,
+    skillStorageLocation: target,
+  };
+
+  return {
+    migratedCount: installedSkillsState.length,
+    skippedCount: 0,
+    errors: [],
+  };
+};
+
 export const getMcpServersState = () =>
   JSON.parse(JSON.stringify(mcpServersState)) as McpServersState;
 
@@ -1446,6 +1955,72 @@ const refreshActiveTargetForApp = (appType: AppId) => {
   };
 };
 
+const clearActiveTargetForApp = (appType: AppId) => {
+  const activeTargets = (proxyStatusState.active_targets ?? []).filter(
+    (target) => target.app_type !== appType,
+  );
+  const clearedCurrent =
+    proxyStatusState.current_provider_id &&
+    (proxyStatusState.active_targets ?? []).some(
+      (target) =>
+        target.app_type === appType &&
+        target.provider_id === proxyStatusState.current_provider_id,
+    );
+
+  proxyStatusState = {
+    ...proxyStatusState,
+    active_targets: activeTargets,
+    current_provider: clearedCurrent ? null : proxyStatusState.current_provider,
+    current_provider_id: clearedCurrent
+      ? null
+      : proxyStatusState.current_provider_id,
+  };
+};
+
+const setActiveTargetFromProvider = (appType: AppId, providerId: string) => {
+  const provider = providers[appType]?.[providerId];
+  if (!provider) {
+    clearActiveTargetForApp(appType);
+    return;
+  }
+
+  const activeTargets = (proxyStatusState.active_targets ?? []).filter(
+    (target) => target.app_type !== appType,
+  );
+  proxyStatusState = {
+    ...proxyStatusState,
+    active_targets: [
+      ...activeTargets,
+      {
+        app_type: appType,
+        provider_id: provider.id,
+        provider_name: provider.name,
+      },
+    ],
+    current_provider: provider.name,
+    current_provider_id: provider.id,
+  };
+};
+
+const syncDirectLiveFromProvider = (appType: AppId, providerId: string) => {
+  if (!isSwitchModeApp(appType)) return;
+  const provider = providers[appType]?.[providerId];
+  if (!provider) return;
+  switchLiveSettingsByApp[appType] = JSON.parse(
+    JSON.stringify(provider.settingsConfig ?? {}),
+  );
+};
+
+const restoreCurrentFromFailoverQueueHead = (appType: AppId) => {
+  const first = (failoverQueuesByApp[appType] ?? [])[0];
+  if (!first) return false;
+  current[appType] = first.providerId;
+  return true;
+};
+
+const isAnyProxyTakeoverEnabled = () =>
+  Object.values(proxyTakeoverStatusByApp).some(Boolean);
+
 export const startProxyServerState = (): ProxyServerInfo => {
   proxyStatusState = {
     ...proxyStatusState,
@@ -1523,6 +2098,10 @@ export const setProxyTakeoverForAppState = (
   appType: AppId,
   enabled: boolean,
 ) => {
+  const wasFailoverEnabled =
+    Boolean(appProxyConfigsByApp[appType]?.autoFailoverEnabled) ||
+    Boolean(autoFailoverEnabledByApp[appType]);
+
   proxyTakeoverStatusByApp = {
     ...proxyTakeoverStatusByApp,
     [appType]: enabled,
@@ -1538,6 +2117,26 @@ export const setProxyTakeoverForAppState = (
     enabled && (autoFailoverEnabledByApp[appType] ?? false);
   if (isSwitchModeApp(appType) && enabled) {
     syncProxyLiveTemplate(appType);
+  }
+  if (!enabled) {
+    autoFailoverEnabledByApp[appType] = false;
+    if (wasFailoverEnabled) {
+      restoreCurrentFromFailoverQueueHead(appType);
+    }
+    const currentId = current[appType];
+    if (currentId) {
+      syncDirectLiveFromProvider(appType, currentId);
+    }
+    clearActiveTargetForApp(appType);
+    if (!isAnyProxyTakeoverEnabled()) {
+      proxyStatusState = {
+        ...proxyStatusState,
+        running: false,
+        active_targets: [],
+        active_request_count: 0,
+        active_request_targets: [],
+      };
+    }
   }
 };
 
@@ -1630,8 +2229,16 @@ export const setAutoFailoverEnabledState = (
 
   if (enabled) {
     current[appType] = "";
+    refreshActiveTargetForApp(appType);
+    return;
   }
-  refreshActiveTargetForApp(appType);
+
+  const restored = restoreCurrentFromFailoverQueueHead(appType);
+  if (restored && proxyTakeoverStatusByApp[appType] && proxyStatusState.running) {
+    setActiveTargetFromProvider(appType, current[appType]);
+  } else {
+    clearActiveTargetForApp(appType);
+  }
 };
 
 export const syncCurrentProvidersLiveState = () => {
@@ -1725,6 +2332,58 @@ export const setManagedAuthStatusState = (
   ) as ManagedAuthStatus;
 };
 
+export const setManagedAuthDefaultAccountState = (
+  provider: ManagedAuthProvider,
+  accountId: string,
+) => {
+  const status = managedAuthStatusByProvider[provider];
+  const accounts = status.accounts.map((account) => ({
+    ...account,
+    is_default: account.id === accountId,
+  }));
+  managedAuthStatusByProvider[provider] = {
+    ...status,
+    authenticated: accounts.length > 0,
+    default_account_id: accounts.some((account) => account.id === accountId)
+      ? accountId
+      : accounts[0]?.id ?? null,
+    accounts,
+  };
+};
+
+export const removeManagedAuthAccountState = (
+  provider: ManagedAuthProvider,
+  accountId: string,
+) => {
+  const status = managedAuthStatusByProvider[provider];
+  const accounts = status.accounts.filter((account) => account.id !== accountId);
+  const defaultAccountId = accounts.some(
+    (account) => account.id === status.default_account_id,
+  )
+    ? status.default_account_id
+    : accounts[0]?.id ?? null;
+
+  managedAuthStatusByProvider[provider] = {
+    ...status,
+    authenticated: accounts.length > 0,
+    default_account_id: defaultAccountId,
+    accounts: accounts.map((account) => ({
+      ...account,
+      is_default: account.id === defaultAccountId,
+    })),
+  };
+};
+
+export const logoutManagedAuthState = (provider: ManagedAuthProvider) => {
+  const status = managedAuthStatusByProvider[provider];
+  managedAuthStatusByProvider[provider] = {
+    ...status,
+    authenticated: false,
+    default_account_id: null,
+    accounts: [],
+  };
+};
+
 export const setCurrentProviderId = (appType: AppId, providerId: string) => {
   current[appType] = providerId;
 };
@@ -1812,6 +2471,22 @@ export const updateSortOrder = (
       providers[appType][id] = { ...provider, sortIndex };
     }
   });
+
+  const queuedProviderIds = new Set(
+    (failoverQueuesByApp[appType] ?? []).map((item) => item.providerId),
+  );
+  if (queuedProviderIds.size > 0) {
+    failoverQueuesByApp[appType] = Object.values(providers[appType])
+      .filter((provider) => queuedProviderIds.has(provider.id))
+      .map((provider) => failoverQueueItemFromProvider(provider))
+      .sort(
+        (a, b) =>
+          (a.sortIndex ?? Number.MAX_SAFE_INTEGER) -
+            (b.sortIndex ?? Number.MAX_SAFE_INTEGER) ||
+          a.providerId.localeCompare(b.providerId),
+      );
+    refreshActiveTargetForApp(appType);
+  }
 };
 
 export const listProviders = (appType: AppId) =>
@@ -1836,6 +2511,64 @@ export const recordSettingsSave = (settings: Settings) => {
   lastSettingsSaveRequest = JSON.parse(JSON.stringify(settings)) as Settings;
   setSettings(settings);
 };
+
+export const recordAutoLaunchRequest = (enabled: boolean) => {
+  lastAutoLaunchRequest = enabled;
+  return true;
+};
+
+export const getLastAutoLaunchRequest = () => lastAutoLaunchRequest;
+
+export const recordClaudeOnboardingSkipAction = (
+  action: "apply" | "clear",
+) => {
+  lastClaudeOnboardingSkipAction = action;
+  return true;
+};
+
+export const getLastClaudeOnboardingSkipAction = () =>
+  lastClaudeOnboardingSkipAction;
+
+export const recordOpenExternalRequest = (url: string) => {
+  externalOpenRequests = [...externalOpenRequests, url];
+  return true;
+};
+
+export const getOpenExternalRequests = () => [...externalOpenRequests];
+
+export const recordWindowThemeRequest = (theme: string) => {
+  lastWindowThemeRequest = theme;
+  return true;
+};
+
+export const getLastWindowThemeRequest = () => lastWindowThemeRequest;
+
+export const recordToolVersionsRequest = (request: {
+  tools?: string[];
+  wslShellByTool?: Record<
+    string,
+    { wslShell?: string | null; wslShellFlag?: string | null }
+  >;
+}) => {
+  lastToolVersionsRequest = JSON.parse(JSON.stringify(request)) as {
+    tools?: string[];
+    wslShellByTool?: Record<
+      string,
+      { wslShell?: string | null; wslShellFlag?: string | null }
+    >;
+  };
+};
+
+export const getLastToolVersionsRequest = () =>
+  lastToolVersionsRequest
+    ? (JSON.parse(JSON.stringify(lastToolVersionsRequest)) as {
+        tools?: string[];
+        wslShellByTool?: Record<
+          string,
+          { wslShell?: string | null; wslShellFlag?: string | null }
+        >;
+      })
+    : null;
 
 export const getAppConfigDirOverride = () => appConfigDirOverride;
 
@@ -2010,6 +2743,30 @@ export const recordSessionMarkdownExport = (session: SessionMeta) => {
 export const getLastSessionExportRequest = () =>
   lastSessionExportRequest
     ? (JSON.parse(JSON.stringify(lastSessionExportRequest)) as SessionMeta)
+    : null;
+
+export const recordProviderTerminalLaunch = (request: {
+  providerId: string;
+  app: AppId;
+  cwd?: string | null;
+}) => {
+  lastProviderTerminalLaunchRequest = {
+    providerId: request.providerId,
+    app: request.app,
+    cwd: request.cwd ?? null,
+  };
+  return true;
+};
+
+export const getLastProviderTerminalLaunchRequest = () =>
+  lastProviderTerminalLaunchRequest
+    ? ({
+        ...lastProviderTerminalLaunchRequest,
+      } as {
+        providerId: string;
+        app: AppId;
+        cwd?: string | null;
+      })
     : null;
 
 export const setSessionFixtures = (

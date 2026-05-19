@@ -169,6 +169,9 @@ const VALID_VIEWS: View[] = [
 
 const getInitialView = (): View => {
   const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
+  if (saved === "agents") {
+    return "providers";
+  }
   if (saved && VALID_VIEWS.includes(saved)) {
     return saved;
   }

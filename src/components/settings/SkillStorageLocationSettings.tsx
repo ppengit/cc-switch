@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -13,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { skillsApi, type MigrationResult } from "@/lib/api/skills";
-import type { SkillStorageLocation } from "@/types";
+import type { Settings, SkillStorageLocation } from "@/types";
 
 export interface SkillStorageLocationSettingsProps {
   value: SkillStorageLocation;
@@ -27,6 +28,7 @@ export function SkillStorageLocationSettings({
   onMigrated,
 }: SkillStorageLocationSettingsProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [pendingTarget, setPendingTarget] =
     useState<SkillStorageLocation | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
@@ -59,6 +61,18 @@ export function SkillStorageLocationSettings({
           }),
         );
       }
+
+      queryClient.setQueryData<Settings | undefined>(
+        ["settings"],
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                skillStorageLocation: target,
+              }
+            : previous,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["settings"] });
       onMigrated(target);
     } catch (error) {
       toast.error(String(error));

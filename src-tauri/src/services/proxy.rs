@@ -1432,6 +1432,16 @@ impl ProxyService {
     ///
     /// 用于程序正常退出时，保留代理状态以便下次启动时自动恢复
     pub async fn stop_with_restore_keep_state(&self) -> Result<(), String> {
+        let app_restore_modes = {
+            let mut modes = Vec::new();
+            for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+                if let Ok(config) = self.db.get_proxy_config_for_app(app_type.as_str()).await {
+                    modes.push((app_type, config.enabled && config.auto_failover_enabled));
+                }
+            }
+            modes
+        };
+
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
         if let Err(e) = self.stop().await {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
@@ -1439,6 +1449,15 @@ impl ProxyService {
 
         // 2. 恢复原始 Live 配置
         self.restore_live_configs().await?;
+
+        // 2.1 退出但保留代理状态时，也要把 failover 模式的直连基线修回队列头，
+        //     否则下次启动前的 current/live 会停留在旧备份对应的历史 provider。
+        for (app_type, failover_mode_active) in &app_restore_modes {
+            if *failover_mode_active {
+                self.restore_direct_current_from_failover_queue(app_type)
+                    .await?;
+            }
+        }
 
         // 3. 更新 proxy_config 表中的 live_takeover_active 标志（兼容旧版）
         //    注意：保留 proxy_config.enabled 状态，下次启动时自动恢复
@@ -5713,6 +5732,266 @@ requires_openai_auth = true
                 .all(|target| target.app_type != "claude"),
             "manual proxy shutdown must clear stale failover active target"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stop_with_restore_keep_state_restores_failover_queue_head_before_preserving_proxy_flags(
+    ) {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut provider_a = Provider::with_id(
+            "claude-a".to_string(),
+            "Claude A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://a.example"
+                }
+            }),
+            None,
+        );
+        provider_a.sort_index = Some(20);
+        let mut provider_b = Provider::with_id(
+            "claude-b".to_string(),
+            "Claude B".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://b.example"
+                }
+            }),
+            None,
+        );
+        provider_b.sort_index = Some(10);
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.set_current_provider("claude", &provider_a.id)
+            .expect("seed db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+            .expect("seed local current provider");
+        db.add_to_failover_queue("claude", &provider_a.id)
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", &provider_b.id)
+            .expect("queue provider b");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_claude_live(&provider_a.settings_config)
+            .expect("seed direct claude live");
+        service
+            .set_takeover_for_app("claude", true)
+            .await
+            .expect("enable claude takeover");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable claude failover");
+        db.clear_current_provider("claude")
+            .expect("clear db current provider for failover mode");
+        crate::settings::set_current_provider(&AppType::Claude, None)
+            .expect("clear local current provider for failover mode");
+        service
+            .sync_failover_active_target("claude")
+            .await
+            .expect("sync failover queue head");
+
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("exit cleanup should restore direct mode while preserving flags");
+
+        let preserved = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config after keep-state stop");
+        assert!(
+            preserved.enabled,
+            "exit cleanup should preserve takeover-enabled state for next startup restore"
+        );
+        assert!(
+            preserved.auto_failover_enabled,
+            "exit cleanup should preserve failover-enabled state for next startup restore"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Claude)
+                .expect("get effective current provider after keep-state stop"),
+            Some(provider_b.id.clone()),
+            "keep-state shutdown from failover mode must restore queue head as direct current provider before the next startup snapshot is rebuilt"
+        );
+
+        let live = service.read_claude_live().expect("read restored claude live");
+        assert_eq!(
+            live, provider_b.settings_config,
+            "keep-state shutdown from failover mode must restore queue head direct live config instead of the stale pre-failover backup"
+        );
+        assert!(
+            !service.is_running().await,
+            "keep-state shutdown must stop the proxy process before exit"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn keep_state_shutdown_followed_by_takeover_restore_uses_queue_head_as_restart_baseline() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut provider_a = Provider::with_id(
+            "claude-a".to_string(),
+            "Claude A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://a.example",
+                    "ANTHROPIC_MODEL": "model-a"
+                }
+            }),
+            None,
+        );
+        provider_a.sort_index = Some(20);
+        let mut provider_b = Provider::with_id(
+            "claude-b".to_string(),
+            "Claude B".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://b.example",
+                    "ANTHROPIC_MODEL": "model-b"
+                }
+            }),
+            None,
+        );
+        provider_b.sort_index = Some(10);
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.set_current_provider("claude", &provider_a.id)
+            .expect("seed db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&provider_a.id))
+            .expect("seed local current provider");
+        db.add_to_failover_queue("claude", &provider_a.id)
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", &provider_b.id)
+            .expect("queue provider b");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_claude_live(&provider_a.settings_config)
+            .expect("seed direct claude live");
+        service
+            .set_takeover_for_app("claude", true)
+            .await
+            .expect("enable claude takeover");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable claude failover");
+        db.clear_current_provider("claude")
+            .expect("clear db current provider for failover mode");
+        crate::settings::set_current_provider(&AppType::Claude, None)
+            .expect("clear local current provider for failover mode");
+        service
+            .sync_failover_active_target("claude")
+            .await
+            .expect("sync failover queue head");
+
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("keep-state shutdown should preserve restart flags");
+
+        let restarted = ProxyService::new(db.clone());
+        restarted
+            .set_takeover_for_app("claude", true)
+            .await
+            .expect("startup restore should re-enable claude takeover");
+
+        let live = restarted
+            .read_claude_live()
+            .expect("read claude live after startup restore");
+        let expected_proxy_url = format!("http://127.0.0.1:{port}");
+        assert_eq!(
+            live.get("env")
+                .and_then(|value| value.get("ANTHROPIC_BASE_URL"))
+                .and_then(|value| value.as_str()),
+            Some(expected_proxy_url.as_str()),
+            "startup restore after keep-state shutdown must rebuild Claude live back to the local proxy endpoint"
+        );
+        assert_eq!(
+            live.get("env")
+                .and_then(|value| value.get("ANTHROPIC_AUTH_TOKEN"))
+                .and_then(|value| value.as_str()),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "startup restore after keep-state shutdown must preserve the takeover token placeholder"
+        );
+        assert_ne!(
+            live.get("env")
+                .and_then(|value| value.get("ANTHROPIC_BASE_URL"))
+                .and_then(|value| value.as_str()),
+            Some("https://a.example"),
+            "startup restore must not regress to the pre-failover provider endpoint"
+        );
+        assert_ne!(
+            live.get("env")
+                .and_then(|value| value.get("ANTHROPIC_BASE_URL"))
+                .and_then(|value| value.as_str()),
+            Some("https://b.example"),
+            "startup restore must not leave the queue-head direct endpoint in live after takeover resumes"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Claude)
+                .expect("get effective current provider after startup restore"),
+            None,
+            "failover takeover restore must clear direct current provider again after rebuilding the proxy live config"
+        );
+
+        let status = restarted
+            .get_status()
+            .await
+            .expect("get proxy status after startup restore");
+        let active = status
+            .active_targets
+            .iter()
+            .find(|target| target.app_type == "claude")
+            .expect("claude active target should be restored from the failover queue");
+        assert_eq!(active.provider_id, provider_b.id);
+
+        restarted.stop().await.expect("stop proxy service");
     }
 
     #[tokio::test]

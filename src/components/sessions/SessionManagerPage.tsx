@@ -43,6 +43,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -1585,6 +1586,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                 defaultValue: "修改会话标题",
               })}
             </DialogTitle>
+            <DialogDescription>
+              {t("sessionManager.renameDialogDescription", {
+                defaultValue:
+                  "输入新的会话标题，留空则恢复自动生成的默认标题。",
+              })}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 px-6 pb-6 pt-4">
             <div className="space-y-2">

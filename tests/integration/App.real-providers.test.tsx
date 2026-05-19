@@ -8,6 +8,7 @@ import {
   getCurrentProviderId,
   getFailoverQueueState,
   getLiveProviderIds,
+  getLastProviderTerminalLaunchRequest,
   getProviders,
   getSwitchLiveSettings,
   resetProviderState,
@@ -731,6 +732,114 @@ describe("App with real ProviderList", () => {
         },
       },
     );
+  }, 15_000);
+
+  it("pins failover providers to the top and reorders enabled rows by model name through the real ProviderList controls", async () => {
+    const user = userEvent.setup();
+
+    setProviders("claude", {
+      "claude-zeta": claudeProvider("claude-zeta", "Claude Zeta", 0),
+      "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 1),
+      "claude-beta": claudeProvider("claude-beta", "Claude Beta", 2),
+    });
+    setCurrentProviderId("claude", "claude-zeta");
+    setSettings({
+      enableLocalProxy: true,
+      enableFailoverToggle: true,
+      proxyConfirmed: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("claude", true);
+    setAutoFailoverEnabledState("claude", true);
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await expectProviderVisible("Claude Zeta");
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-zeta",
+      ]),
+    );
+
+    await user.click(within(findProviderRow("Claude Alpha")).getByTitle("启用"));
+    await user.click(within(findProviderRow("Claude Beta")).getByTitle("启用"));
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-zeta",
+        "claude-alpha",
+        "claude-beta",
+      ]),
+    );
+
+    await user.click(
+      within(findProviderRow("Claude Beta")).getByTitle("置顶（顺序 1）"),
+    );
+
+    await waitFor(() =>
+      expect(
+        Object.values(getProviders("claude"))
+          .sort((a, b) => (a.sortIndex ?? 999) - (b.sortIndex ?? 999))
+          .map((provider) => provider.id),
+      ).toEqual(["claude-beta", "claude-zeta", "claude-alpha"]),
+    );
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-beta",
+        "claude-zeta",
+        "claude-alpha",
+      ]),
+    );
+
+    await user.click(screen.getByRole("button", { name: "模型名称排序" }));
+
+    await waitFor(() =>
+      expect(
+        Object.values(getProviders("claude"))
+          .sort((a, b) => (a.sortIndex ?? 999) - (b.sortIndex ?? 999))
+          .map((provider) => provider.id),
+      ).toEqual(["claude-alpha", "claude-beta", "claude-zeta"]),
+    );
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-alpha",
+        "claude-beta",
+        "claude-zeta",
+      ]),
+    );
+  }, 20_000);
+
+  it("opens the provider terminal for the active Claude provider without crossing into other apps", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await expectProviderVisible("Claude Alpha");
+    await user.click(
+      within(findProviderRow("Claude Alpha")).getByTitle("打开终端"),
+    );
+
+    await waitFor(() =>
+      expect(getLastProviderTerminalLaunchRequest()).toEqual({
+        providerId: "claude-alpha",
+        app: "claude",
+        cwd: "/mock/selected-dir",
+      }),
+    );
+
+    await clickAppSwitcherButton(user, "Codex");
+    await expectProviderVisible("Codex Alpha");
+    expect(screen.queryByTitle("打开终端")).toBeNull();
+    expect(getLastProviderTerminalLaunchRequest()).toEqual({
+      providerId: "claude-alpha",
+      app: "claude",
+      cwd: "/mock/selected-dir",
+    });
   }, 15_000);
 
   it("keeps Claude live config on proxy takeover after failover queue becomes empty", async () => {

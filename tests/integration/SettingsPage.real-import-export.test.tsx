@@ -5,8 +5,23 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+import type { Provider } from "@/types";
 import { server } from "../msw/server";
-import { getSettings, resetProviderState, setSettings } from "../msw/state";
+import {
+  getProviders,
+  getSettings,
+  getSwitchLiveSettings,
+  removeFromFailoverQueueState,
+  resetProviderState,
+  setAutoFailoverEnabledState,
+  setCurrentProviderId,
+  setProviders,
+  setProxyTakeoverForAppState,
+  setSettings,
+  setSwitchLiveSettings,
+  startProxyServerState,
+  syncCurrentProvidersLiveState,
+} from "../msw/state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
 
@@ -90,6 +105,34 @@ vi.mock("@/components/settings/LogConfigPanel", () => ({
 vi.mock("@/components/settings/AuthCenterPanel", () => ({
   AuthCenterPanel: () => <div>auth-center-panel</div>,
 }));
+
+const claudeProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_000_000 + sortIndex,
+  settingsConfig: {
+    env: {
+      ANTHROPIC_BASE_URL: `https://${id}.example.com`,
+      ANTHROPIC_AUTH_TOKEN: `${id}-token`,
+      ANTHROPIC_MODEL: `${id}-model`,
+    },
+  },
+});
+
+const seedClaudeProviders = () => {
+  setProviders("claude", {
+    "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+    "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+  });
+  setCurrentProviderId("claude", "claude-alpha");
+};
 
 const renderSettingsPage = (onImportSuccess = vi.fn()) => {
   const client = new QueryClient({
@@ -267,5 +310,75 @@ describe("SettingsPage with real ImportExportSection", () => {
     expect(
       screen.getByRole("button", { name: /settings\.selectConfigFile/ }),
     ).toBeEnabled();
+  });
+
+  it("keeps Claude live config on the proxy endpoint after importing config in takeover+failover mode", async () => {
+    const user = userEvent.setup();
+
+    seedClaudeProviders();
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("claude", true);
+    setAutoFailoverEnabledState("claude", true);
+    removeFromFailoverQueueState("claude", "claude-alpha");
+
+    setSwitchLiveSettings(
+      "claude",
+      getProviders("claude")["claude-beta"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("claude") as { env?: Record<string, string> }).env
+        ?.ANTHROPIC_BASE_URL,
+    ).toBe("https://claude-beta.example.com");
+
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/open_file_dialog`, () =>
+        HttpResponse.json("/mock/takeover-import.sql"),
+      ),
+      http.post(`${TAURI_ENDPOINT}/import_config_from_file`, () => {
+        setSettings({ language: "en" });
+        return HttpResponse.json({
+          success: true,
+          backupId: "backup-takeover-001",
+        });
+      }),
+      http.post(`${TAURI_ENDPOINT}/sync_current_providers_live`, () =>
+        HttpResponse.json(syncCurrentProvidersLiveState()),
+      ),
+    );
+
+    await openDataSection(user);
+
+    await user.click(
+      screen.getByRole("button", { name: /settings\.selectConfigFile/ }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/takeover-import\.sql/)).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /settings\.import/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText("settings.importSuccess")).toBeInTheDocument(),
+    );
+
+    await waitFor(() => {
+      const live = getSwitchLiveSettings("claude") as {
+        env?: Record<string, string>;
+      };
+      expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
+      expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+      expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+        "https://claude-alpha.example.com",
+      );
+      expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+        "https://claude-beta.example.com",
+      );
+    });
   });
 });

@@ -460,4 +460,19 @@ describe("App real navigation", () => {
       ),
     );
   });
+
+  it("falls back to providers when localStorage still contains the legacy agents view", async () => {
+    window.localStorage.setItem("cc-switch-last-view", "agents");
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list")).toHaveAttribute(
+        "data-app-id",
+        "claude",
+      ),
+    );
+    expect(screen.queryByText("Coming Soon")).not.toBeInTheDocument();
+  });
 });

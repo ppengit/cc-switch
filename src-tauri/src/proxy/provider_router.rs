@@ -420,11 +420,18 @@ fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_config::AppType;
+    use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
     use crate::config::{get_claude_settings_path, read_json_file};
     use crate::database::Database;
-    use serde_json::json;
+    use crate::gemini_config::read_gemini_env;
+    use crate::proxy::types::ProxyConfig;
+    use crate::services::provider::ProviderService;
+    use crate::store::AppState;
+    use serde_json::{Value, json};
     use serial_test::serial;
     use std::env;
+    use std::fs;
     use tempfile::TempDir;
 
     struct TempHome {
@@ -1081,6 +1088,440 @@ mod tests {
                 .iter()
                 .all(|target| target.app_type != "claude"),
             "empty queue after auth disable should clear active target"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn all_circuit_open_failover_queue_keeps_takeover_live_on_proxy_endpoint() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "a".to_string(),
+            "Provider A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://a.example",
+                    "ANTHROPIC_MODEL": "model-a"
+                }
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "b".to_string(),
+            "Provider B".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": "https://b.example",
+                    "ANTHROPIC_MODEL": "model-b"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("claude", "a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", "b")
+            .expect("queue provider b");
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover with strict breaker");
+
+        let state = AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Claude, &provider_a)
+            .await
+            .expect("seed takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("claude", "a", "Provider A")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+        router
+            .record_result("a", "claude", false, false, Some("upstream timeout".to_string()))
+            .await
+            .expect("open breaker for provider a");
+        router
+            .record_result("b", "claude", false, false, Some("upstream timeout".to_string()))
+            .await
+            .expect("open breaker for provider b");
+
+        let error = router
+            .select_providers("claude")
+            .await
+            .expect_err("all queued providers should now be circuit-open");
+        assert!(
+            matches!(error, AppError::AllProvidersCircuitOpen),
+            "expected all providers to be unavailable due to open breakers, got {error:?}"
+        );
+
+        ProviderService::sync_current_provider_for_app(&state, AppType::Claude)
+            .expect("sync should not rewrite takeover live back to a direct provider");
+
+        let live: Value =
+            read_json_file(&get_claude_settings_path()).expect("read claude live");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "all providers circuit-open must still keep Claude live on the local proxy endpoint"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "all providers circuit-open must keep the takeover token placeholder"
+        );
+        assert_eq!(
+            db.get_failover_queue("claude")
+                .expect("read failover queue")
+                .into_iter()
+                .map(|item| item.provider_id)
+                .collect::<Vec<_>>(),
+            vec!["a".to_string(), "b".to_string()],
+            "generic circuit-open errors must not silently rewrite the failover queue"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn all_circuit_open_codex_failover_keeps_live_on_proxy_base_url() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "token-a"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.4"
+
+[model_providers.codex-a]
+base_url = "https://codex-a.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "codex-b".to_string(),
+            "Codex B".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "token-b"
+                },
+                "config": r#"model_provider = "codex-b"
+model = "gpt-5.4"
+
+[model_providers.codex-b]
+base_url = "https://codex-b.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+
+        db.save_provider("codex", &provider_a)
+            .expect("save provider a");
+        db.save_provider("codex", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("codex", "codex-a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("codex", "codex-b")
+            .expect("queue provider b");
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover with strict breaker");
+
+        let state = AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider_a)
+            .await
+            .expect("seed Codex takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("codex", "codex-a", "Codex A")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+        router
+            .record_result(
+                "codex-a",
+                "codex",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
+            .await
+            .expect("open breaker for provider a");
+        router
+            .record_result(
+                "codex-b",
+                "codex",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
+            .await
+            .expect("open breaker for provider b");
+
+        let error = router
+            .select_providers("codex")
+            .await
+            .expect_err("all queued Codex providers should now be circuit-open");
+        assert!(
+            matches!(error, AppError::AllProvidersCircuitOpen),
+            "expected all Codex providers to be unavailable due to open breakers, got {error:?}"
+        );
+
+        ProviderService::sync_current_provider_for_app(&state, AppType::Codex)
+            .expect("sync should not rewrite Codex takeover live back to a direct provider");
+
+        let auth: Value =
+            read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "all Codex providers circuit-open must keep the takeover token placeholder"
+        );
+
+        let config_text =
+            fs::read_to_string(get_codex_config_path()).expect("read Codex config live");
+        let expected_proxy_base_url = format!("http://127.0.0.1:{port}/v1");
+        assert!(
+            config_text.contains(&expected_proxy_base_url),
+            "all Codex providers circuit-open must keep config.toml on the local proxy base_url"
+        );
+        assert!(
+            !config_text.contains("https://codex-a.example/v1")
+                && !config_text.contains("https://codex-b.example/v1"),
+            "all Codex providers circuit-open must not write any provider direct baseUrl back to live"
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn all_circuit_open_gemini_failover_keeps_live_on_proxy_base_url() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().expect("local addr").port()
+        };
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token-a",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini-a.example",
+                    "GEMINI_MODEL": "gemini-3-pro"
+                }
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "gemini-b".to_string(),
+            "Gemini B".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token-b",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini-b.example",
+                    "GEMINI_MODEL": "gemini-3-pro"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("gemini", &provider_a)
+            .expect("save provider a");
+        db.save_provider("gemini", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("gemini", "gemini-a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("gemini", "gemini-b")
+            .expect("queue provider b");
+
+        let mut config = db.get_proxy_config_for_app("gemini").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("enable failover with strict breaker");
+
+        let state = AppState::new(db.clone());
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        state
+            .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Gemini, &provider_a)
+            .await
+            .expect("seed Gemini takeover live");
+        state
+            .proxy_service
+            .set_active_target_only("gemini", "gemini-a", "Gemini A")
+            .await;
+
+        let router = ProviderRouter::with_app_handle(db.clone(), None);
+        router
+            .record_result(
+                "gemini-a",
+                "gemini",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
+            .await
+            .expect("open breaker for provider a");
+        router
+            .record_result(
+                "gemini-b",
+                "gemini",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
+            .await
+            .expect("open breaker for provider b");
+
+        let error = router
+            .select_providers("gemini")
+            .await
+            .expect_err("all queued Gemini providers should now be circuit-open");
+        assert!(
+            matches!(error, AppError::AllProvidersCircuitOpen),
+            "expected all Gemini providers to be unavailable due to open breakers, got {error:?}"
+        );
+
+        ProviderService::sync_current_provider_for_app(&state, AppType::Gemini)
+            .expect("sync should not rewrite Gemini takeover live back to a direct provider");
+
+        let env = read_gemini_env().expect("read Gemini env live");
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "all Gemini providers circuit-open must keep .env on the local proxy base URL"
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("PROXY_MANAGED"),
+            "all Gemini providers circuit-open must keep the takeover token placeholder"
+        );
+        assert_ne!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://gemini-a.example"),
+            "all Gemini providers circuit-open must not write provider A direct baseUrl back to live"
+        );
+        assert_ne!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://gemini-b.example"),
+            "all Gemini providers circuit-open must not write provider B direct baseUrl back to live"
         );
 
         if state.proxy_service.is_running().await {

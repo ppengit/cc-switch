@@ -117,8 +117,8 @@ export function UsageTrendChart({
         <p className="text-sm text-muted-foreground">{rangeLabel}</p>
       </div>
 
-      <div className="h-[350px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="h-[350px] min-h-[350px] w-full">
+        <ResponsiveContainer width="100%" height={350}>
           <AreaChart
             data={displayData}
             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}

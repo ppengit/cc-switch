@@ -4,13 +4,24 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+import type { Provider } from "@/types";
 import {
+  getProviders,
   getLastSettingsSaveRequest,
   getLastWebdavSaveRequest,
   getSettings,
+  getSwitchLiveSettings,
   getWebdavSyncCounts,
   getWebdavTestRequests,
+  removeFromFailoverQueueState,
   resetProviderState,
+  setAutoFailoverEnabledState,
+  setCurrentProviderId,
+  setProviders,
+  setProxyTakeoverForAppState,
+  setSettings,
+  setSwitchLiveSettings,
+  startProxyServerState,
 } from "../msw/state";
 
 vi.mock("sonner", () => ({
@@ -100,6 +111,34 @@ vi.mock("@/components/ConfirmDialog", () => ({
     ) : null,
 }));
 
+const claudeProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_000_000 + sortIndex,
+  settingsConfig: {
+    env: {
+      ANTHROPIC_BASE_URL: `https://${id}.example.com`,
+      ANTHROPIC_AUTH_TOKEN: `${id}-token`,
+      ANTHROPIC_MODEL: `${id}-model`,
+    },
+  },
+});
+
+const seedClaudeProviders = () => {
+  setProviders("claude", {
+    "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+    "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+  });
+  setCurrentProviderId("claude", "claude-alpha");
+};
+
 const renderSettingsPage = () => {
   const client = new QueryClient({
     defaultOptions: {
@@ -126,9 +165,11 @@ const openCloudSyncSection = async (user: ReturnType<typeof userEvent.setup>) =>
     ).toHaveAttribute("data-state", "active"),
   );
 
-  await user.click(screen.getByRole("button", {
-    name: /settings\.advanced\.cloudSync\.title/,
-  }));
+  await user.click(
+    await screen.findByRole("button", {
+      name: /settings\.advanced\.cloudSync\.title/,
+    }),
+  );
 
   await waitFor(() =>
     expect(
@@ -277,5 +318,66 @@ describe("SettingsPage with real WebdavSyncSection", () => {
         expect.objectContaining({ upload: 1, download: 1 }),
       ),
     );
+  });
+
+  it("keeps Claude live config on the proxy endpoint after WebDAV download in takeover+failover mode", async () => {
+    const user = userEvent.setup();
+
+    seedClaudeProviders();
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("claude", true);
+    setAutoFailoverEnabledState("claude", true);
+    removeFromFailoverQueueState("claude", "claude-alpha");
+
+    setSwitchLiveSettings(
+      "claude",
+      getProviders("claude")["claude-beta"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("claude") as { env?: Record<string, string> }).env
+        ?.ANTHROPIC_BASE_URL,
+    ).toBe("https://claude-beta.example.com");
+
+    await openCloudSyncSection(user);
+    await fillWebdavForm(user);
+    await user.click(
+      screen.getByRole("button", { name: "settings.webdavSync.save" }),
+    );
+    await waitFor(() => expect(getLastWebdavSaveRequest()).not.toBeNull());
+
+    await user.click(
+      screen.getByRole("button", { name: "settings.webdavSync.download" }),
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: "settings.webdavSync.confirmDownload.confirm",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(getWebdavSyncCounts()).toEqual(
+        expect.objectContaining({ download: 1 }),
+      ),
+    );
+
+    await waitFor(() => {
+      const live = getSwitchLiveSettings("claude") as {
+        env?: Record<string, string>;
+      };
+      expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
+      expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+      expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+        "https://claude-alpha.example.com",
+      );
+      expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+        "https://claude-beta.example.com",
+      );
+    });
   });
 });

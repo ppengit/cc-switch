@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import type { Prompt } from "@/lib/api/prompts";
+import type { LogConfig } from "@/lib/api/settings";
 import type {
   HermesMemoryKind,
   McpServer,
@@ -23,6 +24,7 @@ import {
   getAppProxyConfigState,
   getAutoFailoverEnabled,
   getAvailableProvidersForFailoverState,
+  getDbBackupsState,
   getCurrentPromptFileContentState,
   getDiscoverableSkillsState,
   getFailoverQueueState,
@@ -30,7 +32,19 @@ import {
   getHermesMemoryLimitsState,
   getHermesMemoryState,
   getInstalledSkillsState,
+  getLogConfigState,
+  getModelPricingState,
+  getModelStatsState,
+  getOpenClawAgentsDefaultsState,
   getOpenClawEnvConfigState,
+  getOpenClawToolsConfigState,
+  getProviderStatsState,
+  getRequestDetailState,
+  getRequestLogsState,
+  getStreamCheckConfigState,
+  getUsageDataSourcesState,
+  getUsageSummaryByAppState,
+  getUsageTrendsState,
   getWorkspaceFileState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
@@ -60,13 +74,20 @@ import {
   isProxyRunningState,
   listProviders,
   listSessions,
+  migrateSkillStorageState,
   getWebdavRemoteInfoState,
   recordSettingsSave,
+  recordAutoLaunchRequest,
+  recordClaudeOnboardingSkipAction,
   recordDeleteSessionsRequest,
+  recordOpenExternalRequest,
   recordOpenHermesWebUiState,
+  recordProviderTerminalLaunch,
   recordOpenWorkspaceDirectoryState,
   recordSessionMarkdownExport,
   recordSessionTerminalLaunch,
+  recordToolVersionsRequest,
+  recordWindowThemeRequest,
   resetProviderState,
   recordWebdavDownload,
   recordWebdavSaveSettings,
@@ -74,8 +95,14 @@ import {
   recordWebdavUpload,
   removeSkillRepoState,
   removeFromFailoverQueueState,
+  removeManagedAuthAccountState,
   removeProviderFromLiveConfigState,
+  restoreDbBackupState,
   restoreSkillBackupState,
+  renameDbBackupState,
+  deleteDbBackupState,
+  createDbBackupState,
+  saveLogConfigState,
   setAppConfigTemplateState,
   setAppProxyConfigState,
   setAutoFailoverEnabledState,
@@ -83,11 +110,15 @@ import {
   setHermesMemoryEnabledState,
   setHermesMemoryState,
   setGlobalProxyConfigState,
+  setOpenClawAgentsDefaultsState,
   setOpenClawEnvConfigState,
+  setOpenClawToolsConfigState,
+  setStreamCheckConfigState,
   setAppConfigDirOverrideState,
   setWorkspaceFileState,
   deleteMcpServer,
   setMcpServerEnabled,
+  setManagedAuthDefaultAccountState,
   setProviderDefaultTemplateState,
   setProxyTakeoverForAppState,
   setSessionTitleMappingState,
@@ -102,6 +133,7 @@ import {
   upsertMcpServer,
   upsertMcpServerState,
   clearSessionTitleMappingState,
+  logoutManagedAuthState,
   updateProvider,
   updateSortOrder,
   addToFailoverQueueState,
@@ -235,6 +267,26 @@ export const handlers = [
     return success({ warnings: [] });
   }),
 
+  http.post(`${TAURI_ENDPOINT}/get_openclaw_tools`, () =>
+    success(getOpenClawToolsConfigState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_openclaw_tools`, async ({ request }) => {
+    const { tools } = await withJson<{ tools: Record<string, unknown> }>(request);
+    setOpenClawToolsConfigState(tools);
+    return success({ warnings: [] });
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_openclaw_agents_defaults`, () =>
+    success(getOpenClawAgentsDefaultsState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_openclaw_agents_defaults`, async ({ request }) => {
+    const { defaults } = await withJson<{ defaults: Record<string, unknown> }>(request);
+    setOpenClawAgentsDefaultsState(defaults as never);
+    return success({ warnings: [] });
+  }),
+
   http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () =>
     success({ provider: null }),
   ),
@@ -357,7 +409,15 @@ export const handlers = [
     },
   ),
 
-  http.post(`${TAURI_ENDPOINT}/open_provider_terminal`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/open_provider_terminal`, async ({ request }) => {
+    const { providerId, app, cwd } = await withJson<{
+      providerId: string;
+      app: AppId;
+      cwd?: string | null;
+    }>(request);
+    recordProviderTerminalLaunch({ providerId, app, cwd: cwd ?? null });
+    return success(true);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/import_default_config`, async () => {
     resetProviderState();
@@ -384,7 +444,11 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/disable_current_omo`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/disable_current_omo_slim`, () => success(true)),
 
-  http.post(`${TAURI_ENDPOINT}/open_external`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/open_external`, async ({ request }) => {
+    const { url } = await withJson<{ url: string }>(request);
+    recordOpenExternalRequest(url);
+    return success(true);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/list_sessions`, () => success(listSessions())),
 
@@ -571,6 +635,15 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_settings`, () => success(getSettings())),
 
+  http.post(`${TAURI_ENDPOINT}/get_log_config`, () =>
+    success(getLogConfigState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_log_config`, async ({ request }) => {
+    const { config } = await withJson<{ config: LogConfig }>(request);
+    return success(saveLogConfigState(config));
+  }),
+
   http.post(`${TAURI_ENDPOINT}/webdav_sync_save_settings`, async ({ request }) => {
     const { settings, passwordTouched = false } = await withJson<{
       settings: Parameters<typeof recordWebdavSaveSettings>[0];
@@ -600,6 +673,7 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/webdav_sync_download`, () => {
     recordWebdavDownload();
+    syncCurrentProvidersLiveState();
     return success({ status: "downloaded" });
   }),
 
@@ -660,6 +734,13 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/update_skill`, async ({ request }) => {
     const { id } = await withJson<{ id: string }>(request);
     return success(updateSkillState(id));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/migrate_skill_storage`, async ({ request }) => {
+    const { target } = await withJson<{ target: "cc_switch" | "unified" }>(
+      request,
+    );
+    return success(migrateSkillStorageState(target));
   }),
 
   http.post(`${TAURI_ENDPOINT}/install_skill_unified`, async ({ request }) => {
@@ -753,13 +834,54 @@ export const handlers = [
     },
   ),
 
-  http.post(`${TAURI_ENDPOINT}/apply_claude_onboarding_skip`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/apply_claude_onboarding_skip`, () => {
+    recordClaudeOnboardingSkipAction("apply");
+    return success(true);
+  }),
 
-  http.post(`${TAURI_ENDPOINT}/clear_claude_onboarding_skip`, () =>
-    success(true),
-  ),
+  http.post(`${TAURI_ENDPOINT}/clear_claude_onboarding_skip`, () => {
+    recordClaudeOnboardingSkipAction("clear");
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/set_auto_launch`, async ({ request }) => {
+    const { enabled } = await withJson<{ enabled: boolean }>(request);
+    recordAutoLaunchRequest(enabled);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_auto_launch_status`, () => success(false)),
+
+  http.post(`${TAURI_ENDPOINT}/set_window_theme`, async ({ request }) => {
+    const { theme } = await withJson<{ theme: string }>(request);
+    recordWindowThemeRequest(theme);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/get_tool_versions`, async ({ request }) => {
+    const payload = await withJson<{
+      tools?: string[];
+      wslShellByTool?: Record<
+        string,
+        { wslShell?: string | null; wslShellFlag?: string | null }
+      >;
+    }>(request);
+    recordToolVersionsRequest(payload);
+    const tools =
+      payload.tools && payload.tools.length > 0
+        ? payload.tools
+        : ["claude", "codex", "gemini", "opencode"];
+    return success(
+      tools.map((name) => ({
+        name,
+        version: `${name}-1.0.0`,
+        latest_version: `${name}-1.0.0`,
+        error: null,
+        env_type: "linux",
+        wsl_distro: null,
+      })),
+    );
+  }),
 
   http.post(`${TAURI_ENDPOINT}/get_config_dir`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
@@ -822,6 +944,7 @@ export const handlers = [
         return success({ success: false, message: "Missing file" });
       }
       setSettings({ language: "en" });
+      syncCurrentProvidersLiveState();
       return success({ success: true, backupId: "backup-123" });
     },
   ),
@@ -837,6 +960,35 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/save_file_dialog`, () =>
     success("/mock/export-settings.json"),
   ),
+
+  http.post(`${TAURI_ENDPOINT}/create_db_backup`, () =>
+    success(createDbBackupState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/list_db_backups`, () =>
+    success(getDbBackupsState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/restore_db_backup`, async ({ request }) => {
+    const { filename } = await withJson<{ filename: string }>(request);
+    const backupId = restoreDbBackupState(filename);
+    syncCurrentProvidersLiveState();
+    return success(backupId);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/rename_db_backup`, async ({ request }) => {
+    const { oldFilename, newName } = await withJson<{
+      oldFilename: string;
+      newName: string;
+    }>(request);
+    return success(renameDbBackupState(oldFilename, newName));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/delete_db_backup`, async ({ request }) => {
+    const { filename } = await withJson<{ filename: string }>(request);
+    deleteDbBackupState(filename);
+    return success(null);
+  }),
 
   http.post(`${TAURI_ENDPOINT}/sync_current_providers_live`, () =>
     success(syncCurrentProvidersLiveState()),
@@ -1009,18 +1161,14 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/stream_check_all_providers`, () => success([])),
 
   http.post(`${TAURI_ENDPOINT}/get_stream_check_config`, () =>
-    success({
-      timeoutSecs: 30,
-      maxRetries: 0,
-      degradedThresholdMs: 2000,
-      claudeModel: "claude-3-5-sonnet-latest",
-      codexModel: "gpt-5",
-      geminiModel: "gemini-2.5-pro",
-      testPrompt: "ping",
-    }),
+    success(getStreamCheckConfigState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/save_stream_check_config`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/save_stream_check_config`, async ({ request }) => {
+    const { config } = await withJson<{ config: ReturnType<typeof getStreamCheckConfigState> }>(request);
+    setStreamCheckConfigState(config);
+    return success(true);
+  }),
 
   // Failover / circuit breaker defaults
   http.post(`${TAURI_ENDPOINT}/get_failover_queue`, async ({ request }) => {
@@ -1093,36 +1241,119 @@ export const handlers = [
   ),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, () => success(null)),
-  http.post(`${TAURI_ENDPOINT}/get_usage_summary`, () =>
-    success({
-      totalRequests: 0,
-      totalCost: "0",
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalCacheCreationTokens: 0,
-      totalCacheReadTokens: 0,
-      successRate: 0,
-    }),
+  http.post(`${TAURI_ENDPOINT}/testUsageScript`, async ({ request }) => {
+    const {
+      providerId,
+      app,
+      scriptCode,
+      timeout,
+      apiKey,
+      baseUrl,
+      templateType,
+    } = await withJson<{
+      providerId: string;
+      app: AppId;
+      scriptCode?: string;
+      timeout?: number;
+      apiKey?: string;
+      baseUrl?: string;
+      templateType?: string;
+    }>(request);
+
+    if (!providerId || !app) {
+      return HttpResponse.json(
+        { success: false, error: "Missing provider or app" },
+        { status: 400 },
+      );
+    }
+
+    if (
+      templateType === "general" &&
+      (!scriptCode || !scriptCode.includes("return"))
+    ) {
+      return success({
+        success: false,
+        error: "Invalid script",
+      });
+    }
+
+    return success({
+      success: true,
+      data: [
+        {
+          planName: "Primary",
+          remaining: 42,
+          unit: "USD",
+          extra: `${baseUrl ?? ""}|${apiKey ?? ""}|${timeout ?? 10}`,
+        },
+      ],
+    });
+  }),
+  http.post(`${TAURI_ENDPOINT}/get_usage_summary`, async ({ request }) => {
+    const { appType } = await withJson<{ appType?: string }>(request);
+    const summaries = getUsageSummaryByAppState();
+    const selected = appType
+      ? summaries.find((item) => item.appType === appType)?.summary
+      : summaries[0]?.summary;
+    return success(
+      selected ?? {
+        totalRequests: 0,
+        totalCost: "0",
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCacheReadTokens: 0,
+        successRate: 0,
+        realTotalTokens: 0,
+        cacheHitRate: 0,
+      },
+    );
+  }),
+  http.post(`${TAURI_ENDPOINT}/get_usage_summary_by_app`, () =>
+    success(getUsageSummaryByAppState()),
   ),
-  http.post(`${TAURI_ENDPOINT}/get_usage_trends`, () => success([])),
-  http.post(`${TAURI_ENDPOINT}/get_provider_stats`, () => success([])),
-  http.post(`${TAURI_ENDPOINT}/get_model_stats`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_usage_trends`, () =>
+    success(getUsageTrendsState()),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_provider_stats`, () =>
+    success(getProviderStatsState()),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_model_stats`, () =>
+    success(getModelStatsState()),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_request_logs`, async ({ request }) => {
     const { page = 0, pageSize = 20 } = await withJson<{
       page?: number;
       pageSize?: number;
     }>(request);
+    const logs = getRequestLogsState();
     return success({
-      data: [],
-      total: 0,
+      data: logs.slice(page * pageSize, page * pageSize + pageSize),
+      total: logs.length,
       page,
       pageSize,
     });
   }),
-  http.post(`${TAURI_ENDPOINT}/get_request_detail`, () => success(null)),
-  http.post(`${TAURI_ENDPOINT}/get_model_pricing`, () => success([])),
+  http.post(`${TAURI_ENDPOINT}/get_request_detail`, async ({ request }) => {
+    const { requestId } = await withJson<{ requestId: string }>(request);
+    return success(getRequestDetailState(requestId));
+  }),
+  http.post(`${TAURI_ENDPOINT}/get_model_pricing`, () =>
+    success(getModelPricingState()),
+  ),
   http.post(`${TAURI_ENDPOINT}/update_model_pricing`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/delete_model_pricing`, () => success(true)),
+  http.post(`${TAURI_ENDPOINT}/get_usage_data_sources`, () =>
+    success(getUsageDataSourcesState()),
+  ),
+  http.post(`${TAURI_ENDPOINT}/sync_session_usage`, () =>
+    success({
+      imported: 0,
+      skipped: 0,
+      filesScanned: 0,
+      errors: [],
+    }),
+  ),
   http.post(`${TAURI_ENDPOINT}/check_provider_limits`, async ({ request }) => {
     const { providerId } = await withJson<{ providerId: string }>(request);
     return success({
@@ -1138,5 +1369,31 @@ export const handlers = [
       authProvider: "github_copilot" | "codex_oauth";
     }>(request);
     return success(getManagedAuthStatus(authProvider));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_set_default_account`, async ({ request }) => {
+    const { authProvider, accountId } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+      accountId: string;
+    }>(request);
+    setManagedAuthDefaultAccountState(authProvider, accountId);
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_remove_account`, async ({ request }) => {
+    const { authProvider, accountId } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+      accountId: string;
+    }>(request);
+    removeManagedAuthAccountState(authProvider, accountId);
+    return success(null);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_logout`, async ({ request }) => {
+    const { authProvider } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+    }>(request);
+    logoutManagedAuthState(authProvider);
+    return success(null);
   }),
 ];

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { settingsApi } from "@/lib/api";
 import type { Provider } from "@/types";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import {
@@ -10,11 +11,13 @@ import {
   getFailoverQueueState,
   getLastSettingsSaveRequest,
   getProxyTakeoverStatusState,
+  getProviders,
   getSwitchLiveSettings,
   resetProviderState,
   setCurrentProviderId,
   setProviders,
   setSettings,
+  setSwitchLiveSettings,
 } from "../msw/state";
 
 vi.mock("sonner", () => ({
@@ -336,5 +339,135 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
         ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
       },
     });
+  }, 20_000);
+
+  it("keeps Claude live config on the proxy endpoint after the failover queue becomes empty", async () => {
+    const user = userEvent.setup();
+
+    setProviders("claude", {
+      "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+      "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+      "claude-gamma": claudeProvider("claude-gamma", "Claude Gamma", 2),
+    });
+    setCurrentProviderId("claude", "claude-beta");
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+
+    await openProxySection(user);
+
+    await clickSwitchNear(user, "代理服务");
+    await waitFor(() =>
+      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
+    );
+
+    await clickSwitchNear(user, "claude");
+    await waitFor(() =>
+      expect(getProxyTakeoverStatusState().claude).toBe(true),
+    );
+
+    await openFailoverSection(user);
+    await user.click(
+      screen.getByRole("switch", {
+        name: "settings.advanced.proxy.enableFailoverToggle",
+      }),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+    await user.click(
+      screen.getByRole("switch", {
+        name: "自动故障转移",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-beta",
+      ]),
+    );
+
+    for (const providerName of ["Claude Alpha", "Claude Gamma"]) {
+      await user.click(
+        screen.getByRole("combobox", {
+          name: "选择供应商添加到队列",
+        }),
+      );
+      await user.click(await screen.findByRole("option", { name: new RegExp(providerName) }));
+      await user.click(
+        screen.getByRole("button", {
+          name: "添加供应商到故障转移队列",
+        }),
+      );
+    }
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-alpha",
+        "claude-beta",
+        "claude-gamma",
+      ]),
+    );
+
+    const deleteButtonName = /^(common\.delete|删除)$/;
+
+    for (const providerName of ["Claude Alpha", "Claude Beta", "Claude Gamma"]) {
+      const row =
+        screen
+          .getAllByText(providerName)
+          .map((element) => {
+            let current = element.parentElement;
+            while (current && current !== document.body) {
+              const deleteButtons = within(current).queryAllByRole("button", {
+                name: deleteButtonName,
+              });
+              if (deleteButtons.length === 1) {
+                return current;
+              }
+              current = current.parentElement;
+            }
+            return null;
+          })
+          .find((container): container is HTMLElement => container !== null) ?? null;
+      if (!row) throw new Error(`${providerName} queue row not found`);
+      await user.click(
+        within(row).getAllByRole("button", {
+          name: deleteButtonName,
+        })[0],
+      );
+      await waitFor(() =>
+        expect(
+          getFailoverQueueState("claude").some(
+            (item) => item.providerName === providerName,
+          ),
+        ).toBe(false),
+      );
+    }
+
+    await waitFor(() => {
+      expect(getFailoverQueueState("claude")).toEqual([]);
+    });
+
+    setSwitchLiveSettings(
+      "claude",
+      getProviders("claude")["claude-alpha"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("claude") as { env?: Record<string, string> }).env
+        ?.ANTHROPIC_BASE_URL,
+    ).toBe("https://claude-alpha.example.com");
+
+    await settingsApi.syncCurrentProvidersLive();
+
+    await waitFor(() =>
+      expect(getSwitchLiveSettings("claude")).toMatchObject({
+        env: {
+          ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+        },
+      }),
+    );
   }, 20_000);
 });

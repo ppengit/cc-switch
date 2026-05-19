@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -37,6 +38,11 @@ export function RequestDetailPanel({
     return (
       <Dialog open onOpenChange={onClose}>
         <DialogContent zIndex="top" className="max-w-4xl">
+          <DialogDescription className="sr-only">
+            {t("usage.requestDetailLoading", {
+              defaultValue: "正在加载请求详情。",
+            })}
+          </DialogDescription>
           <div className="h-[400px] animate-pulse rounded bg-gray-100" />
         </DialogContent>
       </Dialog>
@@ -49,6 +55,11 @@ export function RequestDetailPanel({
         <DialogContent zIndex="top" className="max-w-4xl">
           <DialogHeader>
             <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
+            <DialogDescription>
+              {t("usage.requestDetailDescription", {
+                defaultValue: "查看单次代理请求的供应商、模型、Token、成本和元数据。",
+              })}
+            </DialogDescription>
           </DialogHeader>
           <div className="text-center text-muted-foreground">
             {error
@@ -97,6 +108,11 @@ export function RequestDetailPanel({
       >
         <DialogHeader>
           <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
+          <DialogDescription>
+            {t("usage.requestDetailDescription", {
+              defaultValue: "查看单次代理请求的供应商、模型、Token、成本和元数据。",
+            })}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">

@@ -248,13 +248,15 @@ export function EnvWarningBanner({
               <AlertTriangle className="h-5 w-5 text-destructive" />
               {t("env.confirm.title")}
             </DialogTitle>
-            <DialogDescription className="space-y-2">
-              <p>
-                {t("env.confirm.message", { count: selectedConflicts.size })}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                {t("env.confirm.backupNotice")}
-              </p>
+            <DialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  {t("env.confirm.message", { count: selectedConflicts.size })}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {t("env.confirm.backupNotice")}
+                </p>
+              </div>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -355,6 +356,11 @@ export function RawProxyLogPanel({
                   defaultValue: "代理原始日志详情",
                 })}
               </DialogTitle>
+              <DialogDescription>
+                {t("usage.rawProxyLogDetailDescription", {
+                  defaultValue: "查看单条代理原始日志的完整 JSON 详情。",
+                })}
+              </DialogDescription>
             </DialogHeader>
             <pre className="rounded-md border bg-muted/40 p-3 text-xs leading-relaxed overflow-auto">
               {JSON.stringify(selectedLog, null, 2)}
