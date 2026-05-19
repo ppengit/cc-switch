@@ -54,6 +54,7 @@ import {
   getPromptsState,
   getProxyTakeoverStatusState,
   getProxyStatusState,
+  getCircuitBreakerStatsState,
   getSkillBackupsState,
   getSkillReposState,
   getSkillUpdatesState,
@@ -61,6 +62,7 @@ import {
   getUnmanagedSkillsState,
   getAppConfigDirOverride,
   getMcpConfig,
+  getProviderHealthState,
   getSessionMessages,
   getSettings,
   getProviders,
@@ -1227,20 +1229,21 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/update_circuit_breaker_config`, () =>
     success(true),
   ),
-  http.post(`${TAURI_ENDPOINT}/get_provider_health`, () =>
-    success({
-      provider_id: "mock-provider",
-      app_type: "claude",
-      is_healthy: true,
-      consecutive_failures: 0,
-      last_success_at: null,
-      last_failure_at: null,
-      last_error: null,
-      updated_at: new Date().toISOString(),
-    }),
-  ),
+  http.post(`${TAURI_ENDPOINT}/get_provider_health`, async ({ request }) => {
+    const { providerId, appType } = await withJson<{
+      providerId: string;
+      appType: AppId;
+    }>(request);
+    return success(getProviderHealthState(appType, providerId));
+  }),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, () => success(null)),
+  http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, async ({ request }) => {
+    const { providerId, appType } = await withJson<{
+      providerId: string;
+      appType: AppId;
+    }>(request);
+    return success(getCircuitBreakerStatsState(appType, providerId));
+  }),
   http.post(`${TAURI_ENDPOINT}/testUsageScript`, async ({ request }) => {
     const {
       providerId,

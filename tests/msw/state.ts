@@ -38,8 +38,10 @@ import type {
 } from "@/types/usage";
 import type {
   AppProxyConfig,
+  CircuitBreakerStats,
   FailoverQueueItem,
   GlobalProxyConfig,
+  ProviderHealth,
   ProxyServerInfo,
   ProxyStatus,
 } from "@/types/proxy";
@@ -59,6 +61,8 @@ type SwitchLiveSettingsByApp = Record<SwitchModeAppId, unknown>;
 type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
 type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
 type AutoFailoverEnabledByApp = Record<AppId, boolean>;
+type ProviderHealthState = Record<string, ProviderHealth>;
+type CircuitBreakerStatsState = Record<string, CircuitBreakerStats | null>;
 type McpServersState = Record<string, McpServer>;
 type PromptState = Record<AppId, Record<string, Prompt>>;
 type CurrentPromptFileContentByApp = Record<AppId, string | null>;
@@ -779,6 +783,8 @@ let appConfigTemplatesByApp = createDefaultAppConfigTemplates();
 let autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
 let proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
 let appProxyConfigsByApp = createDefaultAppProxyConfigs();
+let providerHealthState: ProviderHealthState = {};
+let circuitBreakerStatsState: CircuitBreakerStatsState = {};
 let globalProxyConfigState = createDefaultGlobalProxyConfig();
 let failoverQueuesByApp = createDefaultFailoverQueues();
 let switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
@@ -887,6 +893,8 @@ const createDefaultProxyStatus = (): ProxyStatus => ({
 let proxyStatusState: ProxyStatus = createDefaultProxyStatus();
 const sessionMessageKey = (providerId: string, sourcePath: string) =>
   `${providerId}:${sourcePath}`;
+const providerRuntimeKey = (appType: AppId, providerId: string) =>
+  `${appType}:${providerId}`;
 
 const createDefaultSessions = (): SessionMeta[] => {
   const now = Date.now();
@@ -1009,6 +1017,8 @@ export const resetProviderState = () => {
   autoFailoverEnabledByApp = createDefaultAutoFailoverEnabled();
   proxyTakeoverStatusByApp = createDefaultProxyTakeoverStatus();
   appProxyConfigsByApp = createDefaultAppProxyConfigs();
+  providerHealthState = {};
+  circuitBreakerStatsState = {};
   globalProxyConfigState = createDefaultGlobalProxyConfig();
   failoverQueuesByApp = createDefaultFailoverQueues();
   switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
@@ -2305,6 +2315,53 @@ export const setAppConfigTemplateState = (
 
 export const getAutoFailoverEnabled = (appType: AppId) =>
   autoFailoverEnabledByApp[appType] ?? false;
+
+export const getProviderHealthState = (
+  appType: AppId,
+  providerId: string,
+): ProviderHealth => {
+  const key = providerRuntimeKey(appType, providerId);
+  return (
+    providerHealthState[key] ?? {
+      provider_id: providerId,
+      app_type: appType,
+      is_healthy: true,
+      consecutive_failures: 0,
+      last_success_at: null,
+      last_failure_at: null,
+      last_error: null,
+      updated_at: new Date().toISOString(),
+    }
+  );
+};
+
+export const setProviderHealthState = (
+  appType: AppId,
+  providerId: string,
+  health: Partial<ProviderHealth>,
+) => {
+  providerHealthState[providerRuntimeKey(appType, providerId)] = {
+    ...getProviderHealthState(appType, providerId),
+    ...health,
+    provider_id: providerId,
+    app_type: appType,
+  };
+};
+
+export const getCircuitBreakerStatsState = (
+  appType: AppId,
+  providerId: string,
+) => circuitBreakerStatsState[providerRuntimeKey(appType, providerId)] ?? null;
+
+export const setCircuitBreakerStatsState = (
+  appType: AppId,
+  providerId: string,
+  stats: CircuitBreakerStats | null,
+) => {
+  circuitBreakerStatsState[providerRuntimeKey(appType, providerId)] = stats
+    ? JSON.parse(JSON.stringify(stats))
+    : null;
+};
 
 export const getProxyTakeoverStatusState = () =>
   JSON.parse(JSON.stringify(proxyTakeoverStatusByApp)) as ProxyTakeoverStatusByApp;

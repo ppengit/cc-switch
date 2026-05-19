@@ -244,6 +244,22 @@
 - 组合验证命令：`pnpm vitest run tests/integration/App.real-openclaw-env.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
 
+### App + ProviderList 熔断事件真实页面验收
+
+- 新增验收用例：`tests/integration/App.real-providers.test.tsx` 中 `shows all circuit-open failover providers after provider events without drifting Claude live config`
+- 覆盖范围：真实 `App`、真实 `ProviderList`、真实行内供应商启用开关、真实 Tauri 事件监听刷新链路；MSW 只负责模拟后端 provider health 和 circuit breaker stats 状态。
+- 覆盖交互：预置 3 个 Claude 供应商，开启本地代理、Claude 接管和自动故障转移；通过真实供应商行内开关把 `Claude Beta`、`Claude Gamma` 加入故障转移队列，使队列包含 `Claude Alpha`、`Claude Beta`、`Claude Gamma`。
+- 熔断事件验证：通过 `setProviderHealthState` / `setCircuitBreakerStatsState` 把 3 个供应商全部置为不健康且 circuit breaker `open`，再派发真实 `provider-switched` 事件触发页面刷新；断言 3 个供应商行均展示「熔断」状态。
+- 配置漂移验证：熔断事件后直接读取 Claude live settings，断言 `ANTHROPIC_BASE_URL` 仍为 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 仍为 `PROXY_MANAGED`，并且 `ANTHROPIC_BASE_URL` 不等于任一供应商 direct base URL。
+- 测试夹具：MSW 状态新增 provider health / circuit breaker stats 可控状态，`get_provider_health` 和 `get_circuit_breaker_stats` handler 改为按 `appType + providerId` 返回真实测试状态，避免所有供应商共享一个固定 mock 响应。
+- 红绿记录：临时破坏 `get_circuit_breaker_stats` handler 让其返回 `null` 后，同一用例按预期失败并找不到「熔断」文本；恢复 handler 后同一用例通过，证明该验收确实覆盖页面熔断状态刷新，而不是弱断言。
+- 验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx -t "shows all circuit-open failover providers" --reporter=verbose`
+- 当前结果：`1 test passed, 11 tests skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 12 tests passed, 0 failed`
+- 代理 / 故障转移组合验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
+- 代理 / 故障转移组合验证结果：`3 files passed, 15 tests passed, 0 failed`
+
 ### 组合回归
 
 - 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`

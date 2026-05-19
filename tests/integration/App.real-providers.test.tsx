@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
 import {
+  getCircuitBreakerStatsState,
   getCurrentProviderId,
   getFailoverQueueState,
   getLiveProviderIds,
@@ -13,8 +14,10 @@ import {
   getSwitchLiveSettings,
   resetProviderState,
   setAutoFailoverEnabledState,
+  setCircuitBreakerStatsState,
   setCurrentProviderId,
   setLiveProviderIds,
+  setProviderHealthState,
   setProviderDefaultTemplateState,
   setProviders,
   setProxyTakeoverForAppState,
@@ -22,6 +25,7 @@ import {
   setSwitchLiveSettings,
   startProxyServerState,
 } from "../msw/state";
+import { emitTauriEvent } from "../msw/tauriMocks";
 
 vi.mock("@/contexts/UpdateContext", () => ({
   useUpdate: () => ({
@@ -920,6 +924,94 @@ describe("App with real ProviderList", () => {
     };
     expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
     expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-alpha.example.com",
+    );
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-beta.example.com",
+    );
+    expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+      "https://claude-gamma.example.com",
+    );
+  }, 20_000);
+
+  it("shows all circuit-open failover providers after provider events without drifting Claude live config", async () => {
+    setProviders("claude", {
+      "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+      "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+      "claude-gamma": claudeProvider("claude-gamma", "Claude Gamma", 2),
+    });
+    setCurrentProviderId("claude", "claude-alpha");
+    setSettings({
+      enableLocalProxy: true,
+      enableFailoverToggle: true,
+      proxyConfirmed: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("claude", true);
+    setAutoFailoverEnabledState("claude", true);
+
+    const user = userEvent.setup();
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await expectProviderVisible("Claude Alpha");
+    await user.click(within(findProviderRow("Claude Beta")).getByTitle("启用"));
+    await user.click(within(findProviderRow("Claude Gamma")).getByTitle("启用"));
+
+    await waitFor(() =>
+      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
+        "claude-alpha",
+        "claude-beta",
+        "claude-gamma",
+      ]),
+    );
+
+    const providerIds = ["claude-alpha", "claude-beta", "claude-gamma"];
+    for (const providerId of providerIds) {
+      setProviderHealthState("claude", providerId, {
+        is_healthy: false,
+        consecutive_failures: 3,
+        last_failure_at: "2026-05-20T05:30:00Z",
+        last_error: "upstream unavailable",
+      });
+      setCircuitBreakerStatsState("claude", providerId, {
+        state: "open",
+        consecutiveFailures: 3,
+        consecutiveSuccesses: 0,
+        totalRequests: 3,
+        failedRequests: 3,
+      });
+      emitTauriEvent("provider-switched", {
+        appType: "claude",
+        providerId,
+      });
+    }
+
+    await waitFor(() => {
+      for (const providerName of [
+        "Claude Alpha",
+        "Claude Beta",
+        "Claude Gamma",
+      ]) {
+        expect(within(findProviderRow(providerName)).getByText("熔断")).toBeInTheDocument();
+      }
+    });
+
+    for (const providerId of providerIds) {
+      expect(getCircuitBreakerStatsState("claude", providerId)).toMatchObject({
+        state: "open",
+        failedRequests: 3,
+        totalRequests: 3,
+      });
+    }
+
+    const live = getSwitchLiveSettings("claude") as {
+      env?: Record<string, string>;
+    };
+    expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+    expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
     expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
       "https://claude-alpha.example.com",
     );
