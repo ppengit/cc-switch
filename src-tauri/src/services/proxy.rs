@@ -3192,6 +3192,33 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
+    async fn start_mock_claude_messages_error_server() -> (String, JoinHandle<()>) {
+        let app = Router::new().route(
+            "/v1/messages",
+            post(|| async move {
+                axum::response::Response::builder()
+                    .status(500)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"error":{"type":"upstream_error","message":"forced failure"}}"#,
+                    ))
+                    .expect("build mock error response")
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
     #[test]
     fn update_toml_base_url_updates_active_model_provider_base_url() {
         let input = r#"
@@ -5333,6 +5360,167 @@ requires_openai_auth = true
         if service.is_running().await {
             service.stop().await.expect("stop proxy service");
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn real_http_failover_all_upstreams_down_keeps_takeover_live_config() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let (mock_a_base_url, mock_a_handle) = start_mock_claude_messages_error_server().await;
+        let (mock_b_base_url, mock_b_handle) = start_mock_claude_messages_error_server().await;
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let proxy_port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: proxy_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "a".to_string(),
+            "Provider A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": mock_a_base_url,
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6"
+                }
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "b".to_string(),
+            "Provider B".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-b",
+                    "ANTHROPIC_BASE_URL": mock_b_base_url,
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("claude", &provider_a)
+            .expect("save provider a");
+        db.save_provider("claude", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("claude", "a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("claude", "b")
+            .expect("queue provider b");
+        db.set_current_provider("claude", "a")
+            .expect("seed direct current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("a"))
+            .expect("seed local current provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        app_config.max_retries = 1;
+        app_config.circuit_failure_threshold = 1;
+        app_config.circuit_timeout_seconds = 3600;
+        app_config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable strict failover");
+
+        let service = ProxyService::new(db.clone());
+        let info = service.start().await.expect("start proxy service");
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Claude, &provider_a)
+            .await
+            .expect("seed takeover live");
+        service
+            .sync_failover_active_target("claude")
+            .await
+            .expect("sync initial failover target");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/v1/messages", info.port))
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 16,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hello"
+                    }
+                ]
+            }))
+            .send()
+            .await
+            .expect("send proxied request through real HTTP server");
+
+        assert!(
+            !response.status().is_success(),
+            "all failing upstream providers should surface an error response"
+        );
+
+        let stats_a = service
+            .get_circuit_breaker_stats("a", "claude")
+            .await
+            .expect("read circuit breaker stats a")
+            .expect("breaker a should exist");
+        let stats_b = service
+            .get_circuit_breaker_stats("b", "claude")
+            .await
+            .expect("read circuit breaker stats b")
+            .expect("breaker b should exist");
+        assert_eq!(
+            stats_a.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider a should be circuit-open after the failed real request"
+        );
+        assert_eq!(
+            stats_b.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider b should be circuit-open after the failed real request"
+        );
+
+        let live = service.read_claude_live().expect("read claude live");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{proxy_port}").as_str()),
+            "all upstreams failing must keep Claude live on the local proxy endpoint"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "all upstreams failing must keep the takeover token placeholder"
+        );
+
+        let live_text = serde_json::to_string(&live).expect("serialize live config");
+        assert!(
+            !live_text.contains(&mock_a_base_url) && !live_text.contains(&mock_b_base_url),
+            "takeover live config must not be overwritten with a provider direct baseUrl"
+        );
+        assert_eq!(
+            db.get_failover_queue("claude")
+                .expect("read failover queue")
+                .into_iter()
+                .map(|item| item.provider_id)
+                .collect::<Vec<_>>(),
+            vec!["a".to_string(), "b".to_string()],
+            "generic upstream failures must not silently rewrite the failover queue"
+        );
+
+        if service.is_running().await {
+            service.stop().await.expect("stop proxy service");
+        }
+        mock_a_handle.abort();
+        mock_b_handle.abort();
     }
 
     #[tokio::test]
