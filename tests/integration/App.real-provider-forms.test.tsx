@@ -163,6 +163,32 @@ const opencodeProvider = (
   },
 });
 
+const openclawProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_300_000 + sortIndex,
+  settingsConfig: {
+    baseUrl: `https://${id}.example.com/api`,
+    apiKey: `${id}-key`,
+    api: "openai-responses",
+    models: [
+      {
+        id: `${id}-model`,
+        name: `${name} Model`,
+        reasoning: true,
+        input: ["text", "image"],
+      },
+    ],
+  },
+});
+
 const clickAppSwitcherButton = async (
   user: ReturnType<typeof userEvent.setup>,
   appName: string,
@@ -212,6 +238,13 @@ describe("App with real provider add/edit forms", () => {
       "opencode-draft": opencodeProvider("opencode-draft", "OpenCode Draft", 1),
     });
     setLiveProviderIds("opencode", ["opencode-live"]);
+    setProviders("openclaw", {
+      "openclaw-live": openclawProvider("openclaw-live", "OpenClaw Live", 0),
+      "openclaw-draft": openclawProvider("openclaw-draft", "OpenClaw Draft", 1),
+    });
+    setLiveProviderIds("openclaw", ["openclaw-live"]);
+    setProviders("hermes", {});
+    setLiveProviderIds("hermes", []);
     window.localStorage.clear();
     window.sessionStorage.clear();
     Element.prototype.scrollIntoView = vi.fn();
@@ -299,5 +332,112 @@ describe("App with real provider add/edit forms", () => {
       );
       expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
     });
+  }, 20_000);
+
+  it("adds an OpenClaw provider from the real App dialog and appends only OpenClaw live config", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "OpenClaw");
+    await waitFor(() =>
+      expect(screen.getByText("OpenClaw Live")).toBeInTheDocument(),
+    );
+
+    await clickHeaderAddButton(user);
+    await user.type(await getInputById("openclaw-key"), "openclaw-new");
+    await user.type(getProviderNameInput(), "OpenClaw New");
+    await user.clear(getApiKeyInput());
+    await user.type(getApiKeyInput(), "sk-openclaw-new");
+    await user.clear(await getInputById("openclaw-baseurl"));
+    await user.type(
+      await getInputById("openclaw-baseurl"),
+      "https://openclaw-new.example.com/api/",
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => {
+      const providers = getProviders("openclaw");
+      expect(providers["openclaw-new"]).toBeDefined();
+      expect(providers["openclaw-new"].name).toBe("OpenClaw New");
+      expect(providers["openclaw-new"].settingsConfig).toMatchObject({
+        baseUrl: "https://openclaw-new.example.com/api",
+        apiKey: "sk-openclaw-new",
+        api: "openai-responses",
+      });
+      expect(providers["openclaw-new"].settingsConfig.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "gpt-5.5",
+            name: "GPT-5.5",
+            reasoning: true,
+            input: ["text", "image"],
+          }),
+        ]),
+      );
+      expect(getLiveProviderIds("openclaw")).toEqual([
+        "openclaw-live",
+        "openclaw-new",
+      ]);
+    });
+
+    expect(getProviders("opencode")["openclaw-new"]).toBeUndefined();
+    expect(getProviders("hermes")["openclaw-new"]).toBeUndefined();
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getLiveProviderIds("hermes")).toEqual([]);
+  }, 20_000);
+
+  it("edits an OpenClaw database-only provider without rewriting live membership for other apps", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "OpenClaw");
+    await waitFor(() =>
+      expect(screen.getByText("OpenClaw Live")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      within(findProviderRow("OpenClaw Draft")).getByRole("button", {
+        name: "编辑",
+      }),
+    );
+    const keyInput = await getInputById("openclaw-key");
+    expect(keyInput).toHaveValue("openclaw-draft");
+
+    await user.clear(keyInput);
+    await user.type(keyInput, "openclaw-renamed");
+    await user.clear(getProviderNameInput());
+    await user.type(getProviderNameInput(), "OpenClaw Renamed");
+    await user.clear(getApiKeyInput());
+    await user.type(getApiKeyInput(), "sk-openclaw-renamed");
+    await user.clear(await getInputById("openclaw-baseurl"));
+    await user.type(
+      await getInputById("openclaw-baseurl"),
+      "https://openclaw-renamed.example.com/api/",
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => {
+      const providers = getProviders("openclaw");
+      expect(providers["openclaw-draft"]).toBeUndefined();
+      expect(providers["openclaw-renamed"]).toBeDefined();
+      expect(providers["openclaw-renamed"].name).toBe("OpenClaw Renamed");
+      expect(providers["openclaw-renamed"].settingsConfig).toMatchObject({
+        baseUrl: "https://openclaw-renamed.example.com/api",
+        apiKey: "sk-openclaw-renamed",
+        api: "openai-responses",
+      });
+      expect(getLiveProviderIds("openclaw")).toEqual(["openclaw-live"]);
+    });
+
+    expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
+    expect(getLiveProviderIds("hermes")).toEqual([]);
+    expect(getProviders("opencode")["openclaw-renamed"]).toBeUndefined();
+    expect(getProviders("hermes")["openclaw-renamed"]).toBeUndefined();
   }, 20_000);
 });
