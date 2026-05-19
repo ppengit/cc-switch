@@ -38,7 +38,7 @@
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
-| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离、Workspace 文件存在探测、打开目录、编辑保存、缺失文件创建、Env JSON 加载/保存/非法输入拦截 | app 切换后工具栏按钮错位、workspace 写错文件、Env 误提交非法 JSON、保存后状态不刷新 | 已补真实 App + WorkspaceFilesPanel、EnvPanel 页面级验收；`Tools` / `AgentsDefaults` 内部配置写入待补 |
+| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离、Workspace 文件存在探测、打开目录、编辑保存、缺失文件创建、Env JSON 加载 / 保存 / 非法输入拦截、Tools allow / deny 配置写入、Agents 默认模型和运行参数写入 | app 切换后工具栏按钮错位、workspace 写错文件、Env 误提交非法 JSON、保存后状态不刷新、Tools / Agents 配置被覆盖或 legacy 字段迁移错误 | 已补真实 App + WorkspaceFilesPanel、EnvPanel、ToolsPanel、AgentsDefaultsPanel 页面级验收；已覆盖配置写入、未知字段保留、legacy timeout 迁移和不支持值保留 |
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
@@ -258,6 +258,26 @@
 - 当前结果：`1 file passed, 2 tests passed, 0 failed`
 - 组合验证命令：`pnpm vitest run tests/integration/App.real-openclaw-env.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
+
+### App + ToolsPanel 真实页面验收
+
+- 验收文件：`tests/integration/App.real-openclaw-tools.test.tsx`
+- 覆盖范围：真实 `App`、真实 OpenClaw 顶栏 Tools 入口、真实 `ToolsPanel`、真实 `useOpenClawTools` / `useSaveOpenClawTools`；只 mock 与 Tools 链路无关的重型页面。
+- 覆盖交互：从真实顶层 App 切换到 OpenClaw，再点击真实 Tools 入口；加载既有 `profile`、allow list 和 deny list；通过真实 Select 把 profile 从 `minimal` 改为 `full`；新增 allow / deny 项，删除 allow 项，再点击真实保存按钮。
+- 配置 / 请求验证：直接观测 `set_openclaw_tools` 请求体，确认保存结果为 `profile: "full"`、`allow: ["Read", "Shell"]`、`deny: ["Delete", "Network"]`，避免 allow / deny 编辑时把旧项、空项或其它配置误写入。
+- 兼容性验证：当后端返回不在当前支持列表里的 `profile: "default"` 时，真实页面展示 unsupported profile 警告；直接保存会原样保留 `default`，只有用户明确选择 `Coding` 后才写入 `profile: "coding"`，防止升级后自动覆盖用户已有 OpenClaw 配置。
+- 本轮复核验证命令：`pnpm exec vitest run tests/integration/App.real-openclaw-tools.test.tsx tests/integration/App.real-openclaw-agents.test.tsx --fileParallelism=false --reporter=verbose`
+- 本轮复核验证结果：`2 files passed, 4 tests passed, 0 failed`
+
+### App + AgentsDefaultsPanel 真实页面验收
+
+- 验收文件：`tests/integration/App.real-openclaw-agents.test.tsx`
+- 覆盖范围：真实 `App`、真实 OpenClaw 顶栏 Agents 入口、真实 `AgentsDefaultsPanel`、真实 OpenClaw provider 模型选项、真实 `useOpenClawAgentsDefaults` / `useSaveOpenClawAgentsDefaults`；只 mock 与 Agents 默认配置链路无关的重型页面。
+- 覆盖交互：从真实顶层 App 切换到 OpenClaw，再点击真实 Agents 入口；加载 primary model、workspace、timeout、contextTokens、maxConcurrent；通过真实 Select 把 primary model 从 `Provider A / Model Alpha` 改到 `Provider B / Model Beta`，新增 fallback 并选择 `Provider C / Model Gamma`，编辑运行参数后保存。
+- 配置 / 请求验证：直接观测 `set_openclaw_agents_defaults` 请求体，确认保存后的 `model.primary`、`model.fallbacks`、`workspace`、`timeoutSeconds`、`contextTokens`、`maxConcurrent` 均准确写入，同时保留未知字段 `customFlag`，避免页面保存把用户手工配置丢掉。
+- 兼容性验证：当既有默认模型为 `legacy/missing-model` 且后端仍使用旧字段 `timeout` 时，真实页面展示 legacy timeout 警告；保存后保留 unsupported model value 和 fallback，并把 `timeout` 迁移为 `timeoutSeconds`，同时清理旧字段，防止迁移时覆盖用户模型配置。
+- 本轮复核验证命令：`pnpm exec vitest run tests/integration/App.real-openclaw-tools.test.tsx tests/integration/App.real-openclaw-agents.test.tsx --fileParallelism=false --reporter=verbose`
+- 本轮复核验证结果：`2 files passed, 4 tests passed, 0 failed`
 
 ### App + ProviderList 熔断事件真实页面验收
 
