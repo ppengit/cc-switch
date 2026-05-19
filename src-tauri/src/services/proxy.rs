@@ -3219,6 +3219,33 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
+    async fn start_mock_codex_responses_error_server() -> (String, JoinHandle<()>) {
+        let app = Router::new().route(
+            "/v1/responses",
+            post(|| async move {
+                axum::response::Response::builder()
+                    .status(500)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"error":{"type":"server_error","message":"forced failure"}}"#,
+                    ))
+                    .expect("build mock error response")
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
     #[test]
     fn update_toml_base_url_updates_active_model_provider_base_url() {
         let input = r#"
@@ -5514,6 +5541,164 @@ requires_openai_auth = true
                 .collect::<Vec<_>>(),
             vec!["a".to_string(), "b".to_string()],
             "generic upstream failures must not silently rewrite the failover queue"
+        );
+
+        if service.is_running().await {
+            service.stop().await.expect("stop proxy service");
+        }
+        mock_a_handle.abort();
+        mock_b_handle.abort();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn real_http_codex_failover_all_upstreams_down_keeps_takeover_live_config() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let (mock_a_base_url, mock_a_handle) = start_mock_codex_responses_error_server().await;
+        let (mock_b_base_url, mock_b_handle) = start_mock_codex_responses_error_server().await;
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let proxy_port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: proxy_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "token-a"
+                },
+                "config": format!(
+                    "model_provider = \"codex-a\"\nmodel = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.codex-a]\nname = \"Codex A\"\nbase_url = \"{}/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n",
+                    mock_a_base_url
+                )
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "codex-b".to_string(),
+            "Codex B".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "token-b"
+                },
+                "config": format!(
+                    "model_provider = \"codex-b\"\nmodel = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.codex-b]\nname = \"Codex B\"\nbase_url = \"{}/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n",
+                    mock_b_base_url
+                )
+            }),
+            None,
+        );
+
+        db.save_provider("codex", &provider_a)
+            .expect("save provider a");
+        db.save_provider("codex", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("codex", "codex-a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("codex", "codex-b")
+            .expect("queue provider b");
+        db.set_current_provider("codex", "codex-a")
+            .expect("seed direct current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some("codex-a"))
+            .expect("seed local current provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        app_config.max_retries = 1;
+        app_config.circuit_failure_threshold = 1;
+        app_config.circuit_timeout_seconds = 3600;
+        app_config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable strict failover");
+
+        let service = ProxyService::new(db.clone());
+        let info = service.start().await.expect("start proxy service");
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider_a)
+            .await
+            .expect("seed takeover live");
+        service
+            .sync_failover_active_target("codex")
+            .await
+            .expect("sync initial failover target");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/v1/responses", info.port))
+            .json(&json!({
+                "model": "gpt-5.4",
+                "input": "hello",
+                "stream": false
+            }))
+            .send()
+            .await
+            .expect("send proxied Codex request through real HTTP server");
+
+        assert!(
+            !response.status().is_success(),
+            "all failing Codex upstream providers should surface an error response"
+        );
+
+        let stats_a = service
+            .get_circuit_breaker_stats("codex-a", "codex")
+            .await
+            .expect("read circuit breaker stats a")
+            .expect("breaker a should exist");
+        let stats_b = service
+            .get_circuit_breaker_stats("codex-b", "codex")
+            .await
+            .expect("read circuit breaker stats b")
+            .expect("breaker b should exist");
+        assert_eq!(
+            stats_a.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider a should be circuit-open after the failed real Codex request"
+        );
+        assert_eq!(
+            stats_b.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider b should be circuit-open after the failed real Codex request"
+        );
+
+        let live = service.read_codex_live().expect("read Codex live");
+        assert_eq!(
+            live.pointer("/auth/OPENAI_API_KEY").and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "all Codex upstreams failing must keep the takeover token placeholder"
+        );
+        let config_text = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("Codex config.toml should exist");
+        assert!(
+            config_text.contains(&format!("http://127.0.0.1:{proxy_port}/v1")),
+            "all Codex upstreams failing must keep config.toml on the local proxy base_url"
+        );
+        assert!(
+            !config_text.contains(&mock_a_base_url) && !config_text.contains(&mock_b_base_url),
+            "Codex takeover config.toml must not be overwritten with a provider direct baseUrl"
+        );
+        assert_eq!(
+            db.get_failover_queue("codex")
+                .expect("read failover queue")
+                .into_iter()
+                .map(|item| item.provider_id)
+                .collect::<Vec<_>>(),
+            vec!["codex-a".to_string(), "codex-b".to_string()],
+            "generic Codex upstream failures must not silently rewrite the failover queue"
         );
 
         if service.is_running().await {
