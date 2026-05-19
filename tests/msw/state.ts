@@ -1,6 +1,7 @@
 import type { AppId } from "@/lib/api/types";
 import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api/auth";
 import type { AppConfigTemplateFile } from "@/lib/api/config";
+import type { Prompt } from "@/lib/api/prompts";
 import type {
   DiscoverableSkill,
   ImportSkillSelection,
@@ -47,6 +48,19 @@ type ProviderDefaultTemplatesByApp = Record<AppId, string | null>;
 type AppConfigTemplatesByApp = Record<AppId, AppConfigTemplateFile[]>;
 type AutoFailoverEnabledByApp = Record<AppId, boolean>;
 type McpServersState = Record<string, McpServer>;
+type PromptState = Record<AppId, Record<string, Prompt>>;
+type CurrentPromptFileContentByApp = Record<AppId, string | null>;
+type PromptUpsertRequest = { app: AppId; id: string; prompt: Prompt };
+type PromptEnableRequest = { app: AppId; id: string };
+type PromptDeleteRequest = { app: AppId; id: string };
+type PromptRequestCounts = Record<
+  AppId,
+  {
+    getPrompts: number;
+    getCurrentFileContent: number;
+    importFromFile: number;
+  }
+>;
 type ManagedAuthStatusByProvider = Record<
   ManagedAuthProvider,
   ManagedAuthStatus
@@ -434,6 +448,65 @@ const createDefaultMcpServers = (): McpServersState => ({
   },
 });
 
+const createDefaultPrompts = (): PromptState => ({
+  claude: {
+    "claude-alpha": {
+      id: "claude-alpha",
+      name: "Claude Alpha Prompt",
+      description: "Claude enabled prompt",
+      content: "# Claude Alpha\n\nUse the alpha instructions.",
+      enabled: true,
+      createdAt: 1_700_030_000,
+      updatedAt: 1_700_030_100,
+    },
+    "claude-beta": {
+      id: "claude-beta",
+      name: "Claude Beta Prompt",
+      description: "Claude standby prompt",
+      content: "# Claude Beta\n\nUse the beta instructions.",
+      enabled: false,
+      createdAt: 1_700_031_000,
+      updatedAt: 1_700_031_100,
+    },
+  },
+  "claude-desktop": {},
+  codex: {
+    "codex-alpha": {
+      id: "codex-alpha",
+      name: "Codex Alpha Prompt",
+      description: "Codex enabled prompt",
+      content: "# Codex Alpha\n\nUse codex instructions.",
+      enabled: true,
+      createdAt: 1_700_032_000,
+      updatedAt: 1_700_032_100,
+    },
+  },
+  gemini: {},
+  opencode: {},
+  openclaw: {},
+  hermes: {},
+});
+
+const createDefaultCurrentPromptFileContent = (): CurrentPromptFileContentByApp => ({
+  claude: "# CLAUDE.md\n\nCurrent Claude live prompt",
+  "claude-desktop": null,
+  codex: "# AGENTS.md\n\nCurrent Codex live prompt",
+  gemini: null,
+  opencode: null,
+  openclaw: null,
+  hermes: null,
+});
+
+const createDefaultPromptRequestCounts = (): PromptRequestCounts => ({
+  claude: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  "claude-desktop": { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  codex: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  gemini: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  opencode: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  openclaw: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  hermes: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+});
+
 const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   deviceName: "Mock Device",
   createdAt: "2026-05-19T00:00:00Z",
@@ -473,6 +546,12 @@ let skillsShResultsState = createDefaultSkillsShResults();
 let lastZipInstallRequest: { filePath: string; currentApp: AppId } | null =
   null;
 let mcpServersState = createDefaultMcpServers();
+let promptsState = createDefaultPrompts();
+let currentPromptFileContentByApp = createDefaultCurrentPromptFileContent();
+let promptRequestCounts = createDefaultPromptRequestCounts();
+let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
+let lastPromptEnableRequest: PromptEnableRequest | null = null;
+let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
 let lastWebdavSaveRequest: {
   settings: WebDavSyncSettings;
   passwordTouched: boolean;
@@ -644,6 +723,12 @@ export const resetProviderState = () => {
   skillsShResultsState = createDefaultSkillsShResults();
   lastZipInstallRequest = null;
   mcpServersState = createDefaultMcpServers();
+  promptsState = createDefaultPrompts();
+  currentPromptFileContentByApp = createDefaultCurrentPromptFileContent();
+  promptRequestCounts = createDefaultPromptRequestCounts();
+  lastPromptUpsertRequest = null;
+  lastPromptEnableRequest = null;
+  lastPromptDeleteRequest = null;
   lastWebdavSaveRequest = null;
   webdavTestRequests = [];
   webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
@@ -981,6 +1066,129 @@ export const getLastZipInstallRequest = () =>
   lastZipInstallRequest
     ? ({ ...lastZipInstallRequest } as { filePath: string; currentApp: AppId })
     : null;
+
+export const getPromptsState = (app: AppId) => {
+  promptRequestCounts[app].getPrompts += 1;
+  return JSON.parse(JSON.stringify(promptsState[app] ?? {})) as Record<
+    string,
+    Prompt
+  >;
+};
+
+export const setPromptsState = (
+  app: AppId,
+  prompts: Record<string, Prompt>,
+) => {
+  promptsState[app] = JSON.parse(JSON.stringify(prompts)) as Record<
+    string,
+    Prompt
+  >;
+};
+
+export const getPromptsSnapshotState = (app: AppId) =>
+  JSON.parse(JSON.stringify(promptsState[app] ?? {})) as Record<
+    string,
+    Prompt
+  >;
+
+export const getPromptState = (app: AppId, id: string) =>
+  promptsState[app]?.[id]
+    ? (JSON.parse(JSON.stringify(promptsState[app][id])) as Prompt)
+    : null;
+
+export const getCurrentPromptFileContentState = (app: AppId) => {
+  promptRequestCounts[app].getCurrentFileContent += 1;
+  return currentPromptFileContentByApp[app] ?? null;
+};
+
+export const getCurrentPromptFileContentSnapshotState = (app: AppId) =>
+  currentPromptFileContentByApp[app] ?? null;
+
+export const setCurrentPromptFileContentState = (
+  app: AppId,
+  content: string | null,
+) => {
+  currentPromptFileContentByApp[app] = content;
+};
+
+export const upsertPromptState = (
+  app: AppId,
+  id: string,
+  prompt: Prompt,
+) => {
+  lastPromptUpsertRequest = {
+    app,
+    id,
+    prompt: JSON.parse(JSON.stringify(prompt)) as Prompt,
+  };
+  promptsState[app] = promptsState[app] ?? {};
+  promptsState[app][id] = JSON.parse(JSON.stringify(prompt)) as Prompt;
+  if (prompt.enabled) {
+    currentPromptFileContentByApp[app] = prompt.content;
+  } else if (!Object.values(promptsState[app]).some((item) => item.enabled)) {
+    currentPromptFileContentByApp[app] = "";
+  }
+};
+
+export const enablePromptState = (app: AppId, id: string) => {
+  lastPromptEnableRequest = { app, id };
+  const prompt = promptsState[app]?.[id];
+  if (!prompt) return false;
+
+  promptsState[app] = Object.fromEntries(
+    Object.entries(promptsState[app]).map(([promptId, value]) => [
+      promptId,
+      { ...value, enabled: promptId === id },
+    ]),
+  ) as Record<string, Prompt>;
+  currentPromptFileContentByApp[app] = prompt.content;
+  return true;
+};
+
+export const deletePromptState = (app: AppId, id: string) => {
+  lastPromptDeleteRequest = { app, id };
+  const prompt = promptsState[app]?.[id];
+  if (!prompt || prompt.enabled) return false;
+  delete promptsState[app][id];
+  return true;
+};
+
+export const importPromptFromFileState = (app: AppId) => {
+  promptRequestCounts[app].importFromFile += 1;
+  const id = `imported-${app}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  promptsState[app] = promptsState[app] ?? {};
+  promptsState[app][id] = {
+    id,
+    name: `Imported ${app} Prompt`,
+    description: "Imported from current file",
+    content: currentPromptFileContentByApp[app] ?? "",
+    enabled: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  return id;
+};
+
+export const getLastPromptUpsertRequest = () =>
+  lastPromptUpsertRequest
+    ? (JSON.parse(
+        JSON.stringify(lastPromptUpsertRequest),
+      ) as PromptUpsertRequest)
+    : null;
+
+export const getLastPromptEnableRequest = () =>
+  lastPromptEnableRequest
+    ? ({ ...lastPromptEnableRequest } as PromptEnableRequest)
+    : null;
+
+export const getLastPromptDeleteRequest = () =>
+  lastPromptDeleteRequest
+    ? ({ ...lastPromptDeleteRequest } as PromptDeleteRequest)
+    : null;
+
+export const getPromptRequestCounts = () =>
+  JSON.parse(JSON.stringify(promptRequestCounts)) as PromptRequestCounts;
 
 export const addSkillRepoState = (repo: SkillRepo) => {
   skillReposState = [

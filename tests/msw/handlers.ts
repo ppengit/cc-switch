@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
+import type { Prompt } from "@/lib/api/prompts";
 import type { McpServer, Provider, SessionMeta, Settings } from "@/types";
 import type { AppProxyConfig, GlobalProxyConfig } from "@/types/proxy";
 import {
@@ -9,11 +10,14 @@ import {
   deleteProvider,
   deleteMcpServerState,
   deleteSession,
+  deletePromptState,
   deleteSkillBackupState,
+  enablePromptState,
   getAppConfigTemplate,
   getAppProxyConfigState,
   getAutoFailoverEnabled,
   getAvailableProvidersForFailoverState,
+  getCurrentPromptFileContentState,
   getDiscoverableSkillsState,
   getFailoverQueueState,
   getGlobalProxyConfigState,
@@ -23,6 +27,7 @@ import {
   getCurrentProviderId,
   getLiveProviderIds,
   getMcpServersState,
+  getPromptsState,
   getProxyTakeoverStatusState,
   getProxyStatusState,
   getSkillBackupsState,
@@ -37,6 +42,7 @@ import {
   getProviders,
   getSwitchLiveSettings,
   importMcpFromAppsState,
+  importPromptFromFileState,
   importSkillsFromAppsState,
   installSkillFromDiscoveryState,
   installSkillsFromZipState,
@@ -83,6 +89,7 @@ import {
   updateProvider,
   updateSortOrder,
   addToFailoverQueueState,
+  upsertPromptState,
 } from "./state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -104,6 +111,50 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>
     success(null),
   ),
+  http.post(`${TAURI_ENDPOINT}/get_prompts`, async ({ request }) => {
+    const { app } = await withJson<{ app: AppId }>(request);
+    return success(getPromptsState(app));
+  }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/get_current_prompt_file_content`,
+    async ({ request }) => {
+      const { app } = await withJson<{ app: AppId }>(request);
+      return success(getCurrentPromptFileContentState(app));
+    },
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/upsert_prompt`, async ({ request }) => {
+    const { app, id, prompt } = await withJson<{
+      app: AppId;
+      id: string;
+      prompt: Prompt;
+    }>(request);
+    upsertPromptState(app, id, prompt);
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/enable_prompt`, async ({ request }) => {
+    const { app, id } = await withJson<{ app: AppId; id: string }>(request);
+    if (!enablePromptState(app, id)) {
+      return HttpResponse.json("Prompt not found", { status: 404 });
+    }
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/delete_prompt`, async ({ request }) => {
+    const { app, id } = await withJson<{ app: AppId; id: string }>(request);
+    if (!deletePromptState(app, id)) {
+      return HttpResponse.json("Prompt not found or enabled", { status: 400 });
+    }
+    return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/import_prompt_from_file`, async ({ request }) => {
+    const { app } = await withJson<{ app: AppId }>(request);
+    return success(importPromptFromFileState(app));
+  }),
+
   http.post(`${TAURI_ENDPOINT}/get_providers`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
     return success(getProviders(app));

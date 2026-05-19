@@ -35,7 +35,7 @@
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
 | 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
-| Prompts | `PromptPanel` | 打开、返回、新建入口 | 与顶层视图切换耦合 | 顶层入口已验收，面板内部交互待补 |
+| Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
 | Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离 | app 切换后工具栏按钮错位 | OpenClaw 专属入口已验收，内部配置写入待补 |
@@ -192,6 +192,19 @@
 - 组合验证命令：`pnpm vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-providers.test.tsx tests/components/GlobalProxySettings.test.tsx tests/hooks/useFailoverQueue.test.tsx tests/hooks/useProxyStatus.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`5 files passed, 16 tests passed, 0 failed`
 
+### App + PromptPanel 真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-prompts.test.tsx`
+- 覆盖范围：真实 `App`、真实顶栏 Prompts 入口、真实 `PromptPanel`、真实 `PromptListItem`、真实 `PromptFormPanel`、真实 `usePromptActions`；只 mock 与 Prompts 链路无关的重型页面和 CodeMirror 编辑器。
+- 覆盖交互：从真实工具栏进入 Prompts 面板；启用 `Claude Beta Prompt` 并验证同 app 内互斥启用；编辑 `Claude Alpha Prompt`；从顶栏新增提示词；删除新增提示词时验证取消不删除、确认后删除。
+- 隔离验证：从 Claude 返回供应商页后切换到 Codex，再进入 Prompts；验证 Codex 只展示 Codex 提示词，不展示 Claude 提示词；`prompt-imported` 事件只有 `detail.app` 匹配当前 app 时才触发刷新。
+- 配置 / 请求验证：MSW 新增 `get_prompts`、`get_current_prompt_file_content`、`upsert_prompt`、`enable_prompt`、`delete_prompt`、`import_prompt_from_file` 命令模拟；直接观测 `app`、`id`、`prompt` 请求参数，验证保存、启用、删除都落在当前 app，不会串写其它 app。
+- 红绿记录：首次运行真实页面用例时，因缺少 `get_prompts` handler 卡在 loading 并失败；补齐 Prompts MSW 状态和 Tauri command handler 后，同一真实页面链路通过。手动派发 `prompt-imported` 事件引发的 React `act(...)` 警告已用 `act` 包裹消除。
+- 验证命令：`pnpm vitest run tests/integration/App.real-prompts.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`1 file passed, 2 tests passed, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/integration/App.real-prompts.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/App.real-skills-mcp.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`3 files passed, 12 tests passed, 0 failed`
+
 ### 组合回归
 
 - 验证命令：`pnpm vitest run tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-skills-mcp.test.tsx tests/integration/App.real-sessions.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-navigation.test.tsx tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-webdav.test.tsx tests/components/ApiHubPanel.test.tsx tests/components/ProviderList.test.tsx tests/components/SessionManagerPage.test.tsx tests/components/SettingsDialog.test.tsx tests/integration/SettingsDialog.test.tsx tests/integration/App.test.tsx`
@@ -205,8 +218,8 @@
 - 本批次补充：`App.real-providers.test.tsx` 中 OpenCode / OpenClaw / Hermes additive live 配置隔离用例在完整串行回归中超过默认 5 秒阈值，补充显式 `15_000` 超时，与同文件其它真实页面长链路用例保持一致，避免验收套件因默认阈值产生假失败。
 - 最小复现验证：`pnpm vitest run tests/components/ApiHubPanel.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`2 files passed, 20 tests passed, 0 failed`
-- 完整前端串行验证：`pnpm vitest run --fileParallelism=false`
-- 当前结果：`62 files passed, 351 tests passed, 0 failed`
+- 完整前端串行验证：`pnpm vitest run --fileParallelism=false --reporter=json --outputFile=.tmp-vitest-prompts-full.json --silent`
+- 当前结果：`136 files passed, 353 tests passed, 0 failed`
 - 当前剩余测试噪音：`baseline-browser-mapping` 数据过旧提示、Node `punycode` deprecation、CodeMirror 在 jsdom 下输出 `textRange(...).getClientRects is not a function`，以及 `App.test.tsx` 中故意模拟 live provider ids 加载失败时输出的错误日志。
 
 ### 后端 provider_service 回归
