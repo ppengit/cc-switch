@@ -3,10 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { settingsApi } from "@/lib/api";
 import type { Provider } from "@/types";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import {
+  getAppProxyConfigState,
   getAutoFailoverEnabled,
   getFailoverQueueState,
   getLastSettingsSaveRequest,
@@ -14,10 +16,12 @@ import {
   getProviders,
   getSwitchLiveSettings,
   resetProviderState,
+  setAppProxyConfigState,
   setCurrentProviderId,
   setProviders,
   setSettings,
   setSwitchLiveSettings,
+  startProxyServerState,
 } from "../msw/state";
 
 vi.mock("sonner", () => ({
@@ -200,6 +204,34 @@ const clickSwitchNear = async (
   }
   if (!switchButton) throw new Error(`Switch not found near: ${label}`);
   await user.click(switchButton);
+};
+
+const expectClaudeLiveOnProxy = () => {
+  expect(getSwitchLiveSettings("claude")).toMatchObject({
+    env: {
+      ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+    },
+  });
+};
+
+const typeNumberInput = async (
+  user: ReturnType<typeof userEvent.setup>,
+  id: string,
+  value: string,
+) => {
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
+  if (!input) throw new Error(`Number input not found: ${id}`);
+  await user.clear(input);
+  await user.type(input, value);
+};
+
+const clickAutoFailoverSave = async (
+  user: ReturnType<typeof userEvent.setup>,
+) => {
+  await user.click(
+    screen.getByRole("button", { name: /^(common\.save|保存)$/ }),
+  );
 };
 
 describe("SettingsPage with real Proxy and Failover panels", () => {
@@ -469,5 +501,102 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
         },
       }),
     );
+  }, 20_000);
+
+  it("saves Claude auto failover timing and circuit breaker settings without drifting live config", async () => {
+    const user = userEvent.setup();
+
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    setAppProxyConfigState({
+      ...getAppProxyConfigState("claude"),
+      enabled: true,
+      autoFailoverEnabled: true,
+    });
+    startProxyServerState();
+
+    await openProxySection(user);
+    await waitFor(() =>
+      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
+    );
+
+    await openFailoverSection(user);
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    await typeNumberInput(user, "maxRetries-claude", "4");
+    await typeNumberInput(user, "streamingFirstByte-claude", "45");
+    await typeNumberInput(user, "streamingIdle-claude", "90");
+    await typeNumberInput(user, "nonStreaming-claude", "180");
+    await typeNumberInput(user, "failureThreshold-claude", "7");
+    await typeNumberInput(user, "successThreshold-claude", "3");
+    await typeNumberInput(user, "timeoutSeconds-claude", "75");
+    await typeNumberInput(user, "errorRateThreshold-claude", "35");
+    await typeNumberInput(user, "minRequests-claude", "12");
+
+    await clickAutoFailoverSave(user);
+
+    await waitFor(() =>
+      expect(getAppProxyConfigState("claude")).toMatchObject({
+        appType: "claude",
+        enabled: true,
+        autoFailoverEnabled: true,
+        maxRetries: 4,
+        streamingFirstByteTimeout: 45,
+        streamingIdleTimeout: 90,
+        nonStreamingTimeout: 180,
+        circuitFailureThreshold: 7,
+        circuitSuccessThreshold: 3,
+        circuitTimeoutSeconds: 75,
+        circuitErrorRateThreshold: 0.35,
+        circuitMinRequests: 12,
+      }),
+    );
+    expectClaudeLiveOnProxy();
+  }, 20_000);
+
+  it("blocks invalid Claude auto failover config saves and preserves live config", async () => {
+    const user = userEvent.setup();
+
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    setAppProxyConfigState({
+      ...getAppProxyConfigState("claude"),
+      enabled: true,
+      autoFailoverEnabled: true,
+      maxRetries: 3,
+      streamingFirstByteTimeout: 30,
+      streamingIdleTimeout: 60,
+      nonStreamingTimeout: 120,
+      circuitFailureThreshold: 3,
+      circuitSuccessThreshold: 2,
+      circuitTimeoutSeconds: 60,
+      circuitErrorRateThreshold: 0.5,
+      circuitMinRequests: 5,
+    });
+    startProxyServerState();
+    const previousConfig = getAppProxyConfigState("claude");
+
+    await openProxySection(user);
+    await waitFor(() =>
+      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
+    );
+
+    await openFailoverSection(user);
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    await typeNumberInput(user, "maxRetries-claude", "11");
+    await clickAutoFailoverSave(user);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(getAppProxyConfigState("claude")).toEqual(previousConfig);
+    expectClaudeLiveOnProxy();
   }, 20_000);
 });

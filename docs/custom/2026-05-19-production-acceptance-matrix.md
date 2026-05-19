@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收；仍需继续扩展故障转移 UI 面板验收 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补故障转移 UI 面板的队列操作、配置保存、非法输入拦截和 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -214,13 +214,20 @@
 - 覆盖范围：真实 `SettingsPage`、真实 `ProxyTabContent`、真实 `ProxyPanel`、真实 `FailoverQueueManager`、真实 `AutoFailoverConfigPanel`；只 mock 与代理 / 故障转移链路无关的重型设置区块。
 - 覆盖交互：默认打开 `proxy` 页签，展开本地代理配置，开启本地代理功能，确认并启动代理服务，接管 Claude，展开故障转移配置，确认总开关，切到 Claude 队列，开启自动故障转移，添加 `Claude Beta` 到队列，再从队列删除 `Claude Beta`。
 - 配置验证：接管后立即断言 Claude live settings 保持代理模板；开启故障转移、自动故障转移、添加 / 删除队列供应商后再次断言 `ANTHROPIC_BASE_URL` 仍为 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 仍为 `PROXY_MANAGED`，不会漂移成任一供应商 base URL。
+- 本轮新增覆盖：从真实 Claude 故障转移配置面板编辑 `maxRetries`、流式首字节超时、流式静默超时、非流式超时、失败阈值、恢复成功阈值、恢复等待时间、错误率阈值和最小请求数，点击真实保存按钮后直接断言 `update_proxy_config_for_app` 写入 MSW 状态；其中错误率阈值按页面百分比输入 `35`，保存为后端小数 `0.35`。
+- 校验覆盖：将 `maxRetries` 输入为越界值 `11` 后点击保存，断言真实页面触发 `toast.error`，`getAppProxyConfigState("claude")` 保持保存前状态，Claude live settings 仍保持代理模板，不会因校验失败漂移到供应商 base URL。
 - 测试夹具：MSW 补齐 `get_global_proxy_config` / `update_global_proxy_config`，新增全局代理配置状态；测试环境补齐 `scrollTo`、Pointer Capture、`scrollIntoView` 等 jsdom 缺失的浏览器 API，保证 Radix Select 真实下拉交互可执行。
 - 产品修复：`FailoverQueueManager` 为自动故障转移开关、供应商下拉框、添加队列按钮补充明确可访问名称，真实用户操作和页面级验收都能稳定定位这些控件。
 - 红绿记录：首次运行暴露 `get_global_proxy_config` 未模拟、内部 `tablist` 查询歧义、自动故障转移开关无可访问名称、Radix Select 在 jsdom 下缺少浏览器 API、队列删除按钮定位歧义；逐项补齐后同一真实页面用例通过。
-- 最小验证命令：`pnpm vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
-- 最小验证结果：`1 file passed, 1 test passed, 0 failed`
-- 组合验证命令：`pnpm vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-providers.test.tsx tests/components/GlobalProxySettings.test.tsx tests/hooks/useFailoverQueue.test.tsx tests/hooks/useProxyStatus.test.tsx --fileParallelism=false --reporter=verbose`
-- 组合验证结果：`5 files passed, 16 tests passed, 0 failed`
+- 本轮红灯自检：临时把错误率阈值断言从 `0.35` 改为错误的 `35`，同一用例按预期失败，失败信息明确显示实际值为 `0.35`；恢复正确断言后同一用例通过。
+- 新增保存用例验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx -t "saves Claude auto failover timing" --reporter=verbose`
+- 新增保存用例验证结果：`1 file passed, 1 test passed, 3 skipped, 0 failed`
+- 新增校验用例验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx -t "blocks invalid Claude auto failover" --reporter=verbose`
+- 新增校验用例验证结果：`1 file passed, 1 test passed, 3 skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 4 tests passed, 0 failed`
+- 组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`3 files passed, 19 tests passed, 0 failed`
 
 ### App + PromptPanel 真实页面验收
 
