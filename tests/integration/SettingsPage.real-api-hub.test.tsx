@@ -5,8 +5,22 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+import type { Provider } from "@/types";
 import { server } from "../msw/server";
 import { emitTauriEvent } from "../msw/tauriMocks";
+import {
+  getProviders,
+  getSwitchLiveSettings,
+  resetProviderState,
+  setAutoFailoverEnabledState,
+  setCurrentProviderId,
+  setProviders,
+  setProxyTakeoverForAppState,
+  setSettings,
+  setSwitchLiveSettings,
+  startProxyServerState,
+  syncCurrentProvidersLiveState,
+} from "../msw/state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
 
@@ -33,8 +47,61 @@ type ApiHubImportRequest = {
       model: string;
       app: string;
     }>;
+    settings_configs?: Record<string, Record<string, unknown>>;
   };
   [key: string]: unknown;
+};
+
+const claudeProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_000_000 + sortIndex,
+  settingsConfig: {
+    env: {
+      ANTHROPIC_BASE_URL: `https://${id}.example.com`,
+      ANTHROPIC_AUTH_TOKEN: `${id}-token`,
+      ANTHROPIC_MODEL: `${id}-model`,
+    },
+  },
+});
+
+const seedClaudeTakeoverFailover = () => {
+  setProviders("claude", {
+    "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
+    "claude-beta": claudeProvider("claude-beta", "Claude Beta", 1),
+  });
+  setCurrentProviderId("claude", "claude-alpha");
+  setSettings({
+    enableLocalProxy: true,
+    proxyConfirmed: true,
+    enableFailoverToggle: true,
+    failoverConfirmed: true,
+  });
+  startProxyServerState();
+  setProxyTakeoverForAppState("claude", true);
+  setAutoFailoverEnabledState("claude", true);
+};
+
+const expectClaudeLiveOnProxy = () => {
+  const live = getSwitchLiveSettings("claude") as {
+    env?: Record<string, string>;
+  };
+  expect(live.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15721");
+  expect(live.env?.ANTHROPIC_AUTH_TOKEN).toBe("PROXY_MANAGED");
+  expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+    "https://claude-alpha.example.com",
+  );
+  expect(live.env?.ANTHROPIC_BASE_URL).not.toBe(
+    "https://claude-beta.example.com",
+  );
+  expect(live.env?.ANTHROPIC_BASE_URL).not.toBe("https://hub.example.com");
 };
 
 vi.mock("sonner", () => ({
@@ -135,6 +202,7 @@ const renderSettingsPage = (
 
 describe("SettingsPage with real Api-Hub panel", () => {
   beforeEach(() => {
+    resetProviderState();
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     window.localStorage.clear();
@@ -435,4 +503,157 @@ describe("SettingsPage with real Api-Hub panel", () => {
       { group: "default", model: "claude-4", app: "codex" },
     ]);
   });
+
+  it("keeps Claude takeover live config on the proxy endpoint while syncing, aligning, and importing Api-Hub providers", async () => {
+    const user = userEvent.setup();
+    const syncCalls: Array<Record<string, unknown>> = [];
+    const alignCalls: Array<Record<string, unknown>> = [];
+    const importCalls: ApiHubImportRequest[] = [];
+
+    seedClaudeTakeoverFailover();
+    setSwitchLiveSettings(
+      "claude",
+      getProviders("claude")["claude-beta"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("claude") as { env?: Record<string, string> }).env
+        ?.ANTHROPIC_BASE_URL,
+    ).toBe("https://claude-beta.example.com");
+
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: "demo",
+              imported_apps: [],
+              last_synced_at: 1715750061,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 1,
+              model_count: 1,
+              token_count: 1,
+              aligned_group_count: 1,
+              is_aligned: true,
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/api_hub_get_site_detail`, () =>
+        HttpResponse.json({
+          site: {
+            id: "site-1",
+            site_name: "Demo Hub",
+            site_url: "https://hub.example.com",
+            site_type: "new-api",
+            exchange_rate: 1,
+            username: "demo",
+            imported_apps: [],
+            last_synced_at: 1715750061,
+            last_sync_error: null,
+            sort_index: 0,
+            group_count: 1,
+            model_count: 1,
+            token_count: 1,
+            aligned_group_count: 1,
+            is_aligned: true,
+          },
+          groups: [{ name: "default", ratio: 1, description: null }],
+          models: [{ name: "claude-4", enable_groups: ["default"] }],
+          tokens: [
+            {
+              id: 10,
+              name: "default",
+              group_name: "default",
+              key: "sk-hidden",
+              status: 1,
+              remain_quota: null,
+              expired_at: -1,
+            },
+          ],
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/api_hub_sync_sites`, async ({ request }) => {
+        syncCalls.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(syncCurrentProvidersLiveState());
+      }),
+      http.post(`${TAURI_ENDPOINT}/api_hub_align_sites`, async ({ request }) => {
+        alignCalls.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(syncCurrentProvidersLiveState());
+      }),
+      http.post(`${TAURI_ENDPOINT}/api_hub_import_to_apps`, async ({ request }) => {
+        importCalls.push((await request.json()) as ApiHubImportRequest);
+        syncCurrentProvidersLiveState();
+        return HttpResponse.json({
+          created: 1,
+          updated: 0,
+          failed: [],
+          auto_aligned_groups: [],
+        });
+      }),
+    );
+
+    renderSettingsPage({ defaultTab: "apiHub" });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("选择 Demo Hub"));
+    await user.click(screen.getByRole("button", { name: "同步选中" }));
+    await waitFor(() =>
+      expect(syncCalls).toEqual([{ siteIds: ["site-1"] }]),
+    );
+    expectClaudeLiveOnProxy();
+
+    await user.click(screen.getByRole("button", { name: "对齐选中" }));
+    await waitFor(() =>
+      expect(alignCalls).toEqual([
+        {
+          siteIds: ["site-1"],
+          options: { rename_existing: true, delete_extra: true },
+        },
+      ]),
+    );
+    expectClaudeLiveOnProxy();
+
+    await user.click(screen.getByRole("button", { name: "导入应用" }));
+    await waitFor(() =>
+      expect(screen.getByText("导入到应用 - Demo Hub")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByLabelText("导入到 Claude"));
+    await user.click(screen.getByLabelText("default / claude-4"));
+    await user.click(screen.getByRole("button", { name: "确认导入" }));
+
+    await waitFor(() => expect(importCalls).toHaveLength(1));
+    expect(importCalls[0].req).toMatchObject({
+      site_id: "site-1",
+      target_apps: ["claude"],
+      auto_align_if_missing: true,
+      mark_as_imported: true,
+    });
+    expect(importCalls[0].req.selections).toEqual([
+      { group: "default", model: "claude-4", app: "claude" },
+    ]);
+    expect(importCalls[0].req.settings_configs).toMatchObject({
+      "claude::default::claude-4": {
+        env: {
+          ANTHROPIC_BASE_URL: "https://hub.example.com",
+          ANTHROPIC_AUTH_TOKEN: "__API_HUB_API_KEY__",
+          ANTHROPIC_MODEL: "claude-4",
+        },
+      },
+    });
+    expectClaudeLiveOnProxy();
+  }, 20_000);
 });

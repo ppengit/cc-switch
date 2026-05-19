@@ -32,7 +32,7 @@
 | --- | --- | --- | --- | --- |
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
-| Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量操作、导入弹窗 | 会话态污染、请求参数错误、状态错位 | 组件测试已覆盖业务交互，真实页签验收已覆盖挂载 / 隐藏 / 状态保持 |
+| Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
 | 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
@@ -81,6 +81,21 @@
 - 修复内容：`SettingsPage` 的 `apiHub` 内容区补充显式 `hidden` / `aria-hidden`，默认页签初始化收口为“仅打开时初始化”，避免 `forceMount` 内容串到其它页签。
 - 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-tabs.test.tsx`
 - 当前结果：`2 passed, 0 failed`
+
+### SettingsPage + Api-Hub 真实页面验收
+
+- 更新验收文件：`tests/integration/SettingsPage.real-api-hub.test.tsx`
+- 覆盖范围：真实 `SettingsPage`、真实 `Tabs`、真实 `ApiHubPanel`、真实导入弹窗、真实批量同步 / 对齐按钮、真实清理 / 删除确认弹窗；只 mock 与 Api-Hub 链路无关的其它设置页区块。
+- 覆盖交互：从 `apiHub` 页签加载站点列表，切换站点类型筛选，输入搜索词；执行清理站点和删除记录，并验证确认前不发请求、确认后请求参数准确；选中站点后执行批量同步、批量对齐，派发 `api_hub_sync_progress` / `api_hub_align_progress` 事件验证按钮状态；打开导入应用弹窗，选择目标 app、模型和无默认模型导入选项，确认后验证 `api_hub_import_to_apps` 请求。
+- 配置漂移验证：在 Claude 本地代理、接管和自动故障转移均开启时，先把 Claude live settings 人为置为 `https://claude-beta.example.com`；随后通过真实 Api-Hub 页面执行同步、对齐、导入 Claude 应用，并让模拟后端触发一次当前供应商 live 同步；每一步后断言 `ANTHROPIC_BASE_URL` 恢复并保持 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 保持 `PROXY_MANAGED`，不会漂移成 Claude 供应商或 Api-Hub 站点 base URL。
+- 请求验证：导入 Claude 时断言 `target_apps` 为 `["claude"]`，`selections` 为 `default / claude-4`，并验证前端生成的 `settings_configs["claude::default::claude-4"]` 包含 Api-Hub 供应商 direct base URL 和 `__API_HUB_API_KEY__` 占位符，但该 direct 配置不会写入当前 Claude live takeover 文件。
+- 红绿记录：临时让 `api_hub_sync_sites` handler 不调用 `syncCurrentProvidersLiveState()` 后，同一用例按预期失败，收到 `https://claude-beta.example.com`；恢复同步修复后同一用例通过，证明该用例能捕获 Api-Hub 操作后的 live 漂移。
+- 新增用例验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx -t "keeps Claude takeover live config" --reporter=verbose`
+- 新增用例验证结果：`1 test passed, 2 tests skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 3 tests passed, 0 failed`
+- 组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx tests/integration/App.real-settings-api-hub-tabs.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`4 files passed, 7 tests passed, 0 failed`
 
 ### App 顶层真实导航验收
 
