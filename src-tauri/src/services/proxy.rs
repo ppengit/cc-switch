@@ -3246,6 +3246,33 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
+    async fn start_mock_gemini_error_server() -> (String, JoinHandle<()>) {
+        let app = Router::new().route(
+            "/v1beta/*path",
+            post(|| async move {
+                axum::response::Response::builder()
+                    .status(500)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"error":{"code":500,"status":"INTERNAL","message":"forced failure"}}"#,
+                    ))
+                    .expect("build mock Gemini error response")
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock Gemini upstream");
+        let addr = listener.local_addr().expect("mock Gemini local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock Gemini upstream server");
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
     #[test]
     fn update_toml_base_url_updates_active_model_provider_base_url() {
         let input = r#"
@@ -5699,6 +5726,170 @@ requires_openai_auth = true
                 .collect::<Vec<_>>(),
             vec!["codex-a".to_string(), "codex-b".to_string()],
             "generic Codex upstream failures must not silently rewrite the failover queue"
+        );
+
+        if service.is_running().await {
+            service.stop().await.expect("stop proxy service");
+        }
+        mock_a_handle.abort();
+        mock_b_handle.abort();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn real_http_gemini_failover_all_upstreams_down_keeps_takeover_live_config() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let (mock_a_base_url, mock_a_handle) = start_mock_gemini_error_server().await;
+        let (mock_b_base_url, mock_b_handle) = start_mock_gemini_error_server().await;
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let proxy_port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: proxy_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider_a = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token-a",
+                    "GOOGLE_GEMINI_BASE_URL": mock_a_base_url,
+                    "GEMINI_MODEL": "gemini-3-pro"
+                }
+            }),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "gemini-b".to_string(),
+            "Gemini B".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token-b",
+                    "GOOGLE_GEMINI_BASE_URL": mock_b_base_url,
+                    "GEMINI_MODEL": "gemini-3-pro"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("gemini", &provider_a)
+            .expect("save provider a");
+        db.save_provider("gemini", &provider_b)
+            .expect("save provider b");
+        db.add_to_failover_queue("gemini", "gemini-a")
+            .expect("queue provider a");
+        db.add_to_failover_queue("gemini", "gemini-b")
+            .expect("queue provider b");
+        db.set_current_provider("gemini", "gemini-a")
+            .expect("seed direct current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some("gemini-a"))
+            .expect("seed local current provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .expect("get Gemini proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        app_config.max_retries = 1;
+        app_config.circuit_failure_threshold = 1;
+        app_config.circuit_timeout_seconds = 3600;
+        app_config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable strict failover");
+
+        let service = ProxyService::new(db.clone());
+        let info = service.start().await.expect("start proxy service");
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Gemini, &provider_a)
+            .await
+            .expect("seed takeover live");
+        service
+            .sync_failover_active_target("gemini")
+            .await
+            .expect("sync initial failover target");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/v1beta/models/gemini-3-pro:generateContent?key=proxy-test",
+                info.port
+            ))
+            .json(&json!({
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "hello"
+                            }
+                        ]
+                    }
+                ]
+            }))
+            .send()
+            .await
+            .expect("send proxied Gemini request through real HTTP server");
+
+        assert!(
+            !response.status().is_success(),
+            "all failing Gemini upstream providers should surface an error response"
+        );
+
+        let stats_a = service
+            .get_circuit_breaker_stats("gemini-a", "gemini")
+            .await
+            .expect("read circuit breaker stats a")
+            .expect("breaker a should exist");
+        let stats_b = service
+            .get_circuit_breaker_stats("gemini-b", "gemini")
+            .await
+            .expect("read circuit breaker stats b")
+            .expect("breaker b should exist");
+        assert_eq!(
+            stats_a.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider a should be circuit-open after the failed real Gemini request"
+        );
+        assert_eq!(
+            stats_b.state,
+            crate::proxy::circuit_breaker::CircuitState::Open,
+            "provider b should be circuit-open after the failed real Gemini request"
+        );
+
+        let live = service.read_gemini_live().expect("read Gemini live");
+        assert_eq!(
+            live.pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{proxy_port}").as_str()),
+            "all Gemini upstreams failing must keep live on the local proxy endpoint"
+        );
+        assert_eq!(
+            live.pointer("/env/GEMINI_API_KEY").and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "all Gemini upstreams failing must keep the takeover token placeholder"
+        );
+
+        let live_text = serde_json::to_string(&live).expect("serialize live config");
+        assert!(
+            !live_text.contains(&mock_a_base_url) && !live_text.contains(&mock_b_base_url),
+            "Gemini takeover live config must not be overwritten with a provider direct baseUrl"
+        );
+        assert_eq!(
+            db.get_failover_queue("gemini")
+                .expect("read failover queue")
+                .into_iter()
+                .map(|item| item.provider_id)
+                .collect::<Vec<_>>(),
+            vec!["gemini-a".to_string(), "gemini-b".to_string()],
+            "generic Gemini upstream failures must not silently rewrite the failover queue"
         );
 
         if service.is_running().await {
