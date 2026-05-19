@@ -33,7 +33,7 @@
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口 | 配置覆盖、排序错乱、模板误写入 | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收；仍需继续扩展更多 app 类型真实表单链路和故障转移 UI 面板验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -42,7 +42,7 @@
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
-| 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` | 活动条显示、请求模型和上游模型显示、详情跳转 | 活动计数错乱、模型展示错配 | 已有部分测试，待继续扩展 |
+| 代理状态 | 顶栏活动条 / `UsageDashboard` / `RawProxyLogPanel` / `ProviderList` | 活动条显示、请求模型和上游模型显示、详情跳转、供应商行活动状态 | 活动计数错乱、模型展示错配、活动请求状态跨 app 串页 | 已补真实 ProviderList 代理活动事件页面级验收；已有 Usage / Raw Proxy Log / 请求详情相关验收，仍需继续扩展顶栏活动条细节 |
 
 ## 已识别的测试失真来源
 
@@ -118,13 +118,13 @@
 
 - 新增验收文件：`tests/integration/App.real-providers.test.tsx`
 - 覆盖范围：真实 `App`、真实 `AppSwitcher`、真实 `ProviderList` 和真实 provider hooks；只 mock 与本链路无关的重型子页面和弹窗外壳。
-- 覆盖交互：Claude / Codex 跨应用切换后供应商列表不串页；当前供应商状态按 app 隔离；搜索只定位不过滤且切换 app 后重置；切换当前供应商只影响当前 app；编辑 / 用量配置弹窗收到当前 app 的 provider；复制供应商只新增到当前 app。
+- 覆盖交互：Claude / Codex 跨应用切换后供应商列表不串页；当前供应商状态按 app 隔离；搜索只定位不过滤且切换 app 后重置；切换当前供应商只影响当前 app；编辑 / 用量配置弹窗收到当前 app 的 provider；复制供应商只新增到当前 app；`proxy-activity-updated` 事件只让当前 app 对应 provider 行显示「请求中」。
 - 覆盖 live 配置：OpenCode / OpenClaw / Hermes 三类 additive 应用分别使用不同 live provider ids，真实切换页面后验证“使用中 / 禁用”状态只来自当前 app 的 live 配置，不会把其它 app 的 live 状态带入当前页。
 - 新增覆盖：OpenCode additive provider 批量“写入配置 / 移出配置”只变更当前 app 的 live ids，不删除 provider，不影响 OpenClaw / Hermes；单项移出 live 配置必须先弹确认，取消不改状态，确认后仅移出 live ids；删除 provider 必须先弹确认，取消不改状态，确认后删除 provider 并清理 additive live ids；Codex provider 配置模板从真实 App 页面批量套用时只更新模板字段，保留每个供应商已有 API key / base URL，不影响 Claude。
 - 修复内容：`ProviderList` 接入 `onRemoveFromConfig`，表格版 additive provider 单项移出恢复走 App 级确认链路；MSW `deleteProvider` 与生产语义对齐，删除 provider 时同步清理 additive live ids。
 - 测试夹具：补齐 `list_recent_sessions`、OMO 当前供应商、Claude Desktop 状态、OpenClaw model catalog / default model、Hermes model config、当前配置文件读写、流式检查、`remove_provider_from_live_config`、`open_provider_terminal` 等 MSW 默认响应，保证真实 `ProviderList` 页面运行时不会被无关未处理请求干扰。
 - 验证命令：`pnpm vitest run tests/integration/App.real-providers.test.tsx`
-- 当前结果：`8 passed, 0 failed`
+- 当前结果：`13 passed, 0 failed`
 
 ### App + ProviderList 代理接管 / 故障转移 live 漂移验收
 
@@ -274,6 +274,21 @@
 - 全文件验证结果：`1 file passed, 12 tests passed, 0 failed`
 - 代理 / 故障转移组合验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
 - 代理 / 故障转移组合验证结果：`3 files passed, 15 tests passed, 0 failed`
+
+### App + ProviderList 代理活动事件真实页面验收
+
+- 新增验收用例：`tests/integration/App.real-providers.test.tsx` 中 `shows live request activity only for the active app provider from proxy events`
+- 覆盖范围：真实 `App`、真实 `useProxyActivityBridge()`、真实 React Query `proxyStatus` 缓存、真实 `AppSwitcher`、真实 `ProviderList` 行状态和 tooltip / title 文案；MSW / Tauri mock 只负责派发 `proxy-activity-updated` 事件。
+- 覆盖交互：先在 Claude 页派发 `Claude Alpha` 活动请求事件，断言只有 `Claude Alpha` 行显示「请求中」，`Claude Beta` 不显示；切到 Codex 后断言 Claude 活动不会出现在 Codex provider 行；再派发 `Codex Beta` 双请求事件，断言只有 `Codex Beta` 行显示「请求中 2」。
+- 模型展示验证：Claude 和 Codex 两次事件都同时携带 `request_model` 与 `upstream_model`，验收直接读取状态 `title`，确认展示「实际上游模型：...」和「请求模型：...」，避免活动请求只显示数量但丢失模型上下文。
+- 跨 app 隔离验证：切回 Claude 后，等待真实 ProviderList 行刷新到 Claude provider，确认 `Codex Beta` 行不存在，且 `Claude Alpha` 的「请求中」状态仍来自 Claude 活动目标，不会被 Codex 活动覆盖。
+- 红绿记录：临时把 Codex 活动目标 `provider_id` 改为不存在的 `codex-missing` 后，同一用例按预期失败，在 `Codex Beta` 行找不到「请求中 2」；恢复 `provider_id: "codex-beta"` 后同一用例通过，证明该验收能捕获 provider 映射错误。
+- 单用例验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx -t "shows live request activity only" --reporter=verbose`
+- 单用例验证结果：红灯 `1 failed`；恢复后 `1 passed, 12 skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 13 tests passed, 0 failed`
+- 代理活动组合验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx tests/integration/SettingsPage.real-usage.test.tsx tests/integration/App.real-request-detail-panel.test.tsx tests/hooks/useProxyActivityBridge.test.tsx --fileParallelism=false --reporter=verbose`
+- 代理活动组合验证结果：`4 files passed, 20 tests passed, 0 failed`
 
 ### 组合回归
 

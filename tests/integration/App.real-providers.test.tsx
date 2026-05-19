@@ -1,6 +1,6 @@
 import { Suspense, forwardRef, type ComponentType } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
@@ -327,8 +327,19 @@ const findProviderRow = (providerName: string): HTMLElement => {
   return row;
 };
 
+const queryProviderRow = (providerName: string): HTMLElement | null =>
+  screen
+    .getAllByRole("row")
+    .find((item) => within(item).queryByText(providerName)) ?? null;
+
 const expectProviderVisible = async (providerName: string) => {
   await waitFor(() => expect(screen.getByText(providerName)).toBeInTheDocument());
+};
+
+const expectProviderRowVisible = async (providerName: string) => {
+  await waitFor(() =>
+    expect(queryProviderRow(providerName)).toBeInTheDocument(),
+  );
 };
 
 const expectAdditiveState = (
@@ -376,7 +387,7 @@ describe("App with real ProviderList", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    await expectProviderVisible("Claude Alpha");
+    await expectProviderRowVisible("Claude Alpha");
     expect(screen.getByText("Claude Beta")).toBeInTheDocument();
     expect(screen.queryByText("Codex Alpha")).not.toBeInTheDocument();
     expect(within(findProviderRow("Claude Beta")).getByTitle("使用中")).toBeDisabled();
@@ -406,6 +417,145 @@ describe("App with real ProviderList", () => {
     expect(getCurrentProviderId("codex")).toBe("codex-beta");
     expect(within(findProviderRow("Claude Beta")).getByTitle("使用中")).toBeDisabled();
     expect(screen.queryByText("Codex Beta")).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("shows live request activity only for the active app provider from proxy events", async () => {
+    const user = userEvent.setup();
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await expectProviderVisible("Claude Alpha");
+
+    await act(async () => {
+      emitTauriEvent("proxy-activity-updated", {
+        request_id: "req-claude-activity",
+        event: "routed",
+        app_type: "claude",
+        provider_name: "Claude Alpha",
+        provider_id: "claude-alpha",
+        request_model: "claude-request-model",
+        upstream_model: "claude-upstream-model",
+        route_mode: "failover",
+        upstream_url: "https://claude-alpha.example.com/v1/messages",
+        status_code: null,
+        error: null,
+        active_request_count: 1,
+        active_request_targets: [
+          {
+            app_type: "claude",
+            provider_name: "Claude Alpha",
+            provider_id: "claude-alpha",
+            inflight_requests: 1,
+            request_model: "claude-request-model",
+            upstream_model: "claude-upstream-model",
+            route_mode: "failover",
+            upstream_url: "https://claude-alpha.example.com/v1/messages",
+            last_request_model: "claude-upstream-model",
+            last_request_at: "2026-05-20T06:00:00Z",
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      const row = findProviderRow("Claude Alpha");
+      expect(within(row).getByText("请求中")).toBeInTheDocument();
+      const statusDetail = within(row).getByTitle(
+        /实际上游模型：claude-upstream-model/,
+      );
+      expect(statusDetail).toHaveAttribute(
+        "title",
+        expect.stringContaining("请求模型：claude-request-model"),
+      );
+    });
+    expect(
+      within(findProviderRow("Claude Beta")).queryByText("请求中"),
+    ).toBeNull();
+
+    await clickAppSwitcherButton(user, "Codex");
+    await waitFor(() => {
+      expect(queryProviderRow("Codex Alpha")).toBeInTheDocument();
+      expect(queryProviderRow("Claude Alpha")).toBeNull();
+    });
+    expect(
+      within(findProviderRow("Codex Alpha")).queryByText("请求中"),
+    ).toBeNull();
+    expect(
+      within(findProviderRow("Codex Beta")).queryByText("请求中"),
+    ).toBeNull();
+
+    await act(async () => {
+      emitTauriEvent("proxy-activity-updated", {
+        request_id: "req-codex-activity",
+        event: "routed",
+        app_type: "codex",
+        provider_name: "Codex Beta",
+        provider_id: "codex-beta",
+        request_model: "codex-request-model",
+        upstream_model: "codex-upstream-model",
+        route_mode: "failover",
+        upstream_url: "https://codex-beta.example.com/v1/responses",
+        status_code: null,
+        error: null,
+        active_request_count: 2,
+        active_request_targets: [
+          {
+            app_type: "claude",
+            provider_name: "Claude Alpha",
+            provider_id: "claude-alpha",
+            inflight_requests: 1,
+            request_model: "claude-request-model",
+            upstream_model: "claude-upstream-model",
+            route_mode: "failover",
+            upstream_url: "https://claude-alpha.example.com/v1/messages",
+            last_request_model: "claude-upstream-model",
+            last_request_at: "2026-05-20T06:00:00Z",
+          },
+          {
+            app_type: "codex",
+            provider_name: "Codex Beta",
+            provider_id: "codex-beta",
+            inflight_requests: 2,
+            request_model: "codex-request-model",
+            upstream_model: "codex-upstream-model",
+            route_mode: "failover",
+            upstream_url: "https://codex-beta.example.com/v1/responses",
+            last_request_model: "codex-upstream-model",
+            last_request_at: "2026-05-20T06:01:00Z",
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      const row = findProviderRow("Codex Beta");
+      expect(within(row).getByText("请求中 2")).toBeInTheDocument();
+      const statusDetail = within(row).getByTitle(
+        /实际上游模型：codex-upstream-model/,
+      );
+      expect(statusDetail).toHaveAttribute(
+        "title",
+        expect.stringContaining("请求模型：codex-request-model"),
+      );
+    });
+    expect(
+      within(findProviderRow("Codex Alpha")).queryByText("请求中"),
+    ).toBeNull();
+
+    await clickAppSwitcherButton(user, "Claude Code");
+    await waitFor(() => {
+      expect(queryProviderRow("Claude Alpha")).toBeInTheDocument();
+      expect(queryProviderRow("Codex Beta")).toBeNull();
+    });
+    await waitFor(() =>
+      expect(
+        within(findProviderRow("Claude Alpha")).getByText("请求中"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(findProviderRow("Claude Beta")).queryByText("请求中"),
+    ).toBeNull();
   }, 15_000);
 
   it("uses search as location only and resets it when the app changes", async () => {
