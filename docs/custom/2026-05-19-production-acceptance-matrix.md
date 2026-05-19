@@ -38,7 +38,7 @@
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
 | MCP | `UnifiedMcpPanel` | 打开、导入现有、添加、应用开关、删除 | 配置写入和入口错乱 | 已补真实 App + MCP 页面级验收 |
-| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离、Workspace 文件存在探测、打开目录、编辑保存、缺失文件创建 | app 切换后工具栏按钮错位、workspace 写错文件、保存后状态不刷新 | 已补真实 App + WorkspaceFilesPanel 页面级验收；`Env` / `Tools` / `AgentsDefaults` 内部配置写入待补 |
+| Workspace / OpenClaw | `WorkspaceFilesPanel` / `EnvPanel` / `ToolsPanel` / `AgentsDefaultsPanel` | OpenClaw 专属入口切换和按钮隔离、Workspace 文件存在探测、打开目录、编辑保存、缺失文件创建、Env JSON 加载/保存/非法输入拦截 | app 切换后工具栏按钮错位、workspace 写错文件、Env 误提交非法 JSON、保存后状态不刷新 | 已补真实 App + WorkspaceFilesPanel、EnvPanel 页面级验收；`Tools` / `AgentsDefaults` 内部配置写入待补 |
 | Hermes | `HermesMemoryPanel` | Hermes 专属入口切换、Memory / User 内容加载、启停开关、保存、打开配置入口、页签隔离 | app 切换后入口错乱、保存落错文件、Memory / User 串写、配置入口参数错误 | 已补真实 App + HermesMemoryPanel 页面级验收；已覆盖 Memory / User 加载、启停、保存、打开 config、双页签隔离 |
 | WebDAV | `WebdavSyncSection` | 保存、测试连接、上传、下载、确认弹窗、普通设置保存隔离 | 密码字段保留和误提交、`webdavSync` 被普通 `save_settings` 误覆盖 | 已补真实 SettingsPage + WebDAV 页面级验收 |
 | 导入导出 | `ImportExportSection` | 选择文件、导入、导出、清空状态 | 导入成功回调、错误态恢复 | 已补真实 SettingsPage + ImportExport 页面级验收 |
@@ -229,6 +229,19 @@
 - 验证命令：`pnpm vitest run tests/integration/App.real-openclaw-workspace.test.tsx --fileParallelism=false --reporter=verbose`
 - 当前结果：`1 file passed, 2 tests passed, 0 failed`
 - 组合验证命令：`pnpm vitest run tests/integration/App.real-openclaw-workspace.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
+
+### App + EnvPanel 真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-openclaw-env.test.tsx`
+- 覆盖范围：真实 `App`、真实 OpenClaw 顶栏 Env 入口、真实 `EnvPanel`、真实 `useOpenClawEnv` / `useSaveOpenClawEnv`；只 mock 与 Env 链路无关的重型页面，以及为稳定模拟操作把 `JsonEditor` 外壳替换为 textarea。
+- 覆盖交互：从真实 OpenClaw 工具栏进入 Env 页面；加载现有 `env` JSON；编辑 `vars` / `shellEnv` 后点击保存；再输入非法 JSON 对象类型（数组）并尝试保存。
+- 配置 / 请求验证：MSW / Tauri mock 补齐 `get_openclaw_env`、`set_openclaw_env`；直接观测 `env` 请求参数，确认保存时 `OPENCLAW_API_KEY`、`FEATURE_FLAG`、`OPENCLAW_BASE_URL` 都准确落到 `env` 节点；保存后再次请求 `get_openclaw_env`，并确认编辑器保持最新保存值，不回滚到旧配置。
+- 非法输入验证：当输入 `["not","an","object"]` 时，真实页面点击保存不会发出 `set_openclaw_env` 请求，防止把非法 JSON 误提交进 `openclaw.json`。
+- 红绿记录：首次运行真实页面用例时，`EnvPanel` 因缺少 `get_openclaw_env` / `set_openclaw_env` handler 一直停在 loading 并失败；补齐 OpenClaw env MSW 状态和 handler 后转绿。过程中还暴露出 `userEvent.type` 对 `{}` / `"` 的特殊键位解析问题，已改为 `paste` 方式保持真实编辑意图但避免测试工具假失败。
+- 验证命令：`pnpm vitest run tests/integration/App.real-openclaw-env.test.tsx --fileParallelism=false --reporter=verbose`
+- 当前结果：`1 file passed, 2 tests passed, 0 failed`
+- 组合验证命令：`pnpm vitest run tests/integration/App.real-openclaw-env.test.tsx tests/integration/App.real-navigation.test.tsx --fileParallelism=false --reporter=verbose`
 - 组合验证结果：`2 files passed, 9 tests passed, 0 failed`
 
 ### 组合回归

@@ -30,6 +30,7 @@ import {
   getHermesMemoryLimitsState,
   getHermesMemoryState,
   getInstalledSkillsState,
+  getOpenClawEnvConfigState,
   getWorkspaceFileState,
   getManagedAuthStatus,
   getProviderDefaultTemplate,
@@ -82,6 +83,7 @@ import {
   setHermesMemoryEnabledState,
   setHermesMemoryState,
   setGlobalProxyConfigState,
+  setOpenClawEnvConfigState,
   setAppConfigDirOverrideState,
   setWorkspaceFileState,
   deleteMcpServer,
@@ -222,6 +224,16 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/set_openclaw_default_model`, () =>
     success({ warnings: [] }),
   ),
+
+  http.post(`${TAURI_ENDPOINT}/get_openclaw_env`, () =>
+    success(getOpenClawEnvConfigState()),
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/set_openclaw_env`, async ({ request }) => {
+    const { env } = await withJson<{ env: Record<string, unknown> }>(request);
+    setOpenClawEnvConfigState(env);
+    return success({ warnings: [] });
+  }),
 
   http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () =>
     success({ provider: null }),

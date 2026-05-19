@@ -16,6 +16,7 @@ import type {
   HermesMemoryKind,
   HermesMemoryLimits,
   McpServer,
+  OpenClawEnvConfig,
   Provider,
   RemoteSnapshotInfo,
   SessionMessage,
@@ -535,6 +536,15 @@ const createDefaultWorkspaceFiles = (): WorkspaceFileState => ({
   "BOOT.md": "# BOOT.md\n\nWorkspace boot notes.",
 });
 
+const createDefaultOpenClawEnvConfig = (): OpenClawEnvConfig => ({
+  vars: {
+    OPENCLAW_API_KEY: "env-initial-key",
+  },
+  shellEnv: {
+    OPENCLAW_BASE_URL: "https://openclaw.example.com",
+  },
+});
+
 const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   deviceName: "Mock Device",
   createdAt: "2026-05-19T00:00:00Z",
@@ -582,6 +592,7 @@ let hermesMemoryLimitsState = createDefaultHermesMemoryLimits();
 let lastOpenedHermesWebUiPath: string | null = null;
 let workspaceFilesState = createDefaultWorkspaceFiles();
 let lastOpenedWorkspaceDirectory: "workspace" | "memory" | null = null;
+let openClawEnvConfigState = createDefaultOpenClawEnvConfig();
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
 let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
@@ -764,6 +775,7 @@ export const resetProviderState = () => {
   lastOpenedHermesWebUiPath = null;
   workspaceFilesState = createDefaultWorkspaceFiles();
   lastOpenedWorkspaceDirectory = null;
+  openClawEnvConfigState = createDefaultOpenClawEnvConfig();
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
   lastPromptDeleteRequest = null;
@@ -1197,6 +1209,15 @@ export const recordOpenWorkspaceDirectoryState = (
 
 export const getLastOpenedWorkspaceDirectory = () =>
   lastOpenedWorkspaceDirectory;
+
+export const getOpenClawEnvConfigState = () =>
+  JSON.parse(JSON.stringify(openClawEnvConfigState)) as OpenClawEnvConfig;
+
+export const setOpenClawEnvConfigState = (env: OpenClawEnvConfig) => {
+  openClawEnvConfigState = JSON.parse(
+    JSON.stringify(env),
+  ) as OpenClawEnvConfig;
+};
 
 export const setCurrentPromptFileContentState = (
   app: AppId,
