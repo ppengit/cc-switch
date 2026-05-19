@@ -230,4 +230,21 @@ describe("SettingsPage real tab structure", () => {
       expect(screen.getByText("Demo Hub")).toBeInTheDocument(),
     );
   });
+
+  it("keeps the settings tab bar in a single scrollable row for narrow windows", async () => {
+    renderSettingsPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("language-settings")).toBeInTheDocument(),
+    );
+
+    const tabList = screen.getByRole("tablist");
+    expect(tabList).toHaveClass("overflow-x-auto");
+    expect(tabList).toHaveClass("justify-start");
+    expect(tabList).not.toHaveClass("grid-cols-7");
+
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(tab).toHaveClass("shrink-0");
+    }
+  });
 });

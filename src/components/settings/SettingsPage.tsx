@@ -200,22 +200,28 @@ export function SettingsPage({
           onValueChange={setActiveTab}
           className="flex flex-col h-full"
         >
-          <TabsList className="grid w-full grid-cols-7 mb-6 glass rounded-lg">
-            <TabsTrigger value="general">
+          <TabsList className="flex w-full max-w-full justify-start overflow-x-auto mb-6 glass rounded-lg">
+            <TabsTrigger value="general" className="shrink-0">
               {t("settings.tabGeneral")}
             </TabsTrigger>
-            <TabsTrigger value="proxy">{t("settings.tabProxy")}</TabsTrigger>
-            <TabsTrigger value="auth">
+            <TabsTrigger value="proxy" className="shrink-0">
+              {t("settings.tabProxy")}
+            </TabsTrigger>
+            <TabsTrigger value="auth" className="shrink-0">
               {t("settings.tabAuth", { defaultValue: "认证" })}
             </TabsTrigger>
-            <TabsTrigger value="advanced">
+            <TabsTrigger value="advanced" className="shrink-0">
               {t("settings.tabAdvanced")}
             </TabsTrigger>
-            <TabsTrigger value="usage">{t("usage.title")}</TabsTrigger>
-            <TabsTrigger value="apiHub">
+            <TabsTrigger value="usage" className="shrink-0">
+              {t("usage.title")}
+            </TabsTrigger>
+            <TabsTrigger value="apiHub" className="shrink-0">
               {t("settings.tabApiHub", { defaultValue: "Api-Hub" })}
             </TabsTrigger>
-            <TabsTrigger value="about">{t("common.about")}</TabsTrigger>
+            <TabsTrigger value="about" className="shrink-0">
+              {t("common.about")}
+            </TabsTrigger>
           </TabsList>
 
           <div className="flex-1 min-h-0 flex flex-col">

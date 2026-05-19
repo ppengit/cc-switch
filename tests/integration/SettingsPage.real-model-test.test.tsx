@@ -123,9 +123,10 @@ const getLastCommandBody = (fetchSpy: FetchSpyLike, command: string) => {
 const openModelTestAccordion = async (
   user: ReturnType<typeof userEvent.setup>,
 ) => {
-  const modelTestTrigger = screen
-    .getByText("settings.advanced.modelTest.title")
-    .closest("button");
+  const modelTestHeading = await screen.findByText(
+    "settings.advanced.modelTest.title",
+  );
+  const modelTestTrigger = modelTestHeading.closest("button");
   if (!modelTestTrigger) {
     throw new Error("Model test accordion trigger not found");
   }
