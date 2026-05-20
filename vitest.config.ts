@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -15,6 +15,7 @@ export default defineConfig({
     globals: true,
     fileParallelism: false,
     testTimeout: 15_000,
+    exclude: [...configDefaults.exclude, ".worktrees/**"],
     coverage: {
       reporter: ["text", "lcov"],
     },
