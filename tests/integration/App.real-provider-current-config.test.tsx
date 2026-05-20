@@ -14,10 +14,17 @@ import type { AppId } from "@/lib/api";
 import type { Provider } from "@/types";
 import { server } from "../msw/server";
 import {
+  addToFailoverQueueState,
+  getFailoverQueueState,
+  getSwitchLiveSettings,
   resetProviderState,
+  setAutoFailoverEnabledState,
+  setCircuitBreakerStatsState,
   setCurrentProviderId,
+  setProviderHealthState,
   setProviders,
   setProxyTakeoverForAppState,
+  startProxyServerState,
 } from "../msw/state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -474,5 +481,188 @@ describe("App with real ProviderList current-config interactions", () => {
     );
     expect(writeBodies).toEqual([]);
     expect(importBodies).toEqual([]);
+  }, 20_000);
+
+  it("keeps Codex takeover live config on the proxy endpoint after saving current config with all failover providers circuit-open", async () => {
+    const configContents: Record<string, string> = {
+      "codex:auth": '{"OPENAI_API_KEY":"PROXY_MANAGED"}',
+      "codex:config": [
+        'model_provider = "cc-switch"',
+        'model = "gpt-5.5"',
+        "[model_providers.cc-switch]",
+        'base_url = "http://127.0.0.1:15721/codex"',
+        "",
+      ].join("\n"),
+    };
+    const writeBodies: Array<{
+      app: AppId;
+      files: Array<{ fileKey: string; content: string }>;
+    }> = [];
+
+    setProviders("codex", {
+      "codex-alpha": {
+        ...codexProvider("codex-alpha", "Codex Alpha"),
+        sortIndex: 0,
+      },
+      "codex-beta": {
+        ...codexProvider("codex-beta", "Codex Beta"),
+        sortIndex: 1,
+      },
+      "codex-gamma": {
+        ...codexProvider("codex-gamma", "Codex Gamma"),
+        sortIndex: 2,
+      },
+    });
+    setCurrentProviderId("codex", "codex-alpha");
+    startProxyServerState();
+    setProxyTakeoverForAppState("codex", true);
+    setAutoFailoverEnabledState("codex", true);
+    addToFailoverQueueState("codex", "codex-beta");
+    addToFailoverQueueState("codex", "codex-gamma");
+
+    const providerIds = ["codex-alpha", "codex-beta", "codex-gamma"];
+    for (const providerId of providerIds) {
+      setProviderHealthState("codex", providerId, {
+        is_healthy: false,
+        consecutive_failures: 3,
+        last_failure_at: "2026-05-20T05:30:00Z",
+        last_error: "upstream unavailable",
+      });
+      setCircuitBreakerStatsState("codex", providerId, {
+        state: "open",
+        consecutiveFailures: 3,
+        consecutiveSuccesses: 0,
+        totalRequests: 3,
+        failedRequests: 3,
+      });
+    }
+
+    expect(getFailoverQueueState("codex").map((item) => item.providerId)).toEqual([
+      "codex-alpha",
+      "codex-beta",
+      "codex-gamma",
+    ]);
+    expect((getSwitchLiveSettings("codex") as { config?: string }).config).toContain(
+      'base_url = "http://127.0.0.1:15721/codex"',
+    );
+
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/list_app_config_files`, async ({ request }) => {
+        const { app } = (await request.json()) as { app: AppId };
+        if (app !== "codex") {
+          return HttpResponse.json([]);
+        }
+        return HttpResponse.json([
+          {
+            key: "auth",
+            label: "auth.json",
+            path: "/mock/codex/auth.json",
+          },
+          {
+            key: "config",
+            label: "config.toml",
+            path: "/mock/codex/config.toml",
+          },
+        ]);
+      }),
+      http.post(`${TAURI_ENDPOINT}/read_app_config_file`, async ({ request }) => {
+        const { app, fileKey } = (await request.json()) as {
+          app: AppId;
+          fileKey: string;
+        };
+        return HttpResponse.json({
+          key: fileKey,
+          label: fileKey === "auth" ? "auth.json" : "config.toml",
+          path:
+            fileKey === "auth"
+              ? `/mock/${app}/auth.json`
+              : `/mock/${app}/config.toml`,
+          content: configContents[`${app}:${fileKey}`] ?? "",
+        });
+      }),
+      http.post(`${TAURI_ENDPOINT}/write_app_config_files`, async ({ request }) => {
+        const body = (await request.json()) as {
+          app: AppId;
+          files: Array<{ fileKey: string; content: string }>;
+        };
+        writeBodies.push(body);
+        for (const file of body.files) {
+          configContents[`${body.app}:${file.fileKey}`] = file.content;
+        }
+        return HttpResponse.json(true);
+      }),
+    );
+
+    const user = userEvent.setup();
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Codex");
+    await waitFor(() =>
+      expect(screen.getByText("Codex Alpha")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "当前配置" }));
+
+    expect(
+      await screen.findByText(
+        /当前应用已开启代理接管。这里展示的是应用实际配置/,
+      ),
+    ).toBeInTheDocument();
+
+    const configTextarea = (await screen.findByDisplayValue(
+      /http:\/\/127\.0\.0\.1:15721\/codex/,
+    )) as HTMLTextAreaElement;
+
+    fireEvent.change(configTextarea, {
+      target: {
+        value: [
+          'model_provider = "cc-switch"',
+          'model = "gpt-5.6"',
+          "[model_providers.cc-switch]",
+          'base_url = "http://127.0.0.1:15721/codex"',
+          "",
+        ].join("\n"),
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(writeBodies[0]).toEqual({
+        app: "codex",
+        files: [
+          {
+            fileKey: "auth",
+            content: '{"OPENAI_API_KEY":"PROXY_MANAGED"}',
+          },
+          {
+            fileKey: "config",
+            content: [
+              'model_provider = "cc-switch"',
+              'model = "gpt-5.6"',
+              "[model_providers.cc-switch]",
+              'base_url = "http://127.0.0.1:15721/codex"',
+              "",
+            ].join("\n"),
+          },
+        ],
+      }),
+    );
+
+    expect(writeBodies).toHaveLength(1);
+    expect(writeBodies.every((body) => body.app === "codex")).toBe(true);
+    expect(configContents["codex:config"]).toContain('model = "gpt-5.6"');
+
+    const live = getSwitchLiveSettings("codex") as {
+      auth?: Record<string, string>;
+      config?: string;
+    };
+    expect(live.auth?.OPENAI_API_KEY).toBe("PROXY_MANAGED");
+    expect(live.config).toContain('base_url = "http://127.0.0.1:15721/codex"');
+    expect(live.config).not.toContain("https://codex-alpha.example.com/v1");
+    expect(live.config).not.toContain("https://codex-beta.example.com/v1");
+    expect(live.config).not.toContain("https://codex-gamma.example.com/v1");
+    expect(toastSuccessMock).toHaveBeenCalledWith("当前配置已保存");
   }, 20_000);
 });

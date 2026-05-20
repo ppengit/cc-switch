@@ -332,6 +332,19 @@
 - 代理 / 故障转移组合验证命令：`pnpm exec vitest run tests/integration/App.real-providers.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
 - 代理 / 故障转移组合验证结果：`3 files passed, 15 tests passed, 0 failed`
 
+### App + ProviderList 当前配置接管态真实页面验收
+
+- 新增验收用例：`tests/integration/App.real-provider-current-config.test.tsx` 中 `keeps Codex takeover live config on the proxy endpoint after saving current config with all failover providers circuit-open`
+- 覆盖范围：真实 `App`、真实 `ProviderList`、真实 `当前配置` 全屏弹窗、真实 app 切换入口、真实 `write_app_config_files` 调用链；MSW 只负责模拟 Tauri 配置文件读写、故障转移队列、provider health 和 circuit breaker stats 状态。
+- 覆盖交互：预置 3 个 Codex 供应商，开启本地代理、Codex 接管和自动故障转移；将 `Codex Alpha`、`Codex Beta`、`Codex Gamma` 全部放入故障转移队列并标记为不健康、circuit breaker `open`；从真实 Codex 供应商页打开 `当前配置`，编辑 `config.toml` 后点击真实保存按钮。
+- 配置写入验证：断言 `write_app_config_files` 只写入 `app: "codex"`，文件范围只包含 `auth` 和 `config`，不会写入其它 app；保存后的 `config.toml` 保留 `model_provider = "cc-switch"` 和 `base_url = "http://127.0.0.1:15721/codex"`，只更新用户编辑的 `model = "gpt-5.6"`。
+- live 漂移验证：保存当前配置后直接读取 Codex live settings，断言 `OPENAI_API_KEY` 仍为 `PROXY_MANAGED`，`base_url` 仍为 `http://127.0.0.1:15721/codex`，并且不包含 `https://codex-alpha.example.com/v1`、`https://codex-beta.example.com/v1`、`https://codex-gamma.example.com/v1`。
+- 红绿记录：临时把 live 断言改为期待 `https://codex-alpha.example.com/v1` 后，同一用例按预期失败，实际收到代理模板 `base_url = "http://127.0.0.1:15721/codex"`；恢复正确断言后同一用例通过，证明该验收能捕获用户反馈的供应商 direct base URL 漂移。
+- 单用例验证命令：`pnpm exec vitest run tests/integration/App.real-provider-current-config.test.tsx -t "keeps Codex takeover live config" --reporter=verbose`
+- 单用例验证结果：红灯 `1 failed`；恢复后 `1 passed, 2 skipped, 0 failed`
+- 全文件验证命令：`pnpm exec vitest run tests/integration/App.real-provider-current-config.test.tsx --reporter=verbose`
+- 全文件验证结果：`1 file passed, 3 tests passed, 0 failed`
+
 ### App + ProviderList 代理活动事件真实页面验收
 
 - 新增验收用例：`tests/integration/App.real-providers.test.tsx` 中 `shows live request activity only for the active app provider from proxy events`
