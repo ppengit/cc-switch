@@ -68,10 +68,28 @@ pub async fn stream_check_all_providers(
     let mut results = Vec::new();
     let allowed_ids: Option<HashSet<String>> = if proxy_targets_only {
         let mut ids = HashSet::new();
-        if let Ok(Some(current_id)) = state.db.get_current_provider(app_type.as_str()) {
+
+        let failover_mode_active =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
+                .map(|config| config.enabled && config.auto_failover_enabled)
+                .unwrap_or(false);
+
+        if failover_mode_active {
+            if let Ok(queue) = state.db.get_failover_queue(app_type.as_str()) {
+                for item in queue {
+                    ids.insert(item.provider_id);
+                }
+            }
+        } else if let Ok(Some(current_id)) =
+            crate::settings::get_effective_current_provider(&state.db, &app_type)
+        {
             ids.insert(current_id);
-        }
-        if let Ok(queue) = state.db.get_failover_queue(app_type.as_str()) {
+            if let Ok(queue) = state.db.get_failover_queue(app_type.as_str()) {
+                for item in queue {
+                    ids.insert(item.provider_id);
+                }
+            }
+        } else if let Ok(queue) = state.db.get_failover_queue(app_type.as_str()) {
             for item in queue {
                 ids.insert(item.provider_id);
             }

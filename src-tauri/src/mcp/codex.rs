@@ -84,7 +84,7 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
             // 核心字段（需要手动处理的字段）
             let core_fields = match typ {
                 "stdio" => vec!["type", "command", "args", "env", "cwd"],
-                "http" | "sse" => vec!["type", "url", "http_headers"],
+                "http" | "sse" => vec!["type", "url", "headers", "http_headers"],
                 _ => vec!["type"],
             };
 
@@ -569,7 +569,7 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
     // 定义核心字段（已在下方处理，跳过通用转换）
     let core_fields = match typ {
         "stdio" => vec!["type", "command", "args", "env", "cwd"],
-        "http" | "sse" => vec!["type", "url", "http_headers"],
+        "http" | "sse" => vec!["type", "url", "headers", "http_headers"],
         _ => vec!["type"],
     };
 
@@ -639,7 +639,12 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
             let url = spec.get("url").and_then(|v| v.as_str()).unwrap_or("");
             t["url"] = toml_edit::value(url);
 
-            if let Some(headers) = spec.get("headers").and_then(|v| v.as_object()) {
+            let headers = spec
+                .get("http_headers")
+                .or_else(|| spec.get("headers"))
+                .and_then(|v| v.as_object());
+
+            if let Some(headers) = headers {
                 let mut h_tbl = Table::new();
                 for (k, v) in headers.iter() {
                     if let Some(s) = v.as_str() {
@@ -677,4 +682,38 @@ fn json_server_to_toml_table(spec: &Value) -> Result<toml_edit::Table, AppError>
     }
 
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_server_to_toml_table;
+    use serde_json::json;
+    use toml_edit::{DocumentMut, Item};
+
+    #[test]
+    fn codex_http_mcp_preserves_official_http_headers_field() {
+        let table = json_server_to_toml_table(&json!({
+            "type": "http",
+            "url": "https://mcp.example/mcp",
+            "http_headers": {
+                "Authorization": "Bearer token",
+                "X-Trace": "trace-1"
+            }
+        }))
+        .expect("convert Codex HTTP MCP");
+
+        let mut doc = DocumentMut::new();
+        doc["mcp_servers"] = toml_edit::table();
+        doc["mcp_servers"]["http-server"] = Item::Table(table);
+        let rendered = doc.to_string();
+        assert!(
+            rendered.contains("[mcp_servers.http-server.http_headers]"),
+            "Codex HTTP MCP must render official http_headers as a TOML subtable: {rendered}"
+        );
+        assert!(rendered.contains("Authorization = \"Bearer token\""));
+        assert!(
+            !rendered.contains("http_headers = {"),
+            "http_headers must not be lost or downgraded to an inline unknown field: {rendered}"
+        );
+    }
 }

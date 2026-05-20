@@ -685,8 +685,26 @@ pub fn get_effective_current_provider(
         let _ = set_current_provider(app_type, None);
     }
 
-    // Fallback 到数据库的 is_current
-    db.get_current_provider(app_type.as_str())
+    // Fallback 到数据库的 is_current，并再次验证其仍然存在。
+    // 删除供应商、跨设备同步或历史脏状态都可能留下孤儿 is_current；
+    // 这里必须收口，否则启动恢复 / takeover / MCP 重建会继续消费已删除供应商。
+    let db_current = db.get_current_provider(app_type.as_str())?;
+    let Some(db_current) = db_current else {
+        return Ok(None);
+    };
+
+    let providers = db.get_all_providers(app_type.as_str())?;
+    if providers.contains_key(&db_current) {
+        return Ok(Some(db_current));
+    }
+
+    log::warn!(
+        "数据库中的供应商 {} ({}) 已不存在，将清理 is_current 残留",
+        db_current,
+        app_type.as_str()
+    );
+    let _ = db.clear_current_provider(app_type.as_str());
+    Ok(None)
 }
 
 // ===== Skill 同步方式管理函数 =====

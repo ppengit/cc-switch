@@ -6,8 +6,8 @@ use tauri::State;
 use crate::app_config::AppType;
 use crate::provider::{Provider, ProviderMeta};
 use crate::services::api_hub::{
-    align_site_for_groups, align_sites_with_progress, sync_site, sync_sites_with_progress,
-    has_plain_api_key, is_masked_api_key, AccountsBackup, AlignOptions, CleanupSiteProvidersReport,
+    align_site_for_groups, align_sites_with_progress, has_plain_api_key, is_masked_api_key,
+    sync_site, sync_sites_with_progress, AccountsBackup, AlignOptions, CleanupSiteProvidersReport,
     ImportFailure, ImportReport, ImportToAppsReport, ImportToAppsReq, ModelSelection, Paged,
     SiteDetail, SiteFilter, SiteRow, SyncReport,
 };
@@ -163,9 +163,7 @@ async fn import_to_apps(
         .iter()
         .filter_map(
             |group| match db.api_hub_find_token_for_group(&req.site_id, group) {
-                Ok(Some(token)) if !has_plain_api_key(token.key.as_deref()) => {
-                    Some(group.clone())
-                }
+                Ok(Some(token)) if !has_plain_api_key(token.key.as_deref()) => Some(group.clone()),
                 Ok(Some(_)) => None,
                 Ok(None) => Some(group.clone()),
                 Err(_) => Some(group.clone()),
@@ -454,7 +452,10 @@ mod tests {
     fn masked_keys_are_not_normalized_as_importable() {
         assert!(is_masked_api_key("sk-****"));
         assert!(is_masked_api_key("sk-abcd********wxyz"));
-        assert_eq!(normalize_api_key("sk-abcd********wxyz"), "sk-abcd********wxyz");
+        assert_eq!(
+            normalize_api_key("sk-abcd********wxyz"),
+            "sk-abcd********wxyz"
+        );
         assert!(is_masked_api_key(&normalize_api_key("sk-abcd********wxyz")));
     }
 

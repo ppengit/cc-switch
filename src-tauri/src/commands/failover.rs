@@ -31,10 +31,8 @@ async fn disable_auto_failover_and_restore_single_target(
         .await
         .map(|config| config.enabled)
         .map_err(|e| e.to_string())?;
-    let proxy_running = state.proxy_service.is_running().await;
-
     if let Some(provider_id) = restored_provider_id.as_deref() {
-        if takeover_enabled && proxy_running {
+        if takeover_enabled {
             state
                 .proxy_service
                 .hot_switch_provider(app_type, provider_id)
@@ -52,7 +50,7 @@ async fn disable_auto_failover_and_restore_single_target(
         let _ = crate::settings::set_current_provider(app_enum, None);
     }
 
-    if !(takeover_enabled && proxy_running) {
+    if !takeover_enabled {
         state
             .proxy_service
             .sync_failover_active_target(app_type)
@@ -313,10 +311,10 @@ pub async fn set_auto_failover_enabled(
 mod tests {
     use super::{disable_auto_failover_and_restore_single_target, effective_auto_failover_enabled};
     use crate::app_config::AppType;
-    use crate::proxy::CircuitState;
-    use crate::proxy::ProviderRouter;
     use crate::proxy::types::AppProxyConfig;
     use crate::proxy::types::ProxyConfig;
+    use crate::proxy::CircuitState;
+    use crate::proxy::ProviderRouter;
     use crate::store::AppState;
     use crate::{Database, Provider};
     use serde_json::json;
@@ -477,8 +475,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn disable_auto_failover_while_takeover_enabled_restores_current_provider_and_active_target()
-     {
+    async fn disable_auto_failover_while_takeover_enabled_restores_current_provider_and_active_target(
+    ) {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().expect("init db"));
         let state = AppState::new(db.clone());

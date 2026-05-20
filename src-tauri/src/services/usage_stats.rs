@@ -1353,7 +1353,9 @@ impl Database {
                     log::warn!("请求详情会话上下文补全失败（将返回主记录）: {err}");
                 }
                 let mut pricing_cache = HashMap::new();
-                if let Err(err) = Self::maybe_backfill_log_costs(&conn, &mut detail, &mut pricing_cache) {
+                if let Err(err) =
+                    Self::maybe_backfill_log_costs(&conn, &mut detail, &mut pricing_cache)
+                {
                     log::warn!("请求详情成本回填失败（将返回主记录）: {err}");
                 }
                 Ok(Some(detail))

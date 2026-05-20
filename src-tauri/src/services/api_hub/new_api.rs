@@ -166,10 +166,7 @@ impl ApiHubAdapter for NewApiAdapter {
                 groups.push(GroupInfo {
                     name: name.clone(),
                     ratio: info.get("ratio").and_then(|v| v.as_f64()),
-                    description: info
-                        .get("desc")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
+                    description: info.get("desc").and_then(|v| v.as_str()).map(String::from),
                 });
             }
         } else if let Some(arr) = data.as_array() {
@@ -288,12 +285,12 @@ impl ApiHubAdapter for NewApiAdapter {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                group_name: item
-                    .get("group")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                group_name: item.get("group").and_then(|v| v.as_str()).map(String::from),
                 key,
-                status: item.get("status").and_then(|v| v.as_i64()).map(|x| x as i32),
+                status: item
+                    .get("status")
+                    .and_then(|v| v.as_i64())
+                    .map(|x| x as i32),
                 remain_quota: item.get("remain_quota").and_then(|v| v.as_i64()),
                 expired_at: item.get("expired_time").and_then(|v| v.as_i64()),
             });
@@ -340,9 +337,7 @@ impl ApiHubAdapter for NewApiAdapter {
         tokens
             .into_iter()
             .find(|t| t.name == req.name && t.group_name.as_deref() == Some(req.group.as_str()))
-            .ok_or_else(|| {
-                AppError::Config("创建 token 成功但回查未找到对应记录".to_string())
-            })
+            .ok_or_else(|| AppError::Config("创建 token 成功但回查未找到对应记录".to_string()))
     }
 
     async fn rename_token(

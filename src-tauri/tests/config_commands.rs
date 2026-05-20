@@ -1,4 +1,5 @@
-use cc_switch_lib::{write_app_config_files, AppConfigFileWrite};
+use cc_switch_lib::{write_app_config_files_test_hook, AppConfigFileWrite, AppState, Database};
+use std::sync::Arc;
 
 #[path = "support.rs"]
 mod support;
@@ -9,8 +10,10 @@ fn current_config_batch_save_skips_missing_empty_files() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let home = ensure_test_home();
+    let state = AppState::new(Arc::new(Database::memory().expect("init db")));
 
-    futures::executor::block_on(write_app_config_files(
+    futures::executor::block_on(write_app_config_files_test_hook(
+        &state,
         "gemini".to_string(),
         vec![
             AppConfigFileWrite {
@@ -40,8 +43,10 @@ fn current_config_batch_save_validates_all_files_before_writing() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let home = ensure_test_home();
+    let state = AppState::new(Arc::new(Database::memory().expect("init db")));
 
-    let result = futures::executor::block_on(write_app_config_files(
+    let result = futures::executor::block_on(write_app_config_files_test_hook(
+        &state,
         "gemini".to_string(),
         vec![
             AppConfigFileWrite {

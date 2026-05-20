@@ -3,8 +3,7 @@
 //! 统一处理流式和非流式 API 响应
 
 use super::{
-    ProxyError,
-    activity::{ProxyActivityState, finish_request, route_request},
+    activity::{finish_request, route_request, ProxyActivityState},
     forwarder::ActiveConnectionGuard,
     handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
@@ -12,6 +11,7 @@ use super::{
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
     usage::parser::TokenUsage,
+    ProxyError,
 };
 use crate::database::PRICING_SOURCE_REQUEST;
 use axum::http::{header::HeaderMap, HeaderName};
@@ -22,8 +22,8 @@ use serde_json::Value;
 use std::{
     io::Read,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::Duration,
 };

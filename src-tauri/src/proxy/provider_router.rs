@@ -96,14 +96,11 @@ impl ProviderRouter {
             // 但如果该供应商已经因为认证错误或熔断策略被打开断路器，
             // 不能继续把新请求路由给它，否则会在单供应商模式下无限重复打到
             // 一个已知不可用的 key。
-            let current_id = AppType::from_str(app_type)
-                .ok()
-                .and_then(|app_enum| {
-                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
-                        .ok()
-                        .flatten()
-                })
-                .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
+            let current_id = AppType::from_str(app_type).ok().and_then(|app_enum| {
+                crate::settings::get_effective_current_provider(&self.db, &app_enum)
+                    .ok()
+                    .flatten()
+            });
 
             if let Some(current_id) = current_id {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
@@ -428,7 +425,7 @@ mod tests {
     use crate::proxy::types::ProxyConfig;
     use crate::services::provider::ProviderService;
     use crate::store::AppState;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use serial_test::serial;
     use std::env;
     use std::fs;
@@ -978,8 +975,7 @@ mod tests {
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 
@@ -1101,15 +1097,14 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_last_codex_failover_provider_keeps_takeover_live_when_queue_becomes_empty()
-    {
+    async fn api_key_disable_last_codex_failover_provider_keeps_takeover_live_when_queue_becomes_empty(
+    ) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 
@@ -1137,8 +1132,7 @@ wire_api = "responses"
             }),
             None,
         );
-        db.save_provider("codex", &provider)
-            .expect("save provider");
+        db.save_provider("codex", &provider).expect("save provider");
         db.add_to_failover_queue("codex", "codex-solo")
             .expect("queue provider");
 
@@ -1197,8 +1191,7 @@ wire_api = "responses"
             "last Codex provider should be removed from failover queue after auth disable"
         );
 
-        let auth: Value =
-            read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
+        let auth: Value = read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
         assert_eq!(
             auth.get("OPENAI_API_KEY").and_then(Value::as_str),
             Some("PROXY_MANAGED"),
@@ -1240,15 +1233,14 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_last_gemini_failover_provider_keeps_takeover_live_when_queue_becomes_empty()
-    {
+    async fn api_key_disable_last_gemini_failover_provider_keeps_takeover_live_when_queue_becomes_empty(
+    ) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 
@@ -1378,8 +1370,7 @@ wire_api = "responses"
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 
@@ -1452,11 +1443,23 @@ wire_api = "responses"
 
         let router = ProviderRouter::with_app_handle(db.clone(), None);
         router
-            .record_result("a", "claude", false, false, Some("upstream timeout".to_string()))
+            .record_result(
+                "a",
+                "claude",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
             .await
             .expect("open breaker for provider a");
         router
-            .record_result("b", "claude", false, false, Some("upstream timeout".to_string()))
+            .record_result(
+                "b",
+                "claude",
+                false,
+                false,
+                Some("upstream timeout".to_string()),
+            )
             .await
             .expect("open breaker for provider b");
 
@@ -1472,8 +1475,7 @@ wire_api = "responses"
         ProviderService::sync_current_provider_for_app(&state, AppType::Claude)
             .expect("sync should not rewrite takeover live back to a direct provider");
 
-        let live: Value =
-            read_json_file(&get_claude_settings_path()).expect("read claude live");
+        let live: Value = read_json_file(&get_claude_settings_path()).expect("read claude live");
         assert_eq!(
             live.pointer("/env/ANTHROPIC_BASE_URL")
                 .and_then(Value::as_str),
@@ -1513,8 +1515,7 @@ wire_api = "responses"
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 
@@ -1629,8 +1630,7 @@ wire_api = "responses"
         ProviderService::sync_current_provider_for_app(&state, AppType::Codex)
             .expect("sync should not rewrite Codex takeover live back to a direct provider");
 
-        let auth: Value =
-            read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
+        let auth: Value = read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
         assert_eq!(
             auth.get("OPENAI_API_KEY").and_then(Value::as_str),
             Some("PROXY_MANAGED"),
@@ -1667,8 +1667,7 @@ wire_api = "responses"
 
         let db = Arc::new(Database::memory().expect("init db"));
         let port = {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
             listener.local_addr().expect("local addr").port()
         };
 

@@ -4,12 +4,12 @@
 
 use std::collections::HashMap;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::app_config::AppType;
 use crate::app_config_templates::{
-    AppConfigTemplateFile, default_template_files_for, parse_stored_template_files,
+    default_template_files_for, parse_stored_template_files, AppConfigTemplateFile,
 };
 use crate::codex_config::{
     get_codex_auth_path, get_codex_config_path, write_codex_live_atomic_with_stable_provider,
@@ -22,9 +22,9 @@ use crate::services::mcp::McpService;
 use crate::store::AppState;
 
 use super::gemini_auth::{
-    GeminiAuthType, detect_gemini_auth_type, ensure_google_oauth_security_flag,
+    detect_gemini_auth_type, ensure_google_oauth_security_flag, GeminiAuthType,
 };
-use super::{SyncCurrentProviderOptions, normalize_claude_models_in_value};
+use super::{normalize_claude_models_in_value, SyncCurrentProviderOptions};
 
 pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     let mut v = settings.clone();
@@ -106,13 +106,9 @@ fn json_array_contains_subset(target_arr: &[Value], source_arr: &[Value]) -> boo
     let mut matched = vec![false; target_arr.len()];
 
     source_arr.iter().all(|source_item| {
-        if let Some((index, _)) = target_arr
-            .iter()
-            .enumerate()
-            .find(|(index, target_item)| {
-                !matched[*index] && json_is_subset(target_item, source_item)
-            })
-        {
+        if let Some((index, _)) = target_arr.iter().enumerate().find(|(index, target_item)| {
+            !matched[*index] && json_is_subset(target_item, source_item)
+        }) {
             matched[index] = true;
             true
         } else {
@@ -278,7 +274,12 @@ fn mcp_server_to_codex_table_for_template(spec: &Value) -> Result<toml_edit::Tab
                 table["url"] = toml_edit::value(url);
             }
 
-            if let Some(headers) = server_obj.get("headers").and_then(Value::as_object) {
+            let headers = server_obj
+                .get("http_headers")
+                .or_else(|| server_obj.get("headers"))
+                .and_then(Value::as_object);
+
+            if let Some(headers) = headers {
                 let mut headers_table = toml_edit::Table::new();
                 for (key, value) in headers {
                     if let Some(value) = value.as_str() {
@@ -374,6 +375,66 @@ fn build_gemini_mcp_template_block(db: &Database) -> Result<String, AppError> {
     .map_err(|e| AppError::Message(format!("JSON serialization failed: {e}")))?;
 
     Ok(rendered)
+}
+
+pub(crate) fn inject_db_managed_mcp_into_settings(
+    db: &Database,
+    app_type: &AppType,
+    settings: &mut Value,
+) -> Result<(), AppError> {
+    match app_type {
+        AppType::Codex => {
+            let mcp_block = build_codex_mcp_template_block(db)?;
+            let Some(obj) = settings.as_object_mut() else {
+                return Ok(());
+            };
+
+            let raw_config = obj.get("config").and_then(Value::as_str).unwrap_or("");
+            let mut config = strip_codex_mcp_servers_section(raw_config)?;
+            if !mcp_block.trim().is_empty() {
+                config = config.trim_end_matches('\n').to_string();
+                if !config.is_empty() {
+                    config.push_str("\n\n");
+                }
+                config.push_str(mcp_block.trim());
+                config.push('\n');
+            }
+            if !config.trim().is_empty() {
+                config.parse::<DocumentMut>().map_err(|e| {
+                    AppError::Message(format!("Invalid Codex config.toml after MCP merge: {e}"))
+                })?;
+            }
+            obj.insert("config".to_string(), Value::String(config));
+        }
+        AppType::Gemini => {
+            let mcp_block = build_gemini_mcp_template_block(db)?;
+            let Some(obj) = settings.as_object_mut() else {
+                return Ok(());
+            };
+            let config = obj.entry("config").or_insert_with(|| json!({}));
+            if !config.is_object() {
+                *config = json!({});
+            }
+            let config_obj = config
+                .as_object_mut()
+                .expect("Gemini config should be normalized to an object");
+            if mcp_block.trim().is_empty() {
+                config_obj.remove("mcpServers");
+            } else {
+                let mcp_value = serde_json::from_str::<Value>(&mcp_block).map_err(|e| {
+                    AppError::Message(format!("Invalid Gemini MCP block after merge: {e}"))
+                })?;
+                config_obj.insert("mcpServers".to_string(), mcp_value);
+            }
+        }
+        AppType::Claude
+        | AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::ClaudeDesktop => {}
+    }
+
+    Ok(())
 }
 
 fn remove_trailing_commas_before_json_closers(text: &str) -> String {
@@ -651,11 +712,9 @@ pub(crate) fn provider_uses_common_config(
         .and_then(|meta| meta.common_config_enabled)
     {
         Some(explicit) => explicit && snippet.is_some_and(|value| !value.trim().is_empty()),
-        None => {
-            snippet.is_some_and(|value| {
-                settings_contain_common_config(app_type, &provider.settings_config, value)
-            })
-        }
+        None => snippet.is_some_and(|value| {
+            settings_contain_common_config(app_type, &provider.settings_config, value)
+        }),
     }
 }
 
@@ -719,10 +778,12 @@ pub(crate) fn build_proxy_takeover_settings(
                 config_text.push('\n');
             }
 
-            Ok(json!({
+            let mut result = json!({
                 "auth": auth,
                 "config": config_text,
-            }))
+            });
+            inject_db_managed_mcp_into_settings(db, app_type, &mut result)?;
+            Ok(result)
         }
         AppType::Gemini => {
             let env_template = get_template_content_by_key(db, app_type, "env");
@@ -779,6 +840,7 @@ pub(crate) fn build_proxy_takeover_settings(
                 }
             }
 
+            inject_db_managed_mcp_into_settings(db, app_type, &mut result)?;
             Ok(result)
         }
         AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
@@ -939,59 +1001,7 @@ pub(crate) fn build_direct_live_settings_with_mcp(
     provider: &Provider,
 ) -> Result<Value, AppError> {
     let mut settings = build_effective_settings_with_common_config(db, app_type, provider)?;
-
-    match app_type {
-        AppType::Codex => {
-            let mcp_block = build_codex_mcp_template_block(db)?;
-            let Some(obj) = settings.as_object_mut() else {
-                return Ok(settings);
-            };
-
-            let raw_config = obj.get("config").and_then(Value::as_str).unwrap_or("");
-            let mut config = strip_codex_mcp_servers_section(raw_config)?;
-            if !mcp_block.trim().is_empty() {
-                config = config.trim_end_matches('\n').to_string();
-                if !config.is_empty() {
-                    config.push_str("\n\n");
-                }
-                config.push_str(mcp_block.trim());
-                config.push('\n');
-            }
-            if !config.trim().is_empty() {
-                config.parse::<DocumentMut>().map_err(|e| {
-                    AppError::Message(format!("Invalid Codex config.toml after MCP merge: {e}"))
-                })?;
-            }
-            obj.insert("config".to_string(), Value::String(config));
-        }
-        AppType::Gemini => {
-            let mcp_block = build_gemini_mcp_template_block(db)?;
-            let Some(obj) = settings.as_object_mut() else {
-                return Ok(settings);
-            };
-            let config = obj.entry("config").or_insert_with(|| json!({}));
-            if !config.is_object() {
-                *config = json!({});
-            }
-            let config_obj = config
-                .as_object_mut()
-                .expect("Gemini config should be normalized to an object");
-            if mcp_block.trim().is_empty() {
-                config_obj.remove("mcpServers");
-            } else {
-                let mcp_value = serde_json::from_str::<Value>(&mcp_block).map_err(|e| {
-                    AppError::Message(format!("Invalid Gemini MCP block after merge: {e}"))
-                })?;
-                config_obj.insert("mcpServers".to_string(), mcp_value);
-            }
-        }
-        AppType::Claude
-        | AppType::OpenCode
-        | AppType::OpenClaw
-        | AppType::Hermes
-        | AppType::ClaudeDesktop => {}
-    }
-
+    inject_db_managed_mcp_into_settings(db, app_type, &mut settings)?;
     Ok(settings)
 }
 
@@ -1647,8 +1657,8 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
         }
         AppType::Gemini => {
             use crate::gemini_config::{
-                GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
-                get_gemini_settings_path, read_gemini_env, read_gemini_env_text,
+                env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+                read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
             };
 
             // Read .env file (environment variables)
@@ -1727,15 +1737,25 @@ pub fn should_import_default_config_on_startup(
         return Ok(false);
     }
 
+    if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        if futures::executor::block_on(
+            state
+                .proxy_service
+                .should_preserve_takeover_live_semantics(app_type),
+        ) {
+            return Ok(false);
+        }
+    }
+
     Ok(!state.db.has_any_provider_for_app(app_type.as_str())?)
 }
 
 /// Write Gemini live configuration with authentication handling
 pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     use crate::gemini_config::{
-        GEMINI_RENDERED_ENV_TEXT_FIELD, env_text_matches_map, get_gemini_settings_path,
-        json_to_env, validate_gemini_settings_strict, write_gemini_env_atomic,
-        write_gemini_env_text_atomic,
+        env_text_matches_map, get_gemini_settings_path, json_to_env,
+        validate_gemini_settings_strict, write_gemini_env_atomic, write_gemini_env_text_atomic,
+        GEMINI_RENDERED_ENV_TEXT_FIELD,
     };
 
     // One-time auth type detection to avoid repeated detection
@@ -2175,6 +2195,48 @@ mod tests {
     }
 
     #[test]
+    fn codex_proxy_takeover_template_preserves_http_mcp_headers() {
+        let db = Database::memory().expect("create memory db");
+        db.save_mcp_server(&McpServer {
+            id: "http-server".to_string(),
+            name: "HTTP Server".to_string(),
+            server: json!({
+                "type": "http",
+                "url": "https://mcp.example/mcp",
+                "http_headers": {
+                    "Authorization": "Bearer token"
+                }
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        let rendered = build_proxy_takeover_settings(
+            &db,
+            &AppType::Codex,
+            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15721/v1",
+            "PROXY_MANAGED",
+        )
+        .expect("build takeover settings");
+
+        let config = rendered["config"].as_str().expect("config string");
+        assert!(config.contains("[mcp_servers.http-server]"));
+        assert!(
+            config.contains("[mcp_servers.http-server.http_headers]"),
+            "Codex takeover MCP rendering must keep HTTP headers for auth-required MCP servers: {config}"
+        );
+        assert!(config.contains("Authorization = \"Bearer token\""));
+    }
+
+    #[test]
     fn codex_proxy_takeover_template_repairs_unquoted_proxy_base_url_placeholder() {
         let db = Database::memory().expect("create memory db");
         db.set_config_template(
@@ -2387,5 +2449,63 @@ mod tests {
         let env_text = crate::gemini_config::read_gemini_env_text().expect("read gemini env");
         assert!(env_text.contains("GEMINI_API_KEY=sk-new"));
         assert!(!env_text.contains("# stale"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn should_import_default_config_on_startup_skips_takeover_live_recovery_state() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = std::sync::Arc::new(Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        db.update_proxy_config(crate::proxy::types::ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-key"
+                },
+                "config": r#"model_provider = "cc-switch"
+model = "gpt-5.5"
+
+[model_providers.cc-switch]
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        write_live_snapshot(&AppType::Codex, &provider).expect("seed codex takeover-like live");
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&provider.settings_config).expect("serialize backup"),
+        )
+        .await
+        .expect("save live backup");
+
+        assert!(
+            !should_import_default_config_on_startup(&state, &AppType::Codex)
+                .expect("evaluate startup import guard"),
+            "startup live import must skip Codex while takeover/failover recovery state is still active"
+        );
     }
 }

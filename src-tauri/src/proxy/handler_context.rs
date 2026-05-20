@@ -5,10 +5,11 @@
 use crate::app_config::AppType;
 use crate::provider::Provider;
 use crate::proxy::{
-    ProxyError, extract_session_id,
+    extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
     types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
+    ProxyError,
 };
 use axum::http::HeaderMap;
 use std::time::Instant;
@@ -107,8 +108,13 @@ impl RequestContext {
         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
         let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
 
-        let current_provider_id =
-            crate::settings::get_current_provider(&app_type).unwrap_or_default();
+        let current_provider_id = if app_config.enabled && app_config.auto_failover_enabled {
+            String::new()
+        } else {
+            crate::settings::get_effective_current_provider(&state.db, &app_type)
+                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+                .unwrap_or_default()
+        };
 
         // 从请求体提取模型名称
         let request_model = body

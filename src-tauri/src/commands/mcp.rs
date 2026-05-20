@@ -198,9 +198,14 @@ pub async fn toggle_mcp_app(
 #[tauri::command]
 pub async fn import_mcp_from_apps(state: State<'_, AppState>) -> Result<usize, String> {
     let mut total = 0;
-    total += McpService::import_from_claude(&state).unwrap_or(0);
-    total += McpService::import_from_codex(&state).unwrap_or(0);
-    total += McpService::import_from_gemini(&state).unwrap_or(0);
+    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+        total += match app {
+            AppType::Claude => McpService::import_from_claude(&state).unwrap_or(0),
+            AppType::Codex => McpService::import_from_codex(&state).unwrap_or(0),
+            AppType::Gemini => McpService::import_from_gemini(&state).unwrap_or(0),
+            _ => 0,
+        };
+    }
     total += McpService::import_from_opencode(&state).unwrap_or(0);
     total += McpService::import_from_hermes(&state).unwrap_or(0);
     Ok(total)

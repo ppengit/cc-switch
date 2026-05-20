@@ -885,7 +885,8 @@ impl RequestForwarder {
                                         let proxy_activity = proxy_activity.clone();
                                         let app_handle = app_handle.clone();
                                         let switch_epoch = switch_epoch.clone();
-                                        let status_for_disable_hook = status_for_disable_hook.clone();
+                                        let status_for_disable_hook =
+                                            status_for_disable_hook.clone();
                                         async move {
                                             clear_provider(
                                                 &proxy_activity,
@@ -910,7 +911,8 @@ impl RequestForwarder {
                                             }
 
                                             {
-                                                let mut status = status_for_disable_hook.write().await;
+                                                let mut status =
+                                                    status_for_disable_hook.write().await;
                                                 if status.current_provider_id.as_deref()
                                                     == Some(disabled_provider_id.as_str())
                                                 {

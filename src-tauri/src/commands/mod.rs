@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
-mod auth;
 mod api_hub;
+mod auth;
 mod balance;
 mod codex_oauth;
 mod coding_plan;
@@ -34,8 +34,8 @@ mod usage;
 mod webdav_sync;
 mod workspace;
 
-pub use auth::*;
 pub use api_hub::*;
+pub use auth::*;
 pub use balance::*;
 pub use codex_oauth::*;
 pub use coding_plan::*;

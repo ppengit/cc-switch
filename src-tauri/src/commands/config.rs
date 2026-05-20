@@ -539,6 +539,134 @@ fn validate_app_config_writes(
     Ok(())
 }
 
+fn build_live_config_value_from_writes(
+    app_type: &AppType,
+    writes: &[(String, String, PathBuf, String)],
+) -> Result<serde_json::Value, String> {
+    let lookup = |target_key: &str| -> Result<String, String> {
+        if let Some((_, _, _, content)) = writes.iter().find(|(key, _, _, _)| key == target_key) {
+            return Ok(content.clone());
+        }
+
+        let (_, label, path) = resolve_app_config_file(app_type, target_key)?;
+        std::fs::read_to_string(&path).map_err(|e| format!("读取 {label} 失败: {e}"))
+    };
+
+    match app_type {
+        AppType::Claude => serde_json::from_str::<serde_json::Value>(&lookup("settings")?)
+            .map_err(invalid_json_format_error),
+        AppType::Codex => {
+            let auth_value = serde_json::from_str::<serde_json::Value>(&lookup("auth")?)
+                .map_err(invalid_json_format_error)?;
+            Ok(serde_json::json!({
+                "auth": auth_value,
+                "config": lookup("config")?,
+            }))
+        }
+        AppType::Gemini => {
+            let env_text = lookup("env")?;
+            let env_map = crate::gemini_config::parse_env_file_strict(&env_text)
+                .map_err(|e| format!(".env 格式错误: {e}"))?;
+            let settings_value = serde_json::from_str::<serde_json::Value>(&lookup("settings")?)
+                .map_err(invalid_json_format_error)?;
+            Ok(serde_json::json!({
+                "env": crate::gemini_config::env_to_json(&env_map)
+                    .get("env")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                "config": settings_value,
+                crate::gemini_config::GEMINI_RENDERED_ENV_TEXT_FIELD: env_text,
+            }))
+        }
+        _ => Err("当前配置手动保存仅支持 Claude / Codex / Gemini".to_string()),
+    }
+}
+
+async fn write_validated_app_config_files(
+    state: &AppState,
+    app_type: AppType,
+    writes: Vec<(String, String, PathBuf, String)>,
+) -> Result<bool, String> {
+    let write_raw_files = |writes: Vec<(String, String, PathBuf, String)>| -> Result<bool, String> {
+        for (_, _, path, content) in writes {
+            if should_skip_missing_empty_file(&path, &content) {
+                continue;
+            }
+            crate::config::write_text_file(&path, &content)
+                .map_err(|e| format!("写入配置文件失败: {e}"))?;
+        }
+        Ok(true)
+    };
+
+    if writes
+        .iter()
+        .all(|(_, _, path, content)| should_skip_missing_empty_file(path, content))
+    {
+        return Ok(true);
+    }
+
+    if app_type.is_additive_mode() || matches!(app_type, AppType::ClaudeDesktop) {
+        return write_raw_files(writes);
+    }
+
+    let preserve_takeover = state
+        .proxy_service
+        .should_preserve_takeover_live_semantics(&app_type)
+        .await;
+
+    if !preserve_takeover {
+        return write_raw_files(writes);
+    }
+
+    if matches!(app_type, AppType::Claude) && writes.iter().all(|(key, _, _, _)| key == "mcp") {
+        return write_raw_files(writes);
+    }
+
+    let live_value = build_live_config_value_from_writes(&app_type, &writes)?;
+
+    let final_live = if preserve_takeover {
+        state
+            .proxy_service
+            .normalize_manual_live_edit_for_takeover(&app_type, &live_value)
+            .await?
+    } else {
+        live_value
+    };
+
+    state
+        .proxy_service
+        .write_live_config_for_app(&app_type, &final_live)?;
+
+    if matches!(app_type, AppType::Claude) {
+        if let Some((_, _, path, content)) = writes.iter().find(|(key, _, _, _)| key == "mcp") {
+            if !should_skip_missing_empty_file(path, content) {
+                crate::config::write_text_file(path, content)
+                    .map_err(|e| format!("写入配置文件失败: {e}"))?;
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+#[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+pub async fn write_app_config_files_test_hook(
+    state: &AppState,
+    app: String,
+    files: Vec<AppConfigFileWrite>,
+) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let mut writes = Vec::with_capacity(files.len());
+
+    for file in files {
+        let (key, label, path) = resolve_app_config_file(&app_type, &file.file_key)?;
+        writes.push((key, label, path, file.content));
+    }
+
+    validate_app_config_writes(&app_type, &writes)?;
+    write_validated_app_config_files(state, app_type, writes).await
+}
+
 #[tauri::command]
 pub async fn list_app_config_files(app: String) -> Result<Vec<AppConfigFileEntry>, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
@@ -583,6 +711,7 @@ pub async fn write_app_config_file(
     app: String,
     #[allow(non_snake_case)] fileKey: String,
     content: String,
+    state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     let target = resolve_app_config_file(&app_type, &fileKey)?;
@@ -592,35 +721,17 @@ pub async fn write_app_config_file(
         return Ok(true);
     }
     validate_app_config_file_content(&app_type, &key, &label, &content)?;
-    crate::config::write_text_file(&path, &content)
-        .map_err(|e| format!("写入配置文件失败: {e}"))?;
-    Ok(true)
+    write_validated_app_config_files(state.inner(), app_type, vec![(key, label, path, content)])
+        .await
 }
 
 #[tauri::command]
 pub async fn write_app_config_files(
     app: String,
     files: Vec<AppConfigFileWrite>,
+    state: tauri::State<'_, crate::store::AppState>,
 ) -> Result<bool, String> {
-    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    let mut writes = Vec::with_capacity(files.len());
-
-    for file in files {
-        let (key, label, path) = resolve_app_config_file(&app_type, &file.file_key)?;
-        writes.push((key, label, path, file.content));
-    }
-
-    validate_app_config_writes(&app_type, &writes)?;
-
-    for (_, _, path, content) in writes {
-        if should_skip_missing_empty_file(&path, &content) {
-            continue;
-        }
-        crate::config::write_text_file(&path, &content)
-            .map_err(|e| format!("写入配置文件失败: {e}"))?;
-    }
-
-    Ok(true)
+    write_app_config_files_test_hook(state.inner(), app, files).await
 }
 
 #[tauri::command]
@@ -703,9 +814,7 @@ pub async fn set_app_config_template(
             .await
             .map(|config| config.enabled)
             .unwrap_or(false);
-        let proxy_running = state.proxy_service.is_running().await;
-
-        if takeover_enabled && proxy_running {
+        if takeover_enabled {
             state
                 .proxy_service
                 .sync_live_access_template_for_app(&app_type)
@@ -946,8 +1055,66 @@ pub async fn set_common_config_snippet(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_common_config_snippet, validate_provider_default_template_payload};
-    use crate::app_config::AppType;
+    use super::{
+        validate_common_config_snippet, validate_provider_default_template_payload,
+        write_validated_app_config_files,
+    };
+    use crate::app_config::{AppType, McpApps, McpServer};
+    use crate::config::{get_claude_settings_path, read_json_file};
+    use crate::database::Database;
+    use crate::proxy::types::ProxyConfig;
+    use crate::store::AppState;
+    use serde_json::{json, Value};
+    use serial_test::serial;
+    use std::env;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
 
     #[test]
     fn validate_common_config_snippet_accepts_comment_only_codex_snippet() {
@@ -1005,6 +1172,264 @@ mod tests {
         assert!(
             err.contains("auth"),
             "expected auth validation error, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn write_validated_app_config_files_keeps_codex_takeover_proxy_base_url() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        db.save_mcp_server(&McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save codex mcp server");
+
+        write_validated_app_config_files(
+            &state,
+            AppType::Codex,
+            vec![
+                (
+                    "auth".to_string(),
+                    "auth.json".to_string(),
+                    crate::codex_config::get_codex_auth_path(),
+                    "{\n  \"OPENAI_API_KEY\": \"real-key\"\n}\n".to_string(),
+                ),
+                (
+                    "config".to_string(),
+                    "config.toml".to_string(),
+                    crate::codex_config::get_codex_config_path(),
+                    r#"model_provider = "custom"
+model = "gpt-5.6"
+
+[model_providers.custom]
+base_url = "https://real-provider.example/v1"
+wire_api = "responses"
+"#
+                    .to_string(),
+                ),
+            ],
+        )
+        .await
+        .expect("save current config");
+
+        let auth: Value =
+            read_json_file(&crate::codex_config::get_codex_auth_path()).expect("read codex auth");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "manual current-config save must keep Codex takeover auth on the proxy placeholder"
+        );
+
+        let config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read codex config");
+        assert!(
+            config.contains("model = \"gpt-5.6\""),
+            "manual current-config save should preserve user-edited model fields during takeover"
+        );
+        assert!(
+            config.contains("http://127.0.0.1:15721/v1"),
+            "manual current-config save must normalize Codex takeover base_url back to the local proxy"
+        );
+        assert!(
+            !config.contains("https://real-provider.example/v1"),
+            "manual current-config save must not write a direct provider endpoint into Codex live during takeover"
+        );
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "manual current-config save must re-inject DB-managed Codex MCP entries during takeover normalization"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn write_validated_app_config_files_keeps_claude_takeover_proxy_base_url() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        write_validated_app_config_files(
+            &state,
+            AppType::Claude,
+            vec![(
+                "settings".to_string(),
+                "settings.json".to_string(),
+                get_claude_settings_path(),
+                serde_json::to_string_pretty(&json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://real-provider.example",
+                        "ANTHROPIC_AUTH_TOKEN": "real-token",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "My Sonnet"
+                    }
+                }))
+                .expect("serialize claude settings"),
+            )],
+        )
+        .await
+        .expect("save current config");
+
+        let live: Value = read_json_file(&get_claude_settings_path()).expect("read claude live");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some("http://127.0.0.1:15721"),
+            "manual current-config save must normalize Claude takeover base_url back to the local proxy"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("PROXY_MANAGED"),
+            "manual current-config save must keep Claude takeover token on the proxy placeholder"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn write_validated_app_config_files_keeps_gemini_takeover_mcp_servers() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .expect("get gemini proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        db.save_mcp_server(&McpServer {
+            id: "gemini-memory".to_string(),
+            name: "Gemini Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                gemini: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save gemini mcp server");
+
+        write_validated_app_config_files(
+            &state,
+            AppType::Gemini,
+            vec![
+                (
+                    "env".to_string(),
+                    ".env".to_string(),
+                    crate::gemini_config::get_gemini_env_path(),
+                    "GEMINI_API_KEY=real-key\nGOOGLE_GEMINI_BASE_URL=https://real-provider.example\nGEMINI_MODEL=gemini-3.1-pro\n".to_string(),
+                ),
+                (
+                    "settings".to_string(),
+                    "settings.json".to_string(),
+                    crate::gemini_config::get_gemini_settings_path(),
+                    serde_json::to_string_pretty(&json!({
+                        "general": {
+                            "theme": "light"
+                        }
+                    }))
+                    .expect("serialize gemini settings"),
+                ),
+            ],
+        )
+        .await
+        .expect("save gemini current config");
+
+        let env = crate::gemini_config::read_gemini_env().expect("read gemini env");
+        assert_eq!(
+            env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:15721"),
+            "manual current-config save must normalize Gemini takeover base URL back to the local proxy"
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("PROXY_MANAGED"),
+            "manual current-config save must keep Gemini takeover key on the proxy placeholder"
+        );
+
+        let settings: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path())
+            .expect("read gemini settings");
+        assert_eq!(
+            settings.pointer("/general/theme").and_then(Value::as_str),
+            Some("light"),
+            "manual current-config save should preserve user-edited Gemini settings content"
+        );
+        assert_eq!(
+            settings
+                .pointer("/mcpServers/gemini-memory/command")
+                .and_then(Value::as_str),
+            Some("npx"),
+            "manual current-config save must re-inject DB-managed Gemini MCP entries during takeover normalization"
         );
     }
 }

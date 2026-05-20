@@ -10,9 +10,8 @@ use crate::proxy::server::ProxyServer;
 use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use crate::services::provider::{
-    ProviderService, build_direct_live_settings_with_mcp,
-    build_effective_settings_without_template, build_proxy_takeover_settings,
-    write_live_with_common_config,
+    build_direct_live_settings_with_mcp, build_effective_settings_without_template,
+    build_proxy_takeover_settings, write_live_with_common_config, ProviderService,
 };
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
@@ -62,6 +61,103 @@ pub struct HotSwitchOutcome {
 }
 
 impl ProxyService {
+    async fn build_gemini_direct_restore_snapshot(&self) -> Result<Option<Value>, String> {
+        let Some(provider) = self
+            .takeover_restore_target_provider_for_app(&AppType::Gemini)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let settings =
+            build_direct_live_settings_with_mcp(self.db.as_ref(), &AppType::Gemini, &provider)
+                .map_err(|e| format!("构建 Gemini 直连恢复配置失败: {e}"))?;
+        Ok(Some(settings))
+    }
+
+    fn is_legacy_gemini_env_only_backup(config: &Value) -> bool {
+        config.get("env").is_some()
+            && config.get("config").is_none()
+            && config.as_object().is_some_and(|obj| obj.len() == 1)
+    }
+
+    async fn upgrade_legacy_gemini_backup_if_needed(
+        &self,
+        config: Value,
+    ) -> Result<(Value, bool), String> {
+        if !Self::is_legacy_gemini_env_only_backup(&config) {
+            return Ok((config, false));
+        }
+
+        let Some(upgraded) = self.build_gemini_direct_restore_snapshot().await? else {
+            return Ok((config, false));
+        };
+
+        Ok((upgraded, true))
+    }
+
+    async fn load_restorable_live_backup_for_app(
+        &self,
+        app_type: &AppType,
+    ) -> Result<Option<(Value, bool)>, String> {
+        let Some(backup) = self
+            .db
+            .get_live_backup(app_type.as_str())
+            .await
+            .map_err(|e| format!("获取 {} Live 备份失败: {e}", app_type.as_str()))?
+        else {
+            return Ok(None);
+        };
+
+        let parsed: Value = serde_json::from_str(&backup.original_config)
+            .map_err(|e| format!("解析 {} 备份失败: {e}", app_type.as_str()))?;
+
+        if matches!(app_type, AppType::Gemini) {
+            let (upgraded, changed) = self.upgrade_legacy_gemini_backup_if_needed(parsed).await?;
+            return Ok(Some((upgraded, changed)));
+        }
+
+        Ok(Some((parsed, false)))
+    }
+
+    async fn persist_live_backup_for_app(
+        &self,
+        app_type: &AppType,
+        config: &Value,
+    ) -> Result<(), String> {
+        let serialized = serde_json::to_string(config)
+            .map_err(|e| format!("序列化 {} 备份失败: {e}", app_type.as_str()))?;
+        self.db
+            .save_live_backup(app_type.as_str(), &serialized)
+            .await
+            .map_err(|e| format!("更新 {} 备份失败: {e}", app_type.as_str()))?;
+        Ok(())
+    }
+
+    fn hydrate_mcp_db_from_app_live(&self, app_type: &AppType) -> Result<usize, String> {
+        let state = crate::store::AppState::new(self.db.clone());
+        match app_type {
+            AppType::Claude => crate::services::mcp::McpService::import_from_claude(&state),
+            AppType::Codex => crate::services::mcp::McpService::import_from_codex(&state),
+            AppType::Gemini => crate::services::mcp::McpService::import_from_gemini(&state),
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
+                Ok(0)
+            }
+        }
+        .map_err(|e| format!("导入 {} MCP 配置失败: {e}", app_type.as_str()))
+    }
+
+    fn sync_takeover_sidecars_from_db(&self, app_type: &AppType) -> Result<(), String> {
+        if !matches!(app_type, AppType::Claude) {
+            return Ok(());
+        }
+
+        let state = crate::store::AppState::new(self.db.clone());
+        crate::services::mcp::McpService::sync_all_enabled(&state)
+            .map_err(|e| format!("同步 {} MCP 配置失败: {e}", app_type.as_str()))?;
+        Ok(())
+    }
+
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
@@ -69,6 +165,32 @@ impl ProxyService {
             app_handle: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
         }
+    }
+
+    pub async fn should_preserve_takeover_live_semantics(&self, app_type: &AppType) -> bool {
+        if !matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return false;
+        }
+
+        let proxy_config = self
+            .db
+            .get_proxy_config_for_app(app_type.as_str())
+            .await
+            .ok();
+        let takeover_enabled = proxy_config
+            .as_ref()
+            .map(|config| config.enabled)
+            .unwrap_or(false);
+        let has_backup = self
+            .db
+            .get_live_backup(app_type.as_str())
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        let live_taken_over = self.detect_takeover_in_live_config_for_app(app_type);
+
+        takeover_enabled || has_backup || live_taken_over
     }
 
     fn clear_failover_current_provider_state(&self, app_type: &AppType) {
@@ -500,16 +622,16 @@ impl ProxyService {
                     &proxy_url,
                     Some(&provider.settings_config),
                 );
-                self.write_claude_live(&effective_settings)?;
+                self.write_live_config_for_app(app_type, &effective_settings)?;
             }
             AppType::Codex => {
                 Self::apply_codex_takeover_fields(&mut effective_settings, &proxy_codex_base_url);
                 Self::apply_codex_provider_model_fields(&mut effective_settings, provider)?;
-                self.write_codex_live(&effective_settings)?;
+                self.write_live_config_for_app(app_type, &effective_settings)?;
             }
             AppType::Gemini => {
                 Self::apply_gemini_takeover_fields(&mut effective_settings, &proxy_url);
-                self.write_gemini_live(&effective_settings)?;
+                self.write_live_config_for_app(app_type, &effective_settings)?;
             }
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
                 return Err("该应用不支持代理接管".to_string());
@@ -527,7 +649,9 @@ impl ProxyService {
             return Err("该应用不支持代理接管".to_string());
         }
 
-        let current_provider = self.takeover_restore_target_provider_for_app(app_type).await?;
+        let current_provider = self
+            .takeover_restore_target_provider_for_app(app_type)
+            .await?;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let mut live_config = build_proxy_takeover_settings(
             self.db.as_ref(),
@@ -547,18 +671,18 @@ impl ProxyService {
                         .as_ref()
                         .map(|provider| &provider.settings_config),
                 );
-                self.write_claude_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
             }
             AppType::Codex => {
                 Self::apply_codex_takeover_fields(&mut live_config, &proxy_codex_base_url);
                 if let Some(provider) = current_provider.as_ref() {
                     Self::apply_codex_provider_model_fields(&mut live_config, provider)?;
                 }
-                self.write_codex_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
             }
             AppType::Gemini => {
                 Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
-                self.write_gemini_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
             }
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
                 unreachable!()
@@ -749,6 +873,13 @@ impl ProxyService {
                 .await
                 .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
 
+            if let Err(error) = self.hydrate_mcp_db_from_app_live(&app) {
+                log::warn!(
+                    "{} 接管前导入当前 MCP 配置失败，将继续接管流程: {error}",
+                    app_type_str
+                );
+            }
+
             let mut has_existing_backup = false;
             let mut should_backup_live = !current_config.enabled;
             let mut should_sync_live_token = !current_config.enabled;
@@ -803,6 +934,7 @@ impl ProxyService {
                 if live_taken_over {
                     self.repair_takeover_runtime_state(&app).await?;
                     self.sync_live_access_template_for_app(&app).await?;
+                    self.sync_takeover_sidecars_from_db(&app)?;
                     self.sync_failover_active_target(app_type_str).await?;
                     return Ok(());
                 }
@@ -883,6 +1015,7 @@ impl ProxyService {
                 .await
                 .map_err(|e| format!("设置 {app_type_str} enabled 状态失败: {e}"))?;
             self.repair_takeover_runtime_state(&app).await?;
+            self.sync_takeover_sidecars_from_db(&app)?;
             self.sync_failover_active_target(app_type_str).await?;
 
             // 7) 兼容旧逻辑：写入 any-of 标志（失败不影响功能）
@@ -1346,7 +1479,11 @@ impl ProxyService {
             let mut modes = Vec::new();
             for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
                 if let Ok(config) = self.db.get_proxy_config_for_app(app_type.as_str()).await {
-                    modes.push((app_type, config.enabled && config.auto_failover_enabled, config));
+                    modes.push((
+                        app_type,
+                        config.enabled && config.auto_failover_enabled,
+                        config,
+                    ));
                 }
             }
             modes
@@ -1650,7 +1787,7 @@ impl ProxyService {
                         .as_ref()
                         .map(|provider| &provider.settings_config),
                 );
-                self.write_claude_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
                 log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
             }
             AppType::Codex => {
@@ -1663,12 +1800,12 @@ impl ProxyService {
                         app_type.as_str()
                     );
                 }
-                self.write_codex_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
                 Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
-                self.write_gemini_live(&live_config)?;
+                self.write_live_config_for_app(app_type, &live_config)?;
                 log::info!("Gemini Live 配置已接管，代理地址: {proxy_url}");
             }
             _ => return Err("该应用不支持代理功能".to_string()),
@@ -1681,7 +1818,10 @@ impl ProxyService {
     async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let current_provider = if matches!(app_type, AppType::Claude | AppType::Codex) {
-            match self.takeover_restore_target_provider_for_app(app_type).await {
+            match self
+                .takeover_restore_target_provider_for_app(app_type)
+                .await
+            {
                 Ok(provider) => provider,
                 Err(err) => {
                     log::warn!(
@@ -1712,7 +1852,7 @@ impl ProxyService {
                             .as_ref()
                             .map(|provider| &provider.settings_config),
                     );
-                    let _ = self.write_claude_live(&live_config);
+                    let _ = self.write_live_config_for_app(app_type, &live_config);
                 }
             }
             AppType::Codex => {
@@ -1727,13 +1867,13 @@ impl ProxyService {
                     } else {
                         log::warn!("未找到 Codex 当前供应商，接管配置将保留模板模型字段");
                     }
-                    let _ = self.write_codex_live(&live_config);
+                    let _ = self.write_live_config_for_app(app_type, &live_config);
                 }
             }
             AppType::Gemini => {
                 if let Ok(mut live_config) = live_config {
                     Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
-                    let _ = self.write_gemini_live(&live_config);
+                    let _ = self.write_live_config_for_app(app_type, &live_config);
                 }
             }
             _ => {}
@@ -1749,32 +1889,17 @@ impl ProxyService {
     }
 
     async fn restore_live_config_for_app_inner(&self, app_type: &AppType) -> Result<(), String> {
-        match app_type {
-            AppType::Claude => {
-                if let Ok(Some(backup)) = self.db.get_live_backup("claude").await {
-                    let config: Value = serde_json::from_str(&backup.original_config)
-                        .map_err(|e| format!("解析 Claude 备份失败: {e}"))?;
-                    self.write_claude_live(&config)?;
-                    log::info!("Claude Live 配置已恢复");
-                }
+        if !matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            return Ok(());
+        }
+
+        if let Some((config, upgraded)) = self.load_restorable_live_backup_for_app(app_type).await?
+        {
+            if upgraded {
+                self.persist_live_backup_for_app(app_type, &config).await?;
             }
-            AppType::Codex => {
-                if let Ok(Some(backup)) = self.db.get_live_backup("codex").await {
-                    let config: Value = serde_json::from_str(&backup.original_config)
-                        .map_err(|e| format!("解析 Codex 备份失败: {e}"))?;
-                    self.write_codex_live(&config)?;
-                    log::info!("Codex Live 配置已恢复");
-                }
-            }
-            AppType::Gemini => {
-                if let Ok(Some(backup)) = self.db.get_live_backup("gemini").await {
-                    let config: Value = serde_json::from_str(&backup.original_config)
-                        .map_err(|e| format!("解析 Gemini 备份失败: {e}"))?;
-                    self.write_gemini_live(&config)?;
-                    log::info!("Gemini Live 配置已恢复");
-                }
-            }
-            _ => {}
+            self.write_live_config_for_app(app_type, &config)?;
+            log::info!("{} Live 配置已恢复", app_type.as_str());
         }
 
         Ok(())
@@ -1826,25 +1951,6 @@ impl ProxyService {
     ) -> Result<(), String> {
         let app_type_str = app_type.as_str();
 
-        // 1) 优先从 Live 备份恢复（这是"原始 Live"的唯一可靠来源）
-        let backup = self
-            .db
-            .get_live_backup(app_type_str)
-            .await
-            .map_err(|e| format!("获取 {app_type_str} Live 备份失败: {e}"))?;
-        if let Some(backup) = backup {
-            let config: Value = serde_json::from_str(&backup.original_config)
-                .map_err(|e| format!("解析 {app_type_str} 备份失败: {e}"))?;
-            self.write_live_config_for_app(app_type, &config)?;
-            log::info!("{app_type_str} Live 配置已从备份恢复");
-            return Ok(());
-        }
-
-        // 2) 兜底：备份缺失，但 Live 仍包含接管占位符（异常退出/历史 bug 场景）
-        if !self.detect_takeover_in_live_config_for_app(app_type) {
-            return Ok(());
-        }
-
         if preserve_takeover_if_active
             && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
         {
@@ -1854,11 +1960,27 @@ impl ProxyService {
                 .await
                 .map(|config| config.enabled)
                 .unwrap_or(false);
-            if takeover_enabled && self.is_running().await {
+            if takeover_enabled {
                 self.sync_live_access_template_for_app(app_type).await?;
-                log::info!("{app_type_str} Live 配置已重建为代理接入模板（无备份兜底）");
+                log::info!("{app_type_str} Live 配置已保持为代理接入模板");
                 return Ok(());
             }
+        }
+
+        // 1) 优先从 Live 备份恢复（这是"原始 Live"的唯一可靠来源）
+        if let Some((config, upgraded)) = self.load_restorable_live_backup_for_app(app_type).await?
+        {
+            if upgraded {
+                self.persist_live_backup_for_app(app_type, &config).await?;
+            }
+            self.write_live_config_for_app(app_type, &config)?;
+            log::info!("{app_type_str} Live 配置已从备份恢复");
+            return Ok(());
+        }
+
+        // 2) 兜底：备份缺失，但 Live 仍包含接管占位符（异常退出/历史 bug 场景）
+        if !self.detect_takeover_in_live_config_for_app(app_type) {
+            return Ok(());
         }
 
         // 2.1) 优先从 SSOT（当前供应商）重建 Live（比"清理字段"更可用）
@@ -1885,7 +2007,11 @@ impl ProxyService {
         Ok(())
     }
 
-    fn write_live_config_for_app(&self, app_type: &AppType, config: &Value) -> Result<(), String> {
+    pub(crate) fn write_live_config_for_app(
+        &self,
+        app_type: &AppType,
+        config: &Value,
+    ) -> Result<(), String> {
         if let Err(error) = self.db.set_live_owner_provider_id(app_type.as_str(), None) {
             log::warn!(
                 "清理 {} live owner 锚点失败，继续写入原始 Live 配置: {error}",
@@ -1898,6 +2024,37 @@ impl ProxyService {
             AppType::Gemini => self.write_gemini_live(config),
             _ => Err("该应用不支持代理功能".to_string()),
         }
+    }
+
+    pub async fn normalize_manual_live_edit_for_takeover(
+        &self,
+        app_type: &AppType,
+        edited_live: &Value,
+    ) -> Result<Value, String> {
+        let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let mut normalized = edited_live.clone();
+
+        crate::services::provider::inject_db_managed_mcp_into_settings(
+            self.db.as_ref(),
+            app_type,
+            &mut normalized,
+        )
+        .map_err(|e| format!("注入 {} MCP 配置失败: {e}", app_type.as_str()))?;
+
+        match app_type {
+            AppType::Claude => {
+                Self::apply_claude_takeover_fields(&mut normalized, &proxy_url, Some(edited_live));
+            }
+            AppType::Codex => {
+                Self::apply_codex_takeover_fields(&mut normalized, &proxy_codex_base_url);
+            }
+            AppType::Gemini => {
+                Self::apply_gemini_takeover_fields(&mut normalized, &proxy_url);
+            }
+            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {}
+        }
+
+        Ok(normalized)
     }
 
     pub fn detect_takeover_in_live_config_for_app(&self, app_type: &AppType) -> bool {
@@ -2027,7 +2184,7 @@ impl ProxyService {
             env.remove("ANTHROPIC_BASE_URL");
         }
 
-        self.write_claude_live(&config)?;
+        self.write_live_config_for_app(&AppType::Claude, &config)?;
         Ok(())
     }
 
@@ -2046,7 +2203,7 @@ impl ProxyService {
             config["config"] = json!(updated);
         }
 
-        self.write_codex_live(&config)?;
+        self.write_live_config_for_app(&AppType::Codex, &config)?;
         Ok(())
     }
 
@@ -2075,7 +2232,7 @@ impl ProxyService {
             env.remove("GOOGLE_GEMINI_BASE_URL");
         }
 
-        self.write_gemini_live(&config)?;
+        self.write_live_config_for_app(&AppType::Gemini, &config)?;
         Ok(())
     }
 
@@ -2111,7 +2268,15 @@ impl ProxyService {
             }
 
             if config.enabled {
+                if let Err(error) = self.hydrate_mcp_db_from_app_live(&app_type) {
+                    log::warn!(
+                        "{} crash recovery failed to hydrate MCP definitions before takeover rebuild: {error}",
+                        app_key
+                    );
+                }
                 self.repair_takeover_runtime_state(&app_type).await?;
+                self.sync_live_access_template_for_app(&app_type).await?;
+                self.sync_takeover_sidecars_from_db(&app_type)?;
                 if self.is_running().await {
                     self.sync_failover_active_target(app_key).await?;
                 }
@@ -2351,16 +2516,8 @@ impl ProxyService {
                 .map_err(|e| format!("序列化 Claude 配置失败: {e}"))?,
             AppType::Codex => serde_json::to_string(&effective_settings)
                 .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?,
-            AppType::Gemini => {
-                // Gemini takeover 仅修改 .env；settings.json（含 mcpServers）保持原样。
-                let env_backup = if let Some(env) = effective_settings.get("env") {
-                    json!({ "env": env })
-                } else {
-                    json!({ "env": {} })
-                };
-                serde_json::to_string(&env_backup)
-                    .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
-            }
+            AppType::Gemini => serde_json::to_string(&effective_settings)
+                .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?,
             _ => return Err(format!("未知的应用类型: {app_type}")),
         };
 
@@ -2377,7 +2534,10 @@ impl ProxyService {
         &self,
         app_type: &AppType,
     ) -> Result<bool, String> {
-        if let Some(provider) = self.takeover_restore_target_provider_for_app(app_type).await? {
+        if let Some(provider) = self
+            .takeover_restore_target_provider_for_app(app_type)
+            .await?
+        {
             self.update_live_backup_from_provider_inner(app_type.as_str(), &provider)
                 .await?;
             return Ok(true);
@@ -2389,18 +2549,19 @@ impl ProxyService {
         &self,
         app_type: &AppType,
     ) -> Result<bool, String> {
-        let Some(backup) = self
-            .db
-            .get_live_backup(app_type.as_str())
-            .await
-            .map_err(|e| format!("读取 {} Live 备份失败: {e}", app_type.as_str()))?
+        let Some((backup_value, upgraded)) =
+            self.load_restorable_live_backup_for_app(app_type).await?
         else {
             return Ok(false);
         };
-
-        let backup_value: Value = serde_json::from_str(&backup.original_config)
-            .map_err(|e| format!("解析 {} Live 备份失败: {e}", app_type.as_str()))?;
-        let Some(provider) = self.takeover_restore_target_provider_for_app(app_type).await? else {
+        if upgraded {
+            self.persist_live_backup_for_app(app_type, &backup_value)
+                .await?;
+        }
+        let Some(provider) = self
+            .takeover_restore_target_provider_for_app(app_type)
+            .await?
+        else {
             return Ok(false);
         };
 
@@ -2428,9 +2589,13 @@ impl ProxyService {
             self.clear_failover_current_provider_state(app_type);
         }
 
-        let backup_matches_target = self.takeover_backup_matches_restore_target(app_type).await?;
+        let backup_matches_target = self
+            .takeover_backup_matches_restore_target(app_type)
+            .await?;
         if !backup_matches_target {
-            let rebuilt = self.rebuild_live_backup_from_restore_target(app_type).await?;
+            let rebuilt = self
+                .rebuild_live_backup_from_restore_target(app_type)
+                .await?;
             if !rebuilt {
                 if config.auto_failover_enabled {
                     self.db
@@ -2490,8 +2655,7 @@ impl ProxyService {
             .await
             .map(|config| config.enabled)
             .unwrap_or(false);
-        let should_sync_backup =
-            has_backup || live_taken_over || (app_takeover_enabled && self.is_running().await);
+        let should_sync_backup = has_backup || live_taken_over || app_takeover_enabled;
 
         self.db
             .set_current_provider(app_type_enum.as_str(), provider_id)
@@ -2809,8 +2973,8 @@ impl ProxyService {
 
     fn read_gemini_live(&self) -> Result<Value, String> {
         use crate::gemini_config::{
-            GEMINI_RENDERED_ENV_TEXT_FIELD, env_to_json, get_gemini_env_path,
-            get_gemini_settings_path, read_gemini_env, read_gemini_env_text,
+            env_to_json, get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
+            read_gemini_env_text, GEMINI_RENDERED_ENV_TEXT_FIELD,
         };
 
         let env_path = get_gemini_env_path();
@@ -2844,8 +3008,8 @@ impl ProxyService {
 
     fn write_gemini_live(&self, config: &Value) -> Result<(), String> {
         use crate::gemini_config::{
-            GEMINI_RENDERED_ENV_TEXT_FIELD, env_text_matches_map, get_gemini_settings_path,
-            json_to_env, write_gemini_env_atomic, write_gemini_env_text_atomic,
+            env_text_matches_map, get_gemini_settings_path, json_to_env, write_gemini_env_atomic,
+            write_gemini_env_text_atomic, GEMINI_RENDERED_ENV_TEXT_FIELD,
         };
 
         let env_map = json_to_env(config).map_err(|e| format!("转换 Gemini 配置失败: {e}"))?;
@@ -3191,7 +3355,7 @@ impl ProxyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, body::Body, routing::post};
+    use axum::{body::Body, routing::post, Router};
     use bytes::Bytes;
     use futures::StreamExt;
     use serial_test::serial;
@@ -3199,7 +3363,7 @@ mod tests {
     use std::env;
     use tempfile::TempDir;
     use tokio::task::JoinHandle;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     struct TempHome {
         #[allow(dead_code)]
@@ -4033,6 +4197,69 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
+    async fn takeover_live_writes_clear_live_owner_anchor() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "a-key"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.5"
+
+[model_providers.codex-a]
+base_url = "https://codex.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", &provider.id)
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+            .expect("set local current provider");
+        db.set_live_owner_provider_id("codex", Some(&provider.id))
+            .expect("seed direct live owner anchor");
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable codex takeover");
+
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider)
+            .await
+            .expect("write codex takeover live");
+
+        assert_eq!(
+            db.get_live_owner_provider_id("codex")
+                .expect("read live owner anchor after takeover write"),
+            None,
+            "proxy takeover live writes must clear the direct-live owner anchor"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn sync_codex_live_token_skips_when_live_endpoint_is_missing() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -4622,7 +4849,7 @@ requires_openai_auth = true
     #[tokio::test]
     #[serial]
     async fn hot_switch_provider_serializes_same_app_switches() {
-        use tokio::time::{Duration, sleep};
+        use tokio::time::{sleep, Duration};
 
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -4715,7 +4942,7 @@ requires_openai_auth = true
     #[tokio::test]
     #[serial]
     async fn restore_waits_for_hot_switch_and_restores_latest_backup() {
-        use tokio::time::{Duration, sleep};
+        use tokio::time::{sleep, Duration};
 
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -5863,8 +6090,8 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn real_http_codex_failover_first_upstream_down_second_success_keeps_takeover_live_and_current_empty()
-    {
+    async fn real_http_codex_failover_first_upstream_down_second_success_keeps_takeover_live_and_current_empty(
+    ) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -6324,15 +6551,13 @@ requires_openai_auth = true
             .sync_failover_active_target("claude")
             .await
             .expect("sync active target");
-        assert!(
-            service
-                .get_status()
-                .await
-                .expect("get proxy status")
-                .active_targets
-                .iter()
-                .any(|target| target.app_type == "claude")
-        );
+        assert!(service
+            .get_status()
+            .await
+            .expect("get proxy status")
+            .active_targets
+            .iter()
+            .any(|target| target.app_type == "claude"));
 
         let mut app_config = db
             .get_proxy_config_for_app("claude")
@@ -6586,13 +6811,18 @@ requires_openai_auth = true
             "manual proxy shutdown from failover mode must restore queue head as direct current provider"
         );
 
-        let live = service.read_claude_live().expect("read restored claude live");
+        let live = service
+            .read_claude_live()
+            .expect("read restored claude live");
         assert_eq!(
             live, provider_b.settings_config,
             "manual proxy shutdown from failover mode must restore queue head direct live config"
         );
 
-        let status = service.get_status().await.expect("get proxy status after stop");
+        let status = service
+            .get_status()
+            .await
+            .expect("get proxy status after stop");
         assert!(
             status
                 .active_targets
@@ -6604,8 +6834,7 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn stop_with_restore_keep_state_preserves_takeover_live_when_failover_stays_enabled(
-    ) {
+    async fn stop_with_restore_keep_state_preserves_takeover_live_when_failover_stays_enabled() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -6706,7 +6935,9 @@ requires_openai_auth = true
             "keep-state shutdown from failover mode must not recreate a direct current provider"
         );
 
-        let live = service.read_claude_live().expect("read restored claude live");
+        let live = service
+            .read_claude_live()
+            .expect("read restored claude live");
         assert_eq!(
             live.pointer("/env/ANTHROPIC_BASE_URL")
                 .and_then(Value::as_str),
@@ -6727,7 +6958,8 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn keep_state_shutdown_followed_by_takeover_restore_uses_queue_head_as_restart_baseline() {
+    async fn keep_state_shutdown_followed_by_takeover_restore_uses_queue_head_as_restart_baseline()
+    {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -6872,8 +7104,8 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn turning_off_app_takeover_in_failover_mode_restores_queue_head_as_direct_current_provider()
-     {
+    async fn turning_off_app_takeover_in_failover_mode_restores_queue_head_as_direct_current_provider(
+    ) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -7520,7 +7752,7 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn restore_live_fallback_restores_direct_live_when_takeover_is_enabled_but_proxy_stopped()
+    async fn restore_live_fallback_keeps_takeover_live_when_takeover_is_enabled_but_proxy_stopped()
     {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -7585,14 +7817,14 @@ wire_api = "responses"
         assert_eq!(
             live.pointer("/env/ANTHROPIC_BASE_URL")
                 .and_then(Value::as_str),
-            Some("https://a.example"),
-            "fallback restore should return to the current provider direct endpoint when takeover stays enabled but the proxy is not running"
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "fallback restore must keep Claude on the proxy takeover endpoint while enabled=true even if the proxy process is not running yet"
         );
         assert_eq!(
             live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
                 .and_then(Value::as_str),
-            Some("token-a"),
-            "fallback restore should restore the current provider credentials when the proxy is stopped"
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "fallback restore must keep the takeover placeholder while enabled=true even if the proxy process is not running yet"
         );
     }
 
@@ -7851,7 +8083,8 @@ command = "npx"
 
         db.save_live_backup(
             "codex",
-            &serde_json::to_string(&stale_provider.settings_config).expect("serialize stale backup"),
+            &serde_json::to_string(&stale_provider.settings_config)
+                .expect("serialize stale backup"),
         )
         .await
         .expect("seed stale backup");
@@ -7961,6 +8194,24 @@ wire_api = "responses"
             .expect("save codex provider");
         db.add_to_failover_queue("codex", &provider.id)
             .expect("queue provider");
+        db.save_mcp_server(&crate::app_config::McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: crate::app_config::McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save codex mcp server");
 
         let mut app_config = db
             .get_proxy_config_for_app("codex")
@@ -7973,10 +8224,7 @@ wire_api = "responses"
             .expect("enable takeover and failover");
 
         let service = ProxyService::new(db.clone());
-        service
-            .start()
-            .await
-            .expect("start proxy service");
+        service.start().await.expect("start proxy service");
         service
             .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider)
             .await
@@ -8002,7 +8250,9 @@ wire_api = "responses"
             .await
             .expect("startup restore should rebuild takeover live without deleted provider");
 
-        let auth = service.read_codex_live().expect("read codex live after startup restore");
+        let auth = service
+            .read_codex_live()
+            .expect("read codex live after startup restore");
         assert_eq!(
             auth.get("auth")
                 .and_then(|value| value.get("OPENAI_API_KEY"))
@@ -8022,6 +8272,10 @@ wire_api = "responses"
         assert!(
             !config.contains("https://deleted.example/v1"),
             "deleted provider endpoint must not reappear in Codex live during startup restore"
+        );
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "startup restore must preserve DB-managed Codex MCP servers after the queued provider was deleted"
         );
         assert_eq!(
             crate::settings::get_effective_current_provider(&db, &AppType::Codex)
@@ -8108,7 +8362,8 @@ wire_api = "responses"
             .expect("seed stale direct codex live");
         db.save_live_backup(
             "codex",
-            &serde_json::to_string(&deleted_provider.settings_config).expect("serialize stale backup"),
+            &serde_json::to_string(&deleted_provider.settings_config)
+                .expect("serialize stale backup"),
         )
         .await
         .expect("seed stale backup");
@@ -8125,7 +8380,9 @@ wire_api = "responses"
             .await
             .expect("startup takeover should rewrite stale direct live");
 
-        let live = service.read_codex_live().expect("read rewritten codex live");
+        let live = service
+            .read_codex_live()
+            .expect("read rewritten codex live");
         assert_eq!(
             live.get("auth")
                 .and_then(|value| value.get("OPENAI_API_KEY"))
@@ -8274,6 +8531,423 @@ wire_api = "responses"
         assert!(
             config.contains(&format!("http://127.0.0.1:{port}/v1")),
             "startup takeover refresh must keep Codex live on the local proxy endpoint"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabling_codex_takeover_imports_existing_live_mcp_before_rewrite() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-key"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.5"
+
+[model_providers.codex-a]
+base_url = "https://codex.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.set_current_provider("codex", &provider.id)
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+            .expect("set local current provider");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_codex_live(&json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-key"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.5"
+
+[model_providers.codex-a]
+base_url = "https://codex.example/v1"
+wire_api = "responses"
+
+[mcp_servers.memory]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+"#
+            }))
+            .expect("seed codex live with existing mcp");
+
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("enable codex takeover");
+
+        let servers = db.get_all_mcp_servers().expect("load mcp servers");
+        let server = servers
+            .get("memory")
+            .expect("memory mcp should be imported");
+        assert!(
+            server.apps.codex,
+            "existing Codex live MCP should be imported into DB before takeover rewrites the live config"
+        );
+
+        let live = service.read_codex_live().expect("read codex takeover live");
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "Codex takeover rewrite should preserve/import the pre-existing live MCP definition"
+        );
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "Codex takeover rewrite must still point to the local proxy endpoint"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn enabling_gemini_takeover_imports_existing_live_mcp_before_rewrite() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "theme": "light"
+                    }
+                }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save gemini provider");
+        db.set_current_provider("gemini", &provider.id)
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some(&provider.id))
+            .expect("set local current provider");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_gemini_live(&json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "theme": "light"
+                    },
+                    "mcpServers": {
+                        "memory": {
+                            "command": "npx",
+                            "args": ["-y", "@modelcontextprotocol/server-memory"]
+                        }
+                    }
+                }
+            }))
+            .expect("seed gemini live with existing mcp");
+
+        service
+            .set_takeover_for_app("gemini", true)
+            .await
+            .expect("enable gemini takeover");
+
+        let servers = db.get_all_mcp_servers().expect("load mcp servers");
+        let server = servers
+            .get("memory")
+            .expect("memory mcp should be imported");
+        assert!(
+            server.apps.gemini,
+            "existing Gemini live MCP should be imported into DB before takeover rewrites the live config"
+        );
+
+        let live = service
+            .read_gemini_live()
+            .expect("read gemini takeover live");
+        assert_eq!(
+            live.pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "Gemini takeover rewrite must still point to the local proxy endpoint"
+        );
+        assert_eq!(
+            live.pointer("/config/mcpServers/memory/command")
+                .and_then(Value::as_str),
+            Some("npx"),
+            "Gemini takeover rewrite should preserve/import the pre-existing live MCP definition"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn keep_state_restart_clears_stale_deleted_codex_current_before_takeover_restore() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        let deleted_provider = Provider::with_id(
+            "codex-deleted".to_string(),
+            "Codex Deleted".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "deleted-key"
+                },
+                "config": r#"model_provider = "codex-deleted"
+model = "gpt-5.4"
+
+[model_providers.codex-deleted]
+base_url = "https://deleted.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &deleted_provider)
+            .expect("save deleted provider");
+        db.add_to_failover_queue("codex", &deleted_provider.id)
+            .expect("queue deleted provider");
+        db.set_current_provider("codex", &deleted_provider.id)
+            .expect("seed stale db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&deleted_provider.id))
+            .expect("seed stale local current");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &deleted_provider)
+            .await
+            .expect("seed takeover live");
+        service
+            .update_live_backup_from_provider("codex", &deleted_provider)
+            .await
+            .expect("seed takeover backup");
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("keep-state shutdown");
+
+        db.delete_provider("codex", &deleted_provider.id)
+            .expect("delete provider after keep-state shutdown");
+
+        let restarted = ProxyService::new(db.clone());
+        restarted
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("restart takeover restore should tolerate deleted stale current");
+
+        let live = restarted
+            .read_codex_live()
+            .expect("read codex live after restart restore");
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "restart takeover restore must keep Codex live on the local proxy endpoint even when stale DB current pointed to a deleted provider"
+        );
+        assert!(
+            !config.contains("https://deleted.example/v1"),
+            "deleted provider base_url must not be reintroduced by stale DB current during restart takeover restore"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Codex)
+                .expect("get effective current after restart restore"),
+            None,
+            "effective current must clear deleted DB current residues during restart takeover restore"
+        );
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("get raw db current after restart restore"),
+            None,
+            "restart takeover restore must clear raw DB is_current when it points to a deleted provider"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn recover_from_crash_rewrites_stale_direct_codex_live_back_to_takeover() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        let deleted_provider = Provider::with_id(
+            "codex-deleted".to_string(),
+            "Codex Deleted".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "deleted-key"
+                },
+                "config": r#"model_provider = "codex-deleted"
+model = "gpt-5.4"
+
+[model_providers.codex-deleted]
+base_url = "https://deleted.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &deleted_provider)
+            .expect("save stale provider");
+        db.add_to_failover_queue("codex", &deleted_provider.id)
+            .expect("queue stale provider");
+        db.set_current_provider("codex", &deleted_provider.id)
+            .expect("seed stale db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&deleted_provider.id))
+            .expect("seed stale local current");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_codex_live(&deleted_provider.settings_config)
+            .expect("seed stale direct codex live");
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&deleted_provider.settings_config)
+                .expect("serialize stale backup"),
+        )
+        .await
+        .expect("seed stale backup");
+
+        db.delete_provider("codex", &deleted_provider.id)
+            .expect("delete stale provider before crash recovery");
+
+        service
+            .recover_from_crash()
+            .await
+            .expect("recover from crash");
+
+        let live = service.read_codex_live().expect("read repaired codex live");
+        assert_eq!(
+            live.get("auth")
+                .and_then(|value| value.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "crash recovery must restore the takeover auth placeholder instead of leaving a direct provider token in Codex live"
+        );
+
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "crash recovery must rewrite stale direct Codex live to the local proxy endpoint while takeover remains enabled"
+        );
+        assert!(
+            !config.contains("https://deleted.example/v1"),
+            "crash recovery must not preserve a deleted provider endpoint in Codex live"
         );
     }
 
@@ -8796,6 +9470,315 @@ command = "latest-command"
                 .and_then(|v| v.as_str()),
             Some("latest-command"),
             "new MCP entries should remain in the restore backup"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn update_live_backup_from_provider_preserves_gemini_settings_and_mcp_servers() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        db.save_mcp_server(&crate::app_config::McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: crate::app_config::McpApps {
+                gemini: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save gemini mcp server");
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "theme": "light",
+                        "telemetry": false
+                    }
+                }
+            }),
+            None,
+        );
+
+        service
+            .update_live_backup_from_provider("gemini", &provider)
+            .await
+            .expect("update gemini live backup");
+
+        let backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("get gemini live backup")
+            .expect("gemini backup exists");
+        let stored: Value =
+            serde_json::from_str(&backup.original_config).expect("parse gemini backup json");
+
+        assert_eq!(
+            stored
+                .pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://gemini.example"),
+            "Gemini restore backup must preserve the provider direct endpoint"
+        );
+        assert_eq!(
+            stored
+                .pointer("/config/general/theme")
+                .and_then(Value::as_str),
+            Some("light"),
+            "Gemini restore backup must preserve provider-owned settings.json content"
+        );
+        assert_eq!(
+            stored
+                .pointer("/config/mcpServers/memory/command")
+                .and_then(Value::as_str),
+            Some("npx"),
+            "Gemini restore backup must preserve DB-managed MCP definitions for later restore"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn restore_live_fallback_upgrades_legacy_gemini_env_only_backup_from_ssot() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "theme": "light"
+                    }
+                }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save gemini provider");
+        db.set_current_provider("gemini", &provider.id)
+            .expect("set gemini current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some(&provider.id))
+            .expect("set local gemini current provider");
+
+        db.save_live_backup(
+            "gemini",
+            &serde_json::to_string(&json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                }
+            }))
+            .expect("serialize legacy gemini backup"),
+        )
+        .await
+        .expect("save legacy gemini backup");
+
+        service
+            .write_gemini_live(&json!({
+                "env": {
+                    "GEMINI_API_KEY": PROXY_TOKEN_PLACEHOLDER,
+                    "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:15721",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "mcpServers": {
+                        "stale": {
+                            "command": "stale"
+                        }
+                    }
+                }
+            }))
+            .expect("seed taken-over gemini live");
+
+        service
+            .restore_live_config_for_app_with_fallback(&AppType::Gemini)
+            .await
+            .expect("restore gemini with fallback");
+
+        let live = service
+            .read_gemini_live()
+            .expect("read restored gemini live");
+        assert_eq!(
+            live.pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://gemini.example"),
+            "legacy env-only Gemini backups should be upgraded back to the direct provider endpoint"
+        );
+        assert_eq!(
+            live.pointer("/config/general/theme").and_then(Value::as_str),
+            Some("light"),
+            "fallback restore should rebuild Gemini settings.json from SSOT when the backup is legacy env-only"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn keep_state_restart_repairs_legacy_gemini_backup_before_takeover_restore() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.save_mcp_server(&crate::app_config::McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: crate::app_config::McpApps {
+                gemini: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save gemini mcp server");
+
+        let provider = Provider::with_id(
+            "gemini-a".to_string(),
+            "Gemini A".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                },
+                "config": {
+                    "general": {
+                        "theme": "light",
+                        "telemetry": false
+                    }
+                }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save gemini provider");
+        db.add_to_failover_queue("gemini", &provider.id)
+            .expect("queue gemini provider");
+        db.set_current_provider("gemini", &provider.id)
+            .expect("set gemini current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some(&provider.id))
+            .expect("set local gemini current provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .expect("get gemini proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable gemini takeover and failover");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Gemini, &provider)
+            .await
+            .expect("seed gemini takeover live");
+
+        db.save_live_backup(
+            "gemini",
+            &serde_json::to_string(&json!({
+                "env": {
+                    "GEMINI_API_KEY": "real-key",
+                    "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                    "GEMINI_MODEL": "gemini-3.1-pro"
+                }
+            }))
+            .expect("serialize legacy gemini backup"),
+        )
+        .await
+        .expect("save legacy gemini backup");
+
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("keep-state shutdown");
+
+        let restarted = ProxyService::new(db.clone());
+        restarted
+            .set_takeover_for_app("gemini", true)
+            .await
+            .expect("restart gemini takeover");
+
+        let repaired_backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("read repaired gemini backup")
+            .expect("repaired gemini backup should exist");
+        let repaired_value: Value = serde_json::from_str(&repaired_backup.original_config)
+            .expect("parse repaired gemini backup");
+        assert_eq!(
+            repaired_value
+                .pointer("/config/general/theme")
+                .and_then(Value::as_str),
+            Some("light"),
+            "restart takeover repair must upgrade legacy Gemini backups to include settings.json content"
+        );
+        assert_eq!(
+            repaired_value
+                .pointer("/config/mcpServers/memory/command")
+                .and_then(Value::as_str),
+            Some("npx"),
+            "restart takeover repair must rebuild Gemini DB-managed MCP definitions into the restore backup"
+        );
+
+        let live = restarted
+            .read_gemini_live()
+            .expect("read gemini live after restart");
+        assert_eq!(
+            live.pointer("/env/GOOGLE_GEMINI_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "Gemini live should remain on the local proxy endpoint after keep-state restart recovery"
+        );
+        assert_eq!(
+            live.pointer("/config/mcpServers/memory/command")
+                .and_then(Value::as_str),
+            Some("npx"),
+            "Gemini takeover restart should keep MCP definitions available after repairing the restore backup"
         );
     }
 }

@@ -78,8 +78,7 @@ pub async fn import_config_from_file(
 
 #[tauri::command]
 pub async fn sync_current_providers_live(state: State<'_, AppState>) -> Result<Value, String> {
-    ProviderService::sync_current_to_live(state.inner())
-        .map_err(|e: AppError| e.to_string())?;
+    ProviderService::sync_current_to_live(state.inner()).map_err(|e: AppError| e.to_string())?;
     Ok(json!({
         "success": true,
         "message": "Live configuration synchronized"

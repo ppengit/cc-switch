@@ -9,20 +9,20 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
-    ProxyError, activity::ProxyActivityState, failover_switch::FailoverSwitchManager, handlers,
+    activity::ProxyActivityState, failover_switch::FailoverSwitchManager, handlers,
     log_codes::srv as log_srv, provider_router::ProviderRouter,
-    providers::gemini_shadow::GeminiShadowStore, types::*,
+    providers::gemini_shadow::GeminiShadowStore, types::*, ProxyError,
 };
 use crate::database::Database;
 use axum::{
-    Router,
     extract::DefaultBodyLimit,
     routing::{any, get, post},
+    Router,
 };
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
 /// 代理服务器状态（共享）

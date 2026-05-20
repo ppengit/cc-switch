@@ -543,7 +543,9 @@ impl Database {
                         Self::set_user_version(conn, 11)?;
                     }
                     11 => {
-                        log::info!("迁移数据库从 v11 到 v12（Api-Hub 站点 / 分组 / 模型 / Token 缓存）");
+                        log::info!(
+                            "迁移数据库从 v11 到 v12（Api-Hub 站点 / 分组 / 模型 / Token 缓存）"
+                        );
                         Self::migrate_v11_to_v12(conn)?;
                         Self::set_user_version(conn, 12)?;
                     }

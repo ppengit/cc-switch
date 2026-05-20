@@ -104,7 +104,10 @@ impl McpService {
 
         let proxy_config =
             futures::executor::block_on(state.db.get_proxy_config_for_app(app.as_str())).ok();
-        let takeover_enabled = proxy_config.as_ref().map(|config| config.enabled).unwrap_or(false);
+        let takeover_enabled = proxy_config
+            .as_ref()
+            .map(|config| config.enabled)
+            .unwrap_or(false);
         let auto_failover_enabled = proxy_config
             .as_ref()
             .map(|config| config.auto_failover_enabled)
@@ -744,8 +747,7 @@ wire_api = "responses"
             "Codex takeover config should keep MCP servers even when current provider is cleared in failover mode"
         );
         assert!(
-            config.contains("http://127.0.0.1:")
-                && config.contains("/v1"),
+            config.contains("http://127.0.0.1:") && config.contains("/v1"),
             "Codex takeover config should remain on the local proxy endpoint"
         );
     }
@@ -862,6 +864,181 @@ wire_api = "responses"
         assert!(
             !config.contains("https://deleted.example/v1"),
             "stale direct provider endpoint must not survive MCP sync in takeover mode"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn import_from_claude_recovers_live_mcp_while_takeover_recovery_is_pending() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        db.save_live_backup(
+            "claude",
+            &serde_json::to_string(&json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://direct.example",
+                    "ANTHROPIC_AUTH_TOKEN": "direct-token"
+                }
+            }))
+            .expect("serialize backup"),
+        )
+        .await
+        .expect("save live backup");
+
+        std::fs::create_dir_all(crate::config::get_claude_config_dir())
+            .expect("create claude config dir");
+        crate::claude_mcp::set_mcp_servers_map(&std::collections::HashMap::from([(
+            "memory".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+        )]))
+        .expect("seed claude live mcp");
+
+        let imported = McpService::import_from_claude(&state).expect("import from claude");
+        assert_eq!(
+            imported, 1,
+            "MCP import should still recover Claude live MCP definitions while takeover recovery is pending"
+        );
+        assert!(
+            !state
+                .db
+                .get_all_mcp_servers()
+                .expect("load mcp servers")
+                .is_empty(),
+            "takeover recovery should still import Claude MCP definitions into the database so sidecars can be rebuilt"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_all_enabled_rebuilds_claude_takeover_mcp_after_takeover_restore() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let port = unused_local_port().await;
+
+        db.save_mcp_server(&McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                claude: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save claude mcp server");
+
+        let provider = Provider::with_id(
+            "claude-a".to_string(),
+            "Claude A".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "real-token",
+                    "ANTHROPIC_BASE_URL": "https://claude.example",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &provider)
+            .expect("save claude provider");
+        db.add_to_failover_queue("claude", &provider.id)
+            .expect("queue claude provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&provider.id))
+            .expect("set current claude provider");
+
+        crate::config::write_json_file(
+            &crate::config::get_claude_settings_path(),
+            &provider.settings_config,
+        )
+        .expect("seed claude live config");
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        std::fs::create_dir_all(crate::config::get_claude_config_dir())
+            .expect("create claude config dir");
+        crate::claude_mcp::set_mcp_servers_map(&std::collections::HashMap::new())
+            .expect("seed empty claude mcp");
+
+        state
+            .proxy_service
+            .set_takeover_for_app("claude", true)
+            .await
+            .expect("enable claude takeover");
+
+        let text = std::fs::read_to_string(crate::config::get_claude_mcp_path())
+            .expect("read rebuilt claude mcp");
+        let value: serde_json::Value =
+            serde_json::from_str(&text).expect("parse rebuilt claude mcp");
+        let command = value
+            .pointer("/mcpServers/memory/command")
+            .and_then(serde_json::Value::as_str);
+        let args = value
+            .pointer("/mcpServers/memory/args")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let args_str = args
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            command.is_some(),
+            "takeover restore should rebuild Claude MCP sidecar from DB-managed MCP servers"
+        );
+        assert!(
+            command == Some("npx")
+                || (command == Some("cmd")
+                    && args_str.contains(&"/c")
+                    && args_str.contains(&"npx")),
+            "takeover restore should rebuild Claude MCP sidecar from DB-managed MCP servers (command={command:?}, args={args_str:?})"
         );
     }
 }

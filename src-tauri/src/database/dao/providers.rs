@@ -766,10 +766,10 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_config::AppType;
     use crate::database::dao::providers_seed::{
         LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON, OFFICIAL_SEEDS,
     };
-    use crate::app_config::AppType;
     use crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID;
     use serde_json::json;
 

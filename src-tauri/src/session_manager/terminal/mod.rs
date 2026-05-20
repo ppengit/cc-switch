@@ -672,7 +672,9 @@ mod tests {
         let args = build_windows_terminal_args("codex resume abc-123", None);
 
         assert!(
-            !args.iter().any(|arg| arg.eq_ignore_ascii_case("powershell")),
+            !args
+                .iter()
+                .any(|arg| arg.eq_ignore_ascii_case("powershell")),
             "Windows Terminal resume should open cmd inside Windows Terminal, not PowerShell"
         );
         assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);

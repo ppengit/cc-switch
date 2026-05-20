@@ -11,11 +11,8 @@ pub trait ApiHubAdapter: Send + Sync {
     async fn list_groups(&self, ctx: &SiteCtx) -> Result<Vec<GroupInfo>, AppError>;
     async fn list_models(&self, ctx: &SiteCtx) -> Result<Vec<ModelInfo>, AppError>;
     async fn list_tokens(&self, ctx: &SiteCtx) -> Result<Vec<TokenInfo>, AppError>;
-    async fn create_token(
-        &self,
-        ctx: &SiteCtx,
-        req: CreateTokenReq,
-    ) -> Result<TokenInfo, AppError>;
+    async fn create_token(&self, ctx: &SiteCtx, req: CreateTokenReq)
+        -> Result<TokenInfo, AppError>;
     async fn rename_token(
         &self,
         ctx: &SiteCtx,

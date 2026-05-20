@@ -1,8 +1,8 @@
-use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::services::provider::ProviderService;
 use crate::settings;
 use crate::store::AppState;
+use serde_json::{json, Value};
 
 pub(crate) fn run_post_import_sync(state: &AppState) -> Result<(), AppError> {
     ProviderService::sync_current_to_live(state)?;
@@ -60,7 +60,7 @@ mod tests {
     use crate::proxy::types::ProxyConfig;
     use crate::services::provider::ProviderService;
     use crate::store::AppState;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use serial_test::serial;
     use std::env;
     use std::sync::Arc;

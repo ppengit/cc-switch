@@ -132,7 +132,10 @@ impl ApiHubAdapter for Sub2ApiAdapter {
                 }
                 groups.push(GroupInfo {
                     name: name.to_string(),
-                    ratio: obj.get("rate").or_else(|| obj.get("ratio")).and_then(|v| v.as_f64()),
+                    ratio: obj
+                        .get("rate")
+                        .or_else(|| obj.get("ratio"))
+                        .and_then(|v| v.as_f64()),
                     description: obj
                         .get("description")
                         .or_else(|| obj.get("desc"))
@@ -226,7 +229,10 @@ impl ApiHubAdapter for Sub2ApiAdapter {
                         .or_else(|| item.get("api_key"))
                         .and_then(|v| v.as_str())
                         .map(String::from),
-                    status: item.get("status").and_then(|v| v.as_i64()).map(|v| v as i32),
+                    status: item
+                        .get("status")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v as i32),
                     remain_quota: item
                         .get("quota")
                         .or_else(|| item.get("remain_quota"))
@@ -274,7 +280,8 @@ impl ApiHubAdapter for Sub2ApiAdapter {
             "group_id": group,
             "group": group,
         });
-        self.send_json(ctx, reqwest::Method::PUT, &path, body).await?;
+        self.send_json(ctx, reqwest::Method::PUT, &path, body)
+            .await?;
         Ok(())
     }
 
