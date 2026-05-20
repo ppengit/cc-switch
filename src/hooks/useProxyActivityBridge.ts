@@ -20,8 +20,7 @@ function createStatusFromActivity(payload: ProxyActivityEvent): ProxyStatus {
     uptime_seconds: 0,
     current_provider: payload.provider_name || null,
     current_provider_id: payload.provider_id || null,
-    last_request_at:
-      payload.active_request_targets[0]?.last_request_at ?? null,
+    last_request_at: payload.active_request_targets[0]?.last_request_at ?? null,
     last_error: payload.error ?? null,
     failover_count: 0,
     active_targets: payload.active_request_targets.map((target) => ({

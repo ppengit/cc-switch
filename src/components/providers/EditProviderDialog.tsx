@@ -53,7 +53,10 @@ export function EditProviderDialog({
       name: provider.name,
       notes: provider.notes,
       websiteUrl: provider.websiteUrl,
-      settingsConfig: (provider.settingsConfig ?? {}) as Record<string, unknown>,
+      settingsConfig: (provider.settingsConfig ?? {}) as Record<
+        string,
+        unknown
+      >,
       category: provider.category,
       meta: provider.meta,
       icon: provider.icon,
@@ -82,9 +85,7 @@ export function EditProviderDialog({
         unknown
       >;
       const nextProviderId =
-        (appId === "opencode" ||
-          appId === "openclaw" ||
-          appId === "hermes") &&
+        (appId === "opencode" || appId === "openclaw" || appId === "hermes") &&
         values.providerKey?.trim()
           ? values.providerKey.trim()
           : provider.id;
@@ -131,7 +132,9 @@ export function EditProviderDialog({
             <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
               <Checkbox
                 checked={pinToTopOnSave}
-                onCheckedChange={(checked) => setPinToTopOnSave(Boolean(checked))}
+                onCheckedChange={(checked) =>
+                  setPinToTopOnSave(Boolean(checked))
+                }
               />
               <span>
                 {t("providerForm.pinToTopOnSave", {
@@ -143,7 +146,9 @@ export function EditProviderDialog({
               <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
                 <Checkbox
                   checked={enableOnSave}
-                  onCheckedChange={(checked) => setEnableOnSave(Boolean(checked))}
+                  onCheckedChange={(checked) =>
+                    setEnableOnSave(Boolean(checked))
+                  }
                 />
                 <span>
                   {t("providerForm.enableOnSave", {

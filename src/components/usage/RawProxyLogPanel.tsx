@@ -68,7 +68,8 @@ export function RawProxyLogPanel({
     appType,
     LOG_LIMIT,
     {
-      refetchInterval: refreshIntervalMs > 0 ? Math.min(refreshIntervalMs, 2000) : false,
+      refetchInterval:
+        refreshIntervalMs > 0 ? Math.min(refreshIntervalMs, 2000) : false,
     },
   );
 
@@ -131,7 +132,9 @@ export function RawProxyLogPanel({
             onClick={() => void refetch()}
             disabled={isFetching}
           >
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+            <RefreshCw
+              className={`mr-1 h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`}
+            />
             {t("common.refresh", { defaultValue: "刷新" })}
           </Button>
         </div>
@@ -191,7 +194,8 @@ export function RawProxyLogPanel({
                     className="py-10 text-center text-sm text-muted-foreground"
                   >
                     {t("usage.rawProxyLogsEmpty", {
-                      defaultValue: "当前没有代理原始日志。请先开启接管代理并发起请求。",
+                      defaultValue:
+                        "当前没有代理原始日志。请先开启接管代理并发起请求。",
                     })}
                   </TableCell>
                 </TableRow>

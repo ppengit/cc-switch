@@ -221,7 +221,7 @@ impl Database {
         let result = {
             let conn = lock_conn!(self.conn);
             conn.query_row(
-                "SELECT app_type, enabled, auto_failover_enabled,
+                "SELECT app_type, enabled, auto_failover_enabled, load_balancing_enabled,
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests
@@ -232,15 +232,16 @@ impl Database {
                         app_type: row.get(0)?,
                         enabled: row.get::<_, i32>(1)? != 0,
                         auto_failover_enabled: row.get::<_, i32>(2)? != 0,
-                        max_retries: row.get::<_, i32>(3)? as u32,
-                        streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
-                        streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
-                        non_streaming_timeout: row.get::<_, i32>(6)? as u32,
-                        circuit_failure_threshold: row.get::<_, i32>(7)? as u32,
-                        circuit_success_threshold: row.get::<_, i32>(8)? as u32,
-                        circuit_timeout_seconds: row.get::<_, i32>(9)? as u32,
-                        circuit_error_rate_threshold: row.get(10)?,
-                        circuit_min_requests: row.get::<_, i32>(11)? as u32,
+                        load_balancing_enabled: row.get::<_, i32>(3)? != 0,
+                        max_retries: row.get::<_, i32>(4)? as u32,
+                        streaming_first_byte_timeout: row.get::<_, i32>(5)? as u32,
+                        streaming_idle_timeout: row.get::<_, i32>(6)? as u32,
+                        non_streaming_timeout: row.get::<_, i32>(7)? as u32,
+                        circuit_failure_threshold: row.get::<_, i32>(8)? as u32,
+                        circuit_success_threshold: row.get::<_, i32>(9)? as u32,
+                        circuit_timeout_seconds: row.get::<_, i32>(10)? as u32,
+                        circuit_error_rate_threshold: row.get(11)?,
+                        circuit_min_requests: row.get::<_, i32>(12)? as u32,
                     })
                 },
             )
@@ -256,6 +257,7 @@ impl Database {
                     app_type: app_type_owned,
                     enabled: false,
                     auto_failover_enabled: false,
+                    load_balancing_enabled: false,
                     max_retries: 3,
                     streaming_first_byte_timeout: 60,
                     streaming_idle_timeout: 120,
@@ -274,29 +276,39 @@ impl Database {
     /// 更新应用级代理配置
     pub async fn update_proxy_config_for_app(
         &self,
-        config: AppProxyConfig,
+        mut config: AppProxyConfig,
     ) -> Result<(), AppError> {
+        if !config.enabled {
+            config.auto_failover_enabled = false;
+        }
+        if !config.enabled || !config.auto_failover_enabled {
+            config.load_balancing_enabled = false;
+        }
+
+        self.ensure_proxy_config_row_exists(&config.app_type)?;
         let conn = lock_conn!(self.conn);
 
         conn.execute(
             "UPDATE proxy_config SET
                 enabled = ?2,
                 auto_failover_enabled = ?3,
-                max_retries = ?4,
-                streaming_first_byte_timeout = ?5,
-                streaming_idle_timeout = ?6,
-                non_streaming_timeout = ?7,
-                circuit_failure_threshold = ?8,
-                circuit_success_threshold = ?9,
-                circuit_timeout_seconds = ?10,
-                circuit_error_rate_threshold = ?11,
-                circuit_min_requests = ?12,
+                load_balancing_enabled = ?4,
+                max_retries = ?5,
+                streaming_first_byte_timeout = ?6,
+                streaming_idle_timeout = ?7,
+                non_streaming_timeout = ?8,
+                circuit_failure_threshold = ?9,
+                circuit_success_threshold = ?10,
+                circuit_timeout_seconds = ?11,
+                circuit_error_rate_threshold = ?12,
+                circuit_min_requests = ?13,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
                 config.app_type,
                 if config.enabled { 1 } else { 0 },
                 if config.auto_failover_enabled { 1 } else { 0 },
+                if config.load_balancing_enabled { 1 } else { 0 },
                 config.max_retries as i32,
                 config.streaming_first_byte_timeout as i32,
                 config.streaming_idle_timeout as i32,
@@ -858,12 +870,26 @@ impl Database {
             .lock()
             .map_err(|e| AppError::Database(format!("Mutex lock failed: {e}")))?;
 
+        let sanitized_auto_failover_enabled = enabled && auto_failover_enabled;
+
         conn.execute(
-            "UPDATE proxy_config SET enabled = ?2, auto_failover_enabled = ?3, updated_at = datetime('now') WHERE app_type = ?1",
+            "UPDATE proxy_config SET
+                enabled = ?2,
+                auto_failover_enabled = ?3,
+                load_balancing_enabled = CASE
+                    WHEN ?2 = 1 AND ?3 = 1 THEN load_balancing_enabled
+                    ELSE 0
+                END,
+                updated_at = datetime('now')
+             WHERE app_type = ?1",
             rusqlite::params![
                 app_type,
                 if enabled { 1 } else { 0 },
-                if auto_failover_enabled { 1 } else { 0 },
+                if sanitized_auto_failover_enabled {
+                    1
+                } else {
+                    0
+                },
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -876,6 +902,7 @@ impl Database {
 mod tests {
     use crate::database::Database;
     use crate::error::AppError;
+    use crate::proxy::types::AppProxyConfig;
 
     #[tokio::test]
     async fn test_default_cost_multiplier_round_trip() -> Result<(), AppError> {
@@ -946,6 +973,73 @@ mod tests {
                 ..
             }
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_proxy_flags_sync_clears_load_balancing_when_failover_is_off(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let config = AppProxyConfig {
+            app_type: "claude".to_string(),
+            enabled: true,
+            auto_failover_enabled: true,
+            load_balancing_enabled: true,
+            max_retries: 6,
+            streaming_first_byte_timeout: 90,
+            streaming_idle_timeout: 180,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 8,
+            circuit_success_threshold: 3,
+            circuit_timeout_seconds: 90,
+            circuit_error_rate_threshold: 0.7,
+            circuit_min_requests: 15,
+        };
+        db.update_proxy_config_for_app(config).await?;
+
+        db.set_proxy_flags_sync("claude", true, false)?;
+
+        let updated = db.get_proxy_config_for_app("claude").await?;
+        assert!(updated.enabled);
+        assert!(!updated.auto_failover_enabled);
+        assert!(
+            !updated.load_balancing_enabled,
+            "disabling failover through sync flags must clear load balancing"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_proxy_config_for_app_sanitizes_load_balancing_invariants(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let invalid_config = AppProxyConfig {
+            app_type: "claude".to_string(),
+            enabled: false,
+            auto_failover_enabled: true,
+            load_balancing_enabled: true,
+            max_retries: 6,
+            streaming_first_byte_timeout: 90,
+            streaming_idle_timeout: 180,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 8,
+            circuit_success_threshold: 3,
+            circuit_timeout_seconds: 90,
+            circuit_error_rate_threshold: 0.7,
+            circuit_min_requests: 15,
+        };
+
+        db.update_proxy_config_for_app(invalid_config).await?;
+
+        let updated = db.get_proxy_config_for_app("claude").await?;
+        assert!(!updated.enabled);
+        assert!(!updated.auto_failover_enabled);
+        assert!(
+            !updated.load_balancing_enabled,
+            "DAO updates must enforce load balancing prerequisites for every caller"
+        );
 
         Ok(())
     }

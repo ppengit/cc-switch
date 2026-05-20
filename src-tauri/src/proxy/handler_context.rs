@@ -139,7 +139,7 @@ impl RequestContext {
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
         let providers = state
             .provider_router
-            .select_providers(app_type_str)
+            .select_providers_for_session(app_type_str, &session_id, session_result.client_provided)
             .await
             .map_err(|e| match e {
                 crate::error::AppError::AllProvidersCircuitOpen => {
@@ -261,6 +261,7 @@ impl RequestContext {
             state.switch_epoch.clone(),
             self.request_epoch,
             effective_auto_failover_enabled,
+            effective_auto_failover_enabled && self.app_config.load_balancing_enabled,
             max_retries,
         )
     }

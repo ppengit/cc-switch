@@ -317,6 +317,9 @@ pub struct ProviderMeta {
     /// 每月消费限额（USD）
     #[serde(rename = "limitMonthlyUsd", skip_serializing_if = "Option::is_none")]
     pub limit_monthly_usd: Option<String>,
+    /// 分流模式下该供应商优先承接的最大会话数；None/0 表示无限制。
+    #[serde(rename = "maxSessions", skip_serializing_if = "Option::is_none")]
+    pub max_sessions: Option<u32>,
     /// 供应商单独的模型测试配置
     #[serde(rename = "testConfig", skip_serializing_if = "Option::is_none")]
     pub test_config: Option<ProviderTestConfig>,
@@ -880,6 +883,22 @@ mod tests {
         let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
 
         assert!(value.get("pricingModelSource").is_none());
+    }
+
+    #[test]
+    fn provider_meta_serializes_max_sessions() {
+        let meta = ProviderMeta {
+            max_sessions: Some(3),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+
+        assert_eq!(
+            value.get("maxSessions").and_then(|item| item.as_u64()),
+            Some(3)
+        );
+        assert!(value.get("max_sessions").is_none());
     }
 
     #[test]

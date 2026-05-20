@@ -59,10 +59,10 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
             app: appLabel,
             defaultValue: `请先启动代理服务；故障转移只在代理接管运行时生效`,
           })
-      : t("failover.tooltip.disabled", {
-          app: appLabel,
-          defaultValue: `启用 ${appLabel} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个`,
-        });
+        : t("failover.tooltip.disabled", {
+            app: appLabel,
+            defaultValue: `启用 ${appLabel} 故障转移\n将立即切换到队列 P1，并在失败时自动切换到下一个`,
+          });
 
   return (
     <div
@@ -88,7 +88,9 @@ export function FailoverToggle({ className, activeApp }: FailoverToggleProps) {
         checked={isEnabled}
         onCheckedChange={handleToggle}
         disabled={
-          setEnabled.isPending || isLoading || (!isEnabled && !canEnableFailover)
+          setEnabled.isPending ||
+          isLoading ||
+          (!isEnabled && !canEnableFailover)
         }
       />
     </div>

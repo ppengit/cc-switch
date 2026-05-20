@@ -9,11 +9,196 @@ use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
+const LOAD_BALANCING_SESSION_TTL_SECS: u64 = 120;
+
+#[derive(Debug, Clone)]
+struct SessionAffinity {
+    provider_id: String,
+    last_seen: Instant,
+    active_requests: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderSessionEntry {
+    last_seen: Instant,
+    active_requests: usize,
+}
+
+#[derive(Debug, Default)]
+struct LoadBalancingState {
+    affinities: HashMap<String, SessionAffinity>,
+    provider_sessions: HashMap<String, HashMap<String, ProviderSessionEntry>>,
+}
+
+pub(crate) struct LoadBalancingSlotGuard {
+    state: Arc<Mutex<LoadBalancingState>>,
+    provider_key: String,
+    session_key: String,
+    affinity_key: Option<String>,
+}
+
+impl Drop for LoadBalancingSlotGuard {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.release_slot(
+            &self.provider_key,
+            &self.session_key,
+            self.affinity_key.as_deref(),
+            Instant::now(),
+        );
+    }
+}
+
+impl LoadBalancingState {
+    fn affinity_key(app_type: &str, session_id: &str) -> String {
+        format!("{app_type}:{session_id}")
+    }
+
+    fn provider_key(app_type: &str, provider_id: &str) -> String {
+        format!("{app_type}:{provider_id}")
+    }
+
+    fn temporary_session_key(request_id: &str) -> String {
+        format!("request:{request_id}")
+    }
+
+    fn prune_expired(&mut self, now: Instant) {
+        let ttl = Duration::from_secs(LOAD_BALANCING_SESSION_TTL_SECS);
+        let expired: Vec<String> = self
+            .affinities
+            .iter()
+            .filter_map(|(key, affinity)| {
+                (affinity.active_requests == 0 && now.duration_since(affinity.last_seen) >= ttl)
+                    .then(|| key.clone())
+            })
+            .collect();
+
+        for affinity_key in expired {
+            self.affinities.remove(&affinity_key);
+        }
+
+        self.provider_sessions.retain(|_, sessions| {
+            sessions.retain(|_, entry| entry.active_requests > 0);
+            !sessions.is_empty()
+        });
+    }
+
+    fn remove_provider_session(&mut self, provider_key: &str, session_key: &str) {
+        if let Some(sessions) = self.provider_sessions.get_mut(provider_key) {
+            sessions.remove(session_key);
+            if sessions.is_empty() {
+                self.provider_sessions.remove(provider_key);
+            }
+        }
+    }
+
+    fn active_request_count(&self, app_type: &str, provider_id: &str) -> usize {
+        self.provider_sessions
+            .get(&Self::provider_key(app_type, provider_id))
+            .map(|sessions| {
+                sessions
+                    .values()
+                    .map(|entry| entry.active_requests)
+                    .sum::<usize>()
+            })
+            .unwrap_or(0)
+    }
+
+    fn acquire_slot(
+        &mut self,
+        app_type: &str,
+        provider_id: &str,
+        session_id: &str,
+        client_provided: bool,
+        request_id: &str,
+        update_affinity_provider: bool,
+        state: Arc<Mutex<LoadBalancingState>>,
+    ) -> LoadBalancingSlotGuard {
+        let now = Instant::now();
+        self.prune_expired(now);
+
+        let provider_key = Self::provider_key(app_type, provider_id);
+        let affinity_key = if client_provided && !session_id.trim().is_empty() {
+            let affinity_key = Self::affinity_key(app_type, session_id);
+            if let Some(affinity) = self.affinities.get_mut(&affinity_key) {
+                if update_affinity_provider {
+                    affinity.provider_id = provider_id.to_string();
+                }
+                affinity.last_seen = now;
+                affinity.active_requests = affinity.active_requests.saturating_add(1);
+            } else {
+                self.affinities.insert(
+                    affinity_key.clone(),
+                    SessionAffinity {
+                        provider_id: provider_id.to_string(),
+                        last_seen: now,
+                        active_requests: 1,
+                    },
+                );
+            }
+
+            Some(affinity_key)
+        } else {
+            None
+        };
+        let session_key = Self::temporary_session_key(request_id);
+
+        let sessions = self
+            .provider_sessions
+            .entry(provider_key.clone())
+            .or_default();
+        let entry = sessions
+            .entry(session_key.clone())
+            .or_insert_with(|| ProviderSessionEntry {
+                last_seen: now,
+                active_requests: 0,
+            });
+        entry.last_seen = now;
+        entry.active_requests = entry.active_requests.saturating_add(1);
+
+        LoadBalancingSlotGuard {
+            state,
+            provider_key,
+            session_key,
+            affinity_key,
+        }
+    }
+
+    fn release_slot(
+        &mut self,
+        provider_key: &str,
+        session_key: &str,
+        affinity_key: Option<&str>,
+        now: Instant,
+    ) {
+        let mut remove_session = false;
+        if let Some(sessions) = self.provider_sessions.get_mut(provider_key) {
+            if let Some(entry) = sessions.get_mut(session_key) {
+                entry.active_requests = entry.active_requests.saturating_sub(1);
+                entry.last_seen = now;
+                remove_session = entry.active_requests == 0;
+            }
+        }
+        if remove_session {
+            self.remove_provider_session(provider_key, session_key);
+        }
+
+        if let Some(affinity_key) = affinity_key {
+            if let Some(affinity) = self.affinities.get_mut(affinity_key) {
+                affinity.active_requests = affinity.active_requests.saturating_sub(1);
+                affinity.last_seen = now;
+            }
+        }
+    }
+}
 
 /// 供应商路由器
 pub struct ProviderRouter {
@@ -23,6 +208,8 @@ pub struct ProviderRouter {
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
     /// API Key 认证错误计数 - key 格式: "app_type:provider_id"
     api_key_error_counts: Arc<RwLock<HashMap<String, u32>>>,
+    /// 分流运行时状态：会话粘性与供应商当前会话占用。
+    load_balancing: Arc<Mutex<LoadBalancingState>>,
     /// AppHandle，用于通知前端刷新故障转移队列
     app_handle: Option<tauri::AppHandle>,
 }
@@ -39,6 +226,7 @@ impl ProviderRouter {
             db,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             api_key_error_counts: Arc::new(RwLock::new(HashMap::new())),
+            load_balancing: Arc::new(Mutex::new(LoadBalancingState::default())),
             app_handle,
         }
     }
@@ -49,6 +237,19 @@ impl ProviderRouter {
     /// - 故障转移关闭时：仅返回当前供应商
     /// - 故障转移开启时：仅使用故障转移队列，按队列顺序依次尝试（P1 → P2 → ...）
     pub async fn select_providers(&self, app_type: &str) -> Result<Vec<Provider>, AppError> {
+        self.select_providers_for_session(app_type, "", false).await
+    }
+
+    /// 选择当前可用供应商。
+    ///
+    /// 分流不会在这里占用容量；真正的“按会话粘性/容量选择并占用”必须在
+    /// `acquire_load_balancing_slot_for_candidates` 中完成，避免并发请求基于旧快照同时选中同一家。
+    pub async fn select_providers_for_session(
+        &self,
+        app_type: &str,
+        _session_id: &str,
+        _session_client_provided: bool,
+    ) -> Result<Vec<Provider>, AppError> {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
@@ -127,6 +328,79 @@ impl ProviderRouter {
         }
 
         Ok(result)
+    }
+
+    pub(crate) fn acquire_load_balancing_slot_for_candidates(
+        &self,
+        app_type: &str,
+        providers: &[Provider],
+        session_id: &str,
+        session_client_provided: bool,
+        request_id: &str,
+    ) -> Option<(usize, LoadBalancingSlotGuard)> {
+        if providers.is_empty() {
+            return None;
+        }
+
+        let mut state = match self.load_balancing.lock() {
+            Ok(state) => state,
+            Err(e) => {
+                log::warn!("[{app_type}] 分流状态锁已污染，回退故障转移队列顺序: {e}");
+                return None;
+            }
+        };
+        state.prune_expired(Instant::now());
+
+        let mut preserve_existing_affinity = false;
+        if session_client_provided && !session_id.trim().is_empty() {
+            let affinity_key = LoadBalancingState::affinity_key(app_type, session_id);
+            if let Some(affinity) = state.affinities.get(&affinity_key).cloned() {
+                if let Some(index) = providers
+                    .iter()
+                    .position(|provider| provider.id == affinity.provider_id)
+                {
+                    if provider_has_load_balancing_capacity(
+                        state.active_request_count(app_type, &providers[index].id),
+                        provider_max_sessions(&providers[index]),
+                    ) {
+                        let guard = state.acquire_slot(
+                            app_type,
+                            &providers[index].id,
+                            session_id,
+                            session_client_provided,
+                            request_id,
+                            true,
+                            self.load_balancing.clone(),
+                        );
+                        return Some((index, guard));
+                    }
+                    preserve_existing_affinity = true;
+                } else {
+                    state.affinities.remove(&affinity_key);
+                }
+            }
+        }
+
+        let selected_index = providers
+            .iter()
+            .position(|provider| {
+                provider_has_load_balancing_capacity(
+                    state.active_request_count(app_type, &provider.id),
+                    provider_max_sessions(provider),
+                )
+            })
+            .unwrap_or(0);
+
+        let guard = state.acquire_slot(
+            app_type,
+            &providers[selected_index].id,
+            session_id,
+            session_client_provided,
+            request_id,
+            !preserve_existing_affinity,
+            self.load_balancing.clone(),
+        );
+        Some((selected_index, guard))
     }
 
     /// 请求执行前获取熔断器“放行许可”
@@ -414,6 +688,24 @@ fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
     lower.contains("invalid api key") || lower.contains("api key is disabled")
 }
 
+fn provider_max_sessions(provider: &Provider) -> Option<usize> {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.max_sessions)
+        .filter(|value| *value > 0)
+        .map(|value| value as usize)
+}
+
+fn provider_has_load_balancing_capacity(
+    current_sessions: usize,
+    max_sessions: Option<usize>,
+) -> bool {
+    max_sessions
+        .map(|max_sessions| current_sessions < max_sessions)
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +895,382 @@ mod tests {
 
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_respects_queue_order_max_sessions_and_overflow() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(2),
+            ..Default::default()
+        });
+        let mut provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+        provider_c.sort_index = Some(3);
+        provider_c.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(3),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.save_provider("claude", &provider_c).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "c").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let expected = ["a", "b", "b", "c", "c", "c", "a", "a", "a"];
+        let mut guards = Vec::new();
+
+        for (index, expected_provider_id) in expected.iter().enumerate() {
+            let session_id = format!("session-{}", index + 1);
+            let request_id = format!("request-{}", index + 1);
+            let providers = router
+                .select_providers_for_session("claude", &session_id, true)
+                .await
+                .unwrap();
+            let (selected_index, guard) = router
+                .acquire_load_balancing_slot_for_candidates(
+                    "claude",
+                    &providers,
+                    &session_id,
+                    true,
+                    &request_id,
+                )
+                .expect("load balancing should never leave a request unassigned");
+            assert_eq!(
+                providers[selected_index].id, *expected_provider_id,
+                "unexpected provider for {session_id}"
+            );
+            guards.push(guard);
+        }
+
+        let providers = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        let (selected_index, _guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "session-1",
+                true,
+                "request-sticky",
+            )
+            .expect("client-provided sessions should keep provider affinity");
+        assert_eq!(
+            providers[selected_index].id, "a",
+            "requests above the total configured load-balancing capacity should overflow to the first provider"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_counts_concurrent_requests_for_sticky_sessions() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(3),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(3),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_for_session("claude", "same-session", true)
+            .await
+            .unwrap();
+        let expected = ["a", "a", "a", "b", "b", "b"];
+        let mut guards = Vec::new();
+
+        for (index, expected_provider_id) in expected.iter().enumerate() {
+            let request_id = format!("same-session-request-{}", index + 1);
+            let (selected_index, guard) = router
+                .acquire_load_balancing_slot_for_candidates(
+                    "claude",
+                    &providers,
+                    "same-session",
+                    true,
+                    &request_id,
+                )
+                .expect("concurrent sticky-session request should acquire a provider");
+
+            assert_eq!(
+                providers[selected_index].id,
+                *expected_provider_id,
+                "unexpected provider for same-session request {}",
+                index + 1
+            );
+            guards.push(guard);
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_honors_first_provider_capacity_for_six_requests() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(3),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(2),
+            ..Default::default()
+        });
+        let mut provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+        provider_c.sort_index = Some(3);
+        provider_c.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.save_provider("claude", &provider_c).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "c").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let expected = ["a", "a", "a", "b", "b", "c"];
+        let mut guards = Vec::new();
+
+        for (index, expected_provider_id) in expected.iter().enumerate() {
+            let session_id = format!("capacity-session-{}", index + 1);
+            let request_id = format!("capacity-request-{}", index + 1);
+            let providers = router
+                .select_providers_for_session("claude", &session_id, true)
+                .await
+                .unwrap();
+            let (selected_index, guard) = router
+                .acquire_load_balancing_slot_for_candidates(
+                    "claude",
+                    &providers,
+                    &session_id,
+                    true,
+                    &request_id,
+                )
+                .expect("load balancing should always assign a provider when capacity exists");
+
+            assert_eq!(
+                providers[selected_index].id,
+                *expected_provider_id,
+                "unexpected provider for request {}",
+                index + 1
+            );
+            guards.push(guard);
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_temporary_overflow_does_not_reassign_sticky_session() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_for_session("claude", "sticky-session", true)
+            .await
+            .unwrap();
+
+        let (first_index, first_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "sticky-session",
+                true,
+                "sticky-request-1",
+            )
+            .expect("first sticky request should acquire a provider");
+        assert_eq!(providers[first_index].id, "a");
+
+        let (overflow_index, overflow_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "sticky-session",
+                true,
+                "sticky-request-2",
+            )
+            .expect("overflow sticky request should temporarily use another provider");
+        assert_eq!(providers[overflow_index].id, "b");
+
+        drop(first_guard);
+        drop(overflow_guard);
+
+        let (next_index, _next_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "sticky-session",
+                true,
+                "sticky-request-3",
+            )
+            .expect("sticky session should return to its original provider after slots free");
+        assert_eq!(providers[next_index].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_acquire_rechecks_capacity_after_stale_selection() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(2),
+            ..Default::default()
+        });
+        let mut provider_c =
+            Provider::with_id("c".to_string(), "Provider C".to_string(), json!({}), None);
+        provider_c.sort_index = Some(3);
+        provider_c.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(3),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.save_provider("claude", &provider_c).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        db.add_to_failover_queue("claude", "c").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let provider_lists = vec![
+            router
+                .select_providers_for_session("claude", "stale-1", true)
+                .await
+                .unwrap(),
+            router
+                .select_providers_for_session("claude", "stale-2", true)
+                .await
+                .unwrap(),
+            router
+                .select_providers_for_session("claude", "stale-3", true)
+                .await
+                .unwrap(),
+            router
+                .select_providers_for_session("claude", "stale-4", true)
+                .await
+                .unwrap(),
+        ];
+        let expected = ["a", "b", "b", "c"];
+        let mut guards = Vec::new();
+
+        for (index, providers) in provider_lists.iter().enumerate() {
+            let session_id = format!("stale-{}", index + 1);
+            let request_id = format!("stale-request-{}", index + 1);
+            let (selected_index, guard) = router
+                .acquire_load_balancing_slot_for_candidates(
+                    "claude",
+                    providers,
+                    &session_id,
+                    true,
+                    &request_id,
+                )
+                .expect("stale selection should still acquire a provider");
+            assert_eq!(providers[selected_index].id, expected[index]);
+            guards.push(guard);
+        }
     }
 
     #[tokio::test]

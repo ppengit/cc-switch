@@ -1228,7 +1228,11 @@ export function ApiHubPanel() {
                               size="sm"
                               onClick={() => openImportDialog(site)}
                               disabled={!canImportSite}
-                              title={canImportSite ? "导入应用" : importDisabledReason}
+                              title={
+                                canImportSite
+                                  ? "导入应用"
+                                  : importDisabledReason
+                              }
                             >
                               <PackagePlus className="mr-1.5 h-4 w-4" />
                               导入应用
@@ -1370,9 +1374,7 @@ export function ApiHubPanel() {
                       }
                     />
                   </Label>
-                  <Label
-                    className="flex items-center justify-between rounded-md border border-border-default px-3 py-2"
-                  >
+                  <Label className="flex items-center justify-between rounded-md border border-border-default px-3 py-2">
                     <span className="text-sm">无默认模型供应商导入</span>
                     <Checkbox
                       aria-label={`${APP_LABELS.get(activeTargetApp)} 无默认模型供应商导入`}

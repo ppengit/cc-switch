@@ -300,15 +300,15 @@ function App() {
     );
 
     return Object.fromEntries(
-        targets.map((target) => [
-          target.provider_id,
-          {
-            count: target.inflight_requests,
-            model: getActivityDisplayModel(target),
-            requestModel: getActivityRequestModel(target),
-            upstreamModel: getActivityUpstreamModel(target),
-          },
-        ]),
+      targets.map((target) => [
+        target.provider_id,
+        {
+          count: target.inflight_requests,
+          model: getActivityDisplayModel(target),
+          requestModel: getActivityRequestModel(target),
+          upstreamModel: getActivityUpstreamModel(target),
+        },
+      ]),
     );
   }, [activeApp, normalizedActiveRequestTargets]);
   const liveActivityTargets = useMemo(() => {
@@ -420,7 +420,11 @@ function App() {
                   queryKey: ["providerHealth", event.providerId, activeApp],
                 });
                 await queryClient.invalidateQueries({
-                  queryKey: ["circuitBreakerStats", event.providerId, activeApp],
+                  queryKey: [
+                    "circuitBreakerStats",
+                    event.providerId,
+                    activeApp,
+                  ],
                 });
               }
             }
@@ -856,8 +860,10 @@ function App() {
         await failoverApi.addToFailoverQueue(activeApp, providerId);
       } else {
         await failoverApi.removeFromFailoverQueue(activeApp, providerId);
-        queryClient.setQueryData<ProxyStatus | undefined>(["proxyStatus"], (current) =>
-          pruneProxyStatusProviderActivity(current, activeApp, providerId),
+        queryClient.setQueryData<ProxyStatus | undefined>(
+          ["proxyStatus"],
+          (current) =>
+            pruneProxyStatusProviderActivity(current, activeApp, providerId),
         );
       }
     } else if (isAdditiveModeApp) {
@@ -1900,7 +1906,9 @@ function App() {
                   title={[
                     target.app_type,
                     target.provider_name,
-                    upstreamModel && requestModel && upstreamModel !== requestModel
+                    upstreamModel &&
+                    requestModel &&
+                    upstreamModel !== requestModel
                       ? `${upstreamModel} (req: ${requestModel})`
                       : displayModel,
                   ]

@@ -99,13 +99,9 @@ export function LogConfigPanel() {
 
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-0.5">
-          <Label>
-            {t("settings.advanced.logConfig.rawProxyLogRetention")}
-          </Label>
+          <Label>{t("settings.advanced.logConfig.rawProxyLogRetention")}</Label>
           <p className="text-xs text-muted-foreground">
-            {t(
-              "settings.advanced.logConfig.rawProxyLogRetentionDescription",
-            )}
+            {t("settings.advanced.logConfig.rawProxyLogRetentionDescription")}
           </p>
         </div>
         <Input

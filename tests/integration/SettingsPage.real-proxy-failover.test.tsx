@@ -558,6 +558,48 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     expectClaudeLiveOnProxy();
   }, 20_000);
 
+  it("clears load balancing when auto failover is turned off", async () => {
+    const user = userEvent.setup();
+
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    setAppProxyConfigState({
+      ...getAppProxyConfigState("claude"),
+      enabled: true,
+      autoFailoverEnabled: true,
+      loadBalancingEnabled: true,
+    });
+    startProxyServerState();
+
+    await openProxySection(user);
+    await waitFor(() =>
+      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
+    );
+
+    await openFailoverSection(user);
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    const autoFailoverSwitch = screen.getByRole("switch", {
+      name: "自动故障转移",
+    });
+    expect(autoFailoverSwitch).toHaveAttribute("aria-checked", "true");
+    await user.click(autoFailoverSwitch);
+    await clickAutoFailoverSave(user);
+
+    await waitFor(() =>
+      expect(getAppProxyConfigState("claude")).toMatchObject({
+        appType: "claude",
+        enabled: true,
+        autoFailoverEnabled: false,
+        loadBalancingEnabled: false,
+      }),
+    );
+  }, 20_000);
+
   it("blocks invalid Claude auto failover config saves and preserves live config", async () => {
     const user = userEvent.setup();
 

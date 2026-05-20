@@ -7353,14 +7353,25 @@ wire_api = "responses"
         crate::settings::set_current_provider(&AppType::Codex, Some("codex-a"))
             .expect("set local codex provider");
 
-        let mut app_config = db
-            .get_proxy_config_for_app("codex")
-            .await
-            .expect("get codex proxy config");
-        app_config.auto_failover_enabled = true;
-        db.update_proxy_config_for_app(app_config)
-            .await
-            .expect("enable auto failover before takeover");
+        {
+            // 直接模拟旧版本/异常数据库里残留的脏状态：
+            // DAO 现在会自动清洗这个组合，所以测试必须绕过 DAO 来验证
+            // 接管启动时的修复与同步逻辑。
+            let conn = db
+                .conn
+                .lock()
+                .expect("lock db conn for stale proxy config seed");
+            conn.execute(
+                "UPDATE proxy_config SET
+                    enabled = 0,
+                    auto_failover_enabled = 1,
+                    load_balancing_enabled = 0,
+                    updated_at = datetime('now')
+                 WHERE app_type = ?1",
+                rusqlite::params!["codex"],
+            )
+            .expect("seed stale codex proxy config");
+        }
 
         let service = ProxyService::new(db.clone());
         service

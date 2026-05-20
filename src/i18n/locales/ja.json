@@ -1167,6 +1167,10 @@
     "empty": "エンドポイントがありません"
   },
   "providerAdvanced": {
+    "loadBalancingConfig": "分散設定",
+    "maxSessions": "最大セッション数",
+    "maxSessionsPlaceholder": "空白の場合は無制限",
+    "maxSessionsHint": "ローカルプロキシ、フェイルオーバー、分散がすべて有効な場合のみ適用されます。上限に達すると後続のプロバイダーへ切り替え、全プロバイダーが満杯の場合はキュー先頭のプロバイダーが超過リクエストを処理します。",
     "testConfig": "モデルテスト設定",
     "useCustomConfig": "個別設定を使用",
     "testConfigDesc": "このプロバイダーに個別のモデルテストパラメータを設定します。無効の場合はグローバル設定を使用します。",

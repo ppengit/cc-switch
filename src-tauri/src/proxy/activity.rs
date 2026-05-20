@@ -237,6 +237,7 @@ impl ProxyActivityState {
             upstream_model,
             None,
             None,
+            None,
         )
     }
 
@@ -250,6 +251,7 @@ impl ProxyActivityState {
         upstream_model: Option<String>,
         route_mode: Option<String>,
         upstream_url: Option<String>,
+        max_sessions: Option<u32>,
     ) -> ProxyActivityEvent {
         if let Some(existing) = self.requests.get(request_id).cloned() {
             if existing.app_type == app_type && existing.provider_id == provider_id {
@@ -284,6 +286,9 @@ impl ProxyActivityState {
                     }
                     if upstream_url.is_some() {
                         target.upstream_url = upstream_url.clone();
+                    }
+                    if max_sessions.is_some() {
+                        target.max_sessions = max_sessions;
                     }
                     target.last_request_model = Self::derive_display_model(
                         target.request_model.as_ref(),
@@ -325,6 +330,7 @@ impl ProxyActivityState {
                 provider_id: provider_id.to_string(),
                 provider_name: provider_name.to_string(),
                 inflight_requests: 0,
+                max_sessions: None,
                 request_model: None,
                 upstream_model: None,
                 route_mode: None,
@@ -334,6 +340,7 @@ impl ProxyActivityState {
             });
         entry.provider_name = provider_name.to_string();
         entry.inflight_requests += 1;
+        entry.max_sessions = max_sessions;
         entry.request_model = request_model.clone();
         entry.upstream_model = upstream_model.clone();
         entry.route_mode = route_mode.clone();
@@ -617,6 +624,7 @@ pub async fn route_request_with_metadata(
     upstream_model: Option<String>,
     route_mode: Option<String>,
     upstream_url: Option<String>,
+    max_sessions: Option<u32>,
 ) {
     let event = {
         let mut state = activity.write().await;
@@ -629,6 +637,7 @@ pub async fn route_request_with_metadata(
             upstream_model,
             route_mode,
             upstream_url,
+            max_sessions,
         )
     };
     emit_activity_event(app_handle, &event);

@@ -261,6 +261,7 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   appType,
   enabled: false,
   autoFailoverEnabled: false,
+  loadBalancingEnabled: false,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
   streamingIdleTimeout: 60,
@@ -367,7 +368,8 @@ const createDefaultInstalledSkills = (): InstalledSkill[] => [
     repoOwner: "mock-owner",
     repoName: "mock-skills",
     repoBranch: "main",
-    readmeUrl: "https://github.com/mock-owner/mock-skills/tree/main/skill-alpha",
+    readmeUrl:
+      "https://github.com/mock-owner/mock-skills/tree/main/skill-alpha",
     apps: createSkillApps({ claude: true }),
     installedAt: 1_700_010_000,
     updatedAt: 1_700_010_100,
@@ -446,7 +448,8 @@ const createDefaultSkillsShResults = (): SkillsShDiscoverableSkill[] => [
     repoName: "remote-skills",
     repoBranch: "main",
     installs: 42,
-    readmeUrl: "https://github.com/remote-owner/remote-skills/tree/main/remote-skill",
+    readmeUrl:
+      "https://github.com/remote-owner/remote-skills/tree/main/remote-skill",
   },
 ];
 
@@ -526,19 +529,24 @@ const createDefaultPrompts = (): PromptState => ({
   hermes: {},
 });
 
-const createDefaultCurrentPromptFileContent = (): CurrentPromptFileContentByApp => ({
-  claude: "# CLAUDE.md\n\nCurrent Claude live prompt",
-  "claude-desktop": null,
-  codex: "# AGENTS.md\n\nCurrent Codex live prompt",
-  gemini: null,
-  opencode: null,
-  openclaw: null,
-  hermes: null,
-});
+const createDefaultCurrentPromptFileContent =
+  (): CurrentPromptFileContentByApp => ({
+    claude: "# CLAUDE.md\n\nCurrent Claude live prompt",
+    "claude-desktop": null,
+    codex: "# AGENTS.md\n\nCurrent Codex live prompt",
+    gemini: null,
+    opencode: null,
+    openclaw: null,
+    hermes: null,
+  });
 
 const createDefaultPromptRequestCounts = (): PromptRequestCounts => ({
   claude: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
-  "claude-desktop": { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
+  "claude-desktop": {
+    getPrompts: 0,
+    getCurrentFileContent: 0,
+    importFromFile: 0,
+  },
   codex: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
   gemini: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
   opencode: { getPrompts: 0, getCurrentFileContent: 0, importFromFile: 0 },
@@ -968,13 +976,11 @@ let lastSessionTitleMappingRequest: SessionTitleMappingRequest | null = null;
 let lastSessionTerminalLaunchRequest: SessionTerminalLaunchRequest | null =
   null;
 let lastSessionExportRequest: SessionMeta | null = null;
-let lastProviderTerminalLaunchRequest:
-  | {
-      providerId: string;
-      app: AppId;
-      cwd?: string | null;
-    }
-  | null = null;
+let lastProviderTerminalLaunchRequest: {
+  providerId: string;
+  app: AppId;
+  cwd?: string | null;
+} | null = null;
 let mcpConfigs: McpConfigState = {
   claude: {
     sample: {
@@ -1280,7 +1286,9 @@ export const deleteDbBackupState = (filename: string) => {
 };
 
 export const setWebdavRemoteInfoState = (info: WebdavRemoteInfoState) => {
-  webdavRemoteInfoState = JSON.parse(JSON.stringify(info)) as WebdavRemoteInfoState;
+  webdavRemoteInfoState = JSON.parse(
+    JSON.stringify(info),
+  ) as WebdavRemoteInfoState;
 };
 
 export const recordWebdavSaveSettings = (
@@ -1354,9 +1362,7 @@ export const getSkillBackupsState = () =>
   JSON.parse(JSON.stringify(skillBackupsState)) as SkillBackupEntry[];
 
 export const setSkillBackupsState = (backups: SkillBackupEntry[]) => {
-  skillBackupsState = JSON.parse(
-    JSON.stringify(backups),
-  ) as SkillBackupEntry[];
+  skillBackupsState = JSON.parse(JSON.stringify(backups)) as SkillBackupEntry[];
 };
 
 export const getSkillUpdatesState = () =>
@@ -1367,7 +1373,9 @@ export const setSkillUpdatesState = (updates: SkillUpdateInfo[]) => {
 };
 
 export const getSkillsShResultsState = () =>
-  JSON.parse(JSON.stringify(skillsShResultsState)) as SkillsShDiscoverableSkill[];
+  JSON.parse(
+    JSON.stringify(skillsShResultsState),
+  ) as SkillsShDiscoverableSkill[];
 
 export const setSkillsShResultsState = (
   skills: SkillsShDiscoverableSkill[],
@@ -1395,9 +1403,7 @@ export const toggleSkillAppState = (
   );
 };
 
-export const importSkillsFromAppsState = (
-  imports: ImportSkillSelection[],
-) => {
+export const importSkillsFromAppsState = (imports: ImportSkillSelection[]) => {
   const imported = imports
     .map((selection) => {
       const unmanaged = unmanagedSkillsState.find(
@@ -1458,7 +1464,9 @@ export const installSkillFromDiscoveryState = (
 
 export const uninstallSkillState = (id: string) => {
   const existing = installedSkillsState.find((skill) => skill.id === id);
-  installedSkillsState = installedSkillsState.filter((skill) => skill.id !== id);
+  installedSkillsState = installedSkillsState.filter(
+    (skill) => skill.id !== id,
+  );
   if (existing) {
     skillBackupsState = [
       {
@@ -1548,10 +1556,7 @@ export const setPromptsState = (
 };
 
 export const getPromptsSnapshotState = (app: AppId) =>
-  JSON.parse(JSON.stringify(promptsState[app] ?? {})) as Record<
-    string,
-    Prompt
-  >;
+  JSON.parse(JSON.stringify(promptsState[app] ?? {})) as Record<string, Prompt>;
 
 export const getPromptState = (app: AppId, id: string) =>
   promptsState[app]?.[id]
@@ -1626,9 +1631,7 @@ export const getOpenClawEnvConfigState = () =>
   JSON.parse(JSON.stringify(openClawEnvConfigState)) as OpenClawEnvConfig;
 
 export const setOpenClawEnvConfigState = (env: OpenClawEnvConfig) => {
-  openClawEnvConfigState = JSON.parse(
-    JSON.stringify(env),
-  ) as OpenClawEnvConfig;
+  openClawEnvConfigState = JSON.parse(JSON.stringify(env)) as OpenClawEnvConfig;
 };
 
 export const getOpenClawToolsConfigState = () =>
@@ -1695,7 +1698,9 @@ export const getRequestDetailState = (requestId: string) =>
   requestDetailsState[requestId] === null
     ? null
     : requestDetailsState[requestId]
-      ? (JSON.parse(JSON.stringify(requestDetailsState[requestId])) as RequestLog)
+      ? (JSON.parse(
+          JSON.stringify(requestDetailsState[requestId]),
+        ) as RequestLog)
       : null;
 
 export const setRequestDetailState = (
@@ -1736,7 +1741,9 @@ export const getStreamCheckConfigState = () =>
 export const setStreamCheckConfigState = (
   value: typeof streamCheckConfigState,
 ) => {
-  streamCheckConfigState = JSON.parse(JSON.stringify(value)) as typeof streamCheckConfigState;
+  streamCheckConfigState = JSON.parse(
+    JSON.stringify(value),
+  ) as typeof streamCheckConfigState;
 };
 
 export const setCurrentPromptFileContentState = (
@@ -1746,11 +1753,7 @@ export const setCurrentPromptFileContentState = (
   currentPromptFileContentByApp[app] = content;
 };
 
-export const upsertPromptState = (
-  app: AppId,
-  id: string,
-  prompt: Prompt,
-) => {
+export const upsertPromptState = (app: AppId, id: string, prompt: Prompt) => {
   lastPromptUpsertRequest = {
     app,
     id,
@@ -1858,9 +1861,7 @@ export const updateSkillState = (id: string) => {
   );
 };
 
-export const migrateSkillStorageState = (
-  target: "cc_switch" | "unified",
-) => {
+export const migrateSkillStorageState = (target: "cc_switch" | "unified") => {
   const current = settingsState.skillStorageLocation ?? "cc_switch";
   if (current === target) {
     return {
@@ -1986,7 +1987,8 @@ const refreshActiveTargetForApp = (appType: AppId) => {
         ]
       : activeTargets,
     current_provider: first?.providerName ?? proxyStatusState.current_provider,
-    current_provider_id: first?.providerId ?? proxyStatusState.current_provider_id,
+    current_provider_id:
+      first?.providerId ?? proxyStatusState.current_provider_id,
   };
 };
 
@@ -2223,10 +2225,7 @@ export const getAvailableProvidersForFailoverState = (appType: AppId) => {
   );
 };
 
-export const addToFailoverQueueState = (
-  appType: AppId,
-  providerId: string,
-) => {
+export const addToFailoverQueueState = (appType: AppId, providerId: string) => {
   const provider = providers[appType]?.[providerId];
   if (!provider) return false;
   const queue = failoverQueuesByApp[appType] ?? [];
@@ -2281,6 +2280,9 @@ export const setAutoFailoverEnabledState = (
   appProxyConfigsByApp[appType] = {
     ...(appProxyConfigsByApp[appType] ?? createDefaultAppProxyConfig(appType)),
     autoFailoverEnabled: enabled,
+    loadBalancingEnabled: enabled
+      ? (appProxyConfigsByApp[appType]?.loadBalancingEnabled ?? false)
+      : false,
   };
 
   if (enabled) {
@@ -2290,7 +2292,11 @@ export const setAutoFailoverEnabledState = (
   }
 
   const restored = restoreCurrentFromFailoverQueueHead(appType);
-  if (restored && proxyTakeoverStatusByApp[appType] && proxyStatusState.running) {
+  if (
+    restored &&
+    proxyTakeoverStatusByApp[appType] &&
+    proxyStatusState.running
+  ) {
     setActiveTargetFromProvider(appType, current[appType]);
   } else {
     clearActiveTargetForApp(appType);
@@ -2410,7 +2416,9 @@ export const setCircuitBreakerStatsState = (
 };
 
 export const getProxyTakeoverStatusState = () =>
-  JSON.parse(JSON.stringify(proxyTakeoverStatusByApp)) as ProxyTakeoverStatusByApp;
+  JSON.parse(
+    JSON.stringify(proxyTakeoverStatusByApp),
+  ) as ProxyTakeoverStatusByApp;
 
 export const setProxyTakeoverStatusState = (
   status: Partial<ProxyTakeoverStatusByApp>,
@@ -2493,7 +2501,9 @@ export const pollManagedAuthAccountState = (
           id: normalizedDomain === "github.com" ? "github-login" : "ghe-login",
           provider: authProvider,
           login:
-            normalizedDomain === "github.com" ? "github-octocat" : "ghe-octocat",
+            normalizedDomain === "github.com"
+              ? "github-octocat"
+              : "ghe-octocat",
           avatar_url: null,
           authenticated_at: 1_700_000_400,
           is_default: true,
@@ -2524,7 +2534,9 @@ export const getLastManagedAuthStartLoginRequest = () =>
     : null;
 
 export const getManagedAuthPollRequests = () =>
-  JSON.parse(JSON.stringify(managedAuthPollRequests)) as ManagedAuthPollRequest[];
+  JSON.parse(
+    JSON.stringify(managedAuthPollRequests),
+  ) as ManagedAuthPollRequest[];
 
 export const recordClipboardWrite = (text: string) => {
   clipboardWrites = [...clipboardWrites, text];
@@ -2547,7 +2559,7 @@ export const setManagedAuthDefaultAccountState = (
     authenticated: accounts.length > 0,
     default_account_id: accounts.some((account) => account.id === accountId)
       ? accountId
-      : accounts[0]?.id ?? null,
+      : (accounts[0]?.id ?? null),
     accounts,
   };
 };
@@ -2557,12 +2569,14 @@ export const removeManagedAuthAccountState = (
   accountId: string,
 ) => {
   const status = managedAuthStatusByProvider[provider];
-  const accounts = status.accounts.filter((account) => account.id !== accountId);
+  const accounts = status.accounts.filter(
+    (account) => account.id !== accountId,
+  );
   const defaultAccountId = accounts.some(
     (account) => account.id === status.default_account_id,
   )
     ? status.default_account_id
-    : accounts[0]?.id ?? null;
+    : (accounts[0]?.id ?? null);
 
   managedAuthStatusByProvider[provider] = {
     ...status,
@@ -2727,9 +2741,7 @@ export const recordAutoLaunchRequest = (enabled: boolean) => {
 
 export const getLastAutoLaunchRequest = () => lastAutoLaunchRequest;
 
-export const recordClaudeOnboardingSkipAction = (
-  action: "apply" | "clear",
-) => {
+export const recordClaudeOnboardingSkipAction = (action: "apply" | "clear") => {
   lastClaudeOnboardingSkipAction = action;
   return true;
 };

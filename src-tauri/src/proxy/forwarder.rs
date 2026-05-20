@@ -10,7 +10,7 @@ use super::{
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
-    provider_router::ProviderRouter,
+    provider_router::{LoadBalancingSlotGuard, ProviderRouter},
     providers::{
         gemini_shadow::GeminiShadowStore, get_adapter, AuthInfo, AuthStrategy, ProviderAdapter,
         ProviderType,
@@ -42,6 +42,8 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    /// 分流会话占用 RAII guard：成功响应时随响应生命周期释放；失败尝试在进入下一家前释放。
+    pub(crate) load_balancing_guard: Option<LoadBalancingSlotGuard>,
 }
 
 pub struct ForwardError {
@@ -127,6 +129,8 @@ pub struct RequestForwarder {
     /// 本请求开始时该应用的"是否启用故障转移"快照。
     /// 故障转移开启时本请求成功完成后绝不写 is_current（不再有"当前"概念）。
     auto_failover_enabled_at_start: bool,
+    /// 本请求开始时该应用的"是否启用分流"快照。
+    load_balancing_enabled_at_start: bool,
 }
 
 impl RequestForwarder {
@@ -153,6 +157,7 @@ impl RequestForwarder {
         switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
         request_epoch: u64,
         auto_failover_enabled_at_start: bool,
+        load_balancing_enabled_at_start: bool,
         max_retries: u32,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
@@ -182,6 +187,7 @@ impl RequestForwarder {
             switch_epoch,
             request_epoch,
             auto_failover_enabled_at_start,
+            load_balancing_enabled_at_start,
         }
     }
 
@@ -366,18 +372,17 @@ impl RequestForwarder {
         let mut last_provider = None;
         let mut attempted_providers = 0usize;
 
-        // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
-        let bypass_circuit_breaker = providers.len() == 1;
+        let provider_count = providers.len();
+        let mut remaining_providers = providers;
+
+        // 非故障转移的单 Provider 场景下跳过熔断器检查，避免普通接管模式被熔断器彻底阻塞。
+        // 故障转移开启时，即使队列只有 1 个 Provider，也必须尊重 HalfOpen 探测名额。
+        let bypass_circuit_breaker = provider_count == 1 && !self.auto_failover_enabled_at_start;
 
         // 依次尝试每个供应商
-        for provider in providers.iter() {
-            // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
-            // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
-            let mut rectifier_retried = false;
-            let mut budget_rectifier_retried = false;
-
+        while !remaining_providers.is_empty() {
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
-            // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
+            // 放在熔断器 allow 与分流占用之前，避免在已经超限时还占用运行时名额。
             if attempted_providers >= self.max_attempts {
                 log::warn!(
                     "[{app_type_str}] 已达最大尝试次数上限 ({}/{}), 停止故障转移",
@@ -386,6 +391,28 @@ impl RequestForwarder {
                 );
                 break;
             }
+
+            let (provider, mut load_balancing_guard) = if self.load_balancing_enabled_at_start {
+                match self.router.acquire_load_balancing_slot_for_candidates(
+                    app_type_str,
+                    &remaining_providers,
+                    &self.session_id,
+                    self.session_client_provided,
+                    &self.request_id,
+                ) {
+                    Some((selected_index, guard)) => {
+                        (remaining_providers.remove(selected_index), Some(guard))
+                    }
+                    None => (remaining_providers.remove(0), None),
+                }
+            } else {
+                (remaining_providers.remove(0), None)
+            };
+
+            // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
+            // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
+            let mut rectifier_retried = false;
+            let mut budget_rectifier_retried = false;
 
             // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
             // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
@@ -406,7 +433,7 @@ impl RequestForwarder {
             // PRE-SEND 优化器：每个 provider 独立决定是否优化
             // clone body 以避免 Bedrock 优化字段泄漏到非 Bedrock provider（failover 场景）
             let mut provider_body =
-                if self.optimizer_config.enabled && is_bedrock_provider(provider) {
+                if self.optimizer_config.enabled && is_bedrock_provider(&provider) {
                     let mut b = body.clone();
                     if self.optimizer_config.thinking_optimizer {
                         super::thinking_optimizer::optimize(&mut b, &self.optimizer_config);
@@ -450,7 +477,7 @@ impl RequestForwarder {
                 .forward(
                     app_type,
                     &method,
-                    provider,
+                    &provider,
                     endpoint,
                     &provider_body,
                     &provider_headers,
@@ -513,11 +540,12 @@ impl RequestForwarder {
                         provider: provider.clone(),
                         claude_api_format,
                         connection_guard: None,
+                        load_balancing_guard: load_balancing_guard.take(),
                     });
                 }
                 Err(e) => {
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
-                    let provider_type = ProviderType::from_app_type_and_config(app_type, provider);
+                    let provider_type = ProviderType::from_app_type_and_config(app_type, &provider);
                     let is_anthropic_provider = matches!(
                         provider_type,
                         ProviderType::Claude | ProviderType::ClaudeAuth
@@ -581,7 +609,7 @@ impl RequestForwarder {
                                     .forward(
                                         app_type,
                                         &method,
-                                        provider,
+                                        &provider,
                                         endpoint,
                                         &provider_body,
                                         &provider_headers,
@@ -649,6 +677,7 @@ impl RequestForwarder {
                                             provider: provider.clone(),
                                             claude_api_format,
                                             connection_guard: None,
+                                            load_balancing_guard: load_balancing_guard.take(),
                                         });
                                     }
                                     Err(retry_err) => {
@@ -658,7 +687,7 @@ impl RequestForwarder {
                                         if let Some(err) = self
                                             .handle_rectifier_retry_failure(
                                                 retry_err,
-                                                provider,
+                                                &provider,
                                                 app_type_str,
                                                 used_half_open_permit,
                                                 "整流",
@@ -749,7 +778,7 @@ impl RequestForwarder {
                                 .forward(
                                     app_type,
                                     &method,
-                                    provider,
+                                    &provider,
                                     endpoint,
                                     &provider_body,
                                     &provider_headers,
@@ -811,6 +840,7 @@ impl RequestForwarder {
                                         provider: provider.clone(),
                                         claude_api_format,
                                         connection_guard: None,
+                                        load_balancing_guard: load_balancing_guard.take(),
                                     });
                                 }
                                 Err(retry_err) => {
@@ -820,7 +850,7 @@ impl RequestForwarder {
                                     if let Some(err) = self
                                         .handle_rectifier_retry_failure(
                                             retry_err,
-                                            provider,
+                                            &provider,
                                             app_type_str,
                                             used_half_open_permit,
                                             "budget 整流",
@@ -941,7 +971,7 @@ impl RequestForwarder {
                             let (log_code, log_message) = build_retryable_failure_log(
                                 &provider.name,
                                 attempted_providers,
-                                providers.len(),
+                                provider_count,
                                 &e,
                             );
                             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
@@ -1009,7 +1039,7 @@ impl RequestForwarder {
         }
 
         if let Some((log_code, log_message)) =
-            build_terminal_failure_log(attempted_providers, providers.len(), last_error.as_ref())
+            build_terminal_failure_log(attempted_providers, provider_count, last_error.as_ref())
         {
             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
         }
@@ -1317,6 +1347,11 @@ impl RequestForwarder {
             effective_request_model.clone(),
             Some(route_mode.to_string()),
             Some(activity_upstream_url),
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.max_sessions)
+                .filter(|value| *value > 0),
         )
         .await;
         log_prompt_cache_trace(
@@ -2647,6 +2682,7 @@ fn value_for_log(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::database::Database;
+    use crate::proxy::CircuitBreakerConfig;
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
     use bytes::Bytes;
@@ -2703,6 +2739,38 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
+            load_balancing_enabled_at_start: false,
+        }
+    }
+
+    fn test_forwarder_with_router(
+        router: Arc<ProviderRouter>,
+        db: Arc<Database>,
+        auto_failover_enabled_at_start: bool,
+    ) -> RequestForwarder {
+        RequestForwarder {
+            router,
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            current_providers: Arc::new(RwLock::new(HashMap::new())),
+            proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
+            gemini_shadow: Arc::new(GeminiShadowStore::new()),
+            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+            app_handle: None,
+            current_provider_id_at_start: String::new(),
+            request_id: "test-request".to_string(),
+            request_model: "test-model".to_string(),
+            session_id: String::new(),
+            session_client_provided: false,
+            rectifier_config: RectifierConfig::default(),
+            optimizer_config: OptimizerConfig::default(),
+            copilot_optimizer_config: CopilotOptimizerConfig::default(),
+            non_streaming_timeout: Duration::from_secs(1),
+            streaming_first_byte_timeout: Duration::from_secs(1),
+            max_attempts: 1,
+            switch_epoch: Arc::new(RwLock::new(HashMap::new())),
+            request_epoch: 0,
+            auto_failover_enabled_at_start,
+            load_balancing_enabled_at_start: false,
         }
     }
 
@@ -2894,6 +2962,62 @@ mod tests {
         };
 
         assert!(matches!(err, ProxyError::ForwardFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn auto_failover_single_provider_respects_half_open_probe_limit() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.update_circuit_breaker_config(&CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let provider = test_provider_with_type(None);
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", &provider.id).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        router
+            .record_result(
+                &provider.id,
+                "claude",
+                false,
+                false,
+                Some("trip breaker".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let occupied_probe = router.allow_provider_request(&provider.id, "claude").await;
+        assert!(occupied_probe.allowed);
+        assert!(occupied_probe.used_half_open_permit);
+
+        let forwarder = test_forwarder_with_router(router, db, true);
+        let err = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Claude,
+                http::Method::POST,
+                "/v1/messages",
+                json!({ "messages": [] }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider],
+            )
+            .await
+        {
+            Ok(_) => panic!("occupied HalfOpen probe should block the only failover provider"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err.error, ProxyError::NoAvailableProvider));
     }
 
     #[tokio::test]

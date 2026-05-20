@@ -1,6 +1,12 @@
 import { useTranslation } from "react-i18next";
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, FlaskConical, Coins } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FlaskConical,
+  Coins,
+  Waypoints,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -27,6 +33,70 @@ interface ProviderAdvancedConfigProps {
   pricingConfig: ProviderPricingConfig;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
+}
+
+interface ProviderLoadBalancingConfigProps {
+  maxSessions?: number | null;
+  onMaxSessionsChange: (value: number | null) => void;
+}
+
+export function ProviderLoadBalancingConfig({
+  maxSessions,
+  onMaxSessionsChange,
+}: ProviderLoadBalancingConfigProps) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-muted/20 p-4">
+      <div className="mb-3 flex items-center gap-3">
+        <Waypoints className="h-4 w-4 text-muted-foreground" />
+        <span className="font-medium">
+          {t("providerAdvanced.loadBalancingConfig", {
+            defaultValue: "分流配置",
+          })}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <div className="flex flex-nowrap items-center gap-3">
+            <Label
+              htmlFor="max-sessions"
+              className="shrink-0 whitespace-nowrap"
+            >
+              {t("providerAdvanced.maxSessions", {
+                defaultValue: "最大会话数",
+              })}
+            </Label>
+            <Input
+              id="max-sessions"
+              className="w-40 shrink-0"
+              type="number"
+              min={0}
+              step={1}
+              inputMode="numeric"
+              value={maxSessions ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                const parsed = raw ? Number.parseInt(raw, 10) : 0;
+                onMaxSessionsChange(
+                  Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+                );
+              }}
+              placeholder={t("providerAdvanced.maxSessionsPlaceholder", {
+                defaultValue: "留空表示无限制",
+              })}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("providerAdvanced.maxSessionsHint", {
+              defaultValue:
+                "仅在本地代理 + 故障转移 + 分流开启时生效；达到上限后优先切到后续供应商，全部满载时由队列第一个供应商承接溢出请求。",
+            })}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function ProviderAdvancedConfig({

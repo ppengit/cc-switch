@@ -273,6 +273,14 @@ fn schema_create_tables_include_pricing_model_columns() {
     let conn = Connection::open_in_memory().expect("open memory db");
     Database::create_tables_on_conn(&conn).expect("create tables");
 
+    let load_balancing = get_column_info(&conn, "proxy_config", "load_balancing_enabled");
+    assert_eq!(load_balancing.r#type, "INTEGER");
+    assert_eq!(load_balancing.notnull, 1);
+    assert_eq!(
+        normalize_default(&load_balancing.default).as_deref(),
+        Some("0")
+    );
+
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
     assert_eq!(multiplier.r#type, "TEXT");
     assert_eq!(multiplier.notnull, 1);
@@ -321,6 +329,14 @@ fn schema_migration_v4_adds_pricing_model_columns() {
 
     Database::set_user_version(&conn, 4).expect("set user_version=4");
     Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    let load_balancing = get_column_info(&conn, "proxy_config", "load_balancing_enabled");
+    assert_eq!(load_balancing.r#type, "INTEGER");
+    assert_eq!(load_balancing.notnull, 1);
+    assert_eq!(
+        normalize_default(&load_balancing.default).as_deref(),
+        Some("0")
+    );
 
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
     assert_eq!(multiplier.r#type, "TEXT");
@@ -376,11 +392,28 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
         Database::has_column(&conn, "proxy_config", "app_type").expect("check app_type"),
         "proxy_config should be migrated to per-app structure"
     );
+    assert!(
+        Database::has_column(&conn, "proxy_config", "load_balancing_enabled")
+            .expect("check load_balancing_enabled"),
+        "proxy_config should include load_balancing_enabled after repair"
+    );
 
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count rows");
     assert_eq!(count, 3, "per-app proxy_config should have 3 rows");
+
+    let enabled_load_balancing_count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_enabled = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count load balancing rows");
+    assert_eq!(
+        enabled_load_balancing_count, 0,
+        "load balancing should default to off after legacy repair"
+    );
 
     // 新结构下应能按 app_type 查询
     let _: i32 = conn
@@ -521,6 +554,17 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count proxy_config rows");
     assert_eq!(proxy_rows, 3);
+    let load_balancing_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_enabled = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count load balancing rows");
+    assert_eq!(
+        load_balancing_rows, 0,
+        "load balancing should remain off after full legacy migration"
+    );
 
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn

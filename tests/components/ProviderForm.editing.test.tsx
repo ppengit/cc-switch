@@ -85,6 +85,115 @@ describe("ProviderForm edit mode", () => {
     );
   });
 
+  it("saves and reloads maxSessions in edit mode", async () => {
+    const queryClient = createTestQueryClient();
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+
+    const initialData = {
+      name: "Scaled Provider",
+      websiteUrl: "https://scaled.example.com",
+      notes: "scaled notes",
+      category: "third_party" as const,
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://scaled.example.com/v1",
+          ANTHROPIC_AUTH_TOKEN: "sk-scaled",
+          ANTHROPIC_MODEL: "claude-scaled",
+        },
+      },
+      meta: {
+        maxSessions: 3,
+      },
+    };
+
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <ProviderForm
+          appId="claude"
+          providerId="claude-provider"
+          submitLabel="Save"
+          onSubmit={onSubmit}
+          onCancel={onCancel}
+          initialData={initialData}
+        />
+      </QueryClientProvider>,
+    );
+
+    const maxSessionsInput = screen.getByLabelText(
+      "最大会话数",
+    ) as HTMLInputElement;
+    expect(maxSessionsInput.value).toBe("3");
+
+    fireEvent.change(maxSessionsInput, { target: { value: "5" } });
+    expect(maxSessionsInput.value).toBe("5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.maxSessions).toBe(5);
+
+    view.rerender(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="claude"
+          providerId="claude-provider"
+          submitLabel="Save"
+          onSubmit={onSubmit}
+          onCancel={onCancel}
+          initialData={{
+            ...initialData,
+            meta: {
+              maxSessions: 5,
+            },
+          }}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText("最大会话数")).toHaveValue(5);
+  });
+
+  it("omits maxSessions when an existing value is cleared in edit mode", async () => {
+    const queryClient = createTestQueryClient();
+    const onSubmit = vi.fn();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProviderForm
+          appId="claude"
+          providerId="claude-provider"
+          submitLabel="Save"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          initialData={{
+            name: "Cleared Provider",
+            websiteUrl: "https://cleared.example.com",
+            category: "third_party",
+            settingsConfig: {
+              env: {
+                ANTHROPIC_BASE_URL: "https://cleared.example.com/v1",
+                ANTHROPIC_AUTH_TOKEN: "sk-cleared",
+                ANTHROPIC_MODEL: "claude-cleared",
+              },
+            },
+            meta: {
+              maxSessions: 4,
+            },
+          }}
+        />
+      </QueryClientProvider>,
+    );
+
+    const maxSessionsInput = screen.getByLabelText("最大会话数");
+    fireEvent.change(maxSessionsInput, { target: { value: "" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.maxSessions).toBeUndefined();
+  });
+
   it("does not let website/API endpoint sync trim a full Codex endpoint while editing", async () => {
     const queryClient = createTestQueryClient();
     const onSubmit = vi.fn();
@@ -214,6 +323,27 @@ describe("ProviderForm create mode", () => {
     expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
   });
 
+  it("keeps maxSessions empty by default and omits it from the submitted payload", async () => {
+    const { onSubmit } = renderCreateProviderForm("claude");
+
+    const maxSessionsInput = screen.getByLabelText("最大会话数");
+    const maxSessionsLabel = screen.getByText("最大会话数");
+    expect(maxSessionsInput).toHaveValue(null);
+    expect(maxSessionsLabel).toHaveClass("whitespace-nowrap");
+    expect(maxSessionsInput.parentElement).toHaveClass(
+      "flex",
+      "flex-nowrap",
+      "items-center",
+      "gap-3",
+    );
+    expect(maxSessionsInput).toHaveClass("w-40", "shrink-0");
+
+    await submitCreateForm({ confirmSoftIssues: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.maxSessions).toBeUndefined();
+  });
+
   it("submits the Gemini default model as a real value instead of an empty placeholder", async () => {
     const { onSubmit } = renderCreateProviderForm("gemini");
 
@@ -261,6 +391,23 @@ describe("ProviderForm create mode", () => {
       settingsConfig.models.map((model: { id?: string }) => model.id),
     ).not.toContain("");
     expect(JSON.stringify(settingsConfig)).not.toContain("{model}");
+  });
+
+  it("shows and submits maxSessions for OpenClaw create mode", async () => {
+    const { onSubmit } = renderCreateProviderForm("openclaw");
+
+    const maxSessionsInput = screen.getByLabelText("最大会话数");
+    expect(maxSessionsInput).toBeInTheDocument();
+
+    fireEvent.change(maxSessionsInput, { target: { value: "4" } });
+
+    await submitCreateForm({
+      providerKeyInputId: "openclaw-key",
+      providerKey: "openclaw-new",
+    });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.maxSessions).toBe(4);
   });
 
   it("submits the Hermes default model as a real value instead of an empty placeholder", async () => {

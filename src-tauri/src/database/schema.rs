@@ -126,6 +126,7 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -339,6 +340,10 @@ impl Database {
             "ALTER TABLE proxy_config ADD COLUMN enable_logging INTEGER NOT NULL DEFAULT 1",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // 尝试添加超时配置列到 proxy_config 表
         let _ = conn.execute(
@@ -548,6 +553,11 @@ impl Database {
                         );
                         Self::migrate_v11_to_v12(conn)?;
                         Self::set_user_version(conn, 12)?;
+                    }
+                    12 => {
+                        log::info!("迁移数据库从 v12 到 v13（代理故障转移分流配置）");
+                        Self::migrate_v12_to_v13(conn)?;
+                        Self::set_user_version(conn, 13)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -870,6 +880,7 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -1439,6 +1450,43 @@ impl Database {
         Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
 
         log::info!("v11 -> v12 迁移完成：已添加 Api-Hub 四张表 + providers.api_hub_origin 列");
+        Ok(())
+    }
+
+    /// v12 -> v13 迁移：应用级代理配置增加分流开关。
+    fn migrate_v12_to_v13(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::info!("v12 -> v13 迁移跳过：proxy_config 表不存在");
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "load_balancing_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        // 分流只在接管 + 故障转移同时开启时有效；迁移时防御性清理旧/异常数据。
+        let has_enabled = Self::has_column(conn, "proxy_config", "enabled")?;
+        let has_auto_failover = Self::has_column(conn, "proxy_config", "auto_failover_enabled")?;
+        if has_enabled && has_auto_failover {
+            conn.execute(
+                "UPDATE proxy_config
+                 SET load_balancing_enabled = 0
+                 WHERE enabled = 0 OR auto_failover_enabled = 0",
+                [],
+            )
+            .map_err(|e| AppError::Database(format!("清理无效分流配置失败: {e}")))?;
+        } else {
+            log::info!(
+                "v12 -> v13 迁移跳过分流清理：proxy_config 列结构过旧（enabled: {}, auto_failover_enabled: {}）",
+                has_enabled,
+                has_auto_failover
+            );
+        }
+
+        log::info!("v12 -> v13 迁移完成：已添加 proxy_config.load_balancing_enabled");
         Ok(())
     }
 

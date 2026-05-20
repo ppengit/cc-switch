@@ -42,6 +42,7 @@ export interface ActiveRequestTarget {
   provider_name: string;
   provider_id: string;
   inflight_requests: number;
+  max_sessions?: number | null;
   request_model?: string | null;
   upstream_model?: string | null;
   route_mode?: string | null;
@@ -197,6 +198,7 @@ export interface AppProxyConfig {
   appType: string;
   enabled: boolean;
   autoFailoverEnabled: boolean;
+  loadBalancingEnabled: boolean;
   maxRetries: number;
   streamingFirstByteTimeout: number;
   streamingIdleTimeout: number;

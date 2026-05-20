@@ -3,7 +3,7 @@ import { failoverApi } from "@/lib/api/failover";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import type { ProxyStatus } from "@/types/proxy";
+import type { AppProxyConfig, ProxyStatus } from "@/types/proxy";
 import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 
 // ========== 熔断器 Hooks ==========
@@ -236,14 +236,34 @@ export function useSetAutoFailoverEnabled() {
       await queryClient.cancelQueries({
         queryKey: ["autoFailoverEnabled", appType],
       });
+      await queryClient.cancelQueries({
+        queryKey: ["appProxyConfig", appType],
+      });
       const previousValue = queryClient.getQueryData<boolean>([
         "autoFailoverEnabled",
         appType,
       ]);
+      const previousAppProxyConfig = queryClient.getQueryData<AppProxyConfig>([
+        "appProxyConfig",
+        appType,
+      ]);
 
       queryClient.setQueryData(["autoFailoverEnabled", appType], enabled);
+      queryClient.setQueryData<AppProxyConfig | undefined>(
+        ["appProxyConfig", appType],
+        (current) =>
+          current
+            ? {
+                ...current,
+                autoFailoverEnabled: enabled,
+                loadBalancingEnabled: enabled
+                  ? current.loadBalancingEnabled
+                  : false,
+              }
+            : current,
+      );
 
-      return { previousValue, appType };
+      return { previousValue, previousAppProxyConfig, appType };
     },
 
     onSuccess: (_data, variables) => {
@@ -282,6 +302,12 @@ export function useSetAutoFailoverEnabled() {
           context.previousValue,
         );
       }
+      if (context?.previousAppProxyConfig) {
+        queryClient.setQueryData(
+          ["appProxyConfig", context.appType],
+          context.previousAppProxyConfig,
+        );
+      }
 
       const detail =
         extractErrorMessage(error) ||
@@ -298,6 +324,9 @@ export function useSetAutoFailoverEnabled() {
     onSettled: (_, __, variables) => {
       queryClient.invalidateQueries({
         queryKey: ["autoFailoverEnabled", variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["appProxyConfig", variables.appType],
       });
       // 启用/关闭故障转移可能触发：
       // - 立即切到队列 P1（当前供应商变化）

@@ -68,6 +68,7 @@ import {
   useProviderHealth,
   useCircuitBreakerStats,
 } from "@/lib/query/failover";
+import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 import {
   useCurrentOmoProviderId,
   useCurrentOmoSlimProviderId,
@@ -1093,12 +1094,18 @@ export function ProviderList({
   );
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
+  const { data: appProxyConfig } = useAppProxyConfig(appId);
+  const updateAppProxyConfig = useUpdateAppProxyConfig();
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
+  const canEnableLoadBalancing =
+    isFailoverModeActive && Boolean(appProxyConfig);
+  const isLoadBalancingEnabled =
+    canEnableLoadBalancing && appProxyConfig?.loadBalancingEnabled === true;
   const isProxyModeResolving =
     isProxyTakeover === true && isAutoFailoverEnabled === undefined;
   const isTakeoverModeActive =
@@ -1131,6 +1138,17 @@ export function ProviderList({
           : t("provider.modeDirect", {
               defaultValue: "直连配置（未接管代理）",
             });
+
+  const handleLoadBalancingToggle = useCallback(
+    (enabled: boolean) => {
+      if (!appProxyConfig) return;
+      updateAppProxyConfig.mutate({
+        ...appProxyConfig,
+        loadBalancingEnabled: enabled && canEnableLoadBalancing,
+      });
+    },
+    [appProxyConfig, canEnableLoadBalancing, updateAppProxyConfig],
+  );
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -3016,6 +3034,48 @@ export function ProviderList({
             defaultValue: "供应商配置模板",
           })}
         </Button>
+
+        {isSwitchModeApp && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className={cn(
+                    "flex h-7 items-center gap-2 rounded-md border border-border-default bg-background/60 px-2 text-xs",
+                    !canEnableLoadBalancing && "opacity-60",
+                  )}
+                >
+                  <span className="whitespace-nowrap">
+                    {t("provider.loadBalancingToggle", {
+                      defaultValue: "开启分流",
+                    })}
+                  </span>
+                  <Switch
+                    checked={isLoadBalancingEnabled}
+                    onCheckedChange={handleLoadBalancingToggle}
+                    disabled={
+                      !canEnableLoadBalancing || updateAppProxyConfig.isPending
+                    }
+                    aria-label={t("provider.loadBalancingToggle", {
+                      defaultValue: "开启分流",
+                    })}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {canEnableLoadBalancing
+                  ? t("provider.loadBalancingHint", {
+                      defaultValue:
+                        "按故障转移队列和供应商最大会话数分流请求，并优先保持同一会话的供应商粘性。",
+                    })
+                  : t("provider.loadBalancingDisabledHint", {
+                      defaultValue:
+                        "分流仅在本地代理接管并开启故障转移后生效。",
+                    })}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
 
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
           <Popover>

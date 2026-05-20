@@ -422,7 +422,10 @@ export function ProxyPanel({
                                 {target.app_type}
                               </span>
                               <span className="font-medium text-foreground">
-                                {target.inflight_requests}x
+                                {target.inflight_requests}
+                                {target.max_sessions && target.max_sessions > 0
+                                  ? `/${target.max_sessions}`
+                                  : "x"}
                               </span>
                             </div>
                             <div

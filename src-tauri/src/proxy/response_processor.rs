@@ -8,6 +8,7 @@ use super::{
     handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
+    provider_router::LoadBalancingSlotGuard,
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
     usage::parser::TokenUsage,
@@ -185,6 +186,7 @@ pub async fn handle_streaming(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Response {
     let status = response.status();
     log::debug!(
@@ -228,6 +230,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
+        load_balancing_guard,
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -248,6 +251,7 @@ pub async fn handle_non_streaming(
     parser_config: &UsageParserConfig,
     // guard 在函数 scope 内持有，整包响应读取完成后随函数返回一并 drop
     _connection_guard: Option<ActiveConnectionGuard>,
+    _load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<Response, ProxyError> {
     // 整包超时：仅在故障转移开启且配置值非零时生效
     let body_timeout = if ctx.app_config.enabled
@@ -380,11 +384,29 @@ pub async fn process_response(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<Response, ProxyError> {
     if is_sse_response(&response) {
-        Ok(handle_streaming(response, ctx, state, parser_config, connection_guard).await)
+        Ok(handle_streaming(
+            response,
+            ctx,
+            state,
+            parser_config,
+            connection_guard,
+            load_balancing_guard,
+        )
+        .await)
     } else {
-        match handle_non_streaming(response, ctx, state, parser_config, connection_guard).await {
+        match handle_non_streaming(
+            response,
+            ctx,
+            state,
+            parser_config,
+            connection_guard,
+            load_balancing_guard,
+        )
+        .await
+        {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 finish_request(
@@ -848,9 +870,11 @@ pub fn create_logged_passthrough_stream(
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
+    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
+        let _lb_guard = load_balancing_guard;
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;

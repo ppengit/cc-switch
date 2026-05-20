@@ -1167,6 +1167,10 @@
     "empty": "No endpoints"
   },
   "providerAdvanced": {
+    "loadBalancingConfig": "Load Balancing",
+    "maxSessions": "Max sessions",
+    "maxSessionsPlaceholder": "Leave empty for unlimited",
+    "maxSessionsHint": "Only applies when local proxy, failover, and load balancing are enabled. Requests move to later providers after the limit is reached; when all providers are full, overflow requests go to the first provider in the queue.",
     "testConfig": "Model Test Config",
     "useCustomConfig": "Use separate config",
     "testConfigDesc": "Configure separate model testing parameters for this provider. Uses global settings when disabled.",

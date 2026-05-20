@@ -75,6 +75,7 @@ import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
   ProviderAdvancedConfig,
+  ProviderLoadBalancingConfig,
   type PricingModelSourceOption,
 } from "./ProviderAdvancedConfig";
 import {
@@ -373,6 +374,9 @@ function ProviderFormFull({
   const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
     () => initialData?.meta?.testConfig ?? { enabled: false },
   );
+  const [maxSessions, setMaxSessions] = useState<number | null>(
+    () => initialData?.meta?.maxSessions ?? null,
+  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -419,6 +423,7 @@ function ProviderFormFull({
       supportsFullUrl ? (seed?.meta?.isFullUrl ?? false) : false,
     );
     setTestConfig(seed?.meta?.testConfig ?? { enabled: false });
+    setMaxSessions(seed?.meta?.maxSessions ?? null);
     setPricingConfig({
       enabled:
         seed?.meta?.costMultiplier !== undefined ||
@@ -1749,6 +1754,7 @@ function ProviderFormFull({
           : undefined,
       codexFastMode: isCodexOauthProvider ? codexFastMode : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
+      maxSessions: maxSessions && maxSessions > 0 ? maxSessions : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
         : undefined,
@@ -2790,6 +2796,11 @@ function ProviderFormFull({
               />
             </>
           )}
+
+          <ProviderLoadBalancingConfig
+            maxSessions={maxSessions}
+            onMaxSessionsChange={setMaxSessions}
+          />
 
           {!isAnyOmoCategory &&
             appId !== "opencode" &&

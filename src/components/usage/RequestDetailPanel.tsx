@@ -57,7 +57,8 @@ export function RequestDetailPanel({
             <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
             <DialogDescription>
               {t("usage.requestDetailDescription", {
-                defaultValue: "查看单次代理请求的供应商、模型、Token、成本和元数据。",
+                defaultValue:
+                  "查看单次代理请求的供应商、模型、Token、成本和元数据。",
               })}
             </DialogDescription>
           </DialogHeader>
@@ -110,7 +111,8 @@ export function RequestDetailPanel({
           <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
           <DialogDescription>
             {t("usage.requestDetailDescription", {
-              defaultValue: "查看单次代理请求的供应商、模型、Token、成本和元数据。",
+              defaultValue:
+                "查看单次代理请求的供应商、模型、Token、成本和元数据。",
             })}
           </DialogDescription>
         </DialogHeader>

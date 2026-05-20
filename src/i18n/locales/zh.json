@@ -1167,6 +1167,10 @@
     "empty": "暂无端点"
   },
   "providerAdvanced": {
+    "loadBalancingConfig": "分流配置",
+    "maxSessions": "最大会话数",
+    "maxSessionsPlaceholder": "留空表示无限制",
+    "maxSessionsHint": "仅在本地代理 + 故障转移 + 分流开启时生效；达到上限后优先切到后续供应商，全部满载时由队列第一个供应商承接溢出请求。",
     "testConfig": "模型测试配置",
     "useCustomConfig": "使用单独配置",
     "testConfigDesc": "为此供应商配置单独的模型测试参数，不启用时使用全局配置。",

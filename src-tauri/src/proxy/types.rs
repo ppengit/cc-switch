@@ -127,6 +127,8 @@ pub struct ActiveRequestTarget {
     pub provider_name: String,
     pub provider_id: String,
     pub inflight_requests: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_sessions: Option<u32>,
     pub request_model: Option<String>,
     pub upstream_model: Option<String>,
     pub route_mode: Option<String>,
@@ -277,6 +279,9 @@ pub struct AppProxyConfig {
     pub enabled: bool,
     /// 该 app 自动故障转移开关
     pub auto_failover_enabled: bool,
+    /// 该 app 分流开关；仅在 enabled + auto_failover_enabled 同时开启时生效
+    #[serde(default)]
+    pub load_balancing_enabled: bool,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）

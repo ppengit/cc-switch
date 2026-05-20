@@ -16,6 +16,7 @@ use super::{
         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
+    provider_router::LoadBalancingSlotGuard,
     providers::{
         get_adapter, get_claude_api_format, streaming::create_anthropic_sse_stream,
         streaming_codex_chat::create_responses_sse_stream_from_chat,
@@ -200,6 +201,7 @@ async fn handle_messages_for_app(
     };
 
     let connection_guard = result.connection_guard.take();
+    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let api_format = result
         .claude_api_format
@@ -222,6 +224,7 @@ async fn handle_messages_for_app(
             is_stream,
             &api_format,
             connection_guard,
+            load_balancing_guard,
         )
         .await;
     }
@@ -233,6 +236,7 @@ async fn handle_messages_for_app(
         &state,
         &CLAUDE_PARSER_CONFIG,
         connection_guard,
+        load_balancing_guard,
     )
     .await
 }
@@ -275,6 +279,7 @@ async fn handle_claude_transform(
     is_stream: bool,
     api_format: &str,
     connection_guard: Option<ActiveConnectionGuard>,
+    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
     let is_codex_oauth = ctx
@@ -409,6 +414,7 @@ async fn handle_claude_transform(
             usage_collector,
             timeout_config,
             connection_guard,
+            load_balancing_guard,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -664,6 +670,7 @@ pub async fn handle_chat_completions(
     };
 
     let connection_guard = result.connection_guard.take();
+    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -673,6 +680,7 @@ pub async fn handle_chat_completions(
         &state,
         &OPENAI_PARSER_CONFIG,
         connection_guard,
+        load_balancing_guard,
     )
     .await
 }
@@ -729,6 +737,7 @@ pub async fn handle_responses(
     };
 
     let connection_guard = result.connection_guard.take();
+    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -739,6 +748,7 @@ pub async fn handle_responses(
             &state,
             is_stream,
             connection_guard,
+            load_balancing_guard,
         )
         .await;
     }
@@ -749,6 +759,7 @@ pub async fn handle_responses(
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
+        load_balancing_guard,
     )
     .await
 }
@@ -805,6 +816,7 @@ pub async fn handle_responses_compact(
     };
 
     let connection_guard = result.connection_guard.take();
+    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -815,6 +827,7 @@ pub async fn handle_responses_compact(
             &state,
             is_stream,
             connection_guard,
+            load_balancing_guard,
         )
         .await;
     }
@@ -825,6 +838,7 @@ pub async fn handle_responses_compact(
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
+        load_balancing_guard,
     )
     .await
 }
@@ -835,12 +849,20 @@ async fn handle_codex_chat_to_responses_transform(
     state: &ProxyState,
     is_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
+    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
 
     if !status.is_success() {
-        return process_response(response, ctx, state, &CODEX_PARSER_CONFIG, connection_guard)
-            .await;
+        return process_response(
+            response,
+            ctx,
+            state,
+            &CODEX_PARSER_CONFIG,
+            connection_guard,
+            load_balancing_guard,
+        )
+        .await;
     }
 
     if is_stream || response.is_sse() {
@@ -909,6 +931,7 @@ async fn handle_codex_chat_to_responses_transform(
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
+            load_balancing_guard,
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -926,6 +949,7 @@ async fn handle_codex_chat_to_responses_transform(
     }
 
     let _connection_guard = connection_guard;
+    let _load_balancing_guard = load_balancing_guard;
     let body_timeout =
         if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
             std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
@@ -1067,6 +1091,7 @@ pub async fn handle_gemini(
     };
 
     let connection_guard = result.connection_guard.take();
+    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -1076,6 +1101,7 @@ pub async fn handle_gemini(
         &state,
         &GEMINI_PARSER_CONFIG,
         connection_guard,
+        load_balancing_guard,
     )
     .await
 }
