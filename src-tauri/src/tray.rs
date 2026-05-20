@@ -379,12 +379,8 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             return Err(AppError::Message(format!("执行接管失败: {e}")));
         }
 
-        // 3) 设置 auto_failover_enabled = true
-        app_state
-            .db
-            .set_proxy_flags_sync(app_type_str, true, true)?;
-
-        // 3.1) 立即切到队列 P1（热切换：不写 Live，仅更新 DB/settings/备份）
+        // 3) 开启前先切到队列 P1。只有切换成功后才真正打开 auto_failover，
+        // 避免留下“开关已开但恢复基线/路由目标仍是旧 provider”的脏状态。
         if let Err(e) = futures::executor::block_on(
             proxy_service.switch_proxy_target(app_type_str, &p1_provider_id),
         ) {
@@ -394,14 +390,25 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             )));
         }
 
-        // 4) 更新托盘菜单
+        // 4) 设置 auto_failover_enabled = true
+        app_state
+            .db
+            .set_proxy_flags_sync(app_type_str, true, true)?;
+
+        // Auto/failover 模式下不应残留 current provider 概念。
+        let _ = crate::settings::set_current_provider(app_type, None);
+        if let Err(error) = app_state.db.clear_current_provider(app_type_str) {
+            log::warn!("[Tray] Auto 模式清空 {app_type_str} current provider 失败: {error}");
+        }
+
+        // 5) 更新托盘菜单
         if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
             if let Some(tray) = app.tray_by_id(TRAY_ID) {
                 let _ = tray.set_menu(Some(new_menu));
             }
         }
 
-        // 5) 发射事件到前端
+        // 6) 发射事件到前端
         let event_data = serde_json::json!({
             "appType": app_type_str,
             "proxyEnabled": true,

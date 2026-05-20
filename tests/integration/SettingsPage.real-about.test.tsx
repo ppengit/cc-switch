@@ -13,7 +13,7 @@ import {
 const checkUpdateMock = vi.fn();
 
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: vi.fn(async () => "3.15.1"),
+  getVersion: vi.fn(async () => "3.15.2"),
 }));
 
 vi.mock("@/lib/platform", () => ({
@@ -153,7 +153,7 @@ describe("SettingsPage real about section", () => {
     );
 
     await waitFor(() => expect(screen.getByText("CC Switch")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("v3.15.1")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("v3.15.2")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument());
     await waitFor(() => expect(getLastToolVersionsRequest()?.tools).toEqual([
       "claude",
@@ -174,7 +174,7 @@ describe("SettingsPage real about section", () => {
       expect(getOpenExternalRequests()).toEqual([
         "https://ccswitch.io",
         "https://github.com/farion1231/cc-switch",
-        "https://github.com/ppengit/cc-switch/releases/tag/v3.15.1",
+        "https://github.com/ppengit/cc-switch/releases/tag/v3.15.2",
       ]),
     );
 

@@ -14,6 +14,7 @@ import type {
   ProviderMeta,
   ProviderTestConfig,
   ClaudeApiFormat,
+  CodexApiFormat,
   ClaudeApiKeyField,
 } from "@/types";
 import {
@@ -54,6 +55,10 @@ import {
   setCodexBaseUrl as setCodexBaseUrlInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
+import {
+  extractCodexWireApi,
+  setCodexWireApi,
+} from "@/utils/providerConfigUtils";
 import { isNonNegativeDecimalString } from "@/types/usage";
 import { getCodexCustomTemplate } from "@/config/codexTemplates";
 import CodexConfigEditor from "./CodexConfigEditor";
@@ -116,6 +121,25 @@ type PresetEntry = {
     | OpenCodeProviderPreset
     | OpenClawProviderPreset
     | HermesProviderPreset;
+};
+
+const codexApiFormatFromWireApi = (
+  wireApi: string | undefined,
+): CodexApiFormat | undefined => {
+  switch (wireApi?.trim().toLowerCase()) {
+    case "chat":
+    case "chat_completions":
+    case "chat-completions":
+    case "openai_chat":
+    case "openai-chat":
+      return "openai_chat";
+    case "responses":
+    case "openai_responses":
+    case "openai-responses":
+      return "openai_responses";
+    default:
+      return undefined;
+  }
 };
 
 export interface ProviderFormProps {
@@ -620,6 +644,7 @@ function ProviderFormFull({
     codexModelName,
     codexAuthError,
     setCodexAuth,
+    setCodexConfig,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange: originalHandleCodexBaseUrlChange,
     handleCodexModelNameChange,
@@ -658,15 +683,50 @@ function ProviderFormFull({
     [handleEndpointFullUrlDetection, originalHandleCodexBaseUrlChange],
   );
 
+  const [localCodexApiFormat, setLocalCodexApiFormat] =
+    useState<CodexApiFormat>(() => {
+      if (initialData?.meta?.apiFormat === "openai_chat") {
+        return "openai_chat";
+      }
+      if (initialData?.meta?.apiFormat === "openai_responses") {
+        return "openai_responses";
+      }
+      return (
+        codexApiFormatFromWireApi(
+          extractCodexWireApi(
+            typeof initialData?.settingsConfig?.config === "string"
+              ? initialData.settingsConfig.config
+              : "",
+          ),
+        ) ?? "openai_responses"
+      );
+    });
+
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
 
   const handleCodexConfigChange = useCallback(
     (value: string) => {
       originalHandleCodexConfigChange(value);
+      const nextFormat = codexApiFormatFromWireApi(extractCodexWireApi(value));
+      if (nextFormat) {
+        setLocalCodexApiFormat(nextFormat);
+      }
       debouncedValidate(value);
     },
     [originalHandleCodexConfigChange, debouncedValidate],
+  );
+
+  const handleCodexApiFormatChange = useCallback(
+    (format: CodexApiFormat) => {
+      setLocalCodexApiFormat(format);
+      setCodexConfig((prev) => {
+        const updated = setCodexWireApi(prev, "responses");
+        debouncedValidate(updated);
+        return updated;
+      });
+    },
+    [setCodexConfig, debouncedValidate],
   );
 
   useEffect(() => {
@@ -1464,9 +1524,13 @@ function ProviderFormFull({
           codexConfig ?? "",
           effectiveEndpointUrl,
         );
+        const normalizedCodexConfig =
+          category !== "official" && finalCodexConfig.trim()
+            ? setCodexWireApi(finalCodexConfig, "responses")
+            : finalCodexConfig;
         const configObj = {
           auth: authJson,
-          config: finalCodexConfig,
+          config: normalizedCodexConfig,
         };
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -1695,7 +1759,9 @@ function ProviderFormFull({
       apiFormat:
         appId === "claude" && category !== "official"
           ? localApiFormat
-          : undefined,
+          : appId === "codex" && category !== "official"
+            ? localCodexApiFormat
+            : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -1929,9 +1995,17 @@ function ProviderFormFull({
         const seeded = getSeededCodexTemplate(seededSettingsConfig);
         if (seeded.config || Object.keys(seeded.auth).length > 0) {
           resetCodexConfig(seeded.auth, seeded.config);
+          setLocalCodexApiFormat(
+            codexApiFormatFromWireApi(extractCodexWireApi(seeded.config)) ??
+              "openai_responses",
+          );
         } else {
           const template = getCodexCustomTemplate();
           resetCodexConfig(template.auth, template.config);
+          setLocalCodexApiFormat(
+            codexApiFormatFromWireApi(extractCodexWireApi(template.config)) ??
+              "openai_responses",
+          );
         }
       }
       if (appId === "gemini") {
@@ -1973,6 +2047,11 @@ function ProviderFormFull({
       const config = preset.config ?? "";
 
       resetCodexConfig(auth, config);
+      setLocalCodexApiFormat(
+        preset.apiFormat ??
+          codexApiFormatFromWireApi(extractCodexWireApi(config)) ??
+          "openai_responses",
+      );
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2437,6 +2516,8 @@ function ProviderFormFull({
               }
               autoSelect={endpointAutoSelect}
               onAutoSelectChange={setEndpointAutoSelect}
+              apiFormat={localCodexApiFormat}
+              onApiFormatChange={handleCodexApiFormatChange}
               shouldShowModelField={category !== "official"}
               modelName={codexModelName}
               onModelNameChange={handleCodexModelNameChange}

@@ -527,7 +527,7 @@ impl ProxyService {
             return Err("该应用不支持代理接管".to_string());
         }
 
-        let current_provider = self.current_provider_for_app(app_type).await?;
+        let current_provider = self.takeover_restore_target_provider_for_app(app_type).await?;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let mut live_config = build_proxy_takeover_settings(
             self.db.as_ref(),
@@ -801,28 +801,8 @@ impl ProxyService {
                 };
 
                 if live_taken_over {
-                    if !has_existing_backup {
-                        match self.rebuild_live_backup_from_restore_target(&app).await {
-                            Ok(true) => {
-                                log::info!(
-                                    "{app_type_str} Live 已接管但备份缺失，已从当前恢复目标重建备份"
-                                );
-                            }
-                            Ok(false) => {
-                                log::warn!(
-                                    "{app_type_str} Live 已接管但备份缺失，且没有可用恢复目标；关闭接管时将使用无备份兜底"
-                                );
-                            }
-                            Err(error) => {
-                                log::warn!(
-                                    "{app_type_str} Live 已接管但备份缺失，重建备份失败: {error}"
-                                );
-                            }
-                        }
-                    }
-                    if current_config.auto_failover_enabled {
-                        self.clear_failover_current_provider_state(&app);
-                    }
+                    self.repair_takeover_runtime_state(&app).await?;
+                    self.sync_live_access_template_for_app(&app).await?;
                     self.sync_failover_active_target(app_type_str).await?;
                     return Ok(());
                 }
@@ -902,9 +882,7 @@ impl ProxyService {
                 .update_proxy_config_for_app(updated_config)
                 .await
                 .map_err(|e| format!("设置 {app_type_str} enabled 状态失败: {e}"))?;
-            if current_config.auto_failover_enabled {
-                self.clear_failover_current_provider_state(&app);
-            }
+            self.repair_takeover_runtime_state(&app).await?;
             self.sync_failover_active_target(app_type_str).await?;
 
             // 7) 兼容旧逻辑：写入 any-of 标志（失败不影响功能）
@@ -1432,14 +1410,14 @@ impl ProxyService {
     ///
     /// 用于程序正常退出时，保留代理状态以便下次启动时自动恢复
     pub async fn stop_with_restore_keep_state(&self) -> Result<(), String> {
-        let app_restore_modes = {
-            let mut modes = Vec::new();
+        let app_restore_configs = {
+            let mut configs = Vec::new();
             for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
                 if let Ok(config) = self.db.get_proxy_config_for_app(app_type.as_str()).await {
-                    modes.push((app_type, config.enabled && config.auto_failover_enabled));
+                    configs.push((app_type, config));
                 }
             }
-            modes
+            configs
         };
 
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
@@ -1447,16 +1425,36 @@ impl ProxyService {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
-        // 2. 恢复原始 Live 配置
-        self.restore_live_configs().await?;
-
-        // 2.1 退出但保留代理状态时，也要把 failover 模式的直连基线修回队列头，
-        //     否则下次启动前的 current/live 会停留在旧备份对应的历史 provider。
-        for (app_type, failover_mode_active) in &app_restore_modes {
-            if *failover_mode_active {
-                self.restore_direct_current_from_failover_queue(app_type)
-                    .await?;
+        // 2. 仅恢复那些下次启动前不再保持接管的应用。
+        // 对仍启用接管的应用，live 文件应保持 takeover 访问配置，不应回退成某个具体供应商。
+        for (app_type, config) in &app_restore_configs {
+            if config.enabled {
+                if config.auto_failover_enabled {
+                    self.clear_failover_current_provider_state(app_type);
+                }
+                self.clear_active_target_only(app_type.as_str()).await;
+                continue;
             }
+
+            let app_key = app_type.as_str();
+            let has_backup = self
+                .db
+                .get_live_backup(app_key)
+                .await
+                .map_err(|e| format!("读取 {app_key} Live 备份失败: {e}"))?
+                .is_some();
+            let live_taken_over = self.detect_takeover_in_live_config_for_app(app_type);
+
+            if has_backup || live_taken_over {
+                self.restore_live_config_for_app_with_fallback_mode(app_type, false)
+                    .await?;
+                self.db
+                    .delete_live_backup(app_key)
+                    .await
+                    .map_err(|e| format!("删除 {app_key} Live 备份失败: {e}"))?;
+            }
+
+            self.clear_active_target_only(app_key).await;
         }
 
         // 3. 更新 proxy_config 表中的 live_takeover_active 标志（兼容旧版）
@@ -1466,19 +1464,13 @@ impl ProxyService {
             let _ = self.db.update_proxy_config(config).await;
         }
 
-        // 4. 删除备份（Live 配置已恢复，备份不再需要）
-        self.db
-            .delete_all_live_backups()
-            .await
-            .map_err(|e| format!("删除备份失败: {e}"))?;
-
-        // 5. 重置健康状态
+        // 4. 重置健康状态
         self.db
             .clear_all_provider_health()
             .await
             .map_err(|e| format!("重置健康状态失败: {e}"))?;
 
-        log::info!("代理已停止，Live 配置已恢复（保留代理状态，下次启动将自动恢复）");
+        log::info!("代理已停止，已保留接管状态，下次启动将自动恢复");
         Ok(())
     }
 
@@ -1553,6 +1545,37 @@ impl ProxyService {
             .map_err(|e| format!("读取 {} 当前供应商失败: {e}", app_type.as_str()))
     }
 
+    async fn takeover_restore_target_provider_for_app(
+        &self,
+        app_type: &AppType,
+    ) -> Result<Option<Provider>, String> {
+        let proxy_config = self
+            .db
+            .get_proxy_config_for_app(app_type.as_str())
+            .await
+            .map_err(|e| format!("读取 {} 代理配置失败: {e}", app_type.as_str()))?;
+
+        if proxy_config.enabled && proxy_config.auto_failover_enabled {
+            let queue_head = self
+                .db
+                .get_failover_queue(app_type.as_str())
+                .map_err(|e| format!("读取 {} 故障转移队列失败: {e}", app_type.as_str()))?
+                .into_iter()
+                .next();
+
+            let Some(queue_head) = queue_head else {
+                return Ok(None);
+            };
+
+            return self
+                .db
+                .get_provider_by_id(&queue_head.provider_id, app_type.as_str())
+                .map_err(|e| format!("读取 {} 故障转移目标失败: {e}", app_type.as_str()));
+        }
+
+        self.current_provider_for_app(app_type).await
+    }
+
     /// 构造写入 Live 的代理地址（处理 0.0.0.0 / IPv6 等特殊情况）
     async fn build_proxy_urls(&self) -> Result<(String, String), String> {
         let config = self
@@ -1604,7 +1627,8 @@ impl ProxyService {
     async fn takeover_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let current_provider = if matches!(app_type, AppType::Claude | AppType::Codex) {
-            self.current_provider_for_app(app_type).await?
+            self.takeover_restore_target_provider_for_app(app_type)
+                .await?
         } else {
             None
         };
@@ -1634,7 +1658,10 @@ impl ProxyService {
                 if let Some(provider) = current_provider.as_ref() {
                     Self::apply_codex_provider_model_fields(&mut live_config, provider)?;
                 } else {
-                    return Err("Codex 当前供应商不存在，无法接管 Live 配置".to_string());
+                    log::warn!(
+                        "未找到 Codex restore target，{} 接管配置将仅保留代理接入模板字段",
+                        app_type.as_str()
+                    );
                 }
                 self.write_codex_live(&live_config)?;
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
@@ -1654,7 +1681,7 @@ impl ProxyService {
     async fn takeover_live_config_best_effort(&self, app_type: &AppType) -> Result<(), String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
         let current_provider = if matches!(app_type, AppType::Claude | AppType::Codex) {
-            match self.current_provider_for_app(app_type).await {
+            match self.takeover_restore_target_provider_for_app(app_type).await {
                 Ok(provider) => provider,
                 Err(err) => {
                     log::warn!(
@@ -2061,22 +2088,49 @@ impl ProxyService {
     /// 从异常退出中恢复（启动时调用）
     ///
     /// 检测到 Live 备份残留时调用此方法。
-    /// 会恢复 Live 配置、清除接管标志、删除备份。
+    /// 若应用仍配置为 takeover，则保留 takeover 文件并修复恢复基线；
+    /// 否则恢复直连 live。
     pub async fn recover_from_crash(&self) -> Result<(), String> {
-        // 1. 恢复 Live 配置
-        self.restore_live_configs().await?;
+        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            let app_key = app_type.as_str();
+            let config = self
+                .db
+                .get_proxy_config_for_app(app_key)
+                .await
+                .map_err(|e| format!("读取 {app_key} 代理配置失败: {e}"))?;
+            let has_backup = self
+                .db
+                .get_live_backup(app_key)
+                .await
+                .map_err(|e| format!("读取 {app_key} Live 备份失败: {e}"))?
+                .is_some();
+            let live_taken_over = self.detect_takeover_in_live_config_for_app(&app_type);
+
+            if !(has_backup || live_taken_over) {
+                continue;
+            }
+
+            if config.enabled {
+                self.repair_takeover_runtime_state(&app_type).await?;
+                if self.is_running().await {
+                    self.sync_failover_active_target(app_key).await?;
+                }
+                continue;
+            }
+
+            self.restore_live_config_for_app_with_fallback_mode(&app_type, false)
+                .await?;
+            self.db
+                .delete_live_backup(app_key)
+                .await
+                .map_err(|e| format!("删除 {app_key} Live 备份失败: {e}"))?;
+        }
 
         // 2. 清除接管标志
         self.db
             .set_live_takeover_active(false)
             .await
             .map_err(|e| format!("清除接管状态失败: {e}"))?;
-
-        // 3. 删除备份
-        self.db
-            .delete_all_live_backups()
-            .await
-            .map_err(|e| format!("删除备份失败: {e}"))?;
 
         log::info!("已从异常退出中恢复 Live 配置");
         Ok(())
@@ -2323,34 +2377,75 @@ impl ProxyService {
         &self,
         app_type: &AppType,
     ) -> Result<bool, String> {
-        if let Some(provider) = self.current_provider_for_app(app_type).await? {
+        if let Some(provider) = self.takeover_restore_target_provider_for_app(app_type).await? {
             self.update_live_backup_from_provider_inner(app_type.as_str(), &provider)
                 .await?;
             return Ok(true);
         }
+        Ok(false)
+    }
 
-        let queue_head = self
+    async fn takeover_backup_matches_restore_target(
+        &self,
+        app_type: &AppType,
+    ) -> Result<bool, String> {
+        let Some(backup) = self
             .db
-            .get_failover_queue(app_type.as_str())
-            .map_err(|e| format!("读取 {} 故障转移队列失败: {e}", app_type.as_str()))?
-            .into_iter()
-            .next();
-
-        let Some(queue_head) = queue_head else {
-            return Ok(false);
-        };
-
-        let Some(provider) = self
-            .db
-            .get_provider_by_id(&queue_head.provider_id, app_type.as_str())
-            .map_err(|e| format!("读取 {} 恢复目标供应商失败: {e}", app_type.as_str()))?
+            .get_live_backup(app_type.as_str())
+            .await
+            .map_err(|e| format!("读取 {} Live 备份失败: {e}", app_type.as_str()))?
         else {
             return Ok(false);
         };
 
-        self.update_live_backup_from_provider_inner(app_type.as_str(), &provider)
-            .await?;
-        Ok(true)
+        let backup_value: Value = serde_json::from_str(&backup.original_config)
+            .map_err(|e| format!("解析 {} Live 备份失败: {e}", app_type.as_str()))?;
+        let Some(provider) = self.takeover_restore_target_provider_for_app(app_type).await? else {
+            return Ok(false);
+        };
+
+        Ok(Self::live_config_belongs_to_provider(
+            self.db.as_ref(),
+            app_type,
+            &backup_value,
+            &provider,
+        ))
+    }
+
+    pub async fn repair_takeover_runtime_state(&self, app_type: &AppType) -> Result<(), String> {
+        let app_key = app_type.as_str();
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_key)
+            .await
+            .map_err(|e| format!("读取 {app_key} 代理配置失败: {e}"))?;
+
+        if !config.enabled {
+            return Ok(());
+        }
+
+        if config.auto_failover_enabled {
+            self.clear_failover_current_provider_state(app_type);
+        }
+
+        let backup_matches_target = self.takeover_backup_matches_restore_target(app_type).await?;
+        if !backup_matches_target {
+            let rebuilt = self.rebuild_live_backup_from_restore_target(app_type).await?;
+            if !rebuilt {
+                if config.auto_failover_enabled {
+                    self.db
+                        .delete_live_backup(app_key)
+                        .await
+                        .map_err(|e| format!("删除 {app_key} 陈旧 Live 备份失败: {e}"))?;
+                }
+                log::warn!(
+                    "{} takeover 模式下缺少可用 restore target，无法重建 Live 备份",
+                    app_key
+                );
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn hot_switch_provider(
@@ -2957,6 +3052,10 @@ impl ProxyService {
                 .await;
         } else {
             self.clear_active_target_only(app_type).await;
+        }
+
+        if let Ok(app_enum) = AppType::from_str(app_type) {
+            let _ = self.repair_takeover_runtime_state(&app_enum).await;
         }
 
         Ok(())
@@ -6505,7 +6604,7 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn stop_with_restore_keep_state_restores_failover_queue_head_before_preserving_proxy_flags(
+    async fn stop_with_restore_keep_state_preserves_takeover_live_when_failover_stays_enabled(
     ) {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -6586,7 +6685,7 @@ requires_openai_auth = true
         service
             .stop_with_restore_keep_state()
             .await
-            .expect("exit cleanup should restore direct mode while preserving flags");
+            .expect("exit cleanup should preserve takeover mode state");
 
         let preserved = db
             .get_proxy_config_for_app("claude")
@@ -6603,14 +6702,22 @@ requires_openai_auth = true
         assert_eq!(
             crate::settings::get_effective_current_provider(&db, &AppType::Claude)
                 .expect("get effective current provider after keep-state stop"),
-            Some(provider_b.id.clone()),
-            "keep-state shutdown from failover mode must restore queue head as direct current provider before the next startup snapshot is rebuilt"
+            None,
+            "keep-state shutdown from failover mode must not recreate a direct current provider"
         );
 
         let live = service.read_claude_live().expect("read restored claude live");
         assert_eq!(
-            live, provider_b.settings_config,
-            "keep-state shutdown from failover mode must restore queue head direct live config instead of the stale pre-failover backup"
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{port}").as_str()),
+            "keep-state shutdown must preserve Claude takeover live on the local proxy endpoint when failover remains enabled"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "keep-state shutdown must preserve takeover token placeholder instead of restoring a direct provider config"
         );
         assert!(
             !service.is_running().await,
@@ -7665,6 +7772,508 @@ wire_api = "responses"
         assert!(
             !restored_config.contains(&format!("http://127.0.0.1:{port}/v1")),
             "disable takeover should not leave the local proxy endpoint behind"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn recover_from_crash_refreshes_stale_backup_to_failover_queue_head() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let stale_provider = Provider::with_id(
+            "codex-stale".to_string(),
+            "Codex Stale".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "stale-key"
+                },
+                "config": r#"model_provider = "codex-stale"
+model = "gpt-5.5"
+
+[model_providers.codex-stale]
+base_url = "https://stale.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        let queue_head = Provider::with_id(
+            "codex-head".to_string(),
+            "Codex Head".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "head-key"
+                },
+                "config": r#"model_provider = "codex-head"
+model = "gpt-5.5"
+
+[model_providers.codex-head]
+base_url = "https://head.example/v1"
+wire_api = "responses"
+
+[mcp_servers.memory]
+command = "npx"
+"#
+            }),
+            None,
+        );
+
+        db.save_provider("codex", &stale_provider)
+            .expect("save stale provider");
+        db.save_provider("codex", &queue_head)
+            .expect("save queue head provider");
+        db.set_current_provider("codex", &stale_provider.id)
+            .expect("seed stale db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&stale_provider.id))
+            .expect("seed stale local current");
+        db.add_to_failover_queue("codex", &queue_head.id)
+            .expect("queue head provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&stale_provider.settings_config).expect("serialize stale backup"),
+        )
+        .await
+        .expect("seed stale backup");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_codex_live(&json!({
+                "auth": {
+                    "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                },
+                "config": format!(r#"model_provider = "cc-switch"
+model = "gpt-5.5"
+
+[model_providers.cc-switch]
+base_url = "http://127.0.0.1:{port}/v1"
+wire_api = "responses"
+"#)
+            }))
+            .expect("seed takeover live");
+
+        service
+            .recover_from_crash()
+            .await
+            .expect("recover from crash");
+
+        let repaired = db
+            .get_live_backup("codex")
+            .await
+            .expect("get repaired backup")
+            .expect("backup should still exist");
+        let repaired_value: Value =
+            serde_json::from_str(&repaired.original_config).expect("parse repaired backup");
+        let repaired_config = repaired_value
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("repaired config should exist");
+
+        assert!(
+            repaired_config.contains("https://head.example/v1"),
+            "crash recovery should rebuild backup from failover queue head instead of preserving stale provider endpoint"
+        );
+        assert!(
+            repaired_config.contains("[mcp_servers.memory]"),
+            "crash recovery should preserve MCP content from the new restore target backup"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Codex)
+                .expect("get effective current"),
+            None,
+            "failover crash recovery must clear stale current provider state"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn recover_from_crash_keeps_codex_takeover_live_when_failover_target_was_deleted() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        let provider = Provider::with_id(
+            "codex-deleted".to_string(),
+            "Codex Deleted".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "deleted-key"
+                },
+                "config": r#"model_provider = "codex-deleted"
+model = "gpt-5.4"
+
+[model_providers.codex-deleted]
+base_url = "https://deleted.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.add_to_failover_queue("codex", &provider.id)
+            .expect("queue provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .start()
+            .await
+            .expect("start proxy service");
+        service
+            .sync_live_from_provider_while_proxy_active(&AppType::Codex, &provider)
+            .await
+            .expect("seed codex takeover live");
+        service
+            .update_live_backup_from_provider("codex", &provider)
+            .await
+            .expect("seed codex backup");
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("preserve takeover state on shutdown");
+
+        db.delete_provider("codex", &provider.id)
+            .expect("delete queued provider after shutdown");
+
+        service
+            .recover_from_crash()
+            .await
+            .expect("recover from crash");
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("startup restore should rebuild takeover live without deleted provider");
+
+        let auth = service.read_codex_live().expect("read codex live after startup restore");
+        assert_eq!(
+            auth.get("auth")
+                .and_then(|value| value.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "startup restore must keep Codex auth on the proxy placeholder after the queued provider was deleted"
+        );
+
+        let config = auth
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "startup restore must keep Codex live on the local proxy endpoint after the queued provider was deleted"
+        );
+        assert!(
+            !config.contains("https://deleted.example/v1"),
+            "deleted provider endpoint must not reappear in Codex live during startup restore"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Codex)
+                .expect("get effective current after restore"),
+            None,
+            "failover-mode startup restore must not recreate a direct current provider after the queued provider was deleted"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn startup_takeover_rewrites_stale_direct_codex_live_when_failover_target_is_missing() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        let deleted_provider = Provider::with_id(
+            "codex-stale".to_string(),
+            "Codex Stale".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "stale-key"
+                },
+                "config": r#"model_provider = "codex-stale"
+model = "gpt-5.4"
+
+[model_providers.codex-stale]
+base_url = "https://stale.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &deleted_provider)
+            .expect("save stale provider");
+        db.add_to_failover_queue("codex", &deleted_provider.id)
+            .expect("queue stale provider");
+        db.set_current_provider("codex", &deleted_provider.id)
+            .expect("seed stale db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&deleted_provider.id))
+            .expect("seed stale local current");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_codex_live(&deleted_provider.settings_config)
+            .expect("seed stale direct codex live");
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&deleted_provider.settings_config).expect("serialize stale backup"),
+        )
+        .await
+        .expect("seed stale backup");
+
+        db.delete_provider("codex", &deleted_provider.id)
+            .expect("delete stale provider before startup restore");
+
+        service
+            .recover_from_crash()
+            .await
+            .expect("recover stale crash state");
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("startup takeover should rewrite stale direct live");
+
+        let live = service.read_codex_live().expect("read rewritten codex live");
+        assert_eq!(
+            live.get("auth")
+                .and_then(|value| value.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str),
+            Some(PROXY_TOKEN_PLACEHOLDER),
+            "startup takeover must rewrite auth.json to the proxy placeholder even when the old failover target was deleted"
+        );
+
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "startup takeover must rewrite stale direct Codex live to the local proxy endpoint"
+        );
+        assert!(
+            !config.contains("https://stale.example/v1"),
+            "deleted provider base_url must not survive startup takeover restore"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn startup_takeover_refreshes_codex_mcp_even_when_live_already_points_to_proxy() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n\n{mcpConfig}\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        db.save_mcp_server(&crate::app_config::McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: crate::app_config::McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "real-key"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.5"
+
+[model_providers.codex-a]
+base_url = "https://codex.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.add_to_failover_queue("codex", &provider.id)
+            .expect("queue provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&provider.settings_config).expect("serialize backup"),
+        )
+        .await
+        .expect("seed backup");
+
+        let service = ProxyService::new(db.clone());
+        service
+            .write_codex_live(&json!({
+                "auth": {
+                    "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                },
+                "config": format!(r#"model_provider = "cc-switch"
+model = "gpt-5.5"
+
+[model_providers.cc-switch]
+base_url = "http://127.0.0.1:{port}/v1"
+wire_api = "responses"
+"#)
+            }))
+            .expect("seed stale takeover live without mcp");
+
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("startup takeover should refresh existing takeover live");
+
+        let live = service.read_codex_live().expect("read codex live");
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should exist");
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "startup takeover should refresh Codex takeover template to include latest MCP config even when live already points to the proxy"
+        );
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "startup takeover refresh must keep Codex live on the local proxy endpoint"
         );
     }
 

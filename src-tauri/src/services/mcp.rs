@@ -102,8 +102,25 @@ impl McpService {
             return Ok(!matches!(app, AppType::OpenClaw));
         }
 
-        let Some(current_id) = crate::settings::get_effective_current_provider(&state.db, app)?
-        else {
+        let proxy_config =
+            futures::executor::block_on(state.db.get_proxy_config_for_app(app.as_str())).ok();
+        let takeover_enabled = proxy_config.as_ref().map(|config| config.enabled).unwrap_or(false);
+        let auto_failover_enabled = proxy_config
+            .as_ref()
+            .map(|config| config.auto_failover_enabled)
+            .unwrap_or(false);
+
+        let current_id = if takeover_enabled && auto_failover_enabled {
+            state
+                .db
+                .get_failover_queue(app.as_str())?
+                .into_iter()
+                .next()
+                .map(|item| item.provider_id)
+        } else {
+            crate::settings::get_effective_current_provider(&state.db, app)?
+        };
+        let Some(current_id) = current_id else {
             return Ok(false);
         };
 
@@ -143,21 +160,19 @@ impl McpService {
         }
 
         if Self::is_proxy_takeover_enabled(state, app) {
-            if Self::has_syncable_provider(state, app)? {
-                if let Err(err) =
-                    crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
-                        state,
-                        app.clone(),
-                        crate::services::provider::SyncCurrentProviderOptions {
-                            sync_mcp: false,
-                        },
-                    )
-                {
-                    log::warn!(
-                        "Failed to rebuild {} proxy takeover config after MCP change: {err}",
-                        app.as_str()
-                    );
-                }
+            if let Err(err) =
+                crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
+                    state,
+                    app.clone(),
+                    crate::services::provider::SyncCurrentProviderOptions {
+                        sync_mcp: false,
+                    },
+                )
+            {
+                log::warn!(
+                    "Failed to rebuild {} proxy takeover config after MCP change: {err}",
+                    app.as_str()
+                );
             }
 
             // Claude MCP is stored in ~/.claude.json, separate from settings.json.
@@ -298,21 +313,19 @@ impl McpService {
             }
 
             if Self::is_proxy_takeover_enabled(state, &app) {
-                if Self::has_syncable_provider(state, &app)? {
-                    if let Err(err) =
-                        crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
-                            state,
-                            app.clone(),
-                            crate::services::provider::SyncCurrentProviderOptions {
-                                sync_mcp: false,
-                            },
-                        )
-                    {
-                        log::warn!(
-                            "Failed to rebuild {} proxy takeover config during MCP sync: {err}",
-                            app.as_str()
-                        );
-                    }
+                if let Err(err) =
+                    crate::services::provider::ProviderService::sync_current_provider_for_app_with_options(
+                        state,
+                        app.clone(),
+                        crate::services::provider::SyncCurrentProviderOptions {
+                            sync_mcp: false,
+                        },
+                    )
+                {
+                    log::warn!(
+                        "Failed to rebuild {} proxy takeover config during MCP sync: {err}",
+                        app.as_str()
+                    );
                 }
 
                 if matches!(app, AppType::Claude) {
@@ -570,5 +583,285 @@ impl McpService {
         }
 
         Ok(new_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::McpService;
+    use crate::app_config::{AppType, McpApps, McpServer};
+    use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
+    use crate::config::write_json_file;
+    use crate::database::Database;
+    use crate::provider::Provider;
+    use crate::proxy::types::ProxyConfig;
+    use crate::store::AppState;
+    use serde_json::json;
+    use serial_test::serial;
+    use std::env;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    async fn unused_local_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local ephemeral port");
+        listener.local_addr().expect("read local addr").port()
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_all_enabled_rebuilds_codex_takeover_mcp_from_failover_queue_head() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        let provider = Provider::with_id(
+            "codex-a".to_string(),
+            "Codex A".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "codex-key"
+                },
+                "config": r#"model_provider = "codex-a"
+model = "gpt-5.5"
+
+[model_providers.codex-a]
+base_url = "https://codex.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider)
+            .expect("save codex provider");
+        db.add_to_failover_queue("codex", &provider.id)
+            .expect("add provider to failover queue");
+        db.clear_current_provider("codex")
+            .expect("clear db current provider");
+        crate::settings::set_current_provider(&AppType::Codex, None)
+            .expect("clear local current provider");
+
+        db.save_mcp_server(&McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+
+        McpService::sync_all_enabled(&state).expect("sync all enabled mcp");
+
+        let config_path = get_codex_config_path();
+        let config = std::fs::read_to_string(&config_path).expect("read codex config.toml");
+
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "Codex takeover config should keep MCP servers even when current provider is cleared in failover mode"
+        );
+        assert!(
+            config.contains("http://127.0.0.1:")
+                && config.contains("/v1"),
+            "Codex takeover config should remain on the local proxy endpoint"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_all_enabled_rebuilds_codex_takeover_mcp_without_restore_target() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.save_mcp_server(&McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                codex: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save mcp server");
+
+        db.set_config_template(
+            "codex",
+            Some(
+                serde_json::to_string(&json!([
+                    {
+                        "key": "auth",
+                        "label": "auth.json",
+                        "content": "{\n  \"OPENAI_API_KEY\": \"{proxyToken}\"\n}\n"
+                    },
+                    {
+                        "key": "config",
+                        "label": "config.toml",
+                        "content": "model_provider = \"cc-switch\"\nmodel = \"gpt-5.5\"\n\n[model_providers.cc-switch]\nbase_url = \"{proxyCodexBaseUrl}\"\nwire_api = \"responses\"\n\n{mcpConfig}\n"
+                    }
+                ]))
+                .expect("serialize codex template"),
+            ),
+        )
+        .expect("set codex template");
+
+        let port = unused_local_port().await;
+        db.update_proxy_config(ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        write_json_file(
+            &get_codex_auth_path(),
+            &json!({
+                "OPENAI_API_KEY": "stale-direct-key"
+            }),
+        )
+        .expect("seed stale codex auth");
+        std::fs::write(
+            get_codex_config_path(),
+            r#"model_provider = "deleted-provider"
+model = "gpt-5.4"
+
+[model_providers.deleted-provider]
+base_url = "https://deleted.example/v1"
+wire_api = "responses"
+"#,
+        )
+        .expect("seed stale codex config");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+
+        McpService::sync_all_enabled(&state).expect("sync all enabled mcp");
+
+        let auth: serde_json::Value =
+            crate::config::read_json_file(&get_codex_auth_path()).expect("read codex auth");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(serde_json::Value::as_str),
+            Some("PROXY_MANAGED"),
+            "Codex takeover auth should be rebuilt to the proxy placeholder even without a restore target"
+        );
+
+        let config = std::fs::read_to_string(get_codex_config_path()).expect("read codex config");
+        assert!(
+            config.contains("[mcp_servers.memory]"),
+            "Codex takeover config should keep MCP servers even when failover has no restore target"
+        );
+        assert!(
+            config.contains(&format!("http://127.0.0.1:{port}/v1")),
+            "Codex takeover config should still point to the local proxy without a restore target"
+        );
+        assert!(
+            !config.contains("https://deleted.example/v1"),
+            "stale direct provider endpoint must not survive MCP sync in takeover mode"
+        );
     }
 }

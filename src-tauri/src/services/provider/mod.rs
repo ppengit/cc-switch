@@ -643,6 +643,101 @@ base_url = "http://localhost:8080"
 
     #[tokio::test]
     #[serial]
+    async fn sync_current_provider_for_app_prefers_failover_queue_over_stale_current_provider() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        let stale_provider = Provider::with_id(
+            "claude-stale".into(),
+            "Claude Stale".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-stale",
+                    "ANTHROPIC_BASE_URL": "https://api.stale.example",
+                    "ANTHROPIC_MODEL": "model-stale"
+                }
+            }),
+            None,
+        );
+        let queue_head = Provider::with_id(
+            "claude-head".into(),
+            "Claude Head".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "token-head",
+                    "ANTHROPIC_BASE_URL": "https://api.head.example",
+                    "ANTHROPIC_MODEL": "model-head"
+                }
+            }),
+            None,
+        );
+
+        db.save_provider("claude", &stale_provider)
+            .expect("save stale provider");
+        db.save_provider("claude", &queue_head)
+            .expect("save queue head provider");
+
+        db.set_current_provider("claude", &stale_provider.id)
+            .expect("set stale db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some(&stale_provider.id))
+            .expect("set stale local current provider");
+
+        db.add_to_failover_queue("claude", &queue_head.id)
+            .expect("add queue head");
+
+        let reserved_port = reserve_free_tcp_port();
+        db.update_proxy_config(ProxyConfig {
+            listen_port: reserved_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy listen port");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("get claude proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover and failover");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+
+        ProviderService::sync_current_provider_for_app(&state, AppType::Claude)
+            .expect("sync in takeover+failover mode");
+
+        let live: Value = read_json_file(&get_claude_settings_path()).expect("read live config");
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some(format!("http://127.0.0.1:{reserved_port}").as_str()),
+            "takeover+failover sync must keep live on the local proxy endpoint"
+        );
+        assert_eq!(
+            live.pointer("/env/ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
+                .and_then(Value::as_str),
+            Some("model-head"),
+            "takeover+failover sync must render queue-head provider metadata instead of stale current provider metadata"
+        );
+        assert_ne!(
+            live.pointer("/env/ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
+                .and_then(Value::as_str),
+            Some("model-stale"),
+            "stale current provider metadata must not override failover queue head"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn sync_current_provider_for_app_repairs_takeover_live_even_when_failover_has_no_target() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
@@ -1338,6 +1433,11 @@ base_url = "http://localhost:8080"
             .expect("start proxy service");
         state
             .proxy_service
+            .sync_live_from_provider_while_proxy_active(&AppType::Claude, &provider_a)
+            .await
+            .expect("seed takeover live");
+        state
+            .proxy_service
             .set_active_target_only(AppType::Claude.as_str(), &provider_a.id, &provider_a.name)
             .await;
 
@@ -1363,6 +1463,34 @@ base_url = "http://localhost:8080"
         assert_eq!(
             active.provider_id, provider_b.id,
             "deleting the current failover provider must promote the next queue target"
+        );
+        assert_eq!(
+            crate::settings::get_effective_current_provider(&db, &AppType::Claude)
+                .expect("get effective current after delete"),
+            None,
+            "failover-mode delete must not recreate a direct current provider"
+        );
+
+        let backup = db
+            .get_live_backup(AppType::Claude.as_str())
+            .await
+            .expect("get repaired backup")
+            .expect("backup should exist after delete");
+        let backup_value: Value =
+            serde_json::from_str(&backup.original_config).expect("parse repaired backup");
+        assert_eq!(
+            backup_value
+                .pointer("/env/ANTHROPIC_AUTH_TOKEN")
+                .and_then(Value::as_str),
+            Some("token-b"),
+            "deleting the failover head must rebuild restore backup to the next queue target"
+        );
+        assert_eq!(
+            backup_value
+                .pointer("/env/ANTHROPIC_BASE_URL")
+                .and_then(Value::as_str),
+            Some("https://b.example"),
+            "repaired restore backup must point at the promoted queue-head provider"
         );
 
         if state.proxy_service.is_running().await {
@@ -3328,7 +3456,11 @@ impl ProviderService {
         } else {
             None
         };
-        let provider = provider_from_current.or(provider_from_failover_queue);
+        let provider = if takeover_enabled && auto_failover_enabled {
+            provider_from_failover_queue
+        } else {
+            provider_from_current.or(provider_from_failover_queue)
+        };
         let Some(provider) = provider.as_ref() else {
             if proxy_live_active {
                 futures::executor::block_on(
