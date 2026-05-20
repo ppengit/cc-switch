@@ -130,6 +130,7 @@ import {
   startManagedAuthLoginState,
   startProxyServerState,
   stopProxyServerState,
+  switchProxyProviderState,
   syncCurrentProvidersLiveState,
   toggleMcpAppState,
   toggleSkillAppState,
@@ -1148,7 +1149,7 @@ export const handlers = [
     if (!providers[providerId]) {
       return HttpResponse.json(false, { status: 404 });
     }
-    setCurrentProviderId(appType, providerId);
+    switchProxyProviderState(appType, providerId);
     return success(true);
   }),
 

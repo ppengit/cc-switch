@@ -71,6 +71,7 @@ type CircuitBreakerStatsState = Record<string, CircuitBreakerStats | null>;
 type McpServersState = Record<string, McpServer>;
 type PromptState = Record<AppId, Record<string, Prompt>>;
 type CurrentPromptFileContentByApp = Record<AppId, string | null>;
+type ProxyProviderSwitchRequest = { appType: AppId; providerId: string };
 type HermesMemoryState = Record<HermesMemoryKind, string>;
 type WorkspaceFileState = Record<string, string | null>;
 type PromptUpsertRequest = { app: AppId; id: string; prompt: Prompt };
@@ -849,6 +850,7 @@ let streamCheckConfigState = {
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
 let lastPromptDeleteRequest: PromptDeleteRequest | null = null;
+let lastProxyProviderSwitchRequest: ProxyProviderSwitchRequest | null = null;
 let lastWebdavSaveRequest: {
   settings: WebDavSyncSettings;
   passwordTouched: boolean;
@@ -1084,6 +1086,7 @@ export const resetProviderState = () => {
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
   lastPromptDeleteRequest = null;
+  lastProxyProviderSwitchRequest = null;
   lastWebdavSaveRequest = null;
   webdavTestRequests = [];
   webdavRemoteInfoState = createDefaultWebdavRemoteInfo();
@@ -2034,6 +2037,27 @@ const setActiveTargetFromProvider = (appType: AppId, providerId: string) => {
   };
 };
 
+export const switchProxyProviderState = (
+  appType: AppId,
+  providerId: string,
+) => {
+  lastProxyProviderSwitchRequest = { appType, providerId };
+  const provider = providers[appType]?.[providerId];
+  if (!provider) return false;
+
+  if (
+    appProxyConfigsByApp[appType]?.enabled &&
+    appProxyConfigsByApp[appType]?.autoFailoverEnabled
+  ) {
+    setActiveTargetFromProvider(appType, providerId);
+    return true;
+  }
+
+  current[appType] = providerId;
+  setActiveTargetFromProvider(appType, providerId);
+  return true;
+};
+
 const syncDirectLiveFromProvider = (appType: AppId, providerId: string) => {
   if (!isSwitchModeApp(appType)) return;
   const provider = providers[appType]?.[providerId];
@@ -2678,6 +2702,13 @@ export const getSettings = () =>
 export const getLastSettingsSaveRequest = () =>
   lastSettingsSaveRequest
     ? (JSON.parse(JSON.stringify(lastSettingsSaveRequest)) as Settings)
+    : null;
+
+export const getLastProxyProviderSwitchRequest = () =>
+  lastProxyProviderSwitchRequest
+    ? (JSON.parse(
+        JSON.stringify(lastProxyProviderSwitchRequest),
+      ) as ProxyProviderSwitchRequest)
     : null;
 
 export const setSettings = (data: Partial<Settings>) => {

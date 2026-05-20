@@ -9,8 +9,10 @@ import {
   getCurrentProviderId,
   getFailoverQueueState,
   getLiveProviderIds,
+  getLastProxyProviderSwitchRequest,
   getLastProviderTerminalLaunchRequest,
   getProviders,
+  getProxyStatusState,
   getSwitchLiveSettings,
   resetProviderState,
   setAutoFailoverEnabledState,
@@ -418,6 +420,66 @@ describe("App with real ProviderList", () => {
     expect(within(findProviderRow("Claude Beta")).getByTitle("使用中")).toBeDisabled();
     expect(screen.queryByText("Codex Beta")).not.toBeInTheDocument();
   }, 15_000);
+
+  it("hot-switches the proxy target from the real ProviderList without drifting Codex takeover live config", async () => {
+    const user = userEvent.setup();
+
+    setProviders("codex", {
+      "codex-alpha": codexProvider("codex-alpha", "Codex Alpha", 0),
+      "codex-beta": codexProvider("codex-beta", "Codex Beta", 1),
+      "codex-gamma": codexProvider("codex-gamma", "Codex Gamma", 2),
+    });
+    setCurrentProviderId("codex", "codex-alpha");
+    setSettings({
+      enableLocalProxy: true,
+      enableFailoverToggle: true,
+      proxyConfirmed: true,
+      failoverConfirmed: true,
+    });
+    startProxyServerState();
+    setProxyTakeoverForAppState("codex", true);
+
+    expect(getCurrentProviderId("codex")).toBe("codex-alpha");
+    expect(getFailoverQueueState("codex")).toEqual([]);
+    expect((getSwitchLiveSettings("codex") as { config?: string }).config).toContain(
+      'base_url = "http://127.0.0.1:15721/codex"',
+    );
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Codex");
+    await expectProviderVisible("Codex Alpha");
+    await user.click(
+      within(findProviderRow("Codex Beta")).getByTitle("切换到此供应商"),
+    );
+
+    await waitFor(() =>
+      expect(getLastProxyProviderSwitchRequest()).toEqual({
+        appType: "codex",
+        providerId: "codex-beta",
+      }),
+    );
+
+    const proxyStatus = getProxyStatusState();
+    expect(proxyStatus.active_targets).toContainEqual({
+      app_type: "codex",
+      provider_id: "codex-beta",
+      provider_name: "Codex Beta",
+    });
+    expect(proxyStatus.current_provider_id).toBe("codex-beta");
+    expect(getCurrentProviderId("codex")).toBe("codex-beta");
+
+    const live = getSwitchLiveSettings("codex") as {
+      auth?: Record<string, string>;
+      config?: string;
+    };
+    expect(live.auth?.OPENAI_API_KEY).toBe("PROXY_MANAGED");
+    expect(live.config).toContain('base_url = "http://127.0.0.1:15721/codex"');
+    expect(live.config).not.toContain("https://codex-alpha.example.com/v1");
+    expect(live.config).not.toContain("https://codex-beta.example.com/v1");
+    expect(live.config).not.toContain("https://codex-gamma.example.com/v1");
+  }, 20_000);
 
   it("shows live request activity only for the active app provider from proxy events", async () => {
     const user = userEvent.setup();
