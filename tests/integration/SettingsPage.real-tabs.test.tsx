@@ -131,6 +131,15 @@ const renderSettingsPage = (
   );
 };
 
+const getPanelForTab = (container: HTMLElement, tabName: string) => {
+  const tab = screen.getByRole("tab", { name: tabName });
+  const panel = Array.from(
+    container.querySelectorAll<HTMLElement>('[role="tabpanel"]'),
+  ).find((element) => element.getAttribute("aria-labelledby") === tab.id);
+  expect(panel).toBeDefined();
+  return panel as HTMLElement;
+};
+
 describe("SettingsPage real tab structure", () => {
   beforeEach(() => {
     translationMocks.i18n.changeLanguage.mockReset();
@@ -246,5 +255,43 @@ describe("SettingsPage real tab structure", () => {
     for (const tab of screen.getAllByRole("tab")) {
       expect(tab).toHaveClass("shrink-0");
     }
+  });
+
+  it("keeps the force-mounted Api-Hub panel visually hidden outside the Api-Hub tab", async () => {
+    const user = userEvent.setup();
+    const { container } = renderSettingsPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("language-settings")).toBeInTheDocument(),
+    );
+
+    const apiHubPanel = getPanelForTab(container, "Api-Hub");
+    expect(apiHubPanel).toHaveAttribute("data-state", "inactive");
+    expect(apiHubPanel).toHaveAttribute("hidden");
+    expect(apiHubPanel).toHaveAttribute("aria-hidden", "true");
+    expect(apiHubPanel).toHaveClass("data-[state=inactive]:hidden");
+    expect(
+      screen.queryByRole("button", { name: "导入 JSON" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Api-Hub" }));
+
+    await waitFor(() =>
+      expect(apiHubPanel).toHaveAttribute("data-state", "active"),
+    );
+    expect(apiHubPanel).not.toHaveAttribute("hidden");
+    expect(apiHubPanel).toHaveAttribute("aria-hidden", "false");
+    expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
+
+    await waitFor(() =>
+      expect(apiHubPanel).toHaveAttribute("data-state", "inactive"),
+    );
+    expect(apiHubPanel).toHaveAttribute("hidden");
+    expect(apiHubPanel).toHaveAttribute("aria-hidden", "true");
+    expect(
+      screen.queryByRole("button", { name: "导入 JSON" }),
+    ).not.toBeInTheDocument();
   });
 });

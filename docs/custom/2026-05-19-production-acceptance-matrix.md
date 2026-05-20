@@ -78,10 +78,14 @@
 ### SettingsPage 真实页签验收
 
 - 新增验收文件：`tests/integration/SettingsPage.real-tabs.test.tsx`
-- 覆盖范围：真实 `Tabs`、真实 `ApiHubPanel` 挂载、`general -> apiHub -> general -> apiHub` 切换、Api-Hub 隐藏态不可访问、筛选状态保持、默认 `apiHub` 页签顺序。
+- 覆盖范围：真实 `Tabs`、真实 `ApiHubPanel` 挂载、`general -> apiHub -> general -> apiHub` 切换、Api-Hub 隐藏态不可访问、筛选状态保持、默认 `apiHub` 页签顺序、窄屏页签单行滚动，以及 force-mounted Api-Hub 面板在非 Api-Hub 页签下的 DOM 级视觉隐藏状态。
 - 修复内容：`SettingsPage` 的 `apiHub` 内容区补充显式 `hidden` / `aria-hidden`，默认页签初始化收口为“仅打开时初始化”，避免 `forceMount` 内容串到其它页签。
-- 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-tabs.test.tsx`
-- 当前结果：`2 passed, 0 failed`
+- 本轮新增覆盖：直接定位真实 `Api-Hub` tab 对应的 `tabpanel`，断言非活动态同时具备 `data-state="inactive"`、`hidden`、`aria-hidden="true"` 和 `data-[state=inactive]:hidden`；切到 Api-Hub 后断言面板恢复 active 且导入按钮可见；再切到高级页签后再次断言面板恢复隐藏，防止 Api-Hub 与其它设置页签错乱显示。
+- 红绿记录：临时移除 `SettingsPage` 中 Api-Hub 面板的 `data-[state=inactive]:hidden` class 后，同一用例按预期失败，错误明确显示实际 class 缺少该隐藏类；恢复正确 class 后同一用例通过。
+- 验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-tabs.test.tsx --reporter=verbose`
+- 当前结果：`1 file passed, 4 tests passed, 0 failed`
+- 设置页组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-tabs.test.tsx tests/integration/SettingsPage.real-api-hub.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/SettingsPage.real-usage.test.tsx --fileParallelism=false --reporter=verbose`
+- 设置页组合验证结果：`4 files passed, 15 tests passed, 0 failed`
 
 ### SettingsPage + AuthCenter 真实页面验收
 
