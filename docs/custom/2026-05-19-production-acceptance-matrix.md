@@ -34,7 +34,7 @@
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
 | 认证中心 | `SettingsPage` -> `AuthCenterPanel` | GitHub Copilot / Codex OAuth 账号状态、默认账号、移除、注销、设备码登录、浏览器打开、轮询写入 | OAuth provider 串状态、GitHub Enterprise domain 传参错误、Codex OAuth 误携带 GitHub domain、设备码复制 / 外部打开漏调 | 已补真实 AuthCenter 页面级验收；已覆盖已有账号管理、GitHub Enterprise 登录链路、Codex OAuth 登录链路、剪贴板写入、外部打开、轮询写入和 provider 隔离 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
-| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补故障转移 UI 面板的队列操作、配置保存、非法输入拦截和 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收 |
+| 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补 DeepLink enabled 供应商导入后 ProviderList 刷新、代理热切换和 live 配置不漂移验收；已补故障转移 UI 面板的队列操作、配置保存、非法输入拦截和 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
 | Prompts | `PromptPanel` | 打开、返回、新建、编辑、启用、删除、导入事件刷新 | 与顶层视图切换耦合、请求 app 归属串页、提示词启用状态误覆盖 | 已补真实 App + PromptPanel 页面级验收；已覆盖启用互斥、编辑、新增、删除确认、跨 app 隔离、`prompt-imported` 事件按 app 刷新 |
 | Skills | `UnifiedSkillsPanel` / `SkillsPage` | 管理页、发现页切换、导入、安装 ZIP、恢复备份、应用开关 | 面板状态丢失、入口错乱、安装来源错写、应用归属串页 | 已补真实 App + Skills 页面级验收 |
@@ -344,6 +344,24 @@
 - 单用例验证结果：红灯 `1 failed`；恢复后 `1 passed, 2 skipped, 0 failed`
 - 全文件验证命令：`pnpm exec vitest run tests/integration/App.real-provider-current-config.test.tsx --reporter=verbose`
 - 全文件验证结果：`1 file passed, 3 tests passed, 0 failed`
+
+### App + DeepLink 供应商导入接管态真实页面验收
+
+- 新增验收文件：`tests/integration/App.real-deeplink-provider.test.tsx`
+- 覆盖范围：真实 `App`、真实 `DeepLinkImportDialog`、真实 `ProviderList`、真实 `deeplink-import` Tauri 事件监听和真实导入按钮；只 mock 与 DeepLink 供应商导入链路无关的 Skills / MCP / Sessions / OpenClaw / Hermes / Settings 等重型页面。
+- 覆盖交互：预置 `Codex Alpha` / `Codex Beta` 两个供应商，开启本地代理、Codex 接管和自动故障转移；派发真实 `deeplink-import` 事件，模拟 `merge_deeplink_config` 合并 endpoint、API key 和模型；在真实弹窗中点击 `deeplink.import`，导入 enabled 的 `Deep Link Codex` 供应商。
+- 请求验证：断言 `import_from_deeplink_unified` 收到 `app: "codex"`、`enabled: true`、`name: "Deep Link Codex"`、合并后的 `endpoint: "https://deeplink-codex.example.com/v1"`、`apiKey: "deeplink-codex-key"`、`model: "gpt-5.6"` 和原始 `configUrl`。
+- ProviderList 验证：导入后真实供应商列表展示 `Deep Link Codex`，MSW provider state 中存在新 provider；代理状态热切换到 `codex-deeplink-imported`，但 `getCurrentProviderId("codex")` 仍保持空字符串，符合接管 + 故障转移下不直接写当前供应商的语义。
+- live 漂移验证：导入 enabled provider 后直接读取 Codex live settings，断言 `OPENAI_API_KEY` 仍为 `PROXY_MANAGED`，`base_url` 仍为 `http://127.0.0.1:15721/codex`，并且不包含 DeepLink direct endpoint、`Codex Alpha` direct endpoint 或 `Codex Beta` direct endpoint。
+- 红绿记录：临时把 live 断言改为期待 `https://deeplink-codex.example.com/v1` 后，同一用例按预期失败，实际收到代理模板 `base_url = "http://127.0.0.1:15721/codex"`；恢复正确断言后同一用例通过，证明该验收能捕获 DeepLink enabled 供应商导入后的 live direct base URL 漂移。
+- 单文件验证命令：`pnpm exec vitest run tests/integration/App.real-deeplink-provider.test.tsx --reporter=verbose`
+- 单文件验证结果：`1 file passed, 1 test passed, 0 failed`
+- 组合验证命令：`pnpm exec vitest run tests/integration/App.real-deeplink-provider.test.tsx tests/integration/App.real-import-dialogs.test.tsx tests/integration/App.real-provider-current-config.test.tsx tests/integration/App.real-providers.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`4 files passed, 21 tests passed, 0 failed`
+- 类型验证命令：`pnpm typecheck`
+- 类型验证结果：`tsc --noEmit` 通过。
+- Diff 检查命令：`git diff --check`
+- Diff 检查结果：通过，无空白错误。
 
 ### App + ProviderList 代理活动事件真实页面验收
 
