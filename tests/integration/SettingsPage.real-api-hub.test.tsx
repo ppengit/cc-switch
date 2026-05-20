@@ -72,6 +72,29 @@ const claudeProvider = (
   },
 });
 
+const codexProvider = (
+  id: string,
+  name: string,
+  sortIndex: number,
+): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex,
+  createdAt: 1_700_000_100_000 + sortIndex,
+  settingsConfig: {
+    auth: {
+      OPENAI_API_KEY: `${id}-key`,
+    },
+    config: `model_provider = "${id}"
+model = "${id}-model"
+[model_providers.${id}]
+base_url = "https://${id}.example.com/v1"
+`,
+  },
+});
+
 const seedClaudeTakeoverFailover = () => {
   setProviders("claude", {
     "claude-alpha": claudeProvider("claude-alpha", "Claude Alpha", 0),
@@ -89,6 +112,23 @@ const seedClaudeTakeoverFailover = () => {
   setAutoFailoverEnabledState("claude", true);
 };
 
+const seedCodexTakeoverFailover = () => {
+  setProviders("codex", {
+    "codex-alpha": codexProvider("codex-alpha", "Codex Alpha", 0),
+    "codex-beta": codexProvider("codex-beta", "Codex Beta", 1),
+  });
+  setCurrentProviderId("codex", "codex-alpha");
+  setSettings({
+    enableLocalProxy: true,
+    proxyConfirmed: true,
+    enableFailoverToggle: true,
+    failoverConfirmed: true,
+  });
+  startProxyServerState();
+  setProxyTakeoverForAppState("codex", true);
+  setAutoFailoverEnabledState("codex", true);
+};
+
 const expectClaudeLiveOnProxy = () => {
   const live = getSwitchLiveSettings("claude") as {
     env?: Record<string, string>;
@@ -102,6 +142,20 @@ const expectClaudeLiveOnProxy = () => {
     "https://claude-beta.example.com",
   );
   expect(live.env?.ANTHROPIC_BASE_URL).not.toBe("https://hub.example.com");
+};
+
+const expectCodexLiveOnProxy = () => {
+  const live = getSwitchLiveSettings("codex") as {
+    auth?: Record<string, string>;
+    config?: string;
+  };
+  expect(live.auth?.OPENAI_API_KEY).toBe("PROXY_MANAGED");
+  expect(live.config).toContain(
+    'base_url = "http://127.0.0.1:15721/codex"',
+  );
+  expect(live.config).not.toContain("https://codex-alpha.example.com/v1");
+  expect(live.config).not.toContain("https://codex-beta.example.com/v1");
+  expect(live.config).not.toContain("https://hub.example.com/v1");
 };
 
 vi.mock("sonner", () => ({
@@ -655,5 +709,132 @@ describe("SettingsPage with real Api-Hub panel", () => {
       },
     });
     expectClaudeLiveOnProxy();
+  }, 20_000);
+
+  it("keeps Codex takeover live config on the proxy endpoint while importing Api-Hub providers", async () => {
+    const user = userEvent.setup();
+    const importCalls: ApiHubImportRequest[] = [];
+
+    seedCodexTakeoverFailover();
+    setSwitchLiveSettings(
+      "codex",
+      getProviders("codex")["codex-beta"].settingsConfig,
+    );
+    expect(
+      (getSwitchLiveSettings("codex") as { config?: string }).config,
+    ).toContain('base_url = "https://codex-beta.example.com/v1"');
+
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: "demo",
+              imported_apps: [],
+              last_synced_at: 1715750061,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 1,
+              model_count: 1,
+              token_count: 1,
+              aligned_group_count: 1,
+              is_aligned: true,
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/api_hub_get_site_detail`, () =>
+        HttpResponse.json({
+          site: {
+            id: "site-1",
+            site_name: "Demo Hub",
+            site_url: "https://hub.example.com",
+            site_type: "new-api",
+            exchange_rate: 1,
+            username: "demo",
+            imported_apps: [],
+            last_synced_at: 1715750061,
+            last_sync_error: null,
+            sort_index: 0,
+            group_count: 1,
+            model_count: 1,
+            token_count: 1,
+            aligned_group_count: 1,
+            is_aligned: true,
+          },
+          groups: [{ name: "default", ratio: 1, description: null }],
+          models: [{ name: "gpt-5", enable_groups: ["default"] }],
+          tokens: [
+            {
+              id: 10,
+              name: "default",
+              group_name: "default",
+              key: "sk-hidden",
+              status: 1,
+              remain_quota: null,
+              expired_at: -1,
+            },
+          ],
+        }),
+      ),
+      http.post(`${TAURI_ENDPOINT}/api_hub_import_to_apps`, async ({ request }) => {
+        importCalls.push((await request.json()) as ApiHubImportRequest);
+        syncCurrentProvidersLiveState();
+        return HttpResponse.json({
+          created: 1,
+          updated: 0,
+          failed: [],
+          auto_aligned_groups: [],
+        });
+      }),
+    );
+
+    renderSettingsPage({ defaultTab: "apiHub" });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "导入应用" }));
+    await waitFor(() =>
+      expect(screen.getByText("导入到应用 - Demo Hub")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Codex" }));
+    await user.click(screen.getByLabelText("default / gpt-5"));
+    await user.click(screen.getByRole("button", { name: "确认导入" }));
+
+    await waitFor(() => expect(importCalls).toHaveLength(1));
+    expect(importCalls[0].req).toMatchObject({
+      site_id: "site-1",
+      target_apps: ["codex"],
+      auto_align_if_missing: true,
+      mark_as_imported: true,
+    });
+    expect(importCalls[0].req.selections).toEqual([
+      { group: "default", model: "gpt-5", app: "codex" },
+    ]);
+    expect(importCalls[0].req.settings_configs).toMatchObject({
+      "codex::default::gpt-5": {
+        auth: {
+          OPENAI_API_KEY: "__API_HUB_API_KEY__",
+        },
+      },
+    });
+    const importedConfig = importCalls[0].req.settings_configs?.[
+      "codex::default::gpt-5"
+    ]?.config;
+    expect(importedConfig).toContain('base_url = "https://hub.example.com/v1"');
+    expect(importedConfig).toContain('model = "gpt-5"');
+    expectCodexLiveOnProxy();
   }, 20_000);
 });

@@ -102,15 +102,20 @@
 - 更新验收文件：`tests/integration/SettingsPage.real-api-hub.test.tsx`
 - 覆盖范围：真实 `SettingsPage`、真实 `Tabs`、真实 `ApiHubPanel`、真实导入弹窗、真实批量同步 / 对齐按钮、真实清理 / 删除确认弹窗；只 mock 与 Api-Hub 链路无关的其它设置页区块。
 - 覆盖交互：从 `apiHub` 页签加载站点列表，切换站点类型筛选，输入搜索词；执行清理站点和删除记录，并验证确认前不发请求、确认后请求参数准确；选中站点后执行批量同步、批量对齐，派发 `api_hub_sync_progress` / `api_hub_align_progress` 事件验证按钮状态；打开导入应用弹窗，选择目标 app、模型和无默认模型导入选项，确认后验证 `api_hub_import_to_apps` 请求。
-- 配置漂移验证：在 Claude 本地代理、接管和自动故障转移均开启时，先把 Claude live settings 人为置为 `https://claude-beta.example.com`；随后通过真实 Api-Hub 页面执行同步、对齐、导入 Claude 应用，并让模拟后端触发一次当前供应商 live 同步；每一步后断言 `ANTHROPIC_BASE_URL` 恢复并保持 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 保持 `PROXY_MANAGED`，不会漂移成 Claude 供应商或 Api-Hub 站点 base URL。
-- 请求验证：导入 Claude 时断言 `target_apps` 为 `["claude"]`，`selections` 为 `default / claude-4`，并验证前端生成的 `settings_configs["claude::default::claude-4"]` 包含 Api-Hub 供应商 direct base URL 和 `__API_HUB_API_KEY__` 占位符，但该 direct 配置不会写入当前 Claude live takeover 文件。
-- 红绿记录：临时让 `api_hub_sync_sites` handler 不调用 `syncCurrentProvidersLiveState()` 后，同一用例按预期失败，收到 `https://claude-beta.example.com`；恢复同步修复后同一用例通过，证明该用例能捕获 Api-Hub 操作后的 live 漂移。
+- Claude 配置漂移验证：在 Claude 本地代理、接管和自动故障转移均开启时，先把 Claude live settings 人为置为 `https://claude-beta.example.com`；随后通过真实 Api-Hub 页面执行同步、对齐、导入 Claude 应用，并让模拟后端触发一次当前供应商 live 同步；每一步后断言 `ANTHROPIC_BASE_URL` 恢复并保持 `http://127.0.0.1:15721`，`ANTHROPIC_AUTH_TOKEN` 保持 `PROXY_MANAGED`，不会漂移成 Claude 供应商或 Api-Hub 站点 base URL。
+- Codex 配置漂移验证：在 Codex 本地代理、接管和自动故障转移均开启时，先把 Codex live settings 人为置为 `https://codex-beta.example.com/v1`；随后通过真实 Api-Hub 页面打开导入应用弹窗，切到 `Codex` 页签，选择 `default / gpt-5` 并确认导入；导入 handler 触发当前供应商 live 同步后，断言 `OPENAI_API_KEY` 恢复并保持 `PROXY_MANAGED`，`config.toml` 的 `base_url` 恢复并保持 `http://127.0.0.1:15721/codex`，且不包含 Codex 供应商或 Api-Hub 站点 direct base URL。
+- 请求验证：导入 Claude 时断言 `target_apps` 为 `["claude"]`，`selections` 为 `default / claude-4`，并验证前端生成的 `settings_configs["claude::default::claude-4"]` 包含 Api-Hub 供应商 direct base URL 和 `__API_HUB_API_KEY__` 占位符；导入 Codex 时断言 `target_apps` 为 `["codex"]`，`selections` 为 `default / gpt-5`，并验证 `settings_configs["codex::default::gpt-5"]` 包含 `base_url = "https://hub.example.com/v1"`、`model = "gpt-5"` 和 `__API_HUB_API_KEY__` 占位符，但这些 direct 配置不会写入当前 live takeover 文件。
+- 红绿记录：Claude 用例中临时让 `api_hub_sync_sites` handler 不调用 `syncCurrentProvidersLiveState()` 后，同一用例按预期失败，收到 `https://claude-beta.example.com`；Codex 用例中临时把 live 断言改为期待 `https://hub.example.com/v1` 后，同一用例按预期失败，实际收到代理模板 `base_url = "http://127.0.0.1:15721/codex"`；恢复正确断言后通过，证明用例能捕获 Api-Hub 操作后的 live 漂移。
 - 新增用例验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx -t "keeps Claude takeover live config" --reporter=verbose`
 - 新增用例验证结果：`1 test passed, 2 tests skipped, 0 failed`
+- Codex 新增用例验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx -t "keeps Codex takeover" --reporter=verbose`
+- Codex 新增用例验证结果：红灯 `1 failed, 3 skipped`；恢复后 `1 passed, 3 skipped, 0 failed`
 - 全文件验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx --reporter=verbose`
-- 全文件验证结果：`1 file passed, 3 tests passed, 0 failed`
+- 全文件验证结果：`1 file passed, 4 tests passed, 0 failed`
+- 本批 live 漂移组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx tests/integration/App.real-providers.test.tsx tests/integration/App.real-deeplink-provider.test.tsx tests/integration/App.real-provider-current-config.test.tsx --fileParallelism=false --reporter=verbose`
+- 本批 live 漂移组合验证结果：`4 files passed, 22 tests passed, 0 failed`
 - 组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-api-hub.test.tsx tests/integration/App.real-settings-api-hub-tabs.test.tsx tests/integration/SettingsPage.real-proxy-failover.test.tsx tests/integration/App.real-header-proxy-failover.test.tsx --fileParallelism=false --reporter=verbose`
-- 组合验证结果：`4 files passed, 7 tests passed, 0 failed`
+- 组合验证结果：上批结果为 `4 files passed, 7 tests passed, 0 failed`；本批未重跑此组合。
 
 ### App 顶层真实导航验收
 
