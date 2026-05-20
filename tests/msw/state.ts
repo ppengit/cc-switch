@@ -1,5 +1,10 @@
 import type { AppId } from "@/lib/api/types";
-import type { ManagedAuthProvider, ManagedAuthStatus } from "@/lib/api/auth";
+import type {
+  ManagedAuthAccount,
+  ManagedAuthDeviceCodeResponse,
+  ManagedAuthProvider,
+  ManagedAuthStatus,
+} from "@/lib/api/auth";
 import type { AppConfigTemplateFile } from "@/lib/api/config";
 import type { LogConfig } from "@/lib/api/settings";
 import type { Prompt } from "@/lib/api/prompts";
@@ -83,6 +88,15 @@ type ManagedAuthStatusByProvider = Record<
   ManagedAuthProvider,
   ManagedAuthStatus
 >;
+type ManagedAuthStartLoginRequest = {
+  authProvider: ManagedAuthProvider;
+  githubDomain: string | null;
+};
+type ManagedAuthPollRequest = {
+  authProvider: ManagedAuthProvider;
+  deviceCode: string;
+  githubDomain: string | null;
+};
 type WebdavRemoteInfoState = RemoteSnapshotInfo | { empty: true };
 type SessionDeleteRequestItem = {
   providerId: string;
@@ -789,6 +803,10 @@ let globalProxyConfigState = createDefaultGlobalProxyConfig();
 let failoverQueuesByApp = createDefaultFailoverQueues();
 let switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
 let managedAuthStatusByProvider = createDefaultManagedAuthStatus();
+let lastManagedAuthStartLoginRequest: ManagedAuthStartLoginRequest | null =
+  null;
+let managedAuthPollRequests: ManagedAuthPollRequest[] = [];
+let clipboardWrites: string[] = [];
 let installedSkillsState = createDefaultInstalledSkills();
 let unmanagedSkillsState = createDefaultUnmanagedSkills();
 let discoverableSkillsState = createDefaultDiscoverableSkills();
@@ -1023,6 +1041,9 @@ export const resetProviderState = () => {
   failoverQueuesByApp = createDefaultFailoverQueues();
   switchLiveSettingsByApp = createDefaultSwitchLiveSettings();
   managedAuthStatusByProvider = createDefaultManagedAuthStatus();
+  lastManagedAuthStartLoginRequest = null;
+  managedAuthPollRequests = [];
+  clipboardWrites = [];
   installedSkillsState = createDefaultInstalledSkills();
   unmanagedSkillsState = createDefaultUnmanagedSkills();
   discoverableSkillsState = createDefaultDiscoverableSkills();
@@ -1095,6 +1116,7 @@ export const resetProviderState = () => {
   lastAutoLaunchRequest = null;
   lastClaudeOnboardingSkipAction = null;
   externalOpenRequests = [];
+  clipboardWrites = [];
   lastWindowThemeRequest = null;
   lastToolVersionsRequest = null;
   appConfigDirOverride = null;
@@ -2388,6 +2410,104 @@ export const setManagedAuthStatusState = (
     JSON.stringify(status),
   ) as ManagedAuthStatus;
 };
+
+export const startManagedAuthLoginState = (
+  authProvider: ManagedAuthProvider,
+  githubDomain?: string | null,
+): ManagedAuthDeviceCodeResponse => {
+  lastManagedAuthStartLoginRequest = {
+    authProvider,
+    githubDomain: githubDomain ?? null,
+  };
+
+  const isCodex = authProvider === "codex_oauth";
+  return {
+    provider: authProvider,
+    device_code: isCodex ? "codex-device-code" : "github-device-code",
+    user_code: isCodex ? "CDX-USER-1234" : "GH-USER-1234",
+    verification_uri: isCodex
+      ? "https://chatgpt.com/activate"
+      : "https://github.com/login/device",
+    expires_in: 900,
+    interval: 1,
+  };
+};
+
+export const pollManagedAuthAccountState = (
+  authProvider: ManagedAuthProvider,
+  deviceCode: string,
+  githubDomain?: string | null,
+): ManagedAuthAccount | null => {
+  managedAuthPollRequests = [
+    ...managedAuthPollRequests,
+    {
+      authProvider,
+      deviceCode,
+      githubDomain: githubDomain ?? null,
+    },
+  ];
+
+  const expectedDeviceCode =
+    authProvider === "codex_oauth" ? "codex-device-code" : "github-device-code";
+  if (deviceCode !== expectedDeviceCode) {
+    return null;
+  }
+
+  const normalizedDomain = githubDomain ?? "github.com";
+  const account: ManagedAuthAccount =
+    authProvider === "codex_oauth"
+      ? {
+          id: "codex-login",
+          provider: authProvider,
+          login: "chatgpt-login",
+          avatar_url: null,
+          authenticated_at: 1_700_000_500,
+          is_default: true,
+          github_domain: "github.com",
+        }
+      : {
+          id: normalizedDomain === "github.com" ? "github-login" : "ghe-login",
+          provider: authProvider,
+          login:
+            normalizedDomain === "github.com" ? "github-octocat" : "ghe-octocat",
+          avatar_url: null,
+          authenticated_at: 1_700_000_400,
+          is_default: true,
+          github_domain: normalizedDomain,
+        };
+
+  const existing = managedAuthStatusByProvider[authProvider];
+  const accounts = [
+    account,
+    ...existing.accounts
+      .filter((existingAccount) => existingAccount.id !== account.id)
+      .map((existingAccount) => ({ ...existingAccount, is_default: false })),
+  ];
+
+  managedAuthStatusByProvider[authProvider] = {
+    ...existing,
+    authenticated: true,
+    default_account_id: account.id,
+    accounts,
+  };
+
+  return JSON.parse(JSON.stringify(account)) as ManagedAuthAccount;
+};
+
+export const getLastManagedAuthStartLoginRequest = () =>
+  lastManagedAuthStartLoginRequest
+    ? ({ ...lastManagedAuthStartLoginRequest } as ManagedAuthStartLoginRequest)
+    : null;
+
+export const getManagedAuthPollRequests = () =>
+  JSON.parse(JSON.stringify(managedAuthPollRequests)) as ManagedAuthPollRequest[];
+
+export const recordClipboardWrite = (text: string) => {
+  clipboardWrites = [...clipboardWrites, text];
+  return true;
+};
+
+export const getClipboardWrites = () => [...clipboardWrites];
 
 export const setManagedAuthDefaultAccountState = (
   provider: ManagedAuthProvider,

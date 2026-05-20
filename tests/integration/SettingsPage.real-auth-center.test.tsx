@@ -4,7 +4,15 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { getManagedAuthStatus, resetProviderState, setManagedAuthStatusState } from "../msw/state";
+import {
+  getClipboardWrites,
+  getLastManagedAuthStartLoginRequest,
+  getManagedAuthStatus,
+  getManagedAuthPollRequests,
+  getOpenExternalRequests,
+  resetProviderState,
+  setManagedAuthStatusState,
+} from "../msw/state";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -246,5 +254,162 @@ describe("SettingsPage auth center with real auth sections", () => {
     await waitFor(() =>
       expect(screen.getAllByText("未认证").length).toBeGreaterThanOrEqual(1),
     );
+  });
+
+  it("starts GitHub Enterprise login, opens verification URL, polls account, and keeps Codex isolated", async () => {
+    const user = userEvent.setup();
+
+    setManagedAuthStatusState("github_copilot", {
+      provider: "github_copilot",
+      authenticated: false,
+      default_account_id: null,
+      migration_error: null,
+      accounts: [],
+    });
+    setManagedAuthStatusState("codex_oauth", {
+      provider: "codex_oauth",
+      authenticated: false,
+      default_account_id: null,
+      migration_error: null,
+      accounts: [],
+    });
+
+    renderSettingsPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "认证" })).toHaveAttribute(
+        "data-state",
+        "active",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("GitHub Copilot")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("combobox"));
+    await user.click(
+      await screen.findByRole("option", {
+        name: "GitHub Enterprise Server",
+      }),
+    );
+    await user.type(
+      screen.getByPlaceholderText("例如：company.ghe.com"),
+      "https://ghe.example.com/",
+    );
+    await user.click(screen.getByRole("button", { name: "使用 GitHub 登录" }));
+
+    expect(await screen.findByText("GH-USER-1234")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://github.com/login/device"),
+    ).toBeInTheDocument();
+    expect(getLastManagedAuthStartLoginRequest()).toEqual({
+      authProvider: "github_copilot",
+      githubDomain: "ghe.example.com",
+    });
+    expect(getClipboardWrites()).toContain("GH-USER-1234");
+
+    await waitFor(() =>
+      expect(getOpenExternalRequests()).toEqual([
+        "https://github.com/login/device",
+      ]),
+    );
+    await waitFor(() =>
+      expect(getManagedAuthPollRequests()).toEqual([
+        {
+          authProvider: "github_copilot",
+          deviceCode: "github-device-code",
+          githubDomain: "ghe.example.com",
+        },
+      ]),
+    );
+    await waitFor(() =>
+      expect(
+        getManagedAuthStatus("github_copilot").accounts.map((account) => ({
+          login: account.login,
+          github_domain: account.github_domain,
+        })),
+      ).toEqual([
+        {
+          login: "ghe-octocat",
+          github_domain: "ghe.example.com",
+        },
+      ]),
+    );
+
+    expect(getManagedAuthStatus("codex_oauth").accounts).toHaveLength(0);
+    expect(await screen.findByText("ghe-octocat")).toBeInTheDocument();
+    expect(screen.getByText("ghe.example.com")).toBeInTheDocument();
+  });
+
+  it("starts Codex OAuth login without GitHub domain and keeps Copilot isolated", async () => {
+    const user = userEvent.setup();
+
+    setManagedAuthStatusState("github_copilot", {
+      provider: "github_copilot",
+      authenticated: false,
+      default_account_id: null,
+      migration_error: null,
+      accounts: [],
+    });
+    setManagedAuthStatusState("codex_oauth", {
+      provider: "codex_oauth",
+      authenticated: false,
+      default_account_id: null,
+      migration_error: null,
+      accounts: [],
+    });
+
+    renderSettingsPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "认证" })).toHaveAttribute(
+        "data-state",
+        "active",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("ChatGPT (Codex OAuth)")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "使用 ChatGPT 登录" }));
+
+    expect(await screen.findByText("CDX-USER-1234")).toBeInTheDocument();
+    expect(screen.getByText("https://chatgpt.com/activate")).toBeInTheDocument();
+    expect(getLastManagedAuthStartLoginRequest()).toEqual({
+      authProvider: "codex_oauth",
+      githubDomain: null,
+    });
+    expect(getClipboardWrites()).toContain("CDX-USER-1234");
+
+    await waitFor(() =>
+      expect(getOpenExternalRequests()).toEqual([
+        "https://chatgpt.com/activate",
+      ]),
+    );
+    await waitFor(() =>
+      expect(getManagedAuthPollRequests()).toEqual([
+        {
+          authProvider: "codex_oauth",
+          deviceCode: "codex-device-code",
+          githubDomain: null,
+        },
+      ]),
+    );
+    await waitFor(() =>
+      expect(
+        getManagedAuthStatus("codex_oauth").accounts.map((account) => ({
+          login: account.login,
+          github_domain: account.github_domain,
+        })),
+      ).toEqual([
+        {
+          login: "chatgpt-login",
+          github_domain: "github.com",
+        },
+      ]),
+    );
+
+    expect(getManagedAuthStatus("github_copilot").accounts).toHaveLength(0);
+    expect(await screen.findByText("chatgpt-login")).toBeInTheDocument();
   });
 });

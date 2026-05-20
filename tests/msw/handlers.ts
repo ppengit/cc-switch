@@ -47,6 +47,7 @@ import {
   getUsageTrendsState,
   getWorkspaceFileState,
   getManagedAuthStatus,
+  pollManagedAuthAccountState,
   getProviderDefaultTemplate,
   getCurrentProviderId,
   getLiveProviderIds,
@@ -81,6 +82,7 @@ import {
   recordSettingsSave,
   recordAutoLaunchRequest,
   recordClaudeOnboardingSkipAction,
+  recordClipboardWrite,
   recordDeleteSessionsRequest,
   recordOpenExternalRequest,
   recordOpenHermesWebUiState,
@@ -125,6 +127,7 @@ import {
   setProxyTakeoverForAppState,
   setSessionTitleMappingState,
   setSettings,
+  startManagedAuthLoginState,
   startProxyServerState,
   stopProxyServerState,
   syncCurrentProvidersLiveState,
@@ -155,6 +158,8 @@ const withJson = async <T>(request: Request): Promise<T> => {
 };
 
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export const handlers = [
   http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
@@ -1372,6 +1377,38 @@ export const handlers = [
       authProvider: "github_copilot" | "codex_oauth";
     }>(request);
     return success(getManagedAuthStatus(authProvider));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/copy_text_to_clipboard`, async ({ request }) => {
+    const { text } = await withJson<{ text: string }>(request);
+    return success(recordClipboardWrite(text));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_start_login`, async ({ request }) => {
+    const { authProvider, githubDomain } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+      githubDomain?: string | null;
+    }>(request);
+    return success(startManagedAuthLoginState(authProvider, githubDomain));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_poll_for_account`, async ({ request }) => {
+    const { authProvider, deviceCode, githubDomain } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+      deviceCode: string;
+      githubDomain?: string | null;
+    }>(request);
+    await wait(50);
+    return success(
+      pollManagedAuthAccountState(authProvider, deviceCode, githubDomain),
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/auth_list_accounts`, async ({ request }) => {
+    const { authProvider } = await withJson<{
+      authProvider: "github_copilot" | "codex_oauth";
+    }>(request);
+    return success(getManagedAuthStatus(authProvider).accounts);
   }),
 
   http.post(`${TAURI_ENDPOINT}/auth_set_default_account`, async ({ request }) => {

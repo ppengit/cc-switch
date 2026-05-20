@@ -32,6 +32,7 @@
 | --- | --- | --- | --- | --- |
 | 顶层导航 | `App.tsx` 主界面 | 顶层按钮切换到各视图、返回逻辑、不同 app 的工具栏按钮隔离 | `currentView`、`activeApp` 串页、入口错乱 | 已补真实导航验收 |
 | 设置 | `SettingsPage` | `general / proxy / auth / advanced / usage / apiHub / about` 顺序、切换、显示隔离 | 页签内容串页、隐藏态内容误显示 | 已补真实页签验收 |
+| 认证中心 | `SettingsPage` -> `AuthCenterPanel` | GitHub Copilot / Codex OAuth 账号状态、默认账号、移除、注销、设备码登录、浏览器打开、轮询写入 | OAuth provider 串状态、GitHub Enterprise domain 传参错误、Codex OAuth 误携带 GitHub domain、设备码复制 / 外部打开漏调 | 已补真实 AuthCenter 页面级验收；已覆盖已有账号管理、GitHub Enterprise 登录链路、Codex OAuth 登录链路、剪贴板写入、外部打开、轮询写入和 provider 隔离 |
 | Api-Hub | `SettingsPage` -> `ApiHubPanel` | 页签切换后状态保持、列表筛选、批量同步、批量对齐、清理 / 删除确认、导入弹窗 | 会话态污染、请求参数错误、状态错位、导入供应商后 live 配置被 direct base URL 覆盖 | 已补真实 SettingsPage + Api-Hub 页面级验收；已覆盖挂载 / 隐藏 / 状态保持、筛选、清理、删除、同步、对齐、导入请求参数，以及 Claude 接管 + 故障转移下 Api-Hub 操作后 live 配置不漂移 |
 | 供应商管理 | `ProviderList` / `AddProviderDialog` / `EditProviderDialog` | 增删改查、搜索、排序、批量启用、模板应用、故障转移入口、代理活动状态 | 配置覆盖、排序错乱、模板误写入、活动请求串 app 或串 provider | 已补真实 App + ProviderList 以及 Add / Edit ProviderForm 页面级验收；已覆盖 OpenCode / OpenClaw / Hermes 新增和编辑表单链路、additive 批量写入 / 移出、单项移出确认、删除确认、模板批量套用保留凭据；已补 Claude 接管 + 故障转移队列清空后 live 配置不漂移验收；已补故障转移 UI 面板的队列操作、配置保存、非法输入拦截和 live 配置不漂移验收；已补 `proxy-activity-updated` 事件驱动的「请求中」行状态隔离验收 |
 | 会话管理 | `SessionManagerPage` | 搜索、项目分组、删除、批量删除、重命名、导出、恢复终端、过滤 | 选择态和搜索态错乱、删除后 UI 不一致、标题映射串 app、恢复 / 导出请求参数错误 | 已补真实 App + SessionManagerPage 页面级验收；已覆盖搜索隔离、单删、批量删除、重命名、恢复终端、导出 Markdown |
@@ -81,6 +82,20 @@
 - 修复内容：`SettingsPage` 的 `apiHub` 内容区补充显式 `hidden` / `aria-hidden`，默认页签初始化收口为“仅打开时初始化”，避免 `forceMount` 内容串到其它页签。
 - 验证命令：`pnpm vitest run tests/integration/SettingsPage.real-tabs.test.tsx`
 - 当前结果：`2 passed, 0 failed`
+
+### SettingsPage + AuthCenter 真实页面验收
+
+- 更新验收文件：`tests/integration/SettingsPage.real-auth-center.test.tsx`
+- 覆盖范围：真实 `SettingsPage`、真实 `AuthCenterPanel`、真实 `CopilotAuthSection`、真实 `CodexOAuthSection`、真实 `useManagedAuth` 登录流程；只 mock 与认证中心链路无关的其它设置页区块。
+- 覆盖交互：加载 GitHub Copilot 和 Codex OAuth 账号状态；切换默认账号；移除单个账号；注销 Codex 多账号；从未认证状态分别点击“使用 GitHub 登录”和“使用 ChatGPT 登录”。
+- OAuth 链路验证：GitHub Enterprise 登录会把 `githubDomain` 规范化为 `ghe.example.com` 并传给 `auth_start_login` / `auth_poll_for_account`；页面展示设备码 `GH-USER-1234`，调用 `copy_text_to_clipboard`，调用 `open_external` 打开 `https://github.com/login/device`，轮询成功后写入 `ghe-octocat` 并显示 Enterprise domain badge。
+- Codex 隔离验证：Codex OAuth 登录调用 `auth_start_login` 和 `auth_poll_for_account` 时 `githubDomain` 均为 `null`；页面展示设备码 `CDX-USER-1234`，调用 `copy_text_to_clipboard`，调用 `open_external` 打开 `https://chatgpt.com/activate`，轮询成功后只写入 `codex_oauth` 的 `chatgpt-login`，不会污染 GitHub Copilot 状态。
+- 测试夹具：MSW 补齐 `copy_text_to_clipboard`、`auth_start_login`、`auth_poll_for_account`、`auth_list_accounts` handler；状态层补充开始登录请求、轮询请求、剪贴板写入和 provider 隔离账号写入观测点。
+- 红绿记录：新增 GitHub Enterprise 登录用例在缺少 `auth_start_login` handler 时按预期失败，并记录真实请求体 `{"authProvider":"github_copilot","githubDomain":"ghe.example.com"}`；补齐 handler 后通过。随后临时把 Codex OAuth 的 `githubDomain` 期望改为 `github.com`，同一用例按预期失败，实际值为 `null`；恢复正确断言后通过。
+- 目标验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-auth-center.test.tsx --reporter=verbose`
+- 目标验证结果：`1 file passed, 3 tests passed, 0 failed`
+- 组合验证命令：`pnpm exec vitest run tests/integration/SettingsPage.real-auth-center.test.tsx tests/integration/App.real-provider-forms.test.tsx tests/integration/App.real-universal-providers.test.tsx --fileParallelism=false --reporter=verbose`
+- 组合验证结果：`3 files passed, 10 tests passed, 0 failed`
 
 ### SettingsPage + Api-Hub 真实页面验收
 
