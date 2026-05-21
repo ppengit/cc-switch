@@ -7,6 +7,8 @@ import type {
   ApiHubImportReport,
   ApiHubImportToAppsReport,
   ApiHubImportToAppsReq,
+  ApiHubModelCandidateFilter,
+  ApiHubModelCandidateRow,
   ApiHubPaged,
   ApiHubProgressPayload,
   ApiHubSiteDetail,
@@ -30,6 +32,12 @@ export const apiHubApi = {
     return await invoke("api_hub_get_site_detail", { siteId });
   },
 
+  async listModelCandidates(
+    filter: ApiHubModelCandidateFilter,
+  ): Promise<ApiHubModelCandidateRow[]> {
+    return await invoke("api_hub_list_model_candidates", { filter });
+  },
+
   async clearAll(): Promise<void> {
     await invoke("api_hub_clear_all");
   },
@@ -42,6 +50,12 @@ export const apiHubApi = {
     siteId: string,
   ): Promise<ApiHubCleanupSiteProvidersReport> {
     return await invoke("api_hub_cleanup_site_providers", { siteId });
+  },
+
+  async cleanupSitesProviders(
+    siteIds: string[],
+  ): Promise<ApiHubCleanupSiteProvidersReport> {
+    return await invoke("api_hub_cleanup_sites_providers", { siteIds });
   },
 
   async syncSite(siteId: string): Promise<ApiHubSyncReport> {
@@ -62,6 +76,10 @@ export const apiHubApi = {
     await invoke("api_hub_align_sites", { siteIds, options });
   },
 
+  async checkSites(siteIds: string[]): Promise<void> {
+    await invoke("api_hub_check_sites", { siteIds });
+  },
+
   async importToApps(
     req: ApiHubImportToAppsReq,
   ): Promise<ApiHubImportToAppsReport> {
@@ -80,6 +98,14 @@ export const apiHubApi = {
     handler: (payload: ApiHubProgressPayload) => void,
   ): Promise<UnlistenFn> {
     return await listen("api_hub_align_progress", (event) => {
+      handler(event.payload as ApiHubProgressPayload);
+    });
+  },
+
+  async onCheckProgress(
+    handler: (payload: ApiHubProgressPayload) => void,
+  ): Promise<UnlistenFn> {
+    return await listen("api_hub_check_progress", (event) => {
       handler(event.payload as ApiHubProgressPayload);
     });
   },

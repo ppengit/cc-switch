@@ -18,7 +18,6 @@ import {
   Database,
   Eraser,
   ExternalLink,
-  KeyRound,
   Loader2,
   PackagePlus,
   RefreshCw,
@@ -34,6 +33,7 @@ import type { AppId } from "@/lib/api/types";
 import type {
   ApiHubAccountsBackup,
   ApiHubGroupInfo,
+  ApiHubModelCandidateRow,
   ApiHubModelInfo,
   ApiHubModelSelection,
   ApiHubSiteDetail,
@@ -71,6 +71,13 @@ const SITE_TYPE_OPTIONS = [
   { value: "new-api", label: "new-api" },
   { value: "sub2api", label: "sub2api" },
 ] as const;
+const CHANGE_FILTER_OPTIONS = [
+  { value: "all", label: "全部状态" },
+  { value: "changed", label: "有变更" },
+  { value: "needs_review", label: "已导入且有变更" },
+  { value: "unsynced", label: "未同步" },
+  { value: "not_aligned", label: "未对齐" },
+] as const;
 const TARGET_APPS: Array<{ id: AppId; label: string }> = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
@@ -87,20 +94,25 @@ type SiteSortBy =
   | "model_count"
   | "token_count"
   | "last_synced_at"
+  | "last_change_at"
   | "imported_apps";
 type SortDirection = "asc" | "desc";
 type AppModelSelections = Partial<Record<AppId, string[]>>;
 type AppNoDefaultSelections = Partial<Record<AppId, boolean>>;
 type AppCollapsedGroups = Partial<Record<AppId, string[]>>;
-type ConfirmAction = "clear" | "delete" | "cleanup";
+type ConfirmAction = "clear" | "delete" | "cleanup" | "cleanup_batch";
 interface PendingConfirm {
   action: ConfirmAction;
   site?: ApiHubSiteRow;
+  siteIds?: string[];
 }
 interface ApiHubPanelPersistedState {
   searchInput: string;
   search: string;
+  modelFilterInput: string;
+  modelFilter: string;
   siteTypeFilter: string;
+  changeFilter: string;
   sortBy: SiteSortBy;
   sortDirection: SortDirection;
   page: number;
@@ -112,7 +124,10 @@ const API_HUB_PANEL_STATE_KEY = "cc-switch-api-hub-panel-state";
 const DEFAULT_PANEL_STATE: ApiHubPanelPersistedState = {
   searchInput: "",
   search: "",
+  modelFilterInput: "",
+  modelFilter: "",
   siteTypeFilter: "all",
+  changeFilter: "all",
   sortBy: "site_type",
   sortDirection: "asc",
   page: 1,
@@ -134,6 +149,7 @@ function loadPanelState(): ApiHubPanelPersistedState {
         "model_count",
         "token_count",
         "last_synced_at",
+        "last_change_at",
         "imported_apps",
       ] as SiteSortBy[]
     ).includes(parsed.sortBy as SiteSortBy)
@@ -148,10 +164,20 @@ function loadPanelState(): ApiHubPanelPersistedState {
       searchInput:
         typeof parsed.searchInput === "string" ? parsed.searchInput : "",
       search: typeof parsed.search === "string" ? parsed.search : "",
+      modelFilterInput:
+        typeof parsed.modelFilterInput === "string"
+          ? parsed.modelFilterInput
+          : "",
+      modelFilter:
+        typeof parsed.modelFilter === "string" ? parsed.modelFilter : "",
       siteTypeFilter:
         typeof parsed.siteTypeFilter === "string"
           ? parsed.siteTypeFilter
           : DEFAULT_PANEL_STATE.siteTypeFilter,
+      changeFilter:
+        typeof parsed.changeFilter === "string"
+          ? parsed.changeFilter
+          : DEFAULT_PANEL_STATE.changeFilter,
       sortBy,
       sortDirection: parsed.sortDirection === "desc" ? "desc" : "asc",
       page:
@@ -179,6 +205,27 @@ function parseSelectionKey(key: string): ApiHubModelSelection {
   return { group, model: modelParts.join("::") };
 }
 
+function candidateKey(candidate: ApiHubModelCandidateRow): string {
+  return `${candidate.site_id}::${candidate.group}::${candidate.model}`;
+}
+
+function candidateToSiteRow(candidate: ApiHubModelCandidateRow): ApiHubSiteRow {
+  return {
+    id: candidate.site_id,
+    site_name: candidate.site_name,
+    site_url: candidate.site_url,
+    site_type: candidate.site_type,
+    exchange_rate: 1,
+    imported_apps: candidate.imported_apps,
+    sort_index: 0,
+    group_count: 0,
+    aligned_group_count: candidate.is_aligned ? 1 : 0,
+    is_aligned: candidate.is_aligned,
+    model_count: 0,
+    token_count: candidate.has_api_key ? 1 : 0,
+  };
+}
+
 function formatGroupRatio(ratio?: number | null): string {
   if (ratio === null || ratio === undefined) return "倍率 -";
   return `倍率 ${Number.isInteger(ratio) ? ratio : ratio.toFixed(2)}`;
@@ -203,6 +250,24 @@ function siteTypeClass(siteType: string, hasError: boolean): string {
     default:
       return "border-muted-foreground/30 bg-muted text-muted-foreground";
   }
+}
+
+function changeStatusClass(site: ApiHubSiteRow): string {
+  if (site.last_change_summary) {
+    return (site.imported_apps ?? []).length > 0
+      ? "border-amber-500/40 bg-amber-500/10 text-amber-700"
+      : "border-sky-500/40 bg-sky-500/10 text-sky-700";
+  }
+  if (site.last_checked_at) {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700";
+  }
+  return "border-muted-foreground/30 bg-muted text-muted-foreground";
+}
+
+function changeStatusText(site: ApiHubSiteRow): string {
+  if (site.last_change_summary) return site.last_change_summary;
+  if (site.last_checked_at) return "无变更";
+  return "未检查";
 }
 
 function formatSyncTime(value?: number | null): string {
@@ -263,8 +328,15 @@ export function ApiHubPanel() {
   const initialPanelState = initialPanelStateRef.current;
   const [searchInput, setSearchInput] = useState(initialPanelState.searchInput);
   const [search, setSearch] = useState(initialPanelState.search);
+  const [modelFilterInput, setModelFilterInput] = useState(
+    initialPanelState.modelFilterInput,
+  );
+  const [modelFilter, setModelFilter] = useState(initialPanelState.modelFilter);
   const [siteTypeFilter, setSiteTypeFilter] = useState(
     initialPanelState.siteTypeFilter,
+  );
+  const [changeFilter, setChangeFilter] = useState(
+    initialPanelState.changeFilter,
   );
   const [sortBy, setSortBy] = useState<SiteSortBy>(initialPanelState.sortBy);
   const [sortDirection, setSortDirection] = useState<SortDirection>(
@@ -275,6 +347,9 @@ export function ApiHubPanel() {
   const [selectedSiteIds, setSelectedSiteIds] = useState<Set<string>>(
     () => new Set(initialPanelState.selectedSiteIds),
   );
+  const [selectedCandidateKeys, setSelectedCandidateKeys] = useState<
+    Set<string>
+  >(() => new Set());
   const [importSite, setImportSite] = useState<ApiHubSiteRow | null>(null);
   const [targetApps, setTargetApps] = useState<Set<AppId>>(() => new Set());
   const [activeTargetApp, setActiveTargetApp] = useState<AppId>("claude");
@@ -296,6 +371,9 @@ export function ApiHubPanel() {
   const [aligningSiteIds, setAligningSiteIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [checkingSiteIds, setCheckingSiteIds] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const invalidateSites = useCallback(
     () => queryClient.invalidateQueries({ queryKey: ["apiHub", "sites"] }),
@@ -306,7 +384,10 @@ export function ApiHubPanel() {
     const state: ApiHubPanelPersistedState = {
       searchInput,
       search,
+      modelFilterInput,
+      modelFilter,
       siteTypeFilter,
+      changeFilter,
       sortBy,
       sortDirection,
       page,
@@ -318,6 +399,9 @@ export function ApiHubPanel() {
       JSON.stringify(state),
     );
   }, [
+    changeFilter,
+    modelFilter,
+    modelFilterInput,
     page,
     pageSize,
     search,
@@ -338,11 +422,17 @@ export function ApiHubPanel() {
 
   useEffect(() => {
     setPage(1);
-  }, [siteTypeFilter, sortBy, sortDirection]);
+    setModelFilter(modelFilterInput.trim());
+  }, [modelFilterInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [siteTypeFilter, changeFilter, sortBy, sortDirection]);
 
   useEffect(() => {
     let unlistenSync: (() => void) | undefined;
     let unlistenAlign: (() => void) | undefined;
+    let unlistenCheck: (() => void) | undefined;
     void apiHubApi
       .onSyncProgress((payload) => {
         setSyncingSiteIds((prev) => {
@@ -379,10 +469,29 @@ export function ApiHubPanel() {
       .then((unlisten) => {
         unlistenAlign = unlisten;
       });
+    void apiHubApi
+      .onCheckProgress((payload) => {
+        setCheckingSiteIds((prev) => {
+          const next = new Set(prev);
+          if (payload.status === "running" || payload.status === "pending") {
+            next.add(payload.site_id);
+          } else {
+            next.delete(payload.site_id);
+          }
+          return next;
+        });
+        if (payload.status !== "running" && payload.status !== "pending") {
+          void invalidateSites();
+        }
+      })
+      .then((unlisten) => {
+        unlistenCheck = unlisten;
+      });
 
     return () => {
       unlistenSync?.();
       unlistenAlign?.();
+      unlistenCheck?.();
     };
   }, [invalidateSites]);
 
@@ -391,7 +500,9 @@ export function ApiHubPanel() {
       "apiHub",
       "sites",
       search,
+      modelFilter,
       siteTypeFilter,
+      changeFilter,
       sortBy,
       sortDirection,
       page,
@@ -401,10 +512,33 @@ export function ApiHubPanel() {
       apiHubApi.listSites({
         search: search || null,
         site_type: siteTypeFilter === "all" ? null : siteTypeFilter,
+        model_search: modelFilter || null,
+        change_filter: changeFilter === "all" ? null : changeFilter,
         sort_by: sortBy,
         sort_direction: sortDirection,
         page,
         page_size: pageSize,
+      }),
+  });
+
+  const candidateSiteIds = useMemo(
+    () => Array.from(selectedSiteIds).sort(),
+    [selectedSiteIds],
+  );
+  const modelCandidatesQuery = useQuery({
+    queryKey: [
+      "apiHub",
+      "modelCandidates",
+      modelFilter,
+      siteTypeFilter,
+      candidateSiteIds,
+    ],
+    enabled: modelFilter.length > 0,
+    queryFn: () =>
+      apiHubApi.listModelCandidates({
+        site_ids: candidateSiteIds,
+        model_search: modelFilter,
+        site_type: siteTypeFilter === "all" ? null : siteTypeFilter,
       }),
   });
 
@@ -445,54 +579,6 @@ export function ApiHubPanel() {
     },
   });
 
-  const syncMutation = useMutation({
-    mutationFn: apiHubApi.syncSite,
-    onMutate: (siteId) => {
-      setSyncingSiteIds((prev) => new Set([...prev, siteId]));
-    },
-    onSuccess: (report) => {
-      toast.success(
-        t("apiHub.toast.synced", {
-          defaultValue: `同步完成：${report.groups_count} 个分组，${report.models_count} 个模型`,
-          groups: report.groups_count,
-          models: report.models_count,
-        }),
-      );
-      void invalidateSites();
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "同步失败");
-    },
-    onSettled: (_data, _error, siteId) => {
-      if (!siteId) return;
-      setSyncingSiteIds((prev) => {
-        const next = new Set(prev);
-        next.delete(siteId);
-        return next;
-      });
-    },
-  });
-
-  const syncSitesMutation = useMutation({
-    mutationFn: apiHubApi.syncSites,
-    onSuccess: () => {
-      toast.success("批量同步已完成");
-      void invalidateSites();
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "批量同步失败");
-    },
-    onSettled: (_data, error, siteIds) => {
-      if (!siteIds) return;
-      if (!error) return;
-      setSyncingSiteIds((prev) => {
-        const next = new Set(prev);
-        for (const siteId of siteIds) next.delete(siteId);
-        return next;
-      });
-    },
-  });
-
   const alignMutation = useMutation({
     mutationFn: (siteIds: string[]) =>
       apiHubApi.alignSites(siteIds, {
@@ -501,7 +587,7 @@ export function ApiHubPanel() {
       }),
     onSuccess: () => {
       toast.success(
-        t("apiHub.toast.aligned", { defaultValue: "对齐任务已完成" }),
+        t("apiHub.toast.aligned", { defaultValue: "同步对齐任务已完成" }),
       );
       void invalidateSites();
       if (importSite) {
@@ -516,6 +602,25 @@ export function ApiHubPanel() {
     onSettled: (_data, error, siteIds) => {
       if (!siteIds || !error) return;
       setAligningSiteIds((prev) => {
+        const next = new Set(prev);
+        for (const siteId of siteIds) next.delete(siteId);
+        return next;
+      });
+    },
+  });
+
+  const checkSitesMutation = useMutation({
+    mutationFn: apiHubApi.checkSites,
+    onSuccess: () => {
+      toast.success("检查任务已完成");
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "检查失败");
+    },
+    onSettled: (_data, _error, siteIds) => {
+      if (!siteIds) return;
+      setCheckingSiteIds((prev) => {
         const next = new Set(prev);
         for (const siteId of siteIds) next.delete(siteId);
         return next;
@@ -549,6 +654,82 @@ export function ApiHubPanel() {
     },
   });
 
+  const cleanupSitesMutation = useMutation({
+    mutationFn: apiHubApi.cleanupSitesProviders,
+    onSuccess: (report) => {
+      const failedText =
+        (report.failed?.length ?? 0) > 0
+          ? `，失败 ${report.failed.length}`
+          : "";
+      toast.success(`已清理 ${report.deleted} 个供应商${failedText}`);
+      void invalidateSites();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "批量清理失败");
+    },
+  });
+
+  const strategyImportMutation = useMutation({
+    mutationFn: async ({
+      apps,
+      candidates,
+    }: {
+      apps: AppId[];
+      candidates: ApiHubModelCandidateRow[];
+    }) => {
+      const bySite = new Map<
+        string,
+        { site: ApiHubSiteRow; selections: ApiHubModelSelection[] }
+      >();
+      for (const candidate of candidates) {
+        const entry = bySite.get(candidate.site_id) ?? {
+          site: candidateToSiteRow(candidate),
+          selections: [],
+        };
+        for (const app of apps) {
+          entry.selections.push({
+            group: candidate.group,
+            model: candidate.model,
+            app,
+          });
+        }
+        bySite.set(candidate.site_id, entry);
+      }
+
+      let created = 0;
+      let updated = 0;
+      let failed = 0;
+      for (const { site, selections } of bySite.values()) {
+        const report = await apiHubApi.importToApps({
+          site_id: site.id,
+          target_apps: apps,
+          selections,
+          auto_align_if_missing: true,
+          mark_as_imported: true,
+          settings_configs: buildApiHubSettingsConfigs(site, apps, selections),
+        });
+        created += report.created;
+        updated += report.updated;
+        failed += report.failed.length;
+      }
+      return { created, updated, failed };
+    },
+    onSuccess: (report) => {
+      const failedText = report.failed > 0 ? `，失败 ${report.failed}` : "";
+      toast.success(
+        `策略导入完成：新增 ${report.created}，更新 ${report.updated}${failedText}`,
+      );
+      setSelectedCandidateKeys(new Set());
+      void invalidateSites();
+      void queryClient.invalidateQueries({
+        queryKey: ["apiHub", "modelCandidates"],
+      });
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "策略导入失败");
+    },
+  });
+
   const importAppsMutation = useMutation({
     mutationFn: apiHubApi.importToApps,
     onSuccess: (report) => {
@@ -570,11 +751,34 @@ export function ApiHubPanel() {
   });
 
   const sites = sitesQuery.data?.items ?? [];
+  const modelCandidates = modelCandidatesQuery.data ?? [];
   const total = sitesQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const selectedSiteList = Array.from(selectedSiteIds);
+  const checkTargetSiteIds =
+    selectedSiteList.length > 0
+      ? selectedSiteList
+      : sites.map((site) => site.id);
   const allVisibleSelected =
     sites.length > 0 && sites.every((site) => selectedSiteIds.has(site.id));
+  const selectedCandidates = modelCandidates.filter((candidate) =>
+    selectedCandidateKeys.has(candidateKey(candidate)),
+  );
+  const allCandidatesSelected =
+    modelCandidates.length > 0 &&
+    modelCandidates.every((candidate) =>
+      selectedCandidateKeys.has(candidateKey(candidate)),
+    );
+
+  useEffect(() => {
+    const visibleKeys = new Set(modelCandidates.map(candidateKey));
+    setSelectedCandidateKeys((prev) => {
+      const next = new Set(
+        Array.from(prev).filter((key) => visibleKeys.has(key)),
+      );
+      return next.size === prev.size ? prev : next;
+    });
+  }, [modelCandidates]);
 
   const detail = detailQuery.data;
   const groupedModels = useMemo(() => modelsByGroup(detail), [detail]);
@@ -806,6 +1010,48 @@ export function ApiHubPanel() {
     queueConfirmAction({ action: "clear" });
   };
 
+  const handleCheckSites = () => {
+    if (checkTargetSiteIds.length === 0) return;
+    checkSitesMutation.mutate(checkTargetSiteIds);
+  };
+
+  const handleCleanupSelectedSites = () => {
+    if (selectedSiteList.length === 0) return;
+    queueConfirmAction({
+      action: "cleanup_batch",
+      siteIds: selectedSiteList,
+    });
+  };
+
+  const toggleCandidate = (key: string, checked: boolean) => {
+    setSelectedCandidateKeys((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const toggleAllCandidates = (checked: boolean) => {
+    setSelectedCandidateKeys((prev) => {
+      const next = new Set(prev);
+      for (const candidate of modelCandidates) {
+        const key = candidateKey(candidate);
+        if (checked) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  };
+
+  const handleStrategyImport = (apps: AppId[]) => {
+    if (selectedCandidates.length === 0) return;
+    strategyImportMutation.mutate({
+      apps,
+      candidates: selectedCandidates,
+    });
+  };
+
   const handleImportApps = () => {
     if (!importSite) return;
     const apps = Array.from(targetApps);
@@ -837,7 +1083,9 @@ export function ApiHubPanel() {
       ? "清空 Api-Hub 缓存"
       : pendingConfirm.action === "delete"
         ? "删除站点记录"
-        : "清理站点"
+        : pendingConfirm.action === "cleanup_batch"
+          ? "一键清理"
+          : "清理站点"
     : "";
   const confirmMessage = pendingConfirm
     ? pendingConfirm.action === "clear"
@@ -847,9 +1095,11 @@ export function ApiHubPanel() {
         })
       : pendingConfirm.action === "delete" && pendingConfirm.site
         ? `确认删除 Api-Hub 站点记录：${pendingConfirm.site.site_name}？`
-        : pendingConfirm.site
-          ? `确认清理 ${pendingConfirm.site.site_name} 已导入到各应用的供应商记录？`
-          : ""
+        : pendingConfirm.action === "cleanup_batch"
+          ? `确认清理选中的 ${pendingConfirm.siteIds?.length ?? 0} 个站点已导入到各应用的供应商记录？`
+          : pendingConfirm.site
+            ? `确认清理 ${pendingConfirm.site.site_name} 已导入到各应用的供应商记录？`
+            : ""
     : "";
   const confirmText =
     pendingConfirm?.action === "clear"
@@ -865,6 +1115,10 @@ export function ApiHubPanel() {
       clearMutation.mutate();
       return;
     }
+    if (current.action === "cleanup_batch") {
+      cleanupSitesMutation.mutate(current.siteIds ?? []);
+      return;
+    }
     if (!current.site) return;
     if (current.action === "delete") {
       deleteSiteMutation.mutate(current.site.id);
@@ -876,7 +1130,9 @@ export function ApiHubPanel() {
   const isImportingJson = importJsonMutation.isPending;
   const isBatchBusy =
     alignMutation.isPending ||
-    syncSitesMutation.isPending ||
+    checkSitesMutation.isPending ||
+    cleanupSitesMutation.isPending ||
+    strategyImportMutation.isPending ||
     clearMutation.isPending;
   const canImportApps =
     targetApps.size > 0 &&
@@ -945,15 +1201,20 @@ export function ApiHubPanel() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => syncSitesMutation.mutate(selectedSiteList)}
-              disabled={selectedSiteList.length === 0 || isBatchBusy}
+              onClick={handleCheckSites}
+              disabled={checkTargetSiteIds.length === 0 || isBatchBusy}
+              title={
+                selectedSiteList.length > 0
+                  ? `检查选中的 ${selectedSiteList.length} 个站点`
+                  : `检查当前页 ${checkTargetSiteIds.length} 个站点`
+              }
             >
-              {syncSitesMutation.isPending ? (
+              {checkSitesMutation.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <Search className="mr-2 h-4 w-4" />
               )}
-              同步选中
+              一键检查
             </Button>
             <Button
               type="button"
@@ -964,9 +1225,22 @@ export function ApiHubPanel() {
               {alignMutation.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                <KeyRound className="mr-2 h-4 w-4" />
+                <RefreshCw className="mr-2 h-4 w-4" />
               )}
-              对齐选中
+              同步并对齐
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCleanupSelectedSites}
+              disabled={selectedSiteList.length === 0 || isBatchBusy}
+            >
+              {cleanupSitesMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Eraser className="mr-2 h-4 w-4" />
+              )}
+              一键清理
             </Button>
             <Button
               type="button"
@@ -982,16 +1256,28 @@ export function ApiHubPanel() {
         </div>
 
         <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="relative max-w-xl flex-1">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
-              placeholder={t("apiHub.searchPlaceholder", {
-                defaultValue: "搜索站点名称或 URL",
-              })}
-              className="pl-9"
-            />
+          <div className="grid flex-1 gap-2 md:grid-cols-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder={t("apiHub.searchPlaceholder", {
+                  defaultValue: "搜索站点名称或 URL",
+                })}
+                className="pl-9"
+              />
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                aria-label="模型筛选"
+                value={modelFilterInput}
+                onChange={(event) => setModelFilterInput(event.target.value)}
+                placeholder="筛选模型，例如 claude-4 / gpt-5"
+                className="pl-9"
+              />
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <Label htmlFor="api-hub-site-type" className="text-sm font-normal">
@@ -1005,6 +1291,25 @@ export function ApiHubPanel() {
               className="h-9 rounded-md border border-border-default bg-background px-2 text-foreground"
             >
               {SITE_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <Label
+              htmlFor="api-hub-change-filter"
+              className="text-sm font-normal"
+            >
+              变更
+            </Label>
+            <select
+              id="api-hub-change-filter"
+              aria-label="变更筛选"
+              value={changeFilter}
+              onChange={(event) => setChangeFilter(event.target.value)}
+              className="h-9 rounded-md border border-border-default bg-background px-2 text-foreground"
+            >
+              {CHANGE_FILTER_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -1028,6 +1333,129 @@ export function ApiHubPanel() {
             <span>条</span>
           </div>
         </div>
+
+        {modelFilter ? (
+          <div className="mt-4 rounded-lg border border-border-default bg-muted/20 p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground">
+                  模型聚合导入
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  当前关键词“{modelFilter}”，
+                  {selectedSiteList.length > 0
+                    ? `仅聚合选中的 ${selectedSiteList.length} 个站点`
+                    : "聚合当前协议范围内全部站点"}
+                  。只会导入已勾选的站点/分组/模型组合。
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => toggleAllCandidates(!allCandidatesSelected)}
+                  disabled={
+                    modelCandidates.length === 0 ||
+                    modelCandidatesQuery.isLoading ||
+                    strategyImportMutation.isPending
+                  }
+                >
+                  {allCandidatesSelected ? "取消全选" : "全选候选"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => handleStrategyImport(["claude"])}
+                  disabled={
+                    selectedCandidates.length === 0 ||
+                    strategyImportMutation.isPending
+                  }
+                >
+                  {strategyImportMutation.isPending ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : null}
+                  导入 Claude
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleStrategyImport(["codex"])}
+                  disabled={
+                    selectedCandidates.length === 0 ||
+                    strategyImportMutation.isPending
+                  }
+                >
+                  导入 Codex
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleStrategyImport(["claude", "codex"])}
+                  disabled={
+                    selectedCandidates.length === 0 ||
+                    strategyImportMutation.isPending
+                  }
+                >
+                  导入 Claude + Codex
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-3 max-h-64 overflow-y-auto rounded-md border border-border-default bg-background/70">
+              {modelCandidatesQuery.isLoading ? (
+                <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  正在聚合模型
+                </div>
+              ) : modelCandidates.length === 0 ? (
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  没有匹配的模型候选。
+                </div>
+              ) : (
+                <div className="divide-y divide-border-default">
+                  {modelCandidates.map((candidate) => {
+                    const key = candidateKey(candidate);
+                    return (
+                      <Label
+                        key={key}
+                        className="grid grid-cols-[auto_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1.6fr)_auto] items-center gap-3 px-3 py-2 text-sm hover:bg-muted/30"
+                      >
+                        <Checkbox
+                          aria-label={`选择候选 ${candidate.site_name} ${candidate.group} ${candidate.model}`}
+                          checked={selectedCandidateKeys.has(key)}
+                          onCheckedChange={(checked) =>
+                            toggleCandidate(key, checked === true)
+                          }
+                        />
+                        <span className="truncate font-medium text-foreground">
+                          {candidate.site_name}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          {candidate.group}
+                        </span>
+                        <span className="truncate">{candidate.model}</span>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "whitespace-nowrap",
+                            candidate.has_api_key
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+                              : "border-amber-500/40 bg-amber-500/10 text-amber-700",
+                          )}
+                        >
+                          {candidate.has_api_key ? "Key 已对齐" : "需补 Key"}
+                        </Badge>
+                      </Label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-border-default bg-background/70">
@@ -1057,6 +1485,9 @@ export function ApiHubPanel() {
                 {sortableHeader("imported_apps", "导入状态", "导入状态排序")}
               </TableHead>
               <TableHead>
+                {sortableHeader("last_change_at", "变更状态", "变更状态排序")}
+              </TableHead>
+              <TableHead>
                 {sortableHeader("last_synced_at", "最近同步", "最近同步排序")}
               </TableHead>
               <TableHead className="text-right">操作</TableHead>
@@ -1065,14 +1496,14 @@ export function ApiHubPanel() {
           <TableBody>
             {sitesQuery.isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-40 text-center">
+                <TableCell colSpan={9} className="h-40 text-center">
                   <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                 </TableCell>
               </TableRow>
             ) : sites.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="h-40 text-center text-sm text-muted-foreground"
                 >
                   暂无 Api-Hub 站点，先导入 accounts-backup JSON。
@@ -1110,6 +1541,18 @@ export function ApiHubPanel() {
                           {site.last_sync_error}
                         </span>
                       ) : null}
+                      {(site.model_matches ?? []).length > 0 ? (
+                        <div className="space-y-0.5 pt-1 text-xs text-muted-foreground">
+                          {site.model_matches?.map((match) => (
+                            <div key={match.model_name}>
+                              {match.model_name}：
+                              {(match.groups ?? []).length > 0
+                                ? match.groups.join(" / ")
+                                : "无分组"}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
@@ -1143,6 +1586,17 @@ export function ApiHubPanel() {
                       {importedAppsText(site)}
                     </Badge>
                   </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "whitespace-nowrap",
+                        changeStatusClass(site),
+                      )}
+                    >
+                      {changeStatusText(site)}
+                    </Badge>
+                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {formatSyncTime(site.last_synced_at)}
                   </TableCell>
@@ -1151,12 +1605,18 @@ export function ApiHubPanel() {
                       {(() => {
                         const isSyncing = syncingSiteIds.has(site.id);
                         const isAligning = aligningSiteIds.has(site.id);
+                        const isChecking = checkingSiteIds.has(site.id);
                         const isCleaning =
-                          cleanupSiteMutation.isPending &&
-                          cleanupSiteMutation.variables === site.id;
+                          (cleanupSiteMutation.isPending &&
+                            cleanupSiteMutation.variables === site.id) ||
+                          (cleanupSitesMutation.isPending &&
+                            (cleanupSitesMutation.variables ?? []).includes(
+                              site.id,
+                            ));
                         const isDeleting =
                           deleteSiteMutation.isPending &&
                           deleteSiteMutation.variables === site.id;
+                        const isSyncAlignBusy = isSyncing || isAligning;
                         const hasGroups = site.group_count > 0;
                         const hasModels = site.model_count > 0;
                         const isSynced =
@@ -1185,29 +1645,19 @@ export function ApiHubPanel() {
                               type="button"
                               size="sm"
                               variant="outline"
-                              onClick={() => syncMutation.mutate(site.id)}
-                              disabled={isSyncing}
+                              onClick={() => alignMutation.mutate([site.id])}
+                              disabled={isSyncAlignBusy || isChecking}
                             >
-                              {isSyncing ? (
+                              {isSyncAlignBusy || isChecking ? (
                                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
                               ) : (
                                 <RefreshCw className="mr-1.5 h-4 w-4" />
                               )}
-                              {isSyncing ? "同步中" : "同步"}
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => alignMutation.mutate([site.id])}
-                              disabled={isAligning}
-                            >
-                              {isAligning ? (
-                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                              ) : (
-                                <KeyRound className="mr-1.5 h-4 w-4" />
-                              )}
-                              {isAligning ? "对齐中" : "对齐"}
+                              {isChecking
+                                ? "检查中"
+                                : isSyncAlignBusy
+                                  ? "对齐中"
+                                  : "同步对齐"}
                             </Button>
                             <Button
                               type="button"

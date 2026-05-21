@@ -1,4 +1,10 @@
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
@@ -33,6 +39,7 @@ const renderPanel = () => {
 
 describe("ApiHubPanel", () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
     toastSuccessMock.mockReset();
   });
@@ -43,7 +50,6 @@ describe("ApiHubPanel", () => {
 
   it("shows row loading only for the site reported by batch progress events", async () => {
     const alignCalls: unknown[] = [];
-    const syncCalls: unknown[] = [];
     server.use(
       http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
         HttpResponse.json({
@@ -91,10 +97,6 @@ describe("ApiHubPanel", () => {
           return HttpResponse.json(null);
         },
       ),
-      http.post(`${TAURI_ENDPOINT}/api_hub_sync_sites`, async ({ request }) => {
-        syncCalls.push(await request.json());
-        return HttpResponse.json(null);
-      }),
     );
 
     renderPanel();
@@ -105,57 +107,7 @@ describe("ApiHubPanel", () => {
 
     fireEvent.click(screen.getByLabelText("选择 Demo Hub"));
     fireEvent.click(screen.getByLabelText("选择 Second Hub"));
-    fireEvent.click(screen.getByRole("button", { name: "同步选中" }));
-
-    await waitFor(() => {
-      expect(syncCalls).toEqual([{ siteIds: ["site-1", "site-2"] }]);
-    });
-
-    expect(
-      screen.queryByRole("button", { name: "同步中" }),
-    ).not.toBeInTheDocument();
-
-    act(() => {
-      emitTauriEvent("api_hub_sync_progress", {
-        site_id: "site-1",
-        site_name: "Demo Hub",
-        index: 1,
-        total: 2,
-        step: "sync",
-        status: "running",
-        error: null,
-      });
-    });
-
-    await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "同步中" })).toHaveLength(1);
-    });
-    expect(screen.getByRole("row", { name: /Demo Hub/ })).toHaveTextContent(
-      "同步中",
-    );
-    expect(screen.getByRole("row", { name: /Second Hub/ })).toHaveTextContent(
-      "同步对齐",
-    );
-
-    act(() => {
-      emitTauriEvent("api_hub_sync_progress", {
-        site_id: "site-1",
-        site_name: "Demo Hub",
-        index: 1,
-        total: 2,
-        step: "sync",
-        status: "success",
-        error: null,
-      });
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("button", { name: "同步中" }),
-      ).not.toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "对齐选中" }));
+    fireEvent.click(screen.getByRole("button", { name: "同步并对齐" }));
 
     await waitFor(() => {
       expect(alignCalls).toEqual([
@@ -172,11 +124,11 @@ describe("ApiHubPanel", () => {
 
     act(() => {
       emitTauriEvent("api_hub_align_progress", {
-        site_id: "site-2",
-        site_name: "Second Hub",
-        index: 2,
+        site_id: "site-1",
+        site_name: "Demo Hub",
+        index: 1,
         total: 2,
-        step: "align",
+        step: "sync",
         status: "running",
         error: null,
       });
@@ -186,10 +138,122 @@ describe("ApiHubPanel", () => {
       expect(screen.getAllByRole("button", { name: "对齐中" })).toHaveLength(1);
     });
     expect(screen.getByRole("row", { name: /Demo Hub/ })).toHaveTextContent(
-      "同步对齐",
+      "对齐中",
     );
     expect(screen.getByRole("row", { name: /Second Hub/ })).toHaveTextContent(
-      "对齐中",
+      "同步对齐",
+    );
+
+    act(() => {
+      emitTauriEvent("api_hub_align_progress", {
+        site_id: "site-1",
+        site_name: "Demo Hub",
+        index: 1,
+        total: 2,
+        step: "sync",
+        status: "success",
+        error: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "对齐中" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("checks selected sites and tracks check progress per row", async () => {
+    const checkCalls: unknown[] = [];
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: "demo",
+              imported_apps: ["codex"],
+              last_synced_at: 1715750061,
+              last_checked_at: null,
+              last_change_at: null,
+              last_change_summary: null,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 2,
+              model_count: 8,
+              token_count: 1,
+            },
+            {
+              id: "site-2",
+              site_name: "Second Hub",
+              site_url: "https://second.example.com",
+              site_type: "sub2api",
+              exchange_rate: 1,
+              username: "second",
+              imported_apps: [],
+              last_synced_at: 1715750061,
+              last_checked_at: null,
+              last_change_at: null,
+              last_change_summary: null,
+              last_sync_error: null,
+              sort_index: 1,
+              group_count: 1,
+              model_count: 3,
+              token_count: 1,
+            },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_check_sites`,
+        async ({ request }) => {
+          checkCalls.push(await request.json());
+          return HttpResponse.json(null);
+        },
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("选择 Demo Hub"));
+    fireEvent.click(screen.getByRole("button", { name: "一键检查" }));
+
+    await waitFor(() => {
+      expect(checkCalls).toEqual([{ siteIds: ["site-1"] }]);
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "检查中" }),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      emitTauriEvent("api_hub_check_progress", {
+        site_id: "site-1",
+        site_name: "Demo Hub",
+        index: 1,
+        total: 2,
+        step: "check",
+        status: "running",
+        error: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "检查中" })).toHaveLength(1);
+    });
+    expect(screen.getByRole("row", { name: /Demo Hub/ })).toHaveTextContent(
+      "检查中",
+    );
+    expect(screen.getByRole("row", { name: /Second Hub/ })).toHaveTextContent(
+      "同步对齐",
     );
   });
 
@@ -393,6 +457,248 @@ describe("ApiHubPanel", () => {
     });
     expect(cleanupCalls).toEqual([]);
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("cleans selected site providers only after batch cleanup confirmation", async () => {
+    const cleanupCalls: any[] = [];
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: null,
+              imported_apps: ["claude"],
+              last_synced_at: null,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 1,
+              model_count: 2,
+              token_count: 1,
+            },
+            {
+              id: "site-2",
+              site_name: "Second Hub",
+              site_url: "https://second.example.com",
+              site_type: "sub2api",
+              exchange_rate: 1,
+              username: null,
+              imported_apps: ["codex"],
+              last_synced_at: null,
+              last_sync_error: null,
+              sort_index: 1,
+              group_count: 1,
+              model_count: 2,
+              token_count: 1,
+            },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_cleanup_sites_providers`,
+        async ({ request }) => {
+          cleanupCalls.push(await request.json());
+          return HttpResponse.json({ deleted: 3, failed: [] });
+        },
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("选择 Demo Hub"));
+    fireEvent.click(screen.getByLabelText("选择 Second Hub"));
+    fireEvent.click(screen.getByRole("button", { name: "一键清理" }));
+
+    expect(
+      await screen.findByText(
+        "确认清理选中的 2 个站点已导入到各应用的供应商记录？",
+      ),
+    ).toBeInTheDocument();
+    expect(cleanupCalls).toEqual([]);
+
+    const confirmCleanupButton = await screen.findByRole("button", {
+      name: "清理",
+    });
+    await waitFor(() => expect(confirmCleanupButton).toBeEnabled());
+    fireEvent.click(confirmCleanupButton);
+
+    await waitFor(() => {
+      expect(cleanupCalls).toEqual([{ siteIds: ["site-1", "site-2"] }]);
+    });
+  });
+
+  it("filters sites by model and change status, and renders matched model groups", async () => {
+    const listCalls: any[] = [];
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, async ({ request }) => {
+        listCalls.push(await request.json());
+        return HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "sub2api",
+              exchange_rate: 1,
+              username: null,
+              imported_apps: ["codex"],
+              last_synced_at: 1715750061,
+              last_checked_at: 1715751061,
+              last_change_at: 1715751061,
+              last_change_summary: "模型 +1/-0",
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 2,
+              aligned_group_count: 2,
+              is_aligned: true,
+              model_count: 8,
+              token_count: 2,
+              model_matches: [
+                { model_name: "claude-4", groups: ["default", "vip"] },
+              ],
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        });
+      }),
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_model_candidates`, () =>
+        HttpResponse.json([]),
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+    expect(screen.getByText("claude-4：default / vip")).toBeInTheDocument();
+    expect(screen.getByText("模型 +1/-0")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("模型筛选"), {
+      target: { value: "claude-4" },
+    });
+    fireEvent.change(screen.getByLabelText("变更筛选"), {
+      target: { value: "needs_review" },
+    });
+
+    await waitFor(() => {
+      expect(
+        listCalls.some(
+          (call) =>
+            call.filter.model_search === "claude-4" &&
+            call.filter.change_filter === "needs_review",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("imports selected aggregate model candidates to Claude", async () => {
+    const candidateCalls: any[] = [];
+    const importCalls: any[] = [];
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              exchange_rate: 1,
+              username: null,
+              imported_apps: [],
+              last_synced_at: 1715750061,
+              last_sync_error: null,
+              sort_index: 0,
+              group_count: 1,
+              aligned_group_count: 1,
+              is_aligned: true,
+              model_count: 1,
+              token_count: 1,
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        }),
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_list_model_candidates`,
+        async ({ request }) => {
+          candidateCalls.push(await request.json());
+          return HttpResponse.json([
+            {
+              site_id: "site-1",
+              site_name: "Demo Hub",
+              site_url: "https://hub.example.com",
+              site_type: "new-api",
+              imported_apps: [],
+              group: "default",
+              model: "claude-opus-4-7",
+              ratio: 1,
+              has_api_key: true,
+              is_aligned: true,
+            },
+          ]);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_import_to_apps`,
+        async ({ request }) => {
+          importCalls.push(await request.json());
+          return HttpResponse.json({
+            created: 1,
+            updated: 0,
+            failed: [],
+            auto_aligned_groups: [],
+          });
+        },
+      ),
+    );
+
+    renderPanel();
+
+    expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("模型筛选"), {
+      target: { value: "opus" },
+    });
+
+    expect(await screen.findByText("claude-opus-4-7")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        candidateCalls.some(
+          (call) =>
+            call.filter.model_search === "opus" &&
+            call.filter.site_ids.length === 0,
+        ),
+      ).toBe(true);
+    });
+
+    fireEvent.click(
+      screen.getByLabelText("选择候选 Demo Hub default claude-opus-4-7"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "导入 Claude" }));
+
+    await waitFor(() => {
+      expect(importCalls).toHaveLength(1);
+    });
+    expect(importCalls[0].req.site_id).toBe("site-1");
+    expect(importCalls[0].req.target_apps).toEqual(["claude"]);
+    expect(importCalls[0].req.selections).toEqual([
+      { group: "default", model: "claude-opus-4-7", app: "claude" },
+    ]);
+    expect(
+      importCalls[0].req.settings_configs["claude::default::claude-opus-4-7"]
+        .env.ANTHROPIC_AUTH_TOKEN,
+    ).toBe("__API_HUB_API_KEY__");
   });
 
   it("renders millisecond sync timestamps as normal dates", async () => {
@@ -975,9 +1281,7 @@ describe("ApiHubPanel", () => {
       await screen.findByLabelText("Claude 无默认模型供应商导入"),
     );
     fireEvent.click(await screen.findByRole("tab", { name: "Codex" }));
-    fireEvent.click(
-      await screen.findByLabelText("Codex 无默认模型供应商导入"),
-    );
+    fireEvent.click(await screen.findByLabelText("Codex 无默认模型供应商导入"));
 
     expect(screen.getByText("Eu · 不写默认模型 → claude")).toBeInTheDocument();
     expect(screen.getByText("Eu · 不写默认模型 → codex")).toBeInTheDocument();

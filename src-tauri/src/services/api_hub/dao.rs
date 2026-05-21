@@ -5,13 +5,15 @@ use crate::error::AppError;
 use crate::provider::Provider;
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::grouping::group_names_with_models;
 use super::types::{
-    AccountBackupEntry, GroupInfo, ImportReport, ModelInfo, Paged, SiteDetail, SiteFilter,
-    SiteRecord, SiteRow, TokenInfo,
+    has_plain_api_key, AccountBackupEntry, GroupInfo, ImportReport, ModelCandidateFilter,
+    ModelCandidateRow, ModelInfo, ModelMatchInfo, Paged, SiteDetail, SiteFilter, SiteRecord,
+    SiteRow, TokenInfo,
 };
 
 fn now_ms() -> i64 {
@@ -113,6 +115,10 @@ fn sort_sites(items: &mut [SiteRow], sort_by: Option<&str>, sort_direction: Opti
                 .last_synced_at
                 .unwrap_or(0)
                 .cmp(&right.last_synced_at.unwrap_or(0)),
+            "last_change_at" => left
+                .last_change_at
+                .unwrap_or(0)
+                .cmp(&right.last_change_at.unwrap_or(0)),
             "imported_apps" => left.imported_apps.len().cmp(&right.imported_apps.len()),
             "site_type" | _ => site_type_rank(&left.site_type)
                 .cmp(&site_type_rank(&right.site_type))
@@ -173,6 +179,46 @@ fn api_hub_count_groups_with_models_on_conn(
     let groups = api_hub_get_groups_on_conn(conn, site_id)?;
     let models = api_hub_get_models_on_conn(conn, site_id)?;
     Ok(group_names_with_models(&groups, &models).len() as i64)
+}
+
+fn api_hub_model_matches_on_conn(
+    conn: &Connection,
+    site_id: &str,
+    model_search: &str,
+) -> Result<Vec<ModelMatchInfo>, AppError> {
+    let keyword = model_search.trim().to_lowercase();
+    if keyword.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let groups = api_hub_get_groups_on_conn(conn, site_id)?;
+    let models = api_hub_get_models_on_conn(conn, site_id)?;
+    let all_group_names: Vec<String> = groups.into_iter().map(|group| group.name).collect();
+    let mut matches = Vec::new();
+    for model in models {
+        if !model.name.to_lowercase().contains(&keyword) {
+            continue;
+        }
+        matches.push(ModelMatchInfo {
+            model_name: model.name,
+            groups: if model.enable_groups.is_empty() {
+                all_group_names.clone()
+            } else {
+                model.enable_groups
+            },
+        });
+    }
+    Ok(matches)
+}
+
+fn site_matches_change_filter(site: &SiteRow, filter: &str) -> bool {
+    match filter {
+        "changed" => site.last_change_summary.is_some(),
+        "needs_review" => site.last_change_summary.is_some() && !site.imported_apps.is_empty(),
+        "unsynced" => site.last_synced_at.is_none(),
+        "not_aligned" => site.group_count > 0 && !site.is_aligned,
+        _ => true,
+    }
 }
 
 impl Database {
@@ -276,6 +322,16 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let search = filter.search.unwrap_or_default().trim().to_lowercase();
         let site_type = filter.site_type.unwrap_or_default().trim().to_lowercase();
+        let model_search = filter
+            .model_search
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let change_filter = filter
+            .change_filter
+            .unwrap_or_else(|| "all".to_string())
+            .trim()
+            .to_lowercase();
         let page = filter.page.max(1);
         let page_size = filter.page_size.clamp(1, 100);
         let offset = ((page - 1) * page_size) as usize;
@@ -299,7 +355,8 @@ impl Database {
         let list_sql = format!(
             "SELECT
                 s.id, s.site_name, s.site_url, s.site_type, s.exchange_rate, s.username,
-                s.imported_apps, s.last_synced_at, s.last_sync_error, s.sort_index,
+                s.imported_apps, s.last_synced_at, s.last_checked_at, s.last_change_at,
+                s.last_change_summary, s.last_sync_error, s.sort_index,
                 (SELECT COUNT(*) FROM api_hub_models m WHERE m.site_id = s.id) AS model_count,
                 (SELECT COUNT(*) FROM api_hub_tokens t WHERE t.site_id = s.id) AS token_count
              FROM api_hub_sites s
@@ -317,13 +374,17 @@ impl Database {
                 username: row.get(5)?,
                 imported_apps: apps_from_json(imported_apps_json),
                 last_synced_at: row.get(7)?,
-                last_sync_error: row.get(8)?,
-                sort_index: row.get(9)?,
+                last_checked_at: row.get(8)?,
+                last_change_at: row.get(9)?,
+                last_change_summary: row.get(10)?,
+                last_sync_error: row.get(11)?,
+                sort_index: row.get(12)?,
                 group_count: 0,
                 aligned_group_count: 0,
                 is_aligned: false,
-                model_count: row.get(10)?,
-                token_count: row.get(11)?,
+                model_count: row.get(13)?,
+                token_count: row.get(14)?,
+                model_matches: Vec::new(),
             })
         };
 
@@ -348,6 +409,13 @@ impl Database {
                 .unwrap_or(0);
             item.aligned_group_count = aligned;
             item.is_aligned = item.group_count > 0 && aligned >= item.group_count;
+            item.model_matches = api_hub_model_matches_on_conn(&conn, &item.id, &model_search)?;
+        }
+        if !model_search.is_empty() {
+            items.retain(|site| !site.model_matches.is_empty());
+        }
+        if change_filter != "all" {
+            items.retain(|site| site_matches_change_filter(site, &change_filter));
         }
         sort_sites(
             &mut items,
@@ -373,7 +441,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
         conn.query_row(
             "SELECT id, site_name, site_url, site_type, access_token, user_id, username,
-                    exchange_rate, sort_index, last_synced_at, last_sync_error, notes
+                    exchange_rate, sort_index, last_synced_at, last_checked_at,
+                    last_change_at, last_change_summary, last_sync_error, notes
              FROM api_hub_sites WHERE id = ?1",
             params![site_id],
             |row| {
@@ -388,8 +457,11 @@ impl Database {
                     exchange_rate: row.get(7)?,
                     sort_index: row.get(8)?,
                     last_synced_at: row.get(9)?,
-                    last_sync_error: row.get(10)?,
-                    notes: row.get(11)?,
+                    last_checked_at: row.get(10)?,
+                    last_change_at: row.get(11)?,
+                    last_change_summary: row.get(12)?,
+                    last_sync_error: row.get(13)?,
+                    notes: row.get(14)?,
                 })
             },
         )
@@ -405,6 +477,7 @@ impl Database {
                 sort_direction: None,
                 page: 1,
                 page_size: 10_000,
+                ..Default::default()
             })?
             .items
             .into_iter()
@@ -518,11 +591,31 @@ impl Database {
 
         tx.execute(
             "UPDATE api_hub_sites
-             SET last_synced_at = ?1, last_sync_error = ?2, updated_at = ?1
+             SET last_synced_at = ?1, last_checked_at = ?1, last_sync_error = ?2, updated_at = ?1
              WHERE id = ?3",
             params![now, sync_error, site_id],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn api_hub_set_check_result(
+        &self,
+        site_id: &str,
+        change_summary: Option<&str>,
+    ) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        let now = now_ms();
+        let change_at: Option<i64> = change_summary.map(|_| now);
+        conn.execute(
+            "UPDATE api_hub_sites
+             SET last_checked_at = ?1,
+                 last_change_at = CASE WHEN ?2 IS NULL THEN last_change_at ELSE ?2 END,
+                 last_change_summary = ?3,
+                 updated_at = ?1
+             WHERE id = ?4",
+            params![now, change_at, change_summary, site_id],
+        )?;
         Ok(())
     }
 
@@ -636,6 +729,107 @@ impl Database {
         .map_err(AppError::from)
     }
 
+    pub fn api_hub_list_model_candidates(
+        &self,
+        filter: ModelCandidateFilter,
+    ) -> Result<Vec<ModelCandidateRow>, AppError> {
+        let site_ids: HashSet<String> = filter
+            .site_ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        let keyword = filter
+            .model_search
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+
+        let sites = self
+            .api_hub_list_sites(SiteFilter {
+                search: None,
+                site_type: filter.site_type,
+                model_search: None,
+                change_filter: None,
+                sort_by: Some("site_type".to_string()),
+                sort_direction: Some("asc".to_string()),
+                page: 1,
+                page_size: 10_000,
+            })?
+            .items;
+
+        let mut rows = Vec::new();
+        for site in sites {
+            if !site_ids.is_empty() && !site_ids.contains(&site.id) {
+                continue;
+            }
+
+            let groups = self.api_hub_get_groups(&site.id)?;
+            if groups.is_empty() {
+                continue;
+            }
+            let models = self.api_hub_get_models(&site.id)?;
+            let tokens = self.api_hub_get_tokens(&site.id)?;
+            let keyed_groups: HashSet<String> = tokens
+                .into_iter()
+                .filter_map(|token| {
+                    let group = token.group_name?;
+                    if token.name != group || !has_plain_api_key(token.key.as_deref()) {
+                        return None;
+                    }
+                    Some(group)
+                })
+                .collect();
+            let all_group_names: Vec<String> =
+                groups.iter().map(|group| group.name.clone()).collect();
+
+            for model in models {
+                let model_matches =
+                    keyword.is_empty() || model.name.to_lowercase().contains(&keyword);
+                let enabled_groups = if model.enable_groups.is_empty() {
+                    all_group_names.clone()
+                } else {
+                    model.enable_groups.clone()
+                };
+                let enabled_set: HashSet<&str> =
+                    enabled_groups.iter().map(String::as_str).collect();
+
+                for group in &groups {
+                    if !enabled_set.contains(group.name.as_str()) {
+                        continue;
+                    }
+                    let group_matches =
+                        keyword.is_empty() || group.name.to_lowercase().contains(&keyword);
+                    if !model_matches && !group_matches {
+                        continue;
+                    }
+                    let has_api_key = keyed_groups.contains(&group.name);
+                    rows.push(ModelCandidateRow {
+                        site_id: site.id.clone(),
+                        site_name: site.site_name.clone(),
+                        site_url: site.site_url.clone(),
+                        site_type: site.site_type.clone(),
+                        imported_apps: site.imported_apps.clone(),
+                        group: group.name.clone(),
+                        model: model.name.clone(),
+                        ratio: group.ratio,
+                        has_api_key,
+                        is_aligned: has_api_key,
+                    });
+                }
+            }
+        }
+
+        rows.sort_by(|left, right| {
+            site_type_rank(&left.site_type)
+                .cmp(&site_type_rank(&right.site_type))
+                .then_with(|| left.site_name.cmp(&right.site_name))
+                .then_with(|| left.group.cmp(&right.group))
+                .then_with(|| left.model.cmp(&right.model))
+        });
+        Ok(rows)
+    }
+
     pub fn api_hub_save_provider_origin(
         &self,
         app_type: &str,
@@ -695,6 +889,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list sites");
 
@@ -730,6 +925,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list sites");
 
@@ -762,6 +958,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list filtered sites");
 
@@ -769,6 +966,77 @@ mod tests {
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, "site-sub");
         assert_eq!(page.items[0].site_type, "sub2api");
+    }
+
+    #[test]
+    fn api_hub_list_model_candidates_expands_models_by_group_and_key_status() {
+        let db = Database::memory().expect("memory database");
+        db.api_hub_import_accounts(&[backup_account("site-1", "Site One")])
+            .expect("import account");
+        db.api_hub_replace_cache(
+            "site-1",
+            &[
+                GroupInfo {
+                    name: "default".to_string(),
+                    ratio: Some(1.0),
+                    description: None,
+                },
+                GroupInfo {
+                    name: "vip".to_string(),
+                    ratio: Some(2.5),
+                    description: None,
+                },
+            ],
+            &[
+                ModelInfo {
+                    name: "claude-opus-4-7".to_string(),
+                    enable_groups: vec!["default".to_string(), "vip".to_string()],
+                },
+                ModelInfo {
+                    name: "gpt-5".to_string(),
+                    enable_groups: vec!["default".to_string()],
+                },
+            ],
+            &[
+                TokenInfo {
+                    id: 1,
+                    name: "default".to_string(),
+                    group_name: Some("default".to_string()),
+                    key: Some("sk-default".to_string()),
+                    status: Some(1),
+                    remain_quota: None,
+                    expired_at: None,
+                },
+                TokenInfo {
+                    id: 2,
+                    name: "vip".to_string(),
+                    group_name: Some("vip".to_string()),
+                    key: Some("sk-abcd********wxyz".to_string()),
+                    status: Some(1),
+                    remain_quota: None,
+                    expired_at: None,
+                },
+            ],
+            None,
+        )
+        .expect("replace cache");
+
+        let rows = db
+            .api_hub_list_model_candidates(super::super::types::ModelCandidateFilter {
+                site_ids: vec!["site-1".to_string()],
+                model_search: Some("opus".to_string()),
+                site_type: None,
+            })
+            .expect("list candidates");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].group, "default");
+        assert_eq!(rows[0].model, "claude-opus-4-7");
+        assert_eq!(rows[0].ratio, Some(1.0));
+        assert!(rows[0].has_api_key);
+        assert_eq!(rows[1].group, "vip");
+        assert_eq!(rows[1].ratio, Some(2.5));
+        assert!(!rows[1].has_api_key);
     }
 
     #[test]
@@ -808,6 +1076,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list sites");
 
@@ -853,6 +1122,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list sites");
 
@@ -879,6 +1149,7 @@ mod tests {
                 sort_direction: None,
                 page: 1,
                 page_size: 20,
+                ..Default::default()
             })
             .expect("list sites");
 

@@ -6,10 +6,11 @@ use tauri::State;
 use crate::app_config::AppType;
 use crate::provider::{Provider, ProviderMeta};
 use crate::services::api_hub::{
-    align_site_for_groups, align_sites_with_progress, has_plain_api_key, is_masked_api_key,
-    sync_site, sync_sites_with_progress, AccountsBackup, AlignOptions, CleanupSiteProvidersReport,
-    ImportFailure, ImportReport, ImportToAppsReport, ImportToAppsReq, ModelSelection, Paged,
-    SiteDetail, SiteFilter, SiteRow, SyncReport,
+    align_site_for_groups, align_sites_with_progress, check_sites_with_progress, has_plain_api_key,
+    is_masked_api_key, sync_site, sync_sites_with_progress, AccountsBackup, AlignOptions,
+    CleanupSiteProvidersReport, ImportFailure, ImportReport, ImportToAppsReport, ImportToAppsReq,
+    ModelCandidateFilter, ModelCandidateRow, ModelSelection, Paged, SiteDetail, SiteFilter,
+    SiteRow, SyncReport,
 };
 use crate::services::provider::ProviderService;
 use crate::store::AppState;
@@ -35,6 +36,17 @@ pub fn api_hub_list_sites(
     state
         .db
         .api_hub_list_sites(filter)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn api_hub_list_model_candidates(
+    state: State<'_, AppState>,
+    filter: ModelCandidateFilter,
+) -> Result<Vec<ModelCandidateRow>, String> {
+    state
+        .db
+        .api_hub_list_model_candidates(filter)
         .map_err(|e| e.to_string())
 }
 
@@ -67,34 +79,24 @@ pub fn api_hub_cleanup_site_providers(
     state: State<'_, AppState>,
     site_id: String,
 ) -> Result<CleanupSiteProvidersReport, String> {
-    let origins = state
-        .db
-        .api_hub_list_provider_origins_for_site(&site_id)
-        .map_err(|e| e.to_string())?;
+    cleanup_site_providers_inner(state.inner(), &site_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn api_hub_cleanup_sites_providers(
+    state: State<'_, AppState>,
+    site_ids: Vec<String>,
+) -> Result<CleanupSiteProvidersReport, String> {
     let mut report = CleanupSiteProvidersReport::default();
-
-    for (app, provider_id) in origins {
-        let app_type = match AppType::from_str(&app) {
-            Ok(value) => value,
-            Err(err) => {
-                report.failed.push(format!("{app}/{provider_id}: {err}"));
-                continue;
+    for site_id in site_ids {
+        match cleanup_site_providers_inner(state.inner(), &site_id) {
+            Ok(site_report) => {
+                report.deleted += site_report.deleted;
+                report.failed.extend(site_report.failed);
             }
-        };
-
-        match ProviderService::delete(state.inner(), app_type, &provider_id) {
-            Ok(()) => report.deleted += 1,
-            Err(err) => report.failed.push(format!("{app}/{provider_id}: {err}")),
+            Err(err) => report.failed.push(format!("{site_id}: {err}")),
         }
     }
-
-    if report.failed.is_empty() {
-        state
-            .db
-            .api_hub_clear_site_imported_apps(&site_id)
-            .map_err(|e| e.to_string())?;
-    }
-
     Ok(report)
 }
 
@@ -120,6 +122,17 @@ pub async fn api_hub_sync_sites(
 }
 
 #[tauri::command]
+pub async fn api_hub_check_sites(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    site_ids: Vec<String>,
+) -> Result<(), String> {
+    check_sites_with_progress(app, state.db.clone(), site_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn api_hub_align_sites(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -129,6 +142,77 @@ pub async fn api_hub_align_sites(
     align_sites_with_progress(app, state.db.clone(), site_ids, options.unwrap_or_default())
         .await
         .map_err(|e| e.to_string())
+}
+
+fn cleanup_site_providers_inner(
+    state: &AppState,
+    site_id: &str,
+) -> Result<CleanupSiteProvidersReport, crate::error::AppError> {
+    let mut origins = state.db.api_hub_list_provider_origins_for_site(site_id)?;
+    origins.extend(api_hub_find_cleanup_fallback_providers(
+        state, site_id, &origins,
+    )?);
+    let mut report = CleanupSiteProvidersReport::default();
+
+    for (app, provider_id) in origins {
+        let app_type = match AppType::from_str(&app) {
+            Ok(value) => value,
+            Err(err) => {
+                report.failed.push(format!("{app}/{provider_id}: {err}"));
+                continue;
+            }
+        };
+
+        match ProviderService::delete(state, app_type, &provider_id) {
+            Ok(()) => report.deleted += 1,
+            Err(err) => report.failed.push(format!("{app}/{provider_id}: {err}")),
+        }
+    }
+
+    if report.failed.is_empty() {
+        state.db.api_hub_clear_site_imported_apps(site_id)?;
+    }
+
+    Ok(report)
+}
+
+fn api_hub_find_cleanup_fallback_providers(
+    state: &AppState,
+    site_id: &str,
+    known_origins: &[(String, String)],
+) -> Result<Vec<(String, String)>, crate::error::AppError> {
+    let detail = state.db.api_hub_get_site_detail(site_id)?;
+    let site_url = detail.site.site_url;
+    let api_keys: Vec<String> = detail
+        .tokens
+        .iter()
+        .filter_map(|token| token.key.as_deref())
+        .map(|key| normalize_api_key(key.trim()))
+        .filter(|key| !key.is_empty() && !is_masked_api_key(key))
+        .collect();
+    if api_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let known: HashSet<(String, String)> = known_origins.iter().cloned().collect();
+    let mut matches = Vec::new();
+    for app in detail.site.imported_apps {
+        let app_type = match AppType::from_str(&app) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        for (provider_id, provider) in providers {
+            let pair = (app_type.as_str().to_string(), provider_id.clone());
+            if known.contains(&pair) {
+                continue;
+            }
+            if api_hub_provider_matches_site_credentials(&provider, &site_url, &api_keys) {
+                matches.push(pair);
+            }
+        }
+    }
+    Ok(matches)
 }
 
 #[tauri::command]
@@ -366,6 +450,131 @@ fn slug(value: &str) -> String {
     }
 }
 
+fn normalize_cleanup_endpoint(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(trimmed)
+        .or_else(|_| url::Url::parse(&format!("https://{trimmed}")))
+        .ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    Some(match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+fn string_at(value: &serde_json::Value, pointer: &str) -> Option<String> {
+    value
+        .pointer(pointer)
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+}
+
+fn extract_toml_base_urls(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let rest = trimmed.strip_prefix("base_url")?.trim_start();
+            let rest = rest.strip_prefix('=')?.trim();
+            Some(rest.trim_matches('"').trim_matches('\'').trim().to_string())
+        })
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn provider_endpoint_candidates(provider: &Provider) -> Vec<String> {
+    let mut endpoints = Vec::new();
+    if let Some(url) = provider.website_url.as_deref() {
+        endpoints.push(url.to_string());
+    }
+    for pointer in [
+        "/env/ANTHROPIC_BASE_URL",
+        "/env/GOOGLE_GEMINI_BASE_URL",
+        "/options/baseURL",
+        "/baseUrl",
+        "/base_url",
+    ] {
+        if let Some(value) = string_at(&provider.settings_config, pointer) {
+            endpoints.push(value);
+        }
+    }
+    if let Some(config) = string_at(&provider.settings_config, "/config") {
+        endpoints.extend(extract_toml_base_urls(&config));
+    }
+    endpoints
+}
+
+fn provider_api_key_candidates(provider: &Provider) -> Vec<String> {
+    [
+        "/env/ANTHROPIC_AUTH_TOKEN",
+        "/env/ANTHROPIC_API_KEY",
+        "/auth/OPENAI_API_KEY",
+        "/env/GEMINI_API_KEY",
+        "/options/apiKey",
+        "/apiKey",
+        "/api_key",
+    ]
+    .into_iter()
+    .filter_map(|pointer| string_at(&provider.settings_config, pointer))
+    .map(|key| normalize_api_key(key.trim()))
+    .filter(|key| !key.is_empty() && !is_masked_api_key(key))
+    .collect()
+}
+
+fn cleanup_key_fingerprints(raw: &str) -> Vec<String> {
+    let normalized = normalize_api_key(raw.trim());
+    if normalized.is_empty() || is_masked_api_key(&normalized) {
+        return Vec::new();
+    }
+    let mut values = vec![normalized.clone()];
+    if let Some(stripped) = normalized.strip_prefix("sk-") {
+        if !stripped.is_empty() {
+            values.push(stripped.to_string());
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn api_hub_provider_matches_site_credentials(
+    provider: &Provider,
+    site_url: &str,
+    site_api_keys: &[String],
+) -> bool {
+    if provider.category.as_deref() != Some("aggregator") {
+        return false;
+    }
+    if !provider.id.starts_with("apihub-") {
+        return false;
+    }
+
+    let Some(site_endpoint) = normalize_cleanup_endpoint(site_url) else {
+        return false;
+    };
+    let endpoint_matches = provider_endpoint_candidates(provider)
+        .into_iter()
+        .filter_map(|endpoint| normalize_cleanup_endpoint(&endpoint))
+        .any(|endpoint| endpoint == site_endpoint);
+    if !endpoint_matches {
+        return false;
+    }
+
+    let site_keys: HashSet<String> = site_api_keys
+        .iter()
+        .flat_map(|key| cleanup_key_fingerprints(key))
+        .collect();
+    provider_api_key_candidates(provider)
+        .into_iter()
+        .flat_map(|key| cleanup_key_fingerprints(&key))
+        .any(|key| site_keys.contains(&key))
+}
+
 fn normalize_api_key(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -487,5 +696,60 @@ mod tests {
         assert_eq!(gemini.len(), 1);
         assert_eq!(gemini[0].group, "fallback");
         assert_eq!(gemini[0].model, "");
+    }
+
+    #[test]
+    fn cleanup_endpoint_normalization_ignores_v1_and_trailing_slashes() {
+        assert_eq!(
+            normalize_cleanup_endpoint("https://api.example.com/v1/"),
+            Some("api.example.com".to_string())
+        );
+        assert_eq!(
+            normalize_cleanup_endpoint("https://api.example.com///"),
+            Some("api.example.com".to_string())
+        );
+        assert_eq!(
+            normalize_cleanup_endpoint("https://api.example.com/openai/v1"),
+            Some("api.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn cleanup_fallback_matches_only_api_hub_like_provider_with_same_domain_and_key() {
+        let provider = Provider {
+            id: "apihub-site-default-claude-claude".to_string(),
+            name: "Site · default · claude".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.example.com/v1/",
+                    "ANTHROPIC_AUTH_TOKEN": "raw-secret"
+                }
+            }),
+            website_url: Some("https://api.example.com".to_string()),
+            category: Some("aggregator".to_string()),
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+
+        assert!(api_hub_provider_matches_site_credentials(
+            &provider,
+            "https://api.example.com/",
+            &["sk-raw-secret".to_string()]
+        ));
+        assert!(!api_hub_provider_matches_site_credentials(
+            &provider,
+            "https://other.example.com",
+            &["sk-raw-secret".to_string()]
+        ));
+        assert!(!api_hub_provider_matches_site_credentials(
+            &provider,
+            "https://api.example.com",
+            &["sk-other".to_string()]
+        ));
     }
 }

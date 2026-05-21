@@ -1024,10 +1024,13 @@ pub fn run() {
             // Api-Hub
             commands::api_hub_import_json,
             commands::api_hub_list_sites,
+            commands::api_hub_list_model_candidates,
             commands::api_hub_get_site_detail,
             commands::api_hub_clear_all,
             commands::api_hub_delete_site,
             commands::api_hub_cleanup_site_providers,
+            commands::api_hub_cleanup_sites_providers,
+            commands::api_hub_check_sites,
             commands::api_hub_sync_site,
             commands::api_hub_sync_sites,
             commands::api_hub_align_sites,

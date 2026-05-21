@@ -15,5 +15,5 @@ pub mod sync;
 pub mod types;
 
 pub use align::{align_site_for_groups, align_sites_with_progress};
-pub use sync::{sync_site, sync_sites_with_progress};
+pub use sync::{check_sites_with_progress, sync_site, sync_sites_with_progress};
 pub use types::*;

@@ -78,6 +78,9 @@ pub struct SiteRow {
     #[serde(default)]
     pub imported_apps: Vec<String>,
     pub last_synced_at: Option<i64>,
+    pub last_checked_at: Option<i64>,
+    pub last_change_at: Option<i64>,
+    pub last_change_summary: Option<String>,
     pub last_sync_error: Option<String>,
     pub sort_index: i32,
     pub group_count: i64,
@@ -85,6 +88,39 @@ pub struct SiteRow {
     pub is_aligned: bool,
     pub model_count: i64,
     pub token_count: i64,
+    #[serde(default)]
+    pub model_matches: Vec<ModelMatchInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelMatchInfo {
+    pub model_name: String,
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ModelCandidateFilter {
+    #[serde(default)]
+    pub site_ids: Vec<String>,
+    #[serde(default)]
+    pub model_search: Option<String>,
+    #[serde(default)]
+    pub site_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCandidateRow {
+    pub site_id: String,
+    pub site_name: String,
+    pub site_url: String,
+    pub site_type: String,
+    pub imported_apps: Vec<String>,
+    pub group: String,
+    pub model: String,
+    pub ratio: Option<f64>,
+    pub has_api_key: bool,
+    pub is_aligned: bool,
 }
 
 /// 后端内部使用的完整站点记录（含 access_token）
@@ -100,6 +136,9 @@ pub struct SiteRecord {
     pub exchange_rate: f64,
     pub sort_index: i32,
     pub last_synced_at: Option<i64>,
+    pub last_checked_at: Option<i64>,
+    pub last_change_at: Option<i64>,
+    pub last_change_summary: Option<String>,
     pub last_sync_error: Option<String>,
     pub notes: Option<String>,
 }
@@ -131,6 +170,10 @@ pub struct SiteFilter {
     pub search: Option<String>,
     #[serde(default)]
     pub site_type: Option<String>,
+    #[serde(default)]
+    pub model_search: Option<String>,
+    #[serde(default)]
+    pub change_filter: Option<String>,
     #[serde(default)]
     pub sort_by: Option<String>,
     #[serde(default)]
@@ -210,6 +253,8 @@ pub struct SyncReport {
     pub models_count: usize,
     pub tokens_count: usize,
     pub error: Option<String>,
+    pub changed: bool,
+    pub change_summary: Option<String>,
     /// 是否走了协议兜底（site_type 非 new-api/sub2api，按 new-api 尝试）
     pub fallback_used: bool,
 }

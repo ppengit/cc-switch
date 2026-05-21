@@ -1,6 +1,12 @@
 import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
@@ -150,9 +156,7 @@ const expectCodexLiveOnProxy = () => {
     config?: string;
   };
   expect(live.auth?.OPENAI_API_KEY).toBe("PROXY_MANAGED");
-  expect(live.config).toContain(
-    'base_url = "http://127.0.0.1:15721/codex"',
-  );
+  expect(live.config).toContain('base_url = "http://127.0.0.1:15721/codex"');
   expect(live.config).not.toContain("https://codex-alpha.example.com/v1");
   expect(live.config).not.toContain("https://codex-beta.example.com/v1");
   expect(live.config).not.toContain("https://hub.example.com/v1");
@@ -184,7 +188,9 @@ vi.mock("@/components/settings/AppVisibilitySettings", () => ({
 }));
 
 vi.mock("@/components/settings/SkillStorageLocationSettings", () => ({
-  SkillStorageLocationSettings: () => <div>skill-storage-location-settings</div>,
+  SkillStorageLocationSettings: () => (
+    <div>skill-storage-location-settings</div>
+  ),
 }));
 
 vi.mock("@/components/settings/SkillSyncMethodSettings", () => ({
@@ -296,20 +302,28 @@ describe("SettingsPage with real Api-Hub panel", () => {
           page_size: 20,
         });
       }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_cleanup_site_providers`, async ({ request }) => {
-        cleanupCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json({ deleted: 2, failed: [] });
-      }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_delete_site`, async ({ request }) => {
-        deleteCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(null);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_cleanup_site_providers`,
+        async ({ request }) => {
+          cleanupCalls.push((await request.json()) as Record<string, unknown>);
+          return HttpResponse.json({ deleted: 2, failed: [] });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_delete_site`,
+        async ({ request }) => {
+          deleteCalls.push((await request.json()) as Record<string, unknown>);
+          return HttpResponse.json(null);
+        },
+      ),
     );
 
     renderSettingsPage({ defaultTab: "apiHub" });
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "导入 JSON" }),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
     expect(screen.getByText("已导入：Codex")).toBeInTheDocument();
@@ -327,9 +341,9 @@ describe("SettingsPage with real Api-Hub panel", () => {
       target: { value: "Demo" },
     });
     await waitFor(() =>
-      expect(
-        listCalls.some((call) => call.filter?.search === "Demo"),
-      ).toBe(true),
+      expect(listCalls.some((call) => call.filter?.search === "Demo")).toBe(
+        true,
+      ),
     );
 
     await user.click(screen.getByRole("button", { name: "清理站点" }));
@@ -343,9 +357,7 @@ describe("SettingsPage with real Api-Hub panel", () => {
     const cleanupConfirmButton = screen.getByRole("button", { name: "清理" });
     await waitFor(() => expect(cleanupConfirmButton).toBeEnabled());
     await user.click(cleanupConfirmButton);
-    await waitFor(() =>
-      expect(cleanupCalls).toEqual([{ siteId: "site-1" }]),
-    );
+    await waitFor(() => expect(cleanupCalls).toEqual([{ siteId: "site-1" }]));
     expect(toastSuccessMock).toHaveBeenCalledWith("已清理 2 个供应商");
 
     await user.click(screen.getByRole("button", { name: "删除记录" }));
@@ -359,15 +371,12 @@ describe("SettingsPage with real Api-Hub panel", () => {
     const deleteConfirmButton = screen.getByRole("button", { name: "删除" });
     await waitFor(() => expect(deleteConfirmButton).toBeEnabled());
     await user.click(deleteConfirmButton);
-    await waitFor(() =>
-      expect(deleteCalls).toEqual([{ siteId: "site-1" }]),
-    );
+    await waitFor(() => expect(deleteCalls).toEqual([{ siteId: "site-1" }]));
     expect(toastSuccessMock).toHaveBeenCalledWith("站点记录已删除");
   });
 
-  it("imports selected models into Codex and runs batch sync and align through the real settings tab entry", async () => {
+  it("imports selected models into Codex and runs batch sync-align through the real settings tab entry", async () => {
     const user = userEvent.setup();
-    const syncCalls: Array<Record<string, unknown>> = [];
     const alignCalls: Array<Record<string, unknown>> = [];
     const importCalls: ApiHubImportRequest[] = [];
 
@@ -435,68 +444,38 @@ describe("SettingsPage with real Api-Hub panel", () => {
           ],
         }),
       ),
-      http.post(`${TAURI_ENDPOINT}/api_hub_import_to_apps`, async ({ request }) => {
-        importCalls.push((await request.json()) as ApiHubImportRequest);
-        return HttpResponse.json({
-          created: 1,
-          updated: 0,
-          failed: [],
-          auto_aligned_groups: [],
-        });
-      }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_sync_sites`, async ({ request }) => {
-        syncCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(null);
-      }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_align_sites`, async ({ request }) => {
-        alignCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(null);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_import_to_apps`,
+        async ({ request }) => {
+          importCalls.push((await request.json()) as ApiHubImportRequest);
+          return HttpResponse.json({
+            created: 1,
+            updated: 0,
+            failed: [],
+            auto_aligned_groups: [],
+          });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_align_sites`,
+        async ({ request }) => {
+          alignCalls.push((await request.json()) as Record<string, unknown>);
+          return HttpResponse.json(null);
+        },
+      ),
     );
 
     renderSettingsPage({ defaultTab: "apiHub" });
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "导入 JSON" }),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("选择 Demo Hub"));
-    await user.click(screen.getByRole("button", { name: "同步选中" }));
-    await waitFor(() =>
-      expect(syncCalls).toEqual([{ siteIds: ["site-1"] }]),
-    );
-
-    act(() => {
-      emitTauriEvent("api_hub_sync_progress", {
-        site_id: "site-1",
-        site_name: "Demo Hub",
-        index: 1,
-        total: 1,
-        step: "sync",
-        status: "running",
-        error: null,
-      });
-    });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "同步中" })).toBeInTheDocument(),
-    );
-    act(() => {
-      emitTauriEvent("api_hub_sync_progress", {
-        site_id: "site-1",
-        site_name: "Demo Hub",
-        index: 1,
-        total: 1,
-        step: "sync",
-        status: "success",
-        error: null,
-      });
-    });
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "同步中" })).toBeNull(),
-    );
-
-    await user.click(screen.getByRole("button", { name: "对齐选中" }));
+    await user.click(screen.getByRole("button", { name: "同步并对齐" }));
     await waitFor(() =>
       expect(alignCalls).toEqual([
         {
@@ -518,7 +497,9 @@ describe("SettingsPage with real Api-Hub panel", () => {
       });
     });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "对齐中" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "对齐中" }),
+      ).toBeInTheDocument(),
     );
     act(() => {
       emitTauriEvent("api_hub_align_progress", {
@@ -560,7 +541,6 @@ describe("SettingsPage with real Api-Hub panel", () => {
 
   it("keeps Claude takeover live config on the proxy endpoint while syncing, aligning, and importing Api-Hub providers", async () => {
     const user = userEvent.setup();
-    const syncCalls: Array<Record<string, unknown>> = [];
     const alignCalls: Array<Record<string, unknown>> = [];
     const importCalls: ApiHubImportRequest[] = [];
 
@@ -635,41 +615,39 @@ describe("SettingsPage with real Api-Hub panel", () => {
           ],
         }),
       ),
-      http.post(`${TAURI_ENDPOINT}/api_hub_sync_sites`, async ({ request }) => {
-        syncCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(syncCurrentProvidersLiveState());
-      }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_align_sites`, async ({ request }) => {
-        alignCalls.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(syncCurrentProvidersLiveState());
-      }),
-      http.post(`${TAURI_ENDPOINT}/api_hub_import_to_apps`, async ({ request }) => {
-        importCalls.push((await request.json()) as ApiHubImportRequest);
-        syncCurrentProvidersLiveState();
-        return HttpResponse.json({
-          created: 1,
-          updated: 0,
-          failed: [],
-          auto_aligned_groups: [],
-        });
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_align_sites`,
+        async ({ request }) => {
+          alignCalls.push((await request.json()) as Record<string, unknown>);
+          return HttpResponse.json(syncCurrentProvidersLiveState());
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_import_to_apps`,
+        async ({ request }) => {
+          importCalls.push((await request.json()) as ApiHubImportRequest);
+          syncCurrentProvidersLiveState();
+          return HttpResponse.json({
+            created: 1,
+            updated: 0,
+            failed: [],
+            auto_aligned_groups: [],
+          });
+        },
+      ),
     );
 
     renderSettingsPage({ defaultTab: "apiHub" });
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "导入 JSON" }),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("选择 Demo Hub"));
-    await user.click(screen.getByRole("button", { name: "同步选中" }));
-    await waitFor(() =>
-      expect(syncCalls).toEqual([{ siteIds: ["site-1"] }]),
-    );
-    expectClaudeLiveOnProxy();
-
-    await user.click(screen.getByRole("button", { name: "对齐选中" }));
+    await user.click(screen.getByRole("button", { name: "同步并对齐" }));
     await waitFor(() =>
       expect(alignCalls).toEqual([
         {
@@ -785,22 +763,27 @@ describe("SettingsPage with real Api-Hub panel", () => {
           ],
         }),
       ),
-      http.post(`${TAURI_ENDPOINT}/api_hub_import_to_apps`, async ({ request }) => {
-        importCalls.push((await request.json()) as ApiHubImportRequest);
-        syncCurrentProvidersLiveState();
-        return HttpResponse.json({
-          created: 1,
-          updated: 0,
-          failed: [],
-          auto_aligned_groups: [],
-        });
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/api_hub_import_to_apps`,
+        async ({ request }) => {
+          importCalls.push((await request.json()) as ApiHubImportRequest);
+          syncCurrentProvidersLiveState();
+          return HttpResponse.json({
+            created: 1,
+            updated: 0,
+            failed: [],
+            auto_aligned_groups: [],
+          });
+        },
+      ),
     );
 
     renderSettingsPage({ defaultTab: "apiHub" });
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "导入 JSON" }),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("Demo Hub")).toBeInTheDocument();
 
@@ -830,9 +813,8 @@ describe("SettingsPage with real Api-Hub panel", () => {
         },
       },
     });
-    const importedConfig = importCalls[0].req.settings_configs?.[
-      "codex::default::gpt-5"
-    ]?.config;
+    const importedConfig =
+      importCalls[0].req.settings_configs?.["codex::default::gpt-5"]?.config;
     expect(importedConfig).toContain('base_url = "https://hub.example.com/v1"');
     expect(importedConfig).toContain('model = "gpt-5"');
     expectCodexLiveOnProxy();

@@ -9,6 +9,9 @@ export interface ApiHubSiteRow {
   username?: string | null;
   imported_apps?: string[];
   last_synced_at?: number | null;
+  last_checked_at?: number | null;
+  last_change_at?: number | null;
+  last_change_summary?: string | null;
   last_sync_error?: string | null;
   sort_index: number;
   group_count: number;
@@ -16,6 +19,31 @@ export interface ApiHubSiteRow {
   is_aligned?: boolean;
   model_count: number;
   token_count: number;
+  model_matches?: ApiHubModelMatchInfo[];
+}
+
+export interface ApiHubModelMatchInfo {
+  model_name: string;
+  groups: string[];
+}
+
+export interface ApiHubModelCandidateFilter {
+  site_ids?: string[];
+  model_search?: string | null;
+  site_type?: string | null;
+}
+
+export interface ApiHubModelCandidateRow {
+  site_id: string;
+  site_name: string;
+  site_url: string;
+  site_type: string;
+  imported_apps: string[];
+  group: string;
+  model: string;
+  ratio?: number | null;
+  has_api_key: boolean;
+  is_aligned: boolean;
 }
 
 export interface ApiHubGroupInfo {
@@ -49,6 +77,8 @@ export interface ApiHubSiteDetail {
 export interface ApiHubSiteFilter {
   search?: string | null;
   site_type?: string | null;
+  model_search?: string | null;
+  change_filter?: string | null;
   sort_by?: string | null;
   sort_direction?: "asc" | "desc" | null;
   page?: number;
@@ -94,6 +124,8 @@ export interface ApiHubSyncReport {
   models_count: number;
   tokens_count: number;
   error?: string | null;
+  changed: boolean;
+  change_summary?: string | null;
   fallback_used: boolean;
 }
 

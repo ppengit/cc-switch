@@ -400,6 +400,9 @@ impl Database {
                 imported_apps   TEXT NOT NULL DEFAULT '[]',
                 sort_index      INTEGER NOT NULL DEFAULT 0,
                 last_synced_at  INTEGER,
+                last_checked_at INTEGER,
+                last_change_at  INTEGER,
+                last_change_summary TEXT,
                 last_sync_error TEXT,
                 notes           TEXT,
                 created_at      INTEGER NOT NULL,
@@ -459,6 +462,9 @@ impl Database {
             "imported_apps",
             "TEXT NOT NULL DEFAULT '[]'",
         )?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_checked_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_summary", "TEXT")?;
 
         // providers 表追加来源追踪列（Api-Hub 导入的 provider 标记）
         Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
@@ -558,6 +564,11 @@ impl Database {
                         log::info!("迁移数据库从 v12 到 v13（代理故障转移分流配置）");
                         Self::migrate_v12_to_v13(conn)?;
                         Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!("迁移数据库从 v13 到 v14（Api-Hub 站点检查状态）");
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1386,6 +1397,9 @@ impl Database {
                 imported_apps   TEXT NOT NULL DEFAULT '[]',
                 sort_index      INTEGER NOT NULL DEFAULT 0,
                 last_synced_at  INTEGER,
+                last_checked_at INTEGER,
+                last_change_at  INTEGER,
+                last_change_summary TEXT,
                 last_sync_error TEXT,
                 notes           TEXT,
                 created_at      INTEGER NOT NULL,
@@ -1445,6 +1459,9 @@ impl Database {
             "imported_apps",
             "TEXT NOT NULL DEFAULT '[]'",
         )?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_checked_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_summary", "TEXT")?;
 
         // providers 表追加来源追踪列
         Self::add_column_if_missing(conn, "providers", "api_hub_origin", "TEXT")?;
@@ -1487,6 +1504,16 @@ impl Database {
         }
 
         log::info!("v12 -> v13 迁移完成：已添加 proxy_config.load_balancing_enabled");
+        Ok(())
+    }
+
+    /// v13 -> v14 迁移：Api-Hub 站点检查状态。
+    fn migrate_v13_to_v14(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_checked_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_at", "INTEGER")?;
+        Self::add_column_if_missing(conn, "api_hub_sites", "last_change_summary", "TEXT")?;
+
+        log::info!("v13 -> v14 迁移完成：已添加 Api-Hub 检查状态列");
         Ok(())
     }
 
