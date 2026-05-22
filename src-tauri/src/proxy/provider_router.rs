@@ -112,6 +112,29 @@ impl LoadBalancingState {
             .unwrap_or(0)
     }
 
+    fn sticky_session_count(&self, app_type: &str, provider_id: &str) -> usize {
+        let prefix = format!("{app_type}:");
+        self.affinities
+            .iter()
+            .filter(|(key, affinity)| {
+                key.starts_with(&prefix) && affinity.provider_id == provider_id
+            })
+            .count()
+    }
+
+    fn load_balancing_session_count(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        session_client_provided: bool,
+    ) -> usize {
+        if session_client_provided {
+            self.sticky_session_count(app_type, provider_id)
+        } else {
+            self.active_request_count(app_type, provider_id)
+        }
+    }
+
     fn acquire_slot(
         &mut self,
         app_type: &str,
@@ -351,7 +374,6 @@ impl ProviderRouter {
         };
         state.prune_expired(Instant::now());
 
-        let mut preserve_existing_affinity = false;
         if session_client_provided && !session_id.trim().is_empty() {
             let affinity_key = LoadBalancingState::affinity_key(app_type, session_id);
             if let Some(affinity) = state.affinities.get(&affinity_key).cloned() {
@@ -359,22 +381,16 @@ impl ProviderRouter {
                     .iter()
                     .position(|provider| provider.id == affinity.provider_id)
                 {
-                    if provider_has_load_balancing_capacity(
-                        state.active_request_count(app_type, &providers[index].id),
-                        provider_max_sessions(&providers[index]),
-                    ) {
-                        let guard = state.acquire_slot(
-                            app_type,
-                            &providers[index].id,
-                            session_id,
-                            session_client_provided,
-                            request_id,
-                            true,
-                            self.load_balancing.clone(),
-                        );
-                        return Some((index, guard));
-                    }
-                    preserve_existing_affinity = true;
+                    let guard = state.acquire_slot(
+                        app_type,
+                        &providers[index].id,
+                        session_id,
+                        session_client_provided,
+                        request_id,
+                        true,
+                        self.load_balancing.clone(),
+                    );
+                    return Some((index, guard));
                 } else {
                     state.affinities.remove(&affinity_key);
                 }
@@ -385,7 +401,11 @@ impl ProviderRouter {
             .iter()
             .position(|provider| {
                 provider_has_load_balancing_capacity(
-                    state.active_request_count(app_type, &provider.id),
+                    state.load_balancing_session_count(
+                        app_type,
+                        &provider.id,
+                        session_client_provided,
+                    ),
                     provider_max_sessions(provider),
                 )
             })
@@ -397,7 +417,7 @@ impl ProviderRouter {
             session_id,
             session_client_provided,
             request_id,
-            !preserve_existing_affinity,
+            true,
             self.load_balancing.clone(),
         );
         Some((selected_index, guard))
@@ -986,7 +1006,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn load_balancing_counts_concurrent_requests_for_sticky_sessions() {
+    async fn load_balancing_keeps_concurrent_requests_on_sticky_session_provider() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());
 
@@ -1021,7 +1041,7 @@ mod tests {
             .select_providers_for_session("claude", "same-session", true)
             .await
             .unwrap();
-        let expected = ["a", "a", "a", "b", "b", "b"];
+        let expected = ["a", "a", "a", "a", "a", "a"];
         let mut guards = Vec::new();
 
         for (index, expected_provider_id) in expected.iter().enumerate() {
@@ -1034,7 +1054,7 @@ mod tests {
                     true,
                     &request_id,
                 )
-                .expect("concurrent sticky-session request should acquire a provider");
+                .expect("concurrent sticky-session request should keep its provider");
 
             assert_eq!(
                 providers[selected_index].id,
@@ -1120,7 +1140,152 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn load_balancing_temporary_overflow_does_not_reassign_sticky_session() {
+    async fn load_balancing_counts_sticky_sessions_after_requests_complete() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let expected = [("session-a", "a"), ("session-b", "b")];
+
+        for (index, (session_id, expected_provider_id)) in expected.iter().enumerate() {
+            let providers = router
+                .select_providers_for_session("claude", session_id, true)
+                .await
+                .unwrap();
+            let (selected_index, guard) = router
+                .acquire_load_balancing_slot_for_candidates(
+                    "claude",
+                    &providers,
+                    session_id,
+                    true,
+                    &format!("request-{}", index + 1),
+                )
+                .expect("load balancing should assign completed sticky sessions by capacity");
+            assert_eq!(providers[selected_index].id, *expected_provider_id);
+            drop(guard);
+        }
+
+        let providers = router
+            .select_providers_for_session("claude", "session-a", true)
+            .await
+            .unwrap();
+        let (selected_index, _guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "session-a",
+                true,
+                "request-sticky",
+            )
+            .expect("existing sticky session should keep its original provider");
+        assert_eq!(providers[selected_index].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_without_client_session_uses_active_request_capacity() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.sort_index = Some(1);
+        provider_a.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+        let mut provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        provider_b.sort_index = Some(2);
+        provider_b.meta = Some(crate::provider::ProviderMeta {
+            max_sessions: Some(1),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.load_balancing_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_for_session("claude", "generated-session", false)
+            .await
+            .unwrap();
+
+        let (first_index, first_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "generated-session-1",
+                false,
+                "generated-request-1",
+            )
+            .expect("first generated request should acquire a provider");
+        assert_eq!(providers[first_index].id, "a");
+
+        let (second_index, second_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "generated-session-2",
+                false,
+                "generated-request-2",
+            )
+            .expect("second concurrent generated request should use active capacity");
+        assert_eq!(providers[second_index].id, "b");
+
+        drop(first_guard);
+
+        let (third_index, _third_guard) = router
+            .acquire_load_balancing_slot_for_candidates(
+                "claude",
+                &providers,
+                "generated-session-3",
+                false,
+                "generated-request-3",
+            )
+            .expect("released generated request capacity should be reusable");
+        assert_eq!(providers[third_index].id, "a");
+
+        drop(second_guard);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn load_balancing_sticky_session_ignores_new_session_capacity_limit() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());
 
@@ -1167,7 +1332,7 @@ mod tests {
             .expect("first sticky request should acquire a provider");
         assert_eq!(providers[first_index].id, "a");
 
-        let (overflow_index, overflow_guard) = router
+        let (concurrent_index, concurrent_guard) = router
             .acquire_load_balancing_slot_for_candidates(
                 "claude",
                 &providers,
@@ -1175,11 +1340,11 @@ mod tests {
                 true,
                 "sticky-request-2",
             )
-            .expect("overflow sticky request should temporarily use another provider");
-        assert_eq!(providers[overflow_index].id, "b");
+            .expect("sticky request should stay on its original provider");
+        assert_eq!(providers[concurrent_index].id, "a");
 
         drop(first_guard);
-        drop(overflow_guard);
+        drop(concurrent_guard);
 
         let (next_index, _next_guard) = router
             .acquire_load_balancing_slot_for_candidates(
