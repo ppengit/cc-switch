@@ -7,6 +7,10 @@ interface CodexConfigEditorProps {
 
   configValue: string;
 
+  providerName?: string;
+
+  showRemoteCompaction?: boolean;
+
   onAuthChange: (value: string) => void;
 
   onConfigChange: (value: string) => void;
@@ -39,6 +43,8 @@ interface CodexConfigEditorProps {
 const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
   authValue,
   configValue,
+  providerName,
+  showRemoteCompaction,
   onAuthChange,
   onConfigChange,
   onAuthBlur,
@@ -75,6 +81,8 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
       <CodexConfigSection
         value={configValue}
         onChange={onConfigChange}
+        providerName={providerName}
+        showRemoteCompaction={showRemoteCompaction}
         useCommonConfig={useCommonConfig}
         onCommonConfigToggle={onCommonConfigToggle}
         onEditCommonConfig={() => setIsCommonConfigModalOpen(true)}

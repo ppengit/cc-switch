@@ -17,7 +17,7 @@ export interface CodexTemplate {
 export function getCodexCustomTemplate(): CodexTemplate {
   const config = `model_provider = "custom"
 model = "${DEFAULT_PROVIDER_MODEL}"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 disable_response_storage = true
 
 [model_providers.custom]

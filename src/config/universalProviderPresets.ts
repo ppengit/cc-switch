@@ -10,6 +10,7 @@ import type {
   UniversalProviderApps,
   UniversalProviderModels,
 } from "@/types";
+import { deepClone } from "@/utils/deepClone";
 import {
   DEFAULT_CLAUDE_HAIKU_MODEL,
   DEFAULT_CLAUDE_MODEL,
@@ -114,7 +115,7 @@ export function createUniversalProviderFromPreset(
     apps: { ...preset.defaultApps },
     baseUrl,
     apiKey,
-    models: JSON.parse(JSON.stringify(preset.defaultModels)), // Deep copy
+    models: deepClone(preset.defaultModels),
     websiteUrl: preset.websiteUrl,
     icon: preset.icon,
     iconColor: preset.iconColor,

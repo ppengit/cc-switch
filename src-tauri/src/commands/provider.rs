@@ -201,6 +201,17 @@ pub fn import_claude_desktop_providers_from_claude(
     Ok(imported)
 }
 
+#[tauri::command]
+pub fn ensure_claude_desktop_official_provider(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .db
+        .ensure_official_seed_by_id(
+            crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID,
+            AppType::ClaudeDesktop,
+        )
+        .map_err(|e| e.to_string())
+}
+
 fn claude_provider_models_are_claude_safe(provider: &Provider) -> bool {
     let Some(env) = provider
         .settings_config
@@ -889,7 +900,7 @@ mod import_claude_desktop_tests {
         let routes = suggested_claude_desktop_routes(&p).expect("routes built");
         assert_eq!(routes.len(), 3);
         assert_eq!(routes.get("claude-sonnet-4-6").unwrap().model, "GLM-4.6");
-        assert_eq!(routes.get("claude-opus-4-7").unwrap().model, "GLM-4-Air");
+        assert_eq!(routes.get("claude-opus-4-8").unwrap().model, "GLM-4-Air");
         assert_eq!(routes.get("claude-haiku-4-5").unwrap().model, "GLM-4-Flash");
         assert_eq!(
             routes

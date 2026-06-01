@@ -49,8 +49,8 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
       modalities: { input: ["text"], output: ["text"] },
     },
     {
-      id: "glm-5",
-      name: "GLM 5",
+      id: "glm-5.1",
+      name: "GLM 5.1",
       contextLimit: 204800,
       outputLimit: 131072,
       modalities: { input: ["text"], output: ["text"] },
@@ -91,8 +91,8 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
       },
     },
     {
-      id: "gemini-3-flash-preview",
-      name: "Gemini 3 Flash Preview",
+      id: "gemini-3.5-flash",
+      name: "Gemini 3.5 Flash",
       contextLimit: 1048576,
       outputLimit: 65536,
       modalities: {
@@ -108,24 +108,6 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
         },
         medium: {
           thinkingConfig: { includeThoughts: true, thinkingLevel: "medium" },
-        },
-        high: {
-          thinkingConfig: { includeThoughts: true, thinkingLevel: "high" },
-        },
-      },
-    },
-    {
-      id: "gemini-3.1-pro-preview",
-      name: "Gemini 3.1 Pro Preview",
-      contextLimit: 1048576,
-      outputLimit: 65536,
-      modalities: {
-        input: ["text", "image", "pdf", "video", "audio"],
-        output: ["text"],
-      },
-      variants: {
-        low: {
-          thinkingConfig: { includeThoughts: true, thinkingLevel: "low" },
         },
         high: {
           thinkingConfig: { includeThoughts: true, thinkingLevel: "high" },
@@ -166,8 +148,8 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
   ],
   "@ai-sdk/amazon-bedrock": [
     {
-      id: "global.anthropic.claude-opus-4-7",
-      name: "Claude Opus 4.7",
+      id: "global.anthropic.claude-opus-4-8",
+      name: "Claude Opus 4.8",
       contextLimit: 1000000,
       outputLimit: 128000,
       modalities: { input: ["text", "image", "pdf"], output: ["text"] },
@@ -210,38 +192,6 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
   ],
   "@ai-sdk/anthropic": [
     {
-      id: "claude-sonnet-4-6",
-      name: "Claude Sonnet 4.6",
-      contextLimit: 1000000,
-      outputLimit: 64000,
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-      variants: {
-        low: { effort: "low" },
-        medium: { effort: "medium" },
-        high: { effort: "high" },
-      },
-    },
-    {
-      id: "claude-opus-4-7",
-      name: "Claude Opus 4.7",
-      contextLimit: 1000000,
-      outputLimit: 128000,
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-      variants: {
-        low: { effort: "low" },
-        medium: { effort: "medium" },
-        high: { effort: "high" },
-        max: { effort: "max" },
-      },
-    },
-    {
-      id: "claude-haiku-4-5-20251001",
-      name: "Claude Haiku 4.5",
-      contextLimit: 200000,
-      outputLimit: 64000,
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-    },
-    {
       id: "claude-sonnet-4-5-20250929",
       name: "Claude Sonnet 4.5",
       contextLimit: 200000,
@@ -264,6 +214,26 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
         medium: { thinking: { budgetTokens: 13000, type: "enabled" } },
         high: { thinking: { budgetTokens: 18000, type: "enabled" } },
       },
+    },
+    {
+      id: "claude-opus-4-8",
+      name: "Claude Opus 4.8",
+      contextLimit: 1000000,
+      outputLimit: 128000,
+      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+      variants: {
+        low: { effort: "low" },
+        medium: { effort: "medium" },
+        high: { effort: "high" },
+        max: { effort: "max" },
+      },
+    },
+    {
+      id: "claude-haiku-4-5-20251001",
+      name: "Claude Haiku 4.5",
+      contextLimit: 200000,
+      outputLimit: 64000,
+      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
     },
     {
       id: "gemini-claude-opus-4-5-thinking",
@@ -311,7 +281,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "Shengsuanyun",
     nameKey: "providerForm.presets.shengsuanyun",
-    websiteUrl: "https://www.shengsuanyun.com",
+    websiteUrl: "https://www.shengsuanyun.com/?from=CH_4HHXMRYF",
     apiKeyUrl: "https://www.shengsuanyun.com/?from=CH_4HHXMRYF",
     settingsConfig: {
       npm: "@ai-sdk/anthropic",
@@ -322,8 +292,8 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
-        "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
+        "anthropic/claude-opus-4.8": { name: "Claude Opus 4.8" },
+        "anthropic/claude-sonnet-4.6": { name: "Claude Sonnet 4.6" },
       },
     },
     category: "aggregator",
@@ -477,7 +447,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "glm-5": { name: "GLM-5" },
+        "glm-5.1": { name: "GLM-5.1" },
       },
     },
     category: "cn_official",
@@ -510,7 +480,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "glm-5": { name: "GLM-5" },
+        "glm-5.1": { name: "GLM-5.1" },
       },
     },
     category: "cn_official",
@@ -734,7 +704,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "ZhipuAI/GLM-5": { name: "GLM-5" },
+        "ZhipuAI/GLM-5.1": { name: "GLM-5.1" },
       },
     },
     category: "aggregator",
@@ -1005,7 +975,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "aggregator",
@@ -1033,7 +1003,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "aggregator",
@@ -1061,7 +1031,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "anthropic/claude-sonnet-4.6": { name: "Claude Sonnet 4.6" },
-        "anthropic/claude-opus-4.7": { name: "Claude Opus 4.7" },
+        "anthropic/claude-opus-4.8": { name: "Claude Opus 4.8" },
       },
     },
     category: "aggregator",
@@ -1089,14 +1059,10 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "anthropic/claude-sonnet-4.6": { name: "Claude Sonnet 4.6" },
-        "openai/gpt-5.5": { name: "GPT-5.5" },
         "openai/gpt-5.3-codex": { name: "GPT-5.3 Codex" },
         "openai/gpt-5.2": { name: "GPT-5.2" },
-        "google/gemini-3.1-pro-preview": {
-          name: "Gemini 3.1 Pro Preview",
-        },
-        "google/gemini-3-flash-preview": {
-          name: "Gemini 3 Flash Preview",
+        "google/gemini-3.5-flash": {
+          name: "Gemini 3.5 Flash",
         },
         "qwen/qwen3-coder-480b": { name: "Qwen3 Coder 480B" },
       },
@@ -1123,7 +1089,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "zai-org/glm-5": { name: "GLM-5" },
+        "zai-org/glm-5.1": { name: "GLM-5.1" },
       },
     },
     category: "aggregator",
@@ -1177,7 +1143,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "claude-opus-4-7": { name: "claude-opus-4-7" },
+        "claude-opus-4-8": { name: "claude-opus-4-8" },
         "claude-sonnet-4-6": { name: "claude-sonnet-4-6" },
         "claude-haiku-4-5-20251001": { name: "claude-haiku-4-5-20251001" },
       },
@@ -1207,13 +1173,127 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
     isPartner: true,
     partnerPromotionKey: "packycode",
     icon: "packycode",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
+  {
+    name: "APIKEY.FUN",
+    websiteUrl: "https://apikey.fun",
+    apiKeyUrl: "https://apikey.fun/register?aff=CCSwitch",
+    settingsConfig: {
+      npm: "@ai-sdk/anthropic",
+      name: "APIKEY.FUN",
+      options: {
+        baseURL: "https://api.apikey.fun/v1",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
+        "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
+        "claude-haiku-4-5": { name: "Claude Haiku 4.5" },
+      },
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "apikeyfun",
+    icon: "apikeyfun",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
+  {
+    name: "APINebula",
+    websiteUrl: "https://apinebula.com",
+    apiKeyUrl: "https://apinebula.com/02rw5X",
+    settingsConfig: {
+      npm: "@ai-sdk/openai",
+      name: "APINebula",
+      options: {
+        baseURL: "https://apinebula.com/v1",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "gpt-5.5": { name: "GPT-5.5" },
+      },
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "apinebula",
+    icon: "apinebula",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
+  {
+    name: "AtlasCloud",
+    websiteUrl: "https://www.atlascloud.ai/console/coding-plan",
+    apiKeyUrl: "https://www.atlascloud.ai/console/coding-plan",
+    settingsConfig: {
+      npm: "@ai-sdk/openai-compatible",
+      name: "AtlasCloud",
+      options: {
+        baseURL: "https://api.atlascloud.ai/v1",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "zai-org/glm-5.1": { name: "GLM 5.1" },
+      },
+    },
+    category: "aggregator",
+    isPartner: true,
+    partnerPromotionKey: "atlascloud",
+    icon: "atlascloud",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
+  {
+    name: "SudoCode",
+    websiteUrl: "https://sudocode.us",
+    apiKeyUrl: "https://sudocode.us",
+    settingsConfig: {
+      npm: "@ai-sdk/openai",
+      name: "SudoCode",
+      options: {
+        baseURL: "https://sudocode.us/v1",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "gpt-5.5": { name: "GPT-5.5" },
+      },
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "sudocode",
+    icon: "sudocode",
     templateValues: {
       apiKey: {
         label: "API Key",
@@ -1236,7 +1316,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
@@ -1266,7 +1346,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
@@ -1325,13 +1405,43 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4.6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4.7": { name: "Claude Opus 4.7" },
+        "claude-opus-4.8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
     isPartner: true,
     partnerPromotionKey: "aicodemirror",
     icon: "aicodemirror",
+    iconColor: "#000000",
+    templateValues: {
+      apiKey: {
+        label: "API Key",
+        placeholder: "",
+        editorValue: "",
+      },
+    },
+  },
+  {
+    name: "AICoding",
+    websiteUrl: "https://aicoding.sh",
+    apiKeyUrl: "https://aicoding.sh/i/CCSWITCH",
+    settingsConfig: {
+      npm: "@ai-sdk/anthropic",
+      name: "AICoding",
+      options: {
+        baseURL: "https://api.aicoding.sh",
+        apiKey: "",
+        setCacheKey: true,
+      },
+      models: {
+        "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
+      },
+    },
+    category: "third_party",
+    isPartner: true,
+    partnerPromotionKey: "aicoding",
+    icon: "aicoding",
     iconColor: "#000000",
     templateValues: {
       apiKey: {
@@ -1355,7 +1465,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
         "claude-haiku-4-5": { name: "Claude Haiku 4.5" },
       },
     },
@@ -1385,7 +1495,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
         "claude-haiku-4-5": { name: "Claude Haiku 4.5" },
       },
     },
@@ -1393,36 +1503,6 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     isPartner: true,
     partnerPromotionKey: "runapi",
     icon: "runapi",
-    templateValues: {
-      apiKey: {
-        label: "API Key",
-        placeholder: "",
-        editorValue: "",
-      },
-    },
-  },
-  {
-    name: "AICoding",
-    websiteUrl: "https://aicoding.sh",
-    apiKeyUrl: "https://aicoding.sh/i/CCSWITCH",
-    settingsConfig: {
-      npm: "@ai-sdk/anthropic",
-      name: "AICoding",
-      options: {
-        baseURL: "https://api.aicoding.sh",
-        apiKey: "",
-        setCacheKey: true,
-      },
-      models: {
-        "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
-      },
-    },
-    category: "third_party",
-    isPartner: true,
-    partnerPromotionKey: "aicoding",
-    icon: "aicoding",
-    iconColor: "#000000",
     templateValues: {
       apiKey: {
         label: "API Key",
@@ -1445,7 +1525,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
@@ -1475,7 +1555,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       },
       models: {
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
       },
     },
     category: "third_party",
@@ -1504,7 +1584,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
       },
     },
@@ -1534,7 +1614,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "claude-opus-4-8": { name: "Claude Opus 4.8" },
         "claude-sonnet-4-6": { name: "Claude Sonnet 4.6" },
       },
     },
@@ -1562,9 +1642,6 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         baseURL: "https://e-flowcode.cc/v1",
       },
       models: {
-        "gpt-5.5": {
-          name: "GPT-5.5",
-        },
         "gpt-5.2-codex": {
           name: "gpt-5.2-codex",
         },
@@ -1625,7 +1702,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
-        "global.anthropic.claude-opus-4-7": { name: "Claude Opus 4.7" },
+        "global.anthropic.claude-opus-4-8": { name: "Claude Opus 4.8" },
         "global.anthropic.claude-sonnet-4-6": {
           name: "Claude Sonnet 4.6",
         },
