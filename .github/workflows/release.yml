@@ -23,6 +23,9 @@ jobs:
           - os: ubuntu-22.04-arm
             arch: arm64
           - os: macos-14
+    env:
+      HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && 'true' || 'false' }}
+      HAS_APPLE_SIGNING_SECRETS: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
@@ -96,15 +99,18 @@ jobs:
 
       - name: Prepare Tauri signing key
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          # 调试：检查 Secret 是否存在
-          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "❌ TAURI_SIGNING_PRIVATE_KEY Secret 为空或不存在" >&2
-            echo "请检查 GitHub 仓库 Settings > Secrets and variables > Actions" >&2
-            exit 1
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_RAW:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is not configured; updater signature artifacts will be disabled for this release build."
+            echo "TAURI_UPDATER_SIGNING_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
           fi
           
-          RAW="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          RAW="$TAURI_SIGNING_PRIVATE_KEY_RAW"
           # 目标：提供正确的私钥“文件路径”给 Tauri CLI，避免内容解码歧义
           KEY_PATH="$RUNNER_TEMP/tauri_signing.key"
           # 情况 1：原始两行文本（第一行以 "untrusted comment:" 开头）
@@ -145,13 +151,24 @@ jobs:
             exit 1
           fi
           echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
-          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> $GITHUB_ENV
+          echo "TAURI_UPDATER_SIGNING_ENABLED=true" >> "$GITHUB_ENV"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_RAW" >> "$GITHUB_ENV"
           fi
           echo "✅ Tauri signing key prepared"
 
+      - name: Disable updater artifacts when signing key is missing
+        if: env.HAS_TAURI_SIGNING_KEY != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG_PATH="tauri-unsigned-build.json"
+          printf '%s\n' '{"bundle":{"createUpdaterArtifacts":false}}' > "$CONFIG_PATH"
+          echo "TAURI_BUILD_CONFIG=$CONFIG_PATH" >> "$GITHUB_ENV"
+          echo "Building installable artifacts without Tauri updater signatures."
+
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING_SECRETS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -204,9 +221,17 @@ jobs:
         run: |
           set -euo pipefail
           max_attempts=3
+          build_args=(--target universal-apple-darwin)
+          if [ -n "${TAURI_BUILD_CONFIG:-}" ]; then
+            build_args+=(--config "$TAURI_BUILD_CONFIG")
+          fi
+          if [ "${HAS_APPLE_SIGNING_SECRETS:-false}" != "true" ]; then
+            build_args+=(--skip-stapling)
+            echo "Apple signing/notarization secrets are not configured; building an unsigned macOS app."
+          fi
           for attempt in $(seq 1 "$max_attempts"); do
             echo "=== macOS build/notarization attempt ${attempt}/${max_attempts} ==="
-            if pnpm tauri build --target universal-apple-darwin; then
+            if pnpm tauri build "${build_args[@]}"; then
               echo "✅ macOS build/notarization succeeded"
               exit 0
             fi
@@ -223,11 +248,25 @@ jobs:
 
       - name: Build Tauri App (Windows)
         if: runner.os == 'Windows'
-        run: pnpm tauri build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildArgs = @()
+          if ($env:TAURI_BUILD_CONFIG) {
+            $buildArgs += @('--config', $env:TAURI_BUILD_CONFIG)
+          }
+          pnpm tauri build @buildArgs
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
-        run: pnpm tauri build --bundles appimage,deb,rpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=(--bundles appimage,deb,rpm)
+          if [ -n "${TAURI_BUILD_CONFIG:-}" ]; then
+            build_args+=(--config "$TAURI_BUILD_CONFIG")
+          fi
+          pnpm tauri build "${build_args[@]}"
 
       - name: Prepare macOS Assets
         if: runner.os == 'macOS'
@@ -250,7 +289,7 @@ jobs:
             fi
           done
 
-          if [ -z "$TAR_GZ" ]; then
+          if [ "${TAURI_UPDATER_SIGNING_ENABLED:-false}" = "true" ] && [ -z "$TAR_GZ" ]; then
             echo "❌ No macOS .tar.gz updater artifact found" >&2
             exit 1
           fi
@@ -259,26 +298,28 @@ jobs:
             exit 1
           fi
 
-          # Staple notarization ticket to .app (Tauri already notarized it)
-          xcrun stapler staple "$APP_PATH"
-          echo "✅ .app stapled"
+          if [ "${HAS_APPLE_SIGNING_SECRETS:-false}" = "true" ]; then
+            # Staple notarization ticket to .app (Tauri already notarized it)
+            xcrun stapler staple "$APP_PATH"
+            echo "✅ .app stapled"
+          else
+            echo "Skipping .app stapling because Apple signing/notarization secrets are not configured."
+          fi
 
           # 1) Collect .tar.gz (updater artifact)
-          NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
-          cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
-          [ -f "$TAR_GZ.sig" ] && cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig" || echo ".sig for macOS not found yet"
-          echo "macOS updater artifact copied: $NEW_TAR_GZ"
+          if [ "${TAURI_UPDATER_SIGNING_ENABLED:-false}" = "true" ]; then
+            NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
+            cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
+            [ -f "$TAR_GZ.sig" ] && cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig" || echo ".sig for macOS not found yet"
+            echo "macOS updater artifact copied: $NEW_TAR_GZ"
+          else
+            echo "Skipping macOS updater tarball upload because Tauri updater signing is disabled."
+          fi
 
           # 2) Collect .app as zip
           NEW_ZIP="CC-Switch-${VERSION}-macOS.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-assets/$NEW_ZIP"
           echo "macOS zip ready: $NEW_ZIP"
-
-          # 3) Create styled DMG with create-dmg (Tauri's built-in DMG styling doesn't work on CI)
-          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            echo "❌ APPLE_SIGNING_IDENTITY is missing before DMG creation" >&2
-            exit 1
-          fi
 
           HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
           NEW_DMG="CC-Switch-${VERSION}-macOS.dmg"
@@ -287,25 +328,28 @@ jobs:
           mkdir -p "$DMG_STAGE_DIR"
           ditto "$APP_PATH" "$DMG_STAGE_DIR/CC Switch.app"
 
-          create-dmg \
-            --volname "CC Switch" \
-            --background "src-tauri/icons/dmg-background.png" \
-            --window-size 660 400 \
-            --window-pos 200 120 \
-            --icon-size 80 \
-            --icon "CC Switch.app" 180 220 \
-            --hide-extension "CC Switch.app" \
-            --app-drop-link 480 220 \
-            --codesign "$APPLE_SIGNING_IDENTITY" \
-            --no-internet-enable \
-            "release-assets/$NEW_DMG" \
-            "$DMG_STAGE_DIR"
+          dmg_args=(
+            --volname "CC Switch"
+            --background "src-tauri/icons/dmg-background.png"
+            --window-size 660 400
+            --window-pos 200 120
+            --icon-size 80
+            --icon "CC Switch.app" 180 220
+            --hide-extension "CC Switch.app"
+            --app-drop-link 480 220
+            --no-internet-enable
+          )
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            dmg_args+=(--codesign "$APPLE_SIGNING_IDENTITY")
+          fi
+          dmg_args+=("release-assets/$NEW_DMG" "$DMG_STAGE_DIR")
+          create-dmg "${dmg_args[@]}"
 
           rm -rf "$DMG_STAGE_DIR"
           echo "✅ Styled DMG created: $NEW_DMG"
 
       - name: Notarize macOS DMG
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING_SECRETS == 'true'
         shell: bash
         timeout-minutes: 30
         env:
@@ -347,7 +391,7 @@ jobs:
           done
 
       - name: Verify macOS code signing and notarization
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING_SECRETS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -417,6 +461,9 @@ jobs:
             }
           } else {
             Write-Warning 'No Windows MSI installer found'
+            if ($env:TAURI_UPDATER_SIGNING_ENABLED -eq 'true') {
+              throw 'Signed updater release requires a Windows MSI artifact'
+            }
           }
           # 绿色版（portable）：仅可执行文件打 zip（不参与 Updater）
           $exeCandidates = @(
@@ -459,6 +506,9 @@ jobs:
             echo "AppImage copied: $NEW_APPIMAGE"
           else
             echo "No AppImage found under target/release/bundle" >&2
+            if [ "${TAURI_UPDATER_SIGNING_ENABLED:-false}" = "true" ]; then
+              exit 1
+            fi
           fi
           # 额外上传 .deb（用于手动安装，不参与 Updater）
           DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
@@ -557,7 +607,7 @@ jobs:
             > `.tar.gz` 为 Tauri updater 自动更新专用，无需手动下载。
 
             ---
-            macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。
+            macOS 产物会随 release 上传；是否经过 Apple 代码签名和公证取决于仓库是否配置 Apple Developer ID 与 notarization secrets。
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -566,6 +616,7 @@ jobs:
     name: Assemble latest.json
     runs-on: ubuntu-22.04
     needs: publish-release
+    if: github.repository == 'ppengit/cc-switch'
     permissions:
       contents: write
     steps:
@@ -584,6 +635,7 @@ jobs:
           gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY"
           ls -la dl || true
       - name: Generate latest.json
+        id: generate-latest
         env:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
@@ -615,6 +667,11 @@ jobs:
                 win_url="$url"; win_sig="$sig_content";;
             esac
           done
+          if [ -z "$mac_sig$win_sig$linux_x64_sig$linux_arm64_sig" ]; then
+            echo "No updater signatures found; latest.json will not be generated."
+            echo "has_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # 构造 JSON（仅包含存在的目标）
           tmp_json=$(mktemp)
           {
@@ -652,7 +709,9 @@ jobs:
           } > "$tmp_json"
           echo "Generated latest.json:" && cat "$tmp_json"
           mv "$tmp_json" latest.json
+          echo "has_latest=true" >> "$GITHUB_OUTPUT"
       - name: Upload latest.json to release
+        if: steps.generate-latest.outputs.has_latest == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

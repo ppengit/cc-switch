@@ -232,6 +232,7 @@ export interface ProviderFormProps {
   };
   providerDefaultSettingsConfig?: Record<string, unknown>;
   showButtons?: boolean;
+  isProxyTakeover?: boolean;
 }
 
 const getSeededCodexTemplate = (
@@ -399,6 +400,7 @@ function ProviderFormFull({
   initialData,
   providerDefaultSettingsConfig,
   showButtons = true,
+  isProxyTakeover = false,
 }: ProviderFormProps) {
   if (appId === "claude-desktop") {
     throw new Error("ProviderFormFull should not receive claude-desktop");
@@ -2767,6 +2769,7 @@ function ProviderFormFull({
                 configValue={codexConfig}
                 providerName={form.watch("name")}
                 showRemoteCompaction={category !== "official"}
+                isProxyTakeover={isProxyTakeover}
                 onAuthChange={setCodexAuth}
                 onConfigChange={handleCodexConfigChange}
                 useCommonConfig={useCodexCommonConfigFlag}

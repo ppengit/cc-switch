@@ -29,6 +29,7 @@ interface CodexAuthSectionProps {
   onChange: (value: string) => void;
   onBlur?: () => void;
   error?: string;
+  isProxyTakeover?: boolean;
 }
 
 /**
@@ -39,6 +40,7 @@ export const CodexAuthSection: React.FC<CodexAuthSectionProps> = ({
   onChange,
   onBlur,
   error,
+  isProxyTakeover = false,
 }) => {
   const { t } = useTranslation();
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -90,7 +92,11 @@ export const CodexAuthSection: React.FC<CodexAuthSectionProps> = ({
 
       {!error && (
         <p className="text-xs text-muted-foreground">
-          {t("codexConfig.authJsonHint")}
+          {t(
+            isProxyTakeover
+              ? "codexConfig.authJsonStorageHint"
+              : "codexConfig.authJsonHint",
+          )}
         </p>
       )}
     </div>
@@ -108,6 +114,7 @@ interface CodexConfigSectionProps {
   commonConfigError?: string;
   configError?: string;
   showCommonConfig?: boolean;
+  isProxyTakeover?: boolean;
 }
 
 /**
@@ -124,6 +131,7 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
   commonConfigError,
   configError,
   showCommonConfig = true,
+  isProxyTakeover = false,
 }) => {
   const { t } = useTranslation();
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -373,7 +381,11 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
 
       {!configError && (
         <p className="text-xs text-muted-foreground">
-          {t("codexConfig.configTomlHint")}
+          {t(
+            isProxyTakeover
+              ? "codexConfig.configTomlStorageHint"
+              : "codexConfig.configTomlHint",
+          )}
         </p>
       )}
     </div>

@@ -2783,6 +2783,7 @@ mod tests {
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
+            codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
             current_provider_id_at_start: String::new(),

@@ -1138,6 +1138,14 @@ base_url = "http://localhost:8080"
 
         let db = Arc::new(Database::memory().expect("init db"));
         let state = AppState::new(db.clone());
+        let reserved_port = reserve_free_tcp_port();
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: reserved_port,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
 
         let mut original = Provider::with_id(
             "p1".into(),
@@ -1234,7 +1242,7 @@ base_url = "http://localhost:8080"
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!(format!("http://127.0.0.1:{reserved_port}/claude-desktop")),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
@@ -3342,13 +3350,25 @@ impl ProviderService {
 
         if is_current {
             // 只要 takeover 仍然开启，就必须保持 takeover 写盘语义。
-            // 不能因为应用重启后的恢复窗口里代理进程尚未起来，就回退写成直连配置。
+            // 同时兼容上游修复：backup 或 Live 占位符也代表 takeover 正在拥有 live 文件。
             let takeover_enabled =
                 futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
                     .map(|config| config.enabled)
                     .unwrap_or(false);
-            let should_sync_via_proxy = takeover_enabled
-                && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini);
+            let has_live_backup =
+                futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
+                    .ok()
+                    .flatten()
+                    .is_some();
+            let live_taken_over = state
+                .proxy_service
+                .detect_takeover_in_live_config_for_app(&app_type);
+            // Backup or live placeholders mean the live file is currently owned
+            // by proxy takeover, including the short activation window before
+            // proxy_config.enabled is committed.
+            let should_sync_via_proxy =
+                matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
+                    && (takeover_enabled || has_live_backup || live_taken_over);
 
             if should_sync_via_proxy {
                 if matches!(app_type, AppType::ClaudeDesktop) {
@@ -3697,7 +3717,7 @@ impl ProviderService {
     /// Switch flow:
     /// 1. Validate target provider exists
     /// 2. Check if proxy takeover mode is active AND proxy server is running
-    /// 3. If takeover mode active: hot-switch proxy target only (no Live config write)
+    /// 3. If takeover mode active: hot-switch proxy target and refresh proxy-safe Live labels
     /// 4. If normal mode:
     ///    a. **Backfill mechanism**: Backfill current live config to current provider
     ///    b. Update local settings current_provider_xxx (device-level)
@@ -3743,9 +3763,6 @@ impl ProviderService {
             return Self::switch_normal(state, app_type, id, &providers, options);
         }
 
-        // Check if proxy takeover mode is active AND proxy server is actually running
-        // Both conditions must be true to use hot-switch mode
-        // Use blocking wait since this is a sync function
         let app_proxy_config =
             futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str())).ok();
         let proxy_takeover_enabled = app_proxy_config
@@ -3757,10 +3774,34 @@ impl ProviderService {
             .map(|config| config.auto_failover_enabled)
             .unwrap_or(false);
 
-        // Takeover-enabled apps must preserve takeover live semantics even during the
-        // startup recovery window before the proxy process is fully running again.
-        let should_hot_switch = proxy_takeover_enabled
-            && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini);
+        // Provider switches and takeover toggles both mutate live config and the
+        // restore backup. Serialize them per app, then decide from the locked
+        // current state so a just-started takeover cannot be overwritten by a
+        // normal live write.
+        let _switch_guard =
+            if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+                Some(futures::executor::block_on(
+                    state.proxy_service.lock_switch_for_app(app_type.as_str()),
+                ))
+            } else {
+                None
+            };
+
+        // Backup or live placeholders mean the live file is owned by proxy
+        // takeover, even if the proxy server is temporarily stopped or is in the
+        // activation window before enabled=true is committed.
+        let is_app_taken_over =
+            futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
+                .ok()
+                .flatten()
+                .is_some();
+        let live_taken_over = state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(&app_type);
+
+        let should_hot_switch =
+            matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
+                && (proxy_takeover_enabled || is_app_taken_over || live_taken_over);
 
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
@@ -3798,12 +3839,12 @@ impl ProviderService {
             futures::executor::block_on(
                 state
                     .proxy_service
-                    .hot_switch_provider(app_type.as_str(), id),
+                    .hot_switch_provider_inner(app_type.as_str(), id),
             )
             .map_err(|e| AppError::Message(format!("热切换失败: {e}")))?;
 
-            // Note: No Live config write, no MCP sync
-            // The proxy server will route requests to the new provider via is_current
+            // The proxy server will route requests to the new provider via is_current.
+            // MCP sync is intentionally skipped while Live config is owned by takeover.
             return Ok(SwitchResult::default());
         }
 
@@ -4059,11 +4100,6 @@ impl ProviderService {
             return Ok(());
         };
 
-        let takeover_enabled =
-            futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
-                .map(|config| config.enabled)
-                .unwrap_or(false);
-
         let has_live_backup =
             futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
                 .ok()
@@ -4074,7 +4110,8 @@ impl ProviderService {
             .proxy_service
             .detect_takeover_in_live_config_for_app(&app_type);
 
-        if takeover_enabled && (has_live_backup || live_taken_over) {
+        // See the save path above: enabled, backup, or placeholders mean takeover owns Live.
+        if proxy_live_active || has_live_backup || live_taken_over {
             if matches!(app_type, AppType::ClaudeDesktop) {
                 write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
                 return Ok(());
