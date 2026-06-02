@@ -120,7 +120,7 @@ fn sort_sites(items: &mut [SiteRow], sort_by: Option<&str>, sort_direction: Opti
                 .unwrap_or(0)
                 .cmp(&right.last_change_at.unwrap_or(0)),
             "imported_apps" => left.imported_apps.len().cmp(&right.imported_apps.len()),
-            "site_type" | _ => site_type_rank(&left.site_type)
+            _ => site_type_rank(&left.site_type)
                 .cmp(&site_type_rank(&right.site_type))
                 .then_with(|| left.site_type.cmp(&right.site_type)),
         };

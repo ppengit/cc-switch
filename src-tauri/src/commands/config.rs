@@ -23,7 +23,7 @@ pub async fn get_claude_config_status() -> Result<ConfigStatus, String> {
     Ok(config::get_claude_config_status())
 }
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 fn invalid_json_format_error(error: serde_json::Error) -> String {
@@ -523,7 +523,7 @@ fn resolve_app_config_file(
         .ok_or_else(|| format!("Unsupported config file key: {}", file_key.trim()))
 }
 
-fn should_skip_missing_empty_file(path: &PathBuf, content: &str) -> bool {
+fn should_skip_missing_empty_file(path: &Path, content: &str) -> bool {
     !path.exists() && content.trim().is_empty()
 }
 

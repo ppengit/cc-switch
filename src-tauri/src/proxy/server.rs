@@ -339,6 +339,7 @@ impl ProxyServer {
     }
 
     /// 读取某个应用类型当前的"切换代次"。从未切换过则返回 0。
+    #[allow(dead_code)]
     pub async fn current_switch_epoch(&self, app_type: &str) -> u64 {
         let epochs = self.state.switch_epoch.read().await;
         *epochs.get(app_type).unwrap_or(&0)

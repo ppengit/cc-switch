@@ -13,6 +13,7 @@ pub trait ApiHubAdapter: Send + Sync {
     async fn list_tokens(&self, ctx: &SiteCtx) -> Result<Vec<TokenInfo>, AppError>;
     async fn create_token(&self, ctx: &SiteCtx, req: CreateTokenReq)
         -> Result<TokenInfo, AppError>;
+    #[allow(dead_code)]
     async fn rename_token(
         &self,
         ctx: &SiteCtx,
@@ -20,6 +21,7 @@ pub trait ApiHubAdapter: Send + Sync {
         new_name: &str,
         group: &str,
     ) -> Result<(), AppError>;
+    #[allow(dead_code)]
     async fn delete_token(&self, ctx: &SiteCtx, token_id: i64) -> Result<(), AppError>;
 }
 

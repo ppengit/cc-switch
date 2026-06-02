@@ -181,10 +181,10 @@ fn remove_toml_path(table: &mut toml_edit::Table, segments: &[&str]) -> bool {
     let (head, rest) = segments.split_first().expect("segments not empty");
 
     if rest.is_empty() {
-        return table.remove(*head).is_some();
+        return table.remove(head).is_some();
     }
 
-    if let Some(item) = table.get_mut(*head) {
+    if let Some(item) = table.get_mut(head) {
         if let Some(child) = item.as_table_mut() {
             return remove_toml_path(child, rest);
         }

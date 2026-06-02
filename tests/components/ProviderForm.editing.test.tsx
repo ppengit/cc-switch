@@ -14,6 +14,24 @@ vi.mock("sonner", () => ({
   },
 }));
 
+vi.mock("@/components/JsonEditor", () => ({
+  default: ({
+    value,
+    onChange,
+    language = "json",
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    language?: string;
+  }) => (
+    <textarea
+      aria-label={`json-editor-${language}`}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
+
 const renderProviderForm = (name = "Old Provider") => {
   const queryClient = createTestQueryClient();
   const onSubmit = vi.fn();
@@ -431,8 +449,16 @@ describe("ProviderForm create mode", () => {
   it("updates the Codex default model in place without keeping an empty model", async () => {
     const { onSubmit } = renderCreateProviderForm("codex");
 
-    fireEvent.change(screen.getByDisplayValue("gpt-5.5"), {
-      target: { value: "provider-model" },
+    const configEditor = screen.getByLabelText(
+      "json-editor-javascript",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(configEditor, {
+      target: {
+        value: configEditor.value.replace(
+          'model = "gpt-5.5"',
+          'model = "provider-model"',
+        ),
+      },
     });
     await submitCreateForm({ confirmSoftIssues: true });
 

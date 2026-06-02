@@ -14,8 +14,6 @@ fn normalize_session_app_type(provider_id: &str) -> &str {
 fn default_session_terminal_target() -> &'static str {
     if cfg!(target_os = "windows") {
         "cmd"
-    } else if cfg!(target_os = "linux") {
-        "terminal"
     } else {
         "terminal"
     }

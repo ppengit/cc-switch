@@ -12,6 +12,15 @@ use support::{
     ensure_test_home, reset_test_fs, test_mutex,
 };
 
+fn unused_local_port() -> u16 {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral local port");
+    listener
+        .local_addr()
+        .expect("read ephemeral local port")
+        .port()
+}
+
 fn sanitize_provider_name(name: &str) -> String {
     name.chars()
         .map(|c| match c {
@@ -595,6 +604,18 @@ wire_api = "responses"
     }
 
     let state = create_test_state_with_config(&initial_config).expect("create test state");
+    let proxy_port = unused_local_port();
+    let mut proxy_config = state
+        .proxy_service
+        .get_config()
+        .await
+        .expect("get proxy config");
+    proxy_config.listen_port = proxy_port;
+    state
+        .proxy_service
+        .update_config(&proxy_config)
+        .await
+        .expect("set proxy config");
 
     ProviderService::switch(&state, AppType::Codex, "deepseek-provider")
         .expect("switch from official subscription to DeepSeek");
@@ -633,7 +654,7 @@ wire_api = "responses"
     let config_after_takeover =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config");
     assert!(
-        config_after_takeover.contains("http://127.0.0.1:15721/v1"),
+        config_after_takeover.contains(&format!("http://127.0.0.1:{proxy_port}/v1")),
         "enabling takeover should point Codex config.toml at the local proxy"
     );
     assert!(

@@ -476,32 +476,6 @@ struct SseUsageCollectorInner {
     finished: AtomicBool,
 }
 
-struct SseUsageCollectorDropGuard(Option<SseUsageCollector>);
-
-impl SseUsageCollectorDropGuard {
-    fn new(collector: Option<SseUsageCollector>) -> Self {
-        Self(collector)
-    }
-
-    fn as_ref(&self) -> Option<&SseUsageCollector> {
-        self.0.as_ref()
-    }
-
-    fn take(&mut self) -> Option<SseUsageCollector> {
-        self.0.take()
-    }
-}
-
-impl Drop for SseUsageCollectorDropGuard {
-    fn drop(&mut self) {
-        if let Some(collector) = self.0.take() {
-            tokio::spawn(async move {
-                collector.finish().await;
-            });
-        }
-    }
-}
-
 impl SseUsageCollector {
     /// 创建使用量收集器；`should_collect` 用来在 hot path 跳过与 usage 无关的事件。
     pub fn new(

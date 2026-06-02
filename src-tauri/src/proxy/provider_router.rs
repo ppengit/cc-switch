@@ -75,10 +75,10 @@ impl LoadBalancingState {
         let expired: Vec<String> = self
             .affinities
             .iter()
-            .filter_map(|(key, affinity)| {
-                (affinity.active_requests == 0 && now.duration_since(affinity.last_seen) >= ttl)
-                    .then(|| key.clone())
+            .filter(|(_, affinity)| {
+                affinity.active_requests == 0 && now.duration_since(affinity.last_seen) >= ttl
             })
+            .map(|(key, _)| key.clone())
             .collect();
 
         for affinity_key in expired {
@@ -135,6 +135,7 @@ impl LoadBalancingState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn acquire_slot(
         &mut self,
         app_type: &str,
@@ -483,7 +484,7 @@ impl ProviderRouter {
 
         if disabled {
             on_disabled(app_type.to_string(), provider_id.to_string()).await;
-            if let Ok(Some(app)) = self
+            if let Ok(Some(())) = self
                 .db
                 .get_proxy_config_for_app(app_type)
                 .await
@@ -495,7 +496,6 @@ impl ProviderRouter {
                     }
                 })
             {
-                let _ = app;
                 if let Some(app_handle) = &self.app_handle {
                     if let Some(app_state) = app_handle.try_state::<crate::store::AppState>() {
                         let _ = app_state
@@ -1400,7 +1400,7 @@ mod tests {
         db.update_proxy_config_for_app(config).await.unwrap();
 
         let router = ProviderRouter::new(db.clone());
-        let provider_lists = vec![
+        let provider_lists = [
             router
                 .select_providers_for_session("claude", "stale-1", true)
                 .await

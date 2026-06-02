@@ -220,6 +220,7 @@ impl McpService {
     }
 
     /// 将 MCP 服务器同步到所有启用的应用
+    #[allow(dead_code)]
     fn sync_server_to_apps(_state: &AppState, server: &McpServer) -> Result<(), AppError> {
         for app in server.apps.enabled_apps() {
             Self::sync_server_to_app_no_config(server, &app)?;

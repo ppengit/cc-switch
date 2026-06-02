@@ -581,15 +581,18 @@ fn normalize_api_key(raw: &str) -> String {
         return String::new();
     }
     let lowered = trimmed.to_ascii_lowercase();
-    if lowered.starts_with("bearer ") {
-        return normalize_api_key(trimmed[7..].trim());
+    if let Some(rest) = lowered
+        .strip_prefix("bearer ")
+        .and_then(|_| trimmed.get(7..))
+    {
+        return normalize_api_key(rest.trim());
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("sk-") {
         return trimmed.to_string();
     }
-    if trimmed.starts_with("sk") {
-        return format!("sk-{}", &trimmed[2..]);
+    if let Some(rest) = trimmed.strip_prefix("sk") {
+        return format!("sk-{rest}");
     }
     if trimmed.len() >= 16 {
         return format!("sk-{trimmed}");

@@ -241,7 +241,9 @@ fn parse_group_id_name_map(value: &Value) -> HashMap<i64, String> {
         .collect()
 }
 
-fn parse_group_entries(value: &Value) -> Vec<(Option<i64>, String, Option<f64>, Option<String>)> {
+type ParsedGroupEntry = (Option<i64>, String, Option<f64>, Option<String>);
+
+fn parse_group_entries(value: &Value) -> Vec<ParsedGroupEntry> {
     let data = value.get("data").unwrap_or(value);
     let Some(arr) = data.as_array() else {
         return Vec::new();
@@ -468,6 +470,7 @@ fn build_create_key_body(req: &CreateTokenReq, group_id: i64) -> Value {
     })
 }
 
+#[allow(dead_code)]
 fn build_update_key_body(new_name: &str, group_id: i64) -> Value {
     json!({
         "name": new_name,

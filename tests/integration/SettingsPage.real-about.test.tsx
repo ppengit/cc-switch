@@ -65,7 +65,9 @@ vi.mock("@/components/settings/AppVisibilitySettings", () => ({
 }));
 
 vi.mock("@/components/settings/SkillStorageLocationSettings", () => ({
-  SkillStorageLocationSettings: () => <div>skill-storage-location-settings</div>,
+  SkillStorageLocationSettings: () => (
+    <div>skill-storage-location-settings</div>
+  ),
 }));
 
 vi.mock("@/components/settings/SkillSyncMethodSettings", () => ({
@@ -147,20 +149,31 @@ describe("SettingsPage real about section", () => {
     renderSettingsPage();
 
     await waitFor(() =>
-      expect(
-        screen.getByRole("tab", { name: "common.about" }),
-      ).toHaveAttribute("data-state", "active"),
+      expect(screen.getByRole("tab", { name: "common.about" })).toHaveAttribute(
+        "data-state",
+        "active",
+      ),
     );
 
-    await waitFor(() => expect(screen.getByText("CC Switch")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("v3.15.2")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument());
-    await waitFor(() => expect(getLastToolVersionsRequest()?.tools).toEqual([
-      "claude",
-      "codex",
-      "gemini",
-      "opencode",
-    ]));
+    await waitFor(() =>
+      expect(screen.getByText("CC Switch")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("v3.15.2")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Claude Code")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(getLastToolVersionsRequest()?.tools).toEqual([
+        "claude",
+        "codex",
+        "gemini",
+        "opencode",
+        "openclaw",
+        "hermes",
+      ]),
+    );
 
     await user.click(
       screen.getByRole("button", { name: "settings.officialWebsite" }),
@@ -183,6 +196,9 @@ describe("SettingsPage real about section", () => {
     );
     await waitFor(() => expect(checkUpdateMock).toHaveBeenCalledTimes(1));
 
+    await user.click(
+      screen.getByRole("button", { name: "settings.manualInstallCommands" }),
+    );
     expect(screen.getByText(/@openai\/codex@latest/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "common.copy" }),

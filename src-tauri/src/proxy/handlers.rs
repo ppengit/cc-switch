@@ -272,6 +272,7 @@ fn validate_claude_desktop_gateway_auth(
 /// Claude 格式转换处理（独有逻辑）
 ///
 /// 支持 OpenAI Chat Completions 和 Responses API 两种格式的转换
+#[allow(clippy::too_many_arguments)]
 async fn handle_claude_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,

@@ -210,9 +210,7 @@ fn json_value_to_toml_item_for_template(value: &Value) -> Option<Item> {
         Value::Object(obj) => {
             let mut table = toml_edit::InlineTable::default();
             for (key, value) in obj {
-                let Some(string_value) = value.as_str() else {
-                    return None;
-                };
+                let string_value = value.as_str()?;
                 table.insert(key, toml_edit::Value::from(string_value));
             }
             Some(Item::Value(toml_edit::Value::InlineTable(table)))
@@ -1037,6 +1035,7 @@ pub(crate) fn write_live_with_common_config(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_proxy_takeover_live(
     db: &Database,
     app_type: &AppType,
@@ -1814,14 +1813,14 @@ pub fn should_import_default_config_on_startup(
         return Ok(false);
     }
 
-    if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
-        if futures::executor::block_on(
+    if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
+        && futures::executor::block_on(
             state
                 .proxy_service
                 .should_preserve_takeover_live_semantics(app_type),
-        ) {
-            return Ok(false);
-        }
+        )
+    {
+        return Ok(false);
     }
 
     Ok(!state.db.has_any_provider_for_app(app_type.as_str())?)

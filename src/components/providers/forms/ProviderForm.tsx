@@ -811,7 +811,11 @@ function ProviderFormFull({
   }, [formSeedKey]);
 
   useEffect(() => {
-    if (appId === "codex" && !initialDataRef.current && selectedPresetId === "custom") {
+    if (
+      appId === "codex" &&
+      !initialDataRef.current &&
+      selectedPresetId === "custom"
+    ) {
       const template = getCodexCustomTemplate();
       resetCodexConfig(template.auth, template.config);
       setCodexChatReasoning({});
@@ -2104,9 +2108,8 @@ function ProviderFormFull({
       if (appId === "codex") {
         const seeded = getSeededCodexTemplate(seededSettingsConfig);
         if (seeded.config || Object.keys(seeded.auth).length > 0) {
-          const seededModelCatalog =
-            ((seededSettingsConfig as any)?.modelCatalog?.models ??
-              []) as CodexCatalogModel[];
+          const seededModelCatalog = ((seededSettingsConfig as any)
+            ?.modelCatalog?.models ?? []) as CodexCatalogModel[];
           resetCodexConfig(seeded.auth, seeded.config, seededModelCatalog);
           setCodexChatReasoning(
             (seededSettingsConfig as any)?.meta?.codexChatReasoning ?? {},

@@ -241,6 +241,7 @@ impl ProxyActivityState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn route_request_with_metadata(
         &mut self,
         request_id: &str,
@@ -574,7 +575,7 @@ impl ProxyActivityState {
             })
             .cloned()
             .collect();
-        entries.sort_by(|a, b| b.id.cmp(&a.id));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.id));
         entries.truncate(safe_limit);
         entries.reverse();
         entries
@@ -589,6 +590,7 @@ fn emit_activity_event(app_handle: Option<&tauri::AppHandle>, event: &ProxyActiv
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn route_request(
     activity: &Arc<RwLock<ProxyActivityState>>,
     app_handle: Option<&tauri::AppHandle>,
@@ -613,6 +615,7 @@ pub async fn route_request(
     emit_activity_event(app_handle, &event);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn route_request_with_metadata(
     activity: &Arc<RwLock<ProxyActivityState>>,
     app_handle: Option<&tauri::AppHandle>,
