@@ -263,6 +263,7 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   enabled: false,
   autoFailoverEnabled: false,
   loadBalancingEnabled: false,
+  forceResponsesCompactGpt54: false,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
   streamingIdleTimeout: 60,

@@ -132,6 +132,7 @@ impl Database {
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
             circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60, circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+            force_responses_compact_gpt54 INTEGER NOT NULL DEFAULT 0,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -570,6 +571,11 @@ impl Database {
                         Self::migrate_v13_to_v14(conn)?;
                         Self::set_user_version(conn, 14)?;
                     }
+                    14 => {
+                        log::info!("迁移数据库从 v14 到 v15（Codex compact 模型覆盖开关）");
+                        Self::migrate_v14_to_v15(conn)?;
+                        Self::set_user_version(conn, 15)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -897,6 +903,7 @@ impl Database {
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
             circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60, circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
             circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+            force_responses_compact_gpt54 INTEGER NOT NULL DEFAULT 0,
             default_cost_multiplier TEXT NOT NULL DEFAULT '1',
             pricing_model_source TEXT NOT NULL DEFAULT 'response',
             created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1514,6 +1521,24 @@ impl Database {
         Self::add_column_if_missing(conn, "api_hub_sites", "last_change_summary", "TEXT")?;
 
         log::info!("v13 -> v14 迁移完成：已添加 Api-Hub 检查状态列");
+        Ok(())
+    }
+
+    /// v14 -> v15 迁移：Codex compact 可强制使用 gpt-5.4。
+    fn migrate_v14_to_v15(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::info!("v14 -> v15 迁移跳过：proxy_config 表不存在");
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "force_responses_compact_gpt54",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+
+        log::info!("v14 -> v15 迁移完成：已添加 proxy_config.force_responses_compact_gpt54");
         Ok(())
     }
 

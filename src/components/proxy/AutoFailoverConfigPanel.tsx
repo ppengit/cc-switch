@@ -165,6 +165,7 @@ export function AutoFailoverConfigPanel({
         autoFailoverEnabled: formData.autoFailoverEnabled,
         loadBalancingEnabled:
           config.loadBalancingEnabled && formData.autoFailoverEnabled,
+        forceResponsesCompactGpt54: config.forceResponsesCompactGpt54 ?? false,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
         streamingIdleTimeout: raw.streamingIdleTimeout,
@@ -214,7 +215,6 @@ export function AutoFailoverConfigPanel({
   }
 
   const isDisabled = disabled || updateConfig.isPending;
-
   return (
     <div className="border-0 rounded-none shadow-none bg-transparent">
       <div className="space-y-4">

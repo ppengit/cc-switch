@@ -34,6 +34,7 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+const FORCE_CODEX_RESPONSES_COMPACT_MODEL: &str = "gpt-5.4";
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -132,6 +133,8 @@ pub struct RequestForwarder {
     auto_failover_enabled_at_start: bool,
     /// 本请求开始时该应用的"是否启用分流"快照。
     load_balancing_enabled_at_start: bool,
+    /// Codex 专用：本请求是否允许将 `/responses/compact` 上游模型强制为 gpt-5.4。
+    force_responses_compact_gpt54: bool,
 }
 
 impl RequestForwarder {
@@ -160,6 +163,7 @@ impl RequestForwarder {
         request_epoch: u64,
         auto_failover_enabled_at_start: bool,
         load_balancing_enabled_at_start: bool,
+        force_responses_compact_gpt54: bool,
         max_retries: u32,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
@@ -191,6 +195,7 @@ impl RequestForwarder {
             request_epoch,
             auto_failover_enabled_at_start,
             load_balancing_enabled_at_start,
+            force_responses_compact_gpt54,
         }
     }
 
@@ -895,7 +900,7 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度
                     // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
-                    let category = self.categorize_proxy_error(&e);
+                    let category = self.categorize_proxy_error(app_type, endpoint, &e);
 
                     match category {
                         ErrorCategory::Retryable => {
@@ -1343,6 +1348,13 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
+
+        let request_body = force_codex_responses_compact_model_if_needed(
+            self.force_responses_compact_gpt54,
+            app_type,
+            endpoint,
+            request_body,
+        );
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
@@ -2084,7 +2096,12 @@ impl RequestForwarder {
         }
     }
 
-    fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
+    fn categorize_proxy_error(
+        &self,
+        app_type: &AppType,
+        endpoint: &str,
+        error: &ProxyError,
+    ) -> ErrorCategory {
         match error {
             // 网络和上游错误：都应该尝试下一个供应商
             ProxyError::Timeout(_) => ErrorCategory::Retryable,
@@ -2102,10 +2119,18 @@ impl RequestForwarder {
             //
             // 其他 4xx（401/403/404/408/409/429/451 等）和全部 5xx 都保留
             // Retryable —— 换一家 provider 可能持有不同的 key、配额、地域或模型映射。
-            ProxyError::UpstreamError { status, .. } => match *status {
-                400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => ErrorCategory::NonRetryable,
-                _ => ErrorCategory::Retryable,
-            },
+            ProxyError::UpstreamError { status, body } => {
+                if is_codex_compact_provider_capability_error(app_type, endpoint, *status, body) {
+                    ErrorCategory::Retryable
+                } else {
+                    match *status {
+                        400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => {
+                            ErrorCategory::NonRetryable
+                        }
+                        _ => ErrorCategory::Retryable,
+                    }
+                }
+            }
             // Provider 级配置/转换问题：换一个 Provider 可能就能成功
             ProxyError::ConfigError(_) => ErrorCategory::Retryable,
             ProxyError::TransformError(_) => ErrorCategory::Retryable,
@@ -2277,6 +2302,82 @@ fn rewrite_codex_responses_endpoint_to_chat(endpoint: &str) -> (String, Option<S
     };
 
     (rewritten, passthrough_query)
+}
+
+fn is_codex_responses_compact_endpoint(endpoint: &str) -> bool {
+    let (path, _) = split_endpoint_and_query(endpoint);
+    let path = path.trim().trim_end_matches('/');
+    let path = path.strip_prefix("/codex").unwrap_or(path);
+
+    matches!(
+        path,
+        "/responses/compact" | "/v1/responses/compact" | "/v1/v1/responses/compact"
+    )
+}
+
+fn force_codex_responses_compact_model_if_needed(
+    enabled: bool,
+    app_type: &AppType,
+    endpoint: &str,
+    mut body: Value,
+) -> Value {
+    if !enabled
+        || !matches!(app_type, AppType::Codex)
+        || !is_codex_responses_compact_endpoint(endpoint)
+    {
+        return body;
+    }
+
+    let Some(body_obj) = body.as_object_mut() else {
+        return body;
+    };
+
+    body_obj.insert(
+        "model".to_string(),
+        Value::String(FORCE_CODEX_RESPONSES_COMPACT_MODEL.to_string()),
+    );
+    body
+}
+
+fn is_codex_compact_provider_capability_error(
+    app_type: &AppType,
+    endpoint: &str,
+    status: u16,
+    body: &Option<String>,
+) -> bool {
+    if !matches!(app_type, AppType::Codex)
+        || !is_codex_responses_compact_endpoint(endpoint)
+        || !matches!(status, 400 | 422 | 501)
+    {
+        return false;
+    }
+
+    if status == 501 {
+        return true;
+    }
+
+    let Some(body) = body.as_deref() else {
+        return false;
+    };
+    let body = body.to_ascii_lowercase();
+    let mentions_compact = body.contains("responses_compact")
+        || body.contains("responses/compact")
+        || body.contains("response compact")
+        || body.contains("compact");
+    let mentions_capability = body.contains("api_format")
+        || body.contains("no candidate")
+        || body.contains("not found")
+        || body.contains("not supported")
+        || body.contains("unsupported")
+        || body.contains("not implemented")
+        || body.contains("does not support")
+        || body.contains("unavailable");
+    let mentions_model_missing = body.contains("model")
+        && (body.contains("not found")
+            || body.contains("not available")
+            || body.contains("unknown model"));
+
+    (mentions_compact && mentions_capability) || mentions_model_missing
 }
 
 fn rewrite_claude_transform_endpoint(
@@ -2769,6 +2870,7 @@ mod tests {
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
             load_balancing_enabled_at_start: false,
+            force_responses_compact_gpt54: false,
         }
     }
 
@@ -2801,6 +2903,7 @@ mod tests {
             request_epoch: 0,
             auto_failover_enabled_at_start,
             load_balancing_enabled_at_start: false,
+            force_responses_compact_gpt54: false,
         }
     }
 
@@ -2946,6 +3049,113 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&prepared).unwrap(),
             r#"{"a":2,"tools":[{"name":"lookup","parameters":{"properties":{"_id":{"type":"string"},"a":{"type":"string"},"b":{"type":"number"}},"type":"object"}}],"z":1}"#
+        );
+    }
+
+    #[test]
+    fn force_codex_responses_compact_model_only_for_codex_compact() {
+        let original = json!({
+            "model": "gpt-5.5",
+            "input": "compact this"
+        });
+
+        let compact = force_codex_responses_compact_model_if_needed(
+            true,
+            &AppType::Codex,
+            "/v1/responses/compact?foo=bar",
+            original.clone(),
+        );
+        assert_eq!(
+            compact.get("model").and_then(|value| value.as_str()),
+            Some(FORCE_CODEX_RESPONSES_COMPACT_MODEL)
+        );
+
+        let normal_responses = force_codex_responses_compact_model_if_needed(
+            true,
+            &AppType::Codex,
+            "/v1/responses",
+            original.clone(),
+        );
+        assert_eq!(normal_responses, original);
+
+        let claude_compact = force_codex_responses_compact_model_if_needed(
+            true,
+            &AppType::Claude,
+            "/v1/responses/compact",
+            original.clone(),
+        );
+        assert_eq!(claude_compact, original);
+
+        let disabled = force_codex_responses_compact_model_if_needed(
+            false,
+            &AppType::Codex,
+            "/v1/responses/compact",
+            original.clone(),
+        );
+        assert_eq!(disabled, original);
+    }
+
+    #[test]
+    fn codex_compact_provider_capability_errors_are_retryable_only_for_compact() {
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let err = ProxyError::UpstreamError {
+            status: 422,
+            body: Some(
+                r#"{"error":{"message":"no candidate for api_format=openai/responses_compact model not found"}}"#
+                    .to_string(),
+            ),
+        };
+
+        assert_eq!(
+            forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses/compact", &err),
+            ErrorCategory::Retryable
+        );
+        assert_eq!(
+            forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses", &err),
+            ErrorCategory::NonRetryable
+        );
+        assert_eq!(
+            forwarder.categorize_proxy_error(&AppType::Claude, "/v1/responses/compact", &err),
+            ErrorCategory::NonRetryable
+        );
+
+        let model_missing = ProxyError::UpstreamError {
+            status: 422,
+            body: Some(r#"{"error":{"message":"model gpt-5.5 not found"}}"#.to_string()),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/v1/responses/compact",
+                &model_missing,
+            ),
+            ErrorCategory::Retryable
+        );
+
+        let bad_request = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"invalid input item"}}"#.to_string()),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/v1/responses/compact",
+                &bad_request,
+            ),
+            ErrorCategory::NonRetryable
+        );
+
+        let not_implemented = ProxyError::UpstreamError {
+            status: 501,
+            body: None,
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/codex/v1/responses/compact?stream=true",
+                &not_implemented,
+            ),
+            ErrorCategory::Retryable
         );
     }
 

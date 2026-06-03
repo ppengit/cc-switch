@@ -2451,7 +2451,9 @@
       "invalidAddress": "Invalid address. Enter an IPv4 (e.g. 127.0.0.1), IPv6 (e.g. ::1), or localhost",
       "configSaved": "Routing configuration saved",
       "configSaveFailed": "Failed to save configuration",
-      "restartRequired": "Restart routing service for address or port changes to take effect"
+      "restartRequired": "Restart routing service for address or port changes to take effect",
+      "codexCompactGpt54": "Force gpt-5.4 for Codex compact",
+      "codexCompactGpt54Description": "When enabled, only Codex /responses/compact upstream requests have their model field temporarily rewritten to gpt-5.4. Normal responses and chat/completions requests are unaffected."
     },
     "switchFailed": "Switch failed: {{error}}",
     "takeover": {

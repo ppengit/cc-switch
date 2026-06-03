@@ -199,6 +199,7 @@ export interface AppProxyConfig {
   enabled: boolean;
   autoFailoverEnabled: boolean;
   loadBalancingEnabled: boolean;
+  forceResponsesCompactGpt54: boolean;
   maxRetries: number;
   streamingFirstByteTimeout: number;
   streamingIdleTimeout: number;

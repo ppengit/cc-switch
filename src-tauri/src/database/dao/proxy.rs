@@ -222,6 +222,7 @@ impl Database {
             let conn = lock_conn!(self.conn);
             conn.query_row(
                 "SELECT app_type, enabled, auto_failover_enabled, load_balancing_enabled,
+                        force_responses_compact_gpt54,
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests
@@ -233,15 +234,16 @@ impl Database {
                         enabled: row.get::<_, i32>(1)? != 0,
                         auto_failover_enabled: row.get::<_, i32>(2)? != 0,
                         load_balancing_enabled: row.get::<_, i32>(3)? != 0,
-                        max_retries: row.get::<_, i32>(4)? as u32,
-                        streaming_first_byte_timeout: row.get::<_, i32>(5)? as u32,
-                        streaming_idle_timeout: row.get::<_, i32>(6)? as u32,
-                        non_streaming_timeout: row.get::<_, i32>(7)? as u32,
-                        circuit_failure_threshold: row.get::<_, i32>(8)? as u32,
-                        circuit_success_threshold: row.get::<_, i32>(9)? as u32,
-                        circuit_timeout_seconds: row.get::<_, i32>(10)? as u32,
-                        circuit_error_rate_threshold: row.get(11)?,
-                        circuit_min_requests: row.get::<_, i32>(12)? as u32,
+                        force_responses_compact_gpt54: row.get::<_, i32>(4)? != 0,
+                        max_retries: row.get::<_, i32>(5)? as u32,
+                        streaming_first_byte_timeout: row.get::<_, i32>(6)? as u32,
+                        streaming_idle_timeout: row.get::<_, i32>(7)? as u32,
+                        non_streaming_timeout: row.get::<_, i32>(8)? as u32,
+                        circuit_failure_threshold: row.get::<_, i32>(9)? as u32,
+                        circuit_success_threshold: row.get::<_, i32>(10)? as u32,
+                        circuit_timeout_seconds: row.get::<_, i32>(11)? as u32,
+                        circuit_error_rate_threshold: row.get(12)?,
+                        circuit_min_requests: row.get::<_, i32>(13)? as u32,
                     })
                 },
             )
@@ -258,6 +260,7 @@ impl Database {
                     enabled: false,
                     auto_failover_enabled: false,
                     load_balancing_enabled: false,
+                    force_responses_compact_gpt54: false,
                     max_retries: 3,
                     streaming_first_byte_timeout: 60,
                     streaming_idle_timeout: 120,
@@ -302,6 +305,7 @@ impl Database {
                 circuit_timeout_seconds = ?11,
                 circuit_error_rate_threshold = ?12,
                 circuit_min_requests = ?13,
+                force_responses_compact_gpt54 = ?14,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
@@ -318,6 +322,11 @@ impl Database {
                 config.circuit_timeout_seconds as i32,
                 config.circuit_error_rate_threshold,
                 config.circuit_min_requests as i32,
+                if config.force_responses_compact_gpt54 {
+                    1
+                } else {
+                    0
+                },
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -986,6 +995,7 @@ mod tests {
             enabled: true,
             auto_failover_enabled: true,
             load_balancing_enabled: true,
+            force_responses_compact_gpt54: false,
             max_retries: 6,
             streaming_first_byte_timeout: 90,
             streaming_idle_timeout: 180,
@@ -1020,6 +1030,7 @@ mod tests {
             enabled: false,
             auto_failover_enabled: true,
             load_balancing_enabled: true,
+            force_responses_compact_gpt54: false,
             max_retries: 6,
             streaming_first_byte_timeout: 90,
             streaming_idle_timeout: 180,
@@ -1039,6 +1050,37 @@ mod tests {
         assert!(
             !updated.load_balancing_enabled,
             "DAO updates must enforce load balancing prerequisites for every caller"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_proxy_config_for_app_persists_codex_compact_override() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let config = AppProxyConfig {
+            app_type: "codex".to_string(),
+            enabled: true,
+            auto_failover_enabled: false,
+            load_balancing_enabled: false,
+            force_responses_compact_gpt54: true,
+            max_retries: 3,
+            streaming_first_byte_timeout: 60,
+            streaming_idle_timeout: 120,
+            non_streaming_timeout: 600,
+            circuit_failure_threshold: 4,
+            circuit_success_threshold: 2,
+            circuit_timeout_seconds: 60,
+            circuit_error_rate_threshold: 0.6,
+            circuit_min_requests: 10,
+        };
+
+        db.update_proxy_config_for_app(config).await?;
+
+        let updated = db.get_proxy_config_for_app("codex").await?;
+        assert!(
+            updated.force_responses_compact_gpt54,
+            "Codex compact override must round-trip through proxy_config"
         );
 
         Ok(())

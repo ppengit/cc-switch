@@ -9,7 +9,7 @@ use super::{AuthInfo, AuthStrategy, ProviderAdapter};
 use crate::provider::{CodexChatReasoningConfig, Provider};
 use crate::proxy::error::ProxyError;
 use regex::Regex;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
@@ -103,21 +103,105 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
 }
 
 fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
+    codex_provider_catalog_model_ids_vec(provider)
+        .into_iter()
+        .collect()
+}
+
+fn codex_provider_catalog_model_ids_vec(provider: &Provider) -> Vec<String> {
     provider
         .settings_config
         .get("modelCatalog")
         .and_then(|catalog| catalog.get("models"))
         .and_then(|models| models.as_array())
         .map(|models| {
+            let mut seen = HashSet::new();
             models
                 .iter()
-                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
+                .filter_map(|model| {
+                    model
+                        .get("model")
+                        .or_else(|| model.get("id"))
+                        .or_else(|| model.get("slug"))
+                        .and_then(|value| value.as_str())
+                })
                 .map(str::trim)
                 .filter(|model| !model.is_empty())
-                .map(ToString::to_string)
-                .collect()
+                .filter_map(|model| {
+                    if seen.insert(model.to_string()) {
+                        Some(model.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+/// Model IDs advertised by a Codex provider, ordered from explicit catalog
+/// entries to the provider's configured upstream model.
+pub fn codex_provider_model_ids(provider: &Provider) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+
+    for model in codex_provider_catalog_model_ids_vec(provider) {
+        if seen.insert(model.clone()) {
+            ids.push(model);
+        }
+    }
+
+    if let Some(model) = codex_provider_upstream_model(provider) {
+        if seen.insert(model.clone()) {
+            ids.push(model);
+        }
+    }
+
+    ids
+}
+
+/// Build an OpenAI-compatible `GET /v1/models` response for local Codex
+/// clients. This endpoint is intentionally served from local provider metadata:
+/// it is a readiness/catalog probe and should not fail just because a remote
+/// upstream is temporarily slow or circuit-open.
+pub fn codex_model_list_response(
+    providers: &[Provider],
+    fallback_model: Option<&str>,
+) -> JsonValue {
+    let mut seen = HashSet::new();
+    let mut data = Vec::new();
+
+    for provider in providers {
+        for model in codex_provider_model_ids(provider) {
+            if seen.insert(model.clone()) {
+                data.push(json!({
+                    "id": model,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "cc-switch",
+                }));
+            }
+        }
+    }
+
+    if data.is_empty() {
+        if let Some(model) = fallback_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            data.push(json!({
+                "id": model,
+                "object": "model",
+                "created": 0,
+                "owned_by": "cc-switch",
+            }));
+        }
+    }
+
+    json!({
+        "object": "list",
+        "data": data,
+    })
 }
 
 /// For Codex Chat providers, ensure the request uses the configured upstream
@@ -596,6 +680,55 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn test_codex_model_list_response_uses_catalog_then_config_model() {
+        let provider = create_provider(json!({
+            "model": "gpt-5.5",
+            "modelCatalog": {
+                "models": [
+                    { "id": "gpt-5.4" },
+                    { "model": "gpt-5.5" },
+                    { "slug": "kimi-k2" },
+                    { "model": "gpt-5.4" }
+                ]
+            }
+        }));
+
+        let response = codex_model_list_response(&[provider], Some("fallback-model"));
+        let ids = response
+            .get("data")
+            .and_then(|data| data.as_array())
+            .expect("model list data")
+            .iter()
+            .filter_map(|model| model.get("id").and_then(|id| id.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            response.get("object").and_then(|value| value.as_str()),
+            Some("list")
+        );
+        assert_eq!(ids, vec!["gpt-5.4", "gpt-5.5", "kimi-k2"]);
+    }
+
+    #[test]
+    fn test_codex_model_list_response_uses_fallback_when_empty() {
+        let response = codex_model_list_response(&[], Some(" gpt-5.5 "));
+        let data = response
+            .get("data")
+            .and_then(|data| data.as_array())
+            .expect("model list data");
+
+        assert_eq!(data.len(), 1);
+        assert_eq!(
+            data[0].get("id").and_then(|id| id.as_str()),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            data[0].get("object").and_then(|value| value.as_str()),
+            Some("model")
+        );
     }
 
     #[test]

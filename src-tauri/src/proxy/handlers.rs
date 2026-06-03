@@ -44,6 +44,8 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
+const CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
+
 // ============================================================================
 // 健康检查和状态查询（简单端点）
 // ============================================================================
@@ -137,6 +139,22 @@ pub async fn handle_claude_desktop_models(
     let response = crate::claude_desktop_config::model_list_response(provider)
         .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
     Ok(Json(response))
+}
+
+pub async fn handle_codex_models(
+    State(state): State<ProxyState>,
+) -> Result<Json<Value>, ProxyError> {
+    let providers = state
+        .db
+        .get_all_providers("codex")
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+        .into_values()
+        .collect::<Vec<_>>();
+
+    Ok(Json(super::providers::codex_model_list_response(
+        &providers,
+        Some(CODEX_DEFAULT_MODEL),
+    )))
 }
 
 async fn handle_messages_for_app(

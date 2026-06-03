@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/toggle-row";
+import { CodexCompactModelSwitch } from "@/components/proxy/CodexCompactModelSwitch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { toast } from "sonner";
 import { useFailoverQueue } from "@/lib/query/failover";
@@ -258,6 +259,8 @@ export function ProxyPanel({
             disabled={isProxyPending}
           />
         </div>
+
+        <CodexCompactModelSwitch />
 
         {/* [3] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>

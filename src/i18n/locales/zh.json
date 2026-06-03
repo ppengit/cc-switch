@@ -2451,7 +2451,9 @@
       "invalidAddress": "地址无效，请输入 IPv4（如 127.0.0.1）、IPv6（如 ::1）或 localhost",
       "configSaved": "路由配置已保存",
       "configSaveFailed": "保存配置失败",
-      "restartRequired": "修改地址或端口后需要重启路由服务才能生效"
+      "restartRequired": "修改地址或端口后需要重启路由服务才能生效",
+      "codexCompactGpt54": "Codex compact 强制使用 gpt-5.4",
+      "codexCompactGpt54Description": "开启后仅在 Codex /responses/compact 请求发往上游前临时把 model 改写为 gpt-5.4，不影响普通 responses 或 chat/completions 请求。"
     },
     "switchFailed": "切换失败: {{error}}",
     "takeover": {

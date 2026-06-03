@@ -282,6 +282,9 @@ pub struct AppProxyConfig {
     /// 该 app 分流开关；仅在 enabled + auto_failover_enabled 同时开启时生效
     #[serde(default)]
     pub load_balancing_enabled: bool,
+    /// Codex 专用：开启后 `/responses/compact` 上游请求强制使用 gpt-5.4
+    #[serde(default)]
+    pub force_responses_compact_gpt54: bool,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）
