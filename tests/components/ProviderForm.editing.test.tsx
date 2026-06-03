@@ -65,6 +65,57 @@ const renderProviderForm = (name = "Old Provider") => {
   return { ...view, onSubmit, onCancel };
 };
 
+const codexSettingsConfig = (options?: {
+  providerName?: string;
+  baseUrl?: string;
+  modelProvider?: string;
+}) => ({
+  auth: { OPENAI_API_KEY: "sk-old" },
+  config: [
+    `model_provider = "${options?.modelProvider ?? "custom"}"`,
+    'model = "gpt-5.4"',
+    "",
+    `[model_providers.${options?.modelProvider ?? "custom"}]`,
+    `name = "${options?.providerName ?? "AIHubMix"}"`,
+    `base_url = "${options?.baseUrl ?? "https://api.example.com/v1"}"`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "",
+  ].join("\n"),
+});
+
+const renderCodexProviderForm = (options?: {
+  providerId?: string;
+  name?: string;
+  settingsConfig?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+}) => {
+  const queryClient = createTestQueryClient();
+  const onSubmit = vi.fn();
+  const onCancel = vi.fn();
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ProviderForm
+        appId="codex"
+        providerId={options?.providerId ?? "codex-provider"}
+        submitLabel="Save"
+        onSubmit={onSubmit}
+        onCancel={onCancel}
+        initialData={{
+          name: options?.name ?? "Codex Provider",
+          websiteUrl: "https://old.example.com",
+          category: "third_party",
+          settingsConfig: options?.settingsConfig ?? codexSettingsConfig(),
+          meta: options?.meta,
+        }}
+      />
+    </QueryClientProvider>,
+  );
+
+  return { ...view, onSubmit, onCancel };
+};
+
 describe("ProviderForm edit mode", () => {
   it("keeps user edits when parent rerenders with the same provider id", () => {
     const view = renderProviderForm();
@@ -262,6 +313,99 @@ describe("ProviderForm edit mode", () => {
     expect(settingsConfig.config).toContain(`base_url = "${fullEndpoint}"`);
     expect(submitted.websiteUrl).toBe("https://old.example.com");
     expect(submitted.meta?.isFullUrl).toBe(true);
+  });
+
+  it("keeps Codex config edits when parent rerenders with the same provider id", async () => {
+    const view = renderCodexProviderForm();
+
+    const configEditor = (await screen.findByLabelText(
+      "json-editor-javascript",
+    )) as HTMLTextAreaElement;
+    await waitFor(() =>
+      expect(configEditor.value).toContain('model = "gpt-5.4"'),
+    );
+
+    fireEvent.change(configEditor, {
+      target: {
+        value: configEditor.value.replace(
+          'model = "gpt-5.4"',
+          'model = "edited-model"',
+        ),
+      },
+    });
+    expect(configEditor.value).toContain('model = "edited-model"');
+
+    view.rerender(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="codex"
+          providerId="codex-provider"
+          submitLabel="Save"
+          onSubmit={view.onSubmit}
+          onCancel={view.onCancel}
+          initialData={{
+            name: "Codex Provider",
+            websiteUrl: "https://old.example.com",
+            category: "third_party",
+            settingsConfig: codexSettingsConfig(),
+          }}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(
+      (screen.getByLabelText("json-editor-javascript") as HTMLTextAreaElement)
+        .value,
+    ).toContain('model = "edited-model"');
+  });
+
+  it("toggles Codex remote compaction in the config editor", async () => {
+    renderCodexProviderForm({ name: "AIHubMix" });
+
+    const remoteCompactionCheckbox = await screen.findByLabelText(
+      "codexConfig.enableRemoteCompaction",
+    );
+    expect(remoteCompactionCheckbox).not.toBeChecked();
+
+    fireEvent.click(remoteCompactionCheckbox);
+
+    const configEditor = screen.getByLabelText(
+      "json-editor-javascript",
+    ) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(remoteCompactionCheckbox).toBeChecked();
+      expect(configEditor.value).toContain('name = "OpenAI"');
+    });
+
+    fireEvent.click(remoteCompactionCheckbox);
+
+    await waitFor(() => {
+      expect(remoteCompactionCheckbox).not.toBeChecked();
+      expect(configEditor.value).toContain('name = "AIHubMix"');
+    });
+  });
+
+  it("saves and clears the Codex features strip-path toggle", async () => {
+    const { onSubmit } = renderCodexProviderForm({
+      meta: {
+        quirks: {
+          strip_paths: ["config.toml:features", "body:debug"],
+        },
+      },
+    });
+
+    const disableFeaturesCheckbox =
+      await screen.findByLabelText("屏蔽 [features] 段");
+    expect(disableFeaturesCheckbox).toBeChecked();
+
+    fireEvent.click(disableFeaturesCheckbox);
+    expect(disableFeaturesCheckbox).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.quirks?.strip_paths).toEqual([
+      "body:debug",
+    ]);
   });
 });
 

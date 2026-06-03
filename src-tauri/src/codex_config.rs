@@ -157,7 +157,7 @@ pub fn read_and_validate_codex_config_text() -> Result<String, AppError> {
     Ok(s)
 }
 
-fn active_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
+fn declared_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
     doc.get("model_provider")
         .and_then(|item| item.as_str())
         .map(str::trim)
@@ -165,12 +165,59 @@ fn active_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
         .map(str::to_string)
 }
 
+fn defined_codex_model_provider_ids(doc: &DocumentMut) -> Vec<String> {
+    doc.get("model_providers")
+        .and_then(|item| item.as_table())
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(key, item)| item.as_table().map(|_| key.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn codex_config_defines_model_provider(doc: &DocumentMut, provider_id: &str) -> bool {
+    doc.get("model_providers")
+        .and_then(|item| item.as_table())
+        .and_then(|table| table.get(provider_id))
+        .and_then(|item| item.as_table())
+        .is_some()
+}
+
+fn active_codex_model_provider(doc: &DocumentMut) -> Option<(String, bool)> {
+    let declared = declared_codex_model_provider_id(doc);
+    if let Some(provider_id) = declared {
+        if codex_config_defines_model_provider(doc, &provider_id) {
+            return Some((provider_id, false));
+        }
+
+        let defined_provider_ids = defined_codex_model_provider_ids(doc);
+        if defined_provider_ids.len() == 1 {
+            return Some((defined_provider_ids[0].clone(), true));
+        }
+
+        return Some((provider_id, false));
+    }
+
+    let defined_provider_ids = defined_codex_model_provider_ids(doc);
+    if defined_provider_ids.len() == 1 {
+        Some((defined_provider_ids[0].clone(), true))
+    } else {
+        None
+    }
+}
+
+fn active_codex_model_provider_id(doc: &DocumentMut) -> Option<String> {
+    active_codex_model_provider(doc).map(|(provider_id, _)| provider_id)
+}
+
 pub(crate) fn is_custom_codex_model_provider_id(id: &str) -> bool {
     let id = id.trim();
-    !id.is_empty()
-        && !CODEX_RESERVED_MODEL_PROVIDER_IDS
-            .iter()
-            .any(|reserved| reserved.eq_ignore_ascii_case(id))
+    // Codex model-provider keys are TOML table keys and are case-sensitive.
+    // Only the exact built-in ids are reserved; `[model_providers.OpenAI]`
+    // is user-authored and must not be conflated with built-in `openai`.
+    !id.is_empty() && !CODEX_RESERVED_MODEL_PROVIDER_IDS.contains(&id)
 }
 
 /// Write only Codex `config.toml` for provider switching.
@@ -212,14 +259,28 @@ pub fn extract_codex_api_key(auth: Option<&Value>, config_text: Option<&str>) ->
 pub fn extract_codex_base_url(config_text: &str) -> Option<String> {
     let doc = config_text.parse::<toml::Value>().ok()?;
 
-    if let Some(active_provider) = doc.get("model_provider").and_then(|v| v.as_str()) {
-        if let Some(base_url) = doc
-            .get("model_providers")
+    let providers = doc.get("model_providers").and_then(|v| v.as_table());
+    if let Some(active_provider) = doc
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(base_url) = providers
             .and_then(|providers| providers.get(active_provider))
             .and_then(|provider| provider.get("base_url"))
             .and_then(|v| v.as_str())
         {
             return Some(base_url.to_string());
+        }
+
+        if let Some(providers) = providers {
+            let mut provider_tables = providers.iter().filter(|(_, value)| value.is_table());
+            if let (Some((_, provider)), None) = (provider_tables.next(), provider_tables.next()) {
+                if let Some(base_url) = provider.get("base_url").and_then(|v| v.as_str()) {
+                    return Some(base_url.to_string());
+                }
+            }
         }
     }
 
@@ -943,10 +1004,15 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
-    let Some(provider_id) = active_codex_model_provider_id(&doc) else {
+    let Some((provider_id, should_repair_model_provider)) = active_codex_model_provider(&doc)
+    else {
         doc["experimental_bearer_token"] = toml_edit::value(token);
         return Ok(doc.to_string());
     };
+
+    if should_repair_model_provider {
+        doc["model_provider"] = toml_edit::value(provider_id.as_str());
+    }
 
     if !is_custom_codex_model_provider_id(&provider_id) {
         // Reserved Codex provider IDs are owned by the CLI. Keep third-party
@@ -984,7 +1050,11 @@ pub fn remove_codex_experimental_bearer_token_if(
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
-    if let Some(provider_id) = active_codex_model_provider_id(&doc) {
+    if let Some((provider_id, should_repair_model_provider)) = active_codex_model_provider(&doc) {
+        if should_repair_model_provider {
+            doc["model_provider"] = toml_edit::value(provider_id.as_str());
+        }
+
         if let Some(provider_table) = doc
             .get_mut("model_providers")
             .and_then(|item| item.as_table_mut())
@@ -1338,6 +1408,94 @@ experimental_bearer_token = "stale-table-key"
         assert_eq!(
             extract_codex_experimental_bearer_token(input).as_deref(),
             Some("top-level-key")
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_treats_mixed_case_openai_as_custom_id() {
+        let input = r#"model_provider = "OpenAI"
+model = "gpt-5.5"
+
+[model_providers.OpenAI]
+name = "OpenAI Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+
+        assert!(
+            parsed.get("experimental_bearer_token").is_none(),
+            "mixed-case user provider ids should not be treated as built-in openai"
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("OpenAI"))
+                .and_then(|v| v.get("experimental_bearer_token"))
+                .and_then(|v| v.as_str()),
+            Some("sk-test")
+        );
+        assert_eq!(
+            extract_codex_experimental_bearer_token(&output).as_deref(),
+            Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_repairs_single_renamed_provider_section() {
+        let input = r#"model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.OpenAI]
+name = "OpenAI Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+
+        assert_eq!(
+            parsed.get("model_provider").and_then(|v| v.as_str()),
+            Some("OpenAI")
+        );
+        assert!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .is_none(),
+            "renamed single provider section should not create a new custom table"
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("OpenAI"))
+                .and_then(|v| v.get("experimental_bearer_token"))
+                .and_then(|v| v.as_str()),
+            Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn extract_base_url_uses_single_renamed_provider_section() {
+        let input = r#"model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.OpenAI]
+name = "OpenAI Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+
+        assert_eq!(
+            extract_codex_base_url(input).as_deref(),
+            Some("https://relay.example/v1")
         );
     }
 

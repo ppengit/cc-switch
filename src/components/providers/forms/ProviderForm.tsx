@@ -211,6 +211,49 @@ const normalizeCodexChatReasoningForSave = (
   };
 };
 
+const getInitialClaudeApiKeyField = (
+  appId: AppId,
+  meta: ProviderMeta | undefined,
+  settingsConfig: Record<string, unknown> | undefined,
+): ClaudeApiKeyField => {
+  if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
+  if (meta?.apiKeyField) return meta.apiKeyField;
+
+  const env = settingsConfig?.env as Record<string, unknown> | undefined;
+  if (env?.ANTHROPIC_API_KEY !== undefined) return "ANTHROPIC_API_KEY";
+  return "ANTHROPIC_AUTH_TOKEN";
+};
+
+const getInitialClaudeApiFormat = (
+  appId: AppId,
+  meta: ProviderMeta | undefined,
+): ClaudeApiFormat => {
+  if (appId !== "claude") return "anthropic";
+  return meta?.apiFormat ?? "anthropic";
+};
+
+const getInitialCodexApiFormat = (
+  meta: ProviderMeta | undefined,
+  settingsConfig: Record<string, unknown> | undefined,
+): CodexApiFormat => {
+  if (meta?.apiFormat === "openai_chat") return "openai_chat";
+  if (meta?.apiFormat === "openai_responses") return "openai_responses";
+
+  return (
+    codexApiFormatFromWireApi(
+      extractCodexWireApi(
+        typeof settingsConfig?.config === "string" ? settingsConfig.config : "",
+      ),
+    ) ?? "openai_responses"
+  );
+};
+
+const getInitialDisableCodexFeatures = (
+  meta: ProviderMeta | undefined,
+): boolean =>
+  Array.isArray(meta?.quirks?.strip_paths) &&
+  (meta.quirks.strip_paths as string[]).includes("config.toml:features");
+
 export interface ProviderFormProps {
   appId: AppId;
   providerId?: string;
@@ -483,6 +526,8 @@ function ProviderFormFull({
   // 我们只在切到另一个供应商时（formSeedKey 变化）做一次性同步即可，期间用 ref 取值。
   const initialDataRef = useRef(initialData);
   initialDataRef.current = initialData;
+  const seededSettingsConfigRef = useRef(seededSettingsConfig);
+  seededSettingsConfigRef.current = seededSettingsConfig;
 
   useEffect(() => {
     const seed = initialDataRef.current;
@@ -577,16 +622,12 @@ function ProviderFormFull({
   );
 
   const [localApiKeyField, setLocalApiKeyField] = useState<ClaudeApiKeyField>(
-    () => {
-      if (appId !== "claude") return "ANTHROPIC_AUTH_TOKEN";
-      if (initialData?.meta?.apiKeyField) return initialData.meta.apiKeyField;
-      // Infer from existing config env
-      const env = (seededSettingsConfig as Record<string, unknown>)?.env as
-        | Record<string, unknown>
-        | undefined;
-      if (env?.ANTHROPIC_API_KEY !== undefined) return "ANTHROPIC_API_KEY";
-      return "ANTHROPIC_AUTH_TOKEN";
-    },
+    () =>
+      getInitialClaudeApiKeyField(
+        appId,
+        initialData?.meta,
+        seededSettingsConfig,
+      ),
   );
 
   // 软校验：收集"业务约束"类问题（空值/缺项），由用户决定是否仍要保存
@@ -640,8 +681,7 @@ function ProviderFormFull({
   });
 
   const [localApiFormat, setLocalApiFormat] = useState<ClaudeApiFormat>(() => {
-    if (appId !== "claude") return "anthropic";
-    return initialData?.meta?.apiFormat ?? "anthropic";
+    return getInitialClaudeApiFormat(appId, initialData?.meta);
   });
 
   const handleApiFormatChange = useCallback((format: ClaudeApiFormat) => {
@@ -693,11 +733,7 @@ function ProviderFormFull({
   // Codex 「屏蔽 [features] 段」快捷开关：
   // 实际存储位置是 meta.quirks.strip_paths 中是否包含 "config.toml:features"。
   const [disableCodexFeatures, setDisableCodexFeatures] = useState<boolean>(
-    () =>
-      Array.isArray(initialData?.meta?.quirks?.strip_paths) &&
-      (initialData?.meta?.quirks?.strip_paths as string[]).includes(
-        "config.toml:features",
-      ),
+    () => getInitialDisableCodexFeatures(initialData?.meta),
   );
 
   const codexInitialData = useMemo(() => {
@@ -732,6 +768,7 @@ function ProviderFormFull({
     resetCodexConfig,
   } = useCodexConfigState({
     initialData: codexInitialData,
+    initializationKey: formSeedKey,
   });
 
   const handleEndpointFullUrlDetection = useCallback(
@@ -765,22 +802,29 @@ function ProviderFormFull({
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
     useState<CodexApiFormat>(() => {
-      if (initialData?.meta?.apiFormat === "openai_chat") {
-        return "openai_chat";
-      }
-      if (initialData?.meta?.apiFormat === "openai_responses") {
-        return "openai_responses";
-      }
-      return (
-        codexApiFormatFromWireApi(
-          extractCodexWireApi(
-            typeof initialData?.settingsConfig?.config === "string"
-              ? initialData.settingsConfig.config
-              : "",
-          ),
-        ) ?? "openai_responses"
-      );
+      return getInitialCodexApiFormat(initialData?.meta, seededSettingsConfig);
     });
+
+  useEffect(() => {
+    const seed = initialDataRef.current;
+    const seedMeta = seed?.meta;
+    const seedSettingsConfig = seededSettingsConfigRef.current;
+
+    setLocalApiKeyField(
+      getInitialClaudeApiKeyField(appId, seedMeta, seedSettingsConfig),
+    );
+    setLocalApiFormat(getInitialClaudeApiFormat(appId, seedMeta));
+    setSelectedGitHubAccountId(
+      resolveManagedAccountId(seedMeta, "github_copilot"),
+    );
+    setSelectedCodexAccountId(resolveManagedAccountId(seedMeta, "codex_oauth"));
+    setCodexFastMode(seedMeta?.codexFastMode ?? false);
+    setDisableCodexFeatures(getInitialDisableCodexFeatures(seedMeta));
+    setLocalCodexApiFormat(
+      getInitialCodexApiFormat(seedMeta, seedSettingsConfig),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId, formSeedKey]);
 
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
@@ -925,6 +969,7 @@ function ProviderFormFull({
     envObjToString,
   } = useGeminiConfigState({
     initialData: geminiInitialData,
+    initializationKey: formSeedKey,
   });
 
   const updateGeminiEnvField = useCallback(

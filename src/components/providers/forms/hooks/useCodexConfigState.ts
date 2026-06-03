@@ -12,6 +12,7 @@ interface UseCodexConfigStateProps {
   initialData?: {
     settingsConfig?: Record<string, unknown>;
   };
+  initializationKey?: string;
 }
 
 // auth.json 缺 OPENAI_API_KEY 时回退到 config.toml 的 experimental_bearer_token
@@ -31,7 +32,10 @@ function pickCodexApiKey(
  * 管理 Codex 配置状态
  * Codex 配置包含两部分：auth.json (JSON) 和 config.toml (TOML 字符串)
  */
-export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
+export function useCodexConfigState({
+  initialData,
+  initializationKey,
+}: UseCodexConfigStateProps) {
   const [codexAuth, setCodexAuthState] = useState("");
   const [codexConfig, setCodexConfigState] = useState("");
   const [codexApiKey, setCodexApiKey] = useState("");
@@ -42,12 +46,17 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexAuthError, setCodexAuthError] = useState("");
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
+  const initialDataRef = useRef(initialData);
+  initialDataRef.current = initialData;
+  const autoInitializationData =
+    initializationKey === undefined ? initialData : undefined;
 
-  // 初始化 Codex 配置（编辑模式）
+  // 初始化 Codex 配置（编辑模式 / 切换表单种子）
   useEffect(() => {
-    if (!initialData) return;
+    const seed = initialDataRef.current;
+    if (!seed) return;
 
-    const config = initialData.settingsConfig;
+    const config = seed.settingsConfig;
     if (typeof config === "object" && config !== null) {
       // 设置 auth.json
       const auth = (config as any).auth || {};
@@ -88,13 +97,11 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
 
       // 提取 Base URL
       const initialBaseUrl = extractCodexBaseUrl(configStr);
-      if (initialBaseUrl) {
-        setCodexBaseUrl(initialBaseUrl);
-      }
+      setCodexBaseUrl(initialBaseUrl || "");
 
       setCodexApiKey(pickCodexApiKey(auth, configStr));
     }
-  }, [initialData]);
+  }, [autoInitializationData, initializationKey]);
 
   // 与 TOML 配置保持基础 URL 同步
   useEffect(() => {

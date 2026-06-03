@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 interface UseGeminiConfigStateProps {
   initialData?: {
     settingsConfig?: Record<string, unknown>;
   };
+  initializationKey?: string;
 }
 
 /**
@@ -12,6 +13,7 @@ interface UseGeminiConfigStateProps {
  */
 export function useGeminiConfigState({
   initialData,
+  initializationKey,
 }: UseGeminiConfigStateProps) {
   const [geminiEnv, setGeminiEnvState] = useState("");
   const [geminiConfig, setGeminiConfigState] = useState("");
@@ -20,6 +22,10 @@ export function useGeminiConfigState({
   const [geminiModel, setGeminiModel] = useState("");
   const [envError, setEnvError] = useState("");
   const [configError, setConfigError] = useState("");
+  const initialDataRef = useRef(initialData);
+  initialDataRef.current = initialData;
+  const autoInitializationData =
+    initializationKey === undefined ? initialData : undefined;
 
   // 将 JSON env 对象转换为 .env 格式字符串
   // 保留所有环境变量，已知 key 优先显示
@@ -73,11 +79,12 @@ export function useGeminiConfigState({
     [],
   );
 
-  // 初始化 Gemini 配置（编辑模式）
+  // 初始化 Gemini 配置（编辑模式 / 切换表单种子）
   useEffect(() => {
-    if (!initialData) return;
+    const seed = initialDataRef.current;
+    if (!seed) return;
 
-    const config = initialData.settingsConfig;
+    const config = seed.settingsConfig;
     if (typeof config === "object" && config !== null) {
       // 设置 env
       const env = (config as any).env || {};
@@ -90,15 +97,21 @@ export function useGeminiConfigState({
       // 提取 API Key、Base URL 和 Model
       if (typeof env.GEMINI_API_KEY === "string") {
         setGeminiApiKey(env.GEMINI_API_KEY);
+      } else {
+        setGeminiApiKey("");
       }
       if (typeof env.GOOGLE_GEMINI_BASE_URL === "string") {
         setGeminiBaseUrl(env.GOOGLE_GEMINI_BASE_URL);
+      } else {
+        setGeminiBaseUrl("");
       }
       if (typeof env.GEMINI_MODEL === "string") {
         setGeminiModel(env.GEMINI_MODEL);
+      } else {
+        setGeminiModel("");
       }
     }
-  }, [initialData, envObjToString]);
+  }, [autoInitializationData, envObjToString, initializationKey]);
 
   // 从 geminiEnv 中提取并同步 API Key、Base URL 和 Model
   useEffect(() => {

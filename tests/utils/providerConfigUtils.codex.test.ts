@@ -69,13 +69,13 @@ describe("Codex TOML utils", () => {
       'model_provider = "custom"',
       'model = "gpt-5.4"',
       'model_reasoning_effort = "xhigh"',
-      'disable_response_storage = true',
+      "disable_response_storage = true",
       "",
       "[model_providers.custom]",
       'name = "custom"',
       'base_url = ""',
       'wire_api = "responses"',
-      'requires_openai_auth = true',
+      "requires_openai_auth = true",
       "",
     ].join("\n");
 
@@ -117,8 +117,7 @@ describe("Codex TOML utils", () => {
       "",
     ].join("\n");
 
-    const fullEndpoint =
-      "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
+    const fullEndpoint = "https://api.xn--chy-js0fk50c.top/v1/chat/completions";
     const output = setCodexBaseUrl(input, fullEndpoint);
 
     expect(extractCodexBaseUrl(output)).toBe(fullEndpoint);
@@ -131,9 +130,9 @@ describe("Codex TOML utils", () => {
         "https://api.xn--chy-js0fk50c.top/v1/chat/completions",
       ),
     ).toBe(true);
-    expect(
-      isKnownFullApiEndpoint("https://relay.example/v1/responses"),
-    ).toBe(true);
+    expect(isKnownFullApiEndpoint("https://relay.example/v1/responses")).toBe(
+      true,
+    );
     expect(isKnownFullApiEndpoint("https://relay.example/v1")).toBe(false);
     expect(isKnownFullApiEndpoint("https://relay.example/api")).toBe(false);
   });
@@ -157,6 +156,29 @@ describe("Codex TOML utils", () => {
     expect(output).toContain(
       '[model_providers.custom]\nname = "custom"\nwire_api = "responses"\nbase_url = "https://api.example.com/v1"',
     );
+    expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
+  });
+
+  it("repairs model_provider when the only provider section was renamed", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      "",
+      "[model_providers.OpenAI]",
+      'name = "OpenAI Relay"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexBaseUrl(input)).toBeUndefined();
+
+    const output = setCodexBaseUrl(input, "https://api.example.com/v1");
+
+    expect(output).toContain('model_provider = "OpenAI"');
+    expect(output).toContain(
+      '[model_providers.OpenAI]\nname = "OpenAI Relay"\nwire_api = "responses"\nbase_url = "https://api.example.com/v1"',
+    );
+    expect(output).not.toContain("[model_providers.custom]");
     expect(extractCodexBaseUrl(output)).toBe("https://api.example.com/v1");
   });
 
@@ -463,6 +485,43 @@ describe("Codex TOML utils", () => {
     ].join("\n");
 
     expect(extractCodexExperimentalBearerToken(input)).toBe("top-level-key");
+  });
+
+  it("treats mixed-case OpenAI provider ids as custom sections", () => {
+    const input = [
+      'model_provider = "OpenAI"',
+      "",
+      "[model_providers.OpenAI]",
+      'name = "OpenAI Relay"',
+      'base_url = "https://relay.example/v1"',
+      'experimental_bearer_token = "old-key"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexExperimentalBearerToken(input)).toBe("old-key");
+
+    const updated = updateCodexExperimentalBearerToken(input, "new-key");
+
+    expect(extractCodexExperimentalBearerToken(updated)).toBe("new-key");
+    expect(updated).toContain("[model_providers.OpenAI]");
+    expect(updated.split("[model_providers.OpenAI]")[0]).not.toMatch(
+      /^experimental_bearer_token\s*=/m,
+    );
+    expect(updated).not.toContain("old-key");
+  });
+
+  it("extracts bearer token from the only renamed provider section", () => {
+    const input = [
+      'model_provider = "custom"',
+      "",
+      "[model_providers.OpenAI]",
+      'name = "OpenAI Relay"',
+      'base_url = "https://relay.example/v1"',
+      'experimental_bearer_token = "section-key"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexExperimentalBearerToken(input)).toBe("section-key");
   });
 
   it("extractCodexExperimentalBearerToken reads only top-level model_provider", () => {

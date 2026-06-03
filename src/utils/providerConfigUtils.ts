@@ -410,6 +410,8 @@ const TOML_WIRE_API_PATTERN =
   /^\s*wire_api\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_MODEL_PROVIDER_LINE_PATTERN =
   /^\s*model_provider\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+const TOML_MODEL_PROVIDER_REPLACE_PATTERN =
+  /^(\s*model_provider\s*=\s*)(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')(\s*(?:#.*)?)$/;
 const TOML_PROVIDER_NAME_PATTERN =
   /^\s*name\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
 const TOML_PROVIDER_NAME_REPLACE_PATTERN =
@@ -436,6 +438,12 @@ interface TomlAssignmentMatch {
   index: number;
   sectionName?: string;
   value: string;
+}
+
+interface CodexProviderSectionSelection {
+  providerName: string;
+  sectionName: string;
+  shouldRepairModelProvider: boolean;
 }
 
 const finalizeTomlText = (lines: string[]): string =>
@@ -526,22 +534,141 @@ const getCodexModelProviderName = (configText: string): string | undefined => {
 const getCodexProviderSectionName = (
   configText: string,
 ): string | undefined => {
-  const providerName = getCodexModelProviderName(configText);
-  return providerName ? `model_providers.${providerName}` : undefined;
+  return getCodexProviderSectionSelection(configText)?.sectionName;
 };
 
 const isCustomCodexModelProviderId = (providerName: string): boolean => {
-  const id = providerName.trim().toLowerCase();
+  // Codex provider ids are case-sensitive TOML keys. Only exact built-in ids
+  // are reserved; `OpenAI` is a valid custom key distinct from `openai`.
+  const id = providerName.trim();
   return Boolean(id) && !CODEX_RESERVED_MODEL_PROVIDER_IDS.has(id);
 };
 
 const getCodexCustomProviderSectionName = (
   configText: string,
 ): string | undefined => {
-  const providerName = getCodexModelProviderName(configText);
-  return providerName && isCustomCodexModelProviderId(providerName)
-    ? `model_providers.${providerName}`
+  return getCodexProviderSectionSelection(configText, {
+    customOnly: true,
+  })?.sectionName;
+};
+
+const CODEX_MODEL_PROVIDER_SECTION_PREFIX = "model_providers.";
+
+const getDefinedCodexProviderSections = (lines: string[]): string[] => {
+  const sections: string[] = [];
+  for (const line of lines) {
+    const match = line.match(TOML_SECTION_HEADER_PATTERN);
+    const sectionName = match?.[1]?.trim();
+    if (
+      sectionName?.startsWith(CODEX_MODEL_PROVIDER_SECTION_PREFIX) &&
+      !sectionName
+        .slice(CODEX_MODEL_PROVIDER_SECTION_PREFIX.length)
+        .includes(".")
+    ) {
+      sections.push(sectionName);
+    }
+  }
+  return sections;
+};
+
+const providerNameFromSectionName = (sectionName: string): string =>
+  sectionName.slice(CODEX_MODEL_PROVIDER_SECTION_PREFIX.length);
+
+const getCodexProviderSectionSelection = (
+  configText: string,
+  options: { customOnly?: boolean } = {},
+): CodexProviderSectionSelection | undefined => {
+  const normalized = normalizeTomlText(configText);
+  const lines = normalized ? normalized.split("\n") : [];
+  const providerName = getCodexModelProviderName(normalized);
+  const declaredSectionName = providerName
+    ? `${CODEX_MODEL_PROVIDER_SECTION_PREFIX}${providerName}`
     : undefined;
+
+  if (
+    providerName &&
+    (!options.customOnly || isCustomCodexModelProviderId(providerName)) &&
+    declaredSectionName &&
+    getTomlSectionRange(lines, declaredSectionName)
+  ) {
+    return {
+      providerName,
+      sectionName: declaredSectionName,
+      shouldRepairModelProvider: false,
+    };
+  }
+
+  const definedSections = getDefinedCodexProviderSections(lines).filter(
+    (sectionName) =>
+      !options.customOnly ||
+      isCustomCodexModelProviderId(providerNameFromSectionName(sectionName)),
+  );
+
+  if (declaredSectionName && !getTomlSectionRange(lines, declaredSectionName)) {
+    if (definedSections.length === 1) {
+      const sectionName = definedSections[0];
+      return {
+        providerName: providerNameFromSectionName(sectionName),
+        sectionName,
+        shouldRepairModelProvider: true,
+      };
+    }
+  }
+
+  if (
+    providerName &&
+    (!options.customOnly || isCustomCodexModelProviderId(providerName))
+  ) {
+    return {
+      providerName,
+      sectionName: `${CODEX_MODEL_PROVIDER_SECTION_PREFIX}${providerName}`,
+      shouldRepairModelProvider: false,
+    };
+  }
+
+  if (!providerName && definedSections.length === 1) {
+    const sectionName = definedSections[0];
+    return {
+      providerName: providerNameFromSectionName(sectionName),
+      sectionName,
+      shouldRepairModelProvider: true,
+    };
+  }
+
+  return undefined;
+};
+
+const repairTopLevelModelProviderIfNeeded = (
+  lines: string[],
+  selection: CodexProviderSectionSelection | undefined,
+): void => {
+  if (!selection?.shouldRepairModelProvider) return;
+
+  const replacementLine = `model_provider = ${tomlBasicString(
+    selection.providerName,
+  )}`;
+  const lineIndex = getTopLevelModelProviderLineIndex(lines);
+  if (lineIndex !== -1) {
+    lines[lineIndex] = TOML_MODEL_PROVIDER_REPLACE_PATTERN.test(
+      lines[lineIndex],
+    )
+      ? lines[lineIndex].replace(
+          TOML_MODEL_PROVIDER_REPLACE_PATTERN,
+          `$1${tomlBasicString(selection.providerName)}$2`,
+        )
+      : replacementLine;
+    return;
+  }
+
+  lines.splice(getTopLevelEndIndex(lines), 0, replacementLine);
+};
+
+const finalizeTomlTextWithProviderRepair = (
+  lines: string[],
+  selection: CodexProviderSectionSelection | undefined,
+): string => {
+  repairTopLevelModelProviderIfNeeded(lines, selection);
+  return finalizeTomlText(lines);
 };
 
 const findTomlAssignmentInRange = (
@@ -751,7 +878,8 @@ export const setCodexWireApi = (
 ): string => {
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
-  const targetSectionName = getCodexProviderSectionName(normalizedText);
+  const targetSelection = getCodexProviderSectionSelection(normalizedText);
+  const targetSectionName = targetSelection?.sectionName;
   const replacementLine = `wire_api = "${wireApi}"`;
   const allAssignments = findTomlAssignments(lines, TOML_WIRE_API_PATTERN);
   const recoverableAssignments = getRecoverableCodexProviderAssignments(
@@ -773,7 +901,7 @@ export const setCodexWireApi = (
 
     if (targetMatch) {
       lines[targetMatch.index] = replacementLine;
-      return finalizeTomlText(lines);
+      return finalizeTomlTextWithProviderRepair(lines, targetSelection);
     }
 
     if (recoverableAssignments.length === 1) {
@@ -784,14 +912,14 @@ export const setCodexWireApi = (
     if (targetSectionRange) {
       const insertIndex = getTomlSectionInsertIndex(lines, targetSectionRange);
       lines.splice(insertIndex, 0, replacementLine);
-      return finalizeTomlText(lines);
+      return finalizeTomlTextWithProviderRepair(lines, targetSelection);
     }
 
     if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
       lines.push("");
     }
     lines.push(`[${targetSectionName}]`, replacementLine);
-    return finalizeTomlText(lines);
+    return finalizeTomlTextWithProviderRepair(lines, targetSelection);
   }
 
   const topLevelEndIndex = getTopLevelEndIndex(lines);
@@ -927,10 +1055,9 @@ export const isCodexRemoteCompactionEnabled = (
 
     try {
       const parsed = parseToml(text) as Record<string, any>;
-      const providerId =
-        typeof parsed.model_provider === "string"
-          ? parsed.model_provider.trim()
-          : "";
+      const providerId = getCodexProviderSectionSelection(text, {
+        customOnly: true,
+      })?.providerName;
       if (!providerId || !isCustomCodexModelProviderId(providerId)) {
         return false;
       }
@@ -961,6 +1088,28 @@ export const isCodexRemoteCompactionEnabled = (
   }
 };
 
+const CODEX_REMOTE_COMPACTION_PROVIDER_NAME = "OpenAI";
+const CODEX_REMOTE_COMPACTION_DISABLED_FALLBACK_NAME = "OpenAI Compatible";
+
+const nonRemoteCompactionProviderName = (
+  fallbackProviderName: string | undefined,
+  configText: string,
+): string => {
+  const fallback = fallbackProviderName?.trim();
+  if (fallback === CODEX_REMOTE_COMPACTION_PROVIDER_NAME) {
+    return CODEX_REMOTE_COMPACTION_DISABLED_FALLBACK_NAME;
+  }
+  if (fallback) return fallback;
+
+  const providerId = getCodexModelProviderName(configText);
+  if (providerId === CODEX_REMOTE_COMPACTION_PROVIDER_NAME) {
+    return CODEX_REMOTE_COMPACTION_DISABLED_FALLBACK_NAME;
+  }
+  if (providerId) return providerId;
+
+  return "custom";
+};
+
 export const setCodexRemoteCompaction = (
   configText: string,
   enabled: boolean,
@@ -968,7 +1117,10 @@ export const setCodexRemoteCompaction = (
 ): string => {
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
-  const targetSectionName = getCodexCustomProviderSectionName(normalizedText);
+  const targetSelection = getCodexProviderSectionSelection(normalizedText, {
+    customOnly: true,
+  });
+  const targetSectionName = targetSelection?.sectionName;
 
   if (!targetSectionName) {
     return normalizedText;
@@ -976,10 +1128,8 @@ export const setCodexRemoteCompaction = (
 
   let targetSectionRange = getTomlSectionRange(lines, targetSectionName);
   const replacementName = enabled
-    ? "OpenAI"
-    : fallbackProviderName?.trim() ||
-      getCodexModelProviderName(normalizedText) ||
-      "custom";
+    ? CODEX_REMOTE_COMPACTION_PROVIDER_NAME
+    : nonRemoteCompactionProviderName(fallbackProviderName, normalizedText);
   const replacementLine = `name = ${tomlBasicString(replacementName)}`;
 
   if (targetSectionRange) {
@@ -995,7 +1145,7 @@ export const setCodexRemoteCompaction = (
         TOML_PROVIDER_NAME_REPLACE_PATTERN,
         `$1${tomlBasicString(replacementName)}$2`,
       );
-      return finalizeTomlText(lines);
+      return finalizeTomlTextWithProviderRepair(lines, targetSelection);
     }
 
     lines.splice(
@@ -1003,7 +1153,7 @@ export const setCodexRemoteCompaction = (
       0,
       replacementLine,
     );
-    return finalizeTomlText(lines);
+    return finalizeTomlTextWithProviderRepair(lines, targetSelection);
   }
 
   if (!enabled) return normalizedText;
@@ -1014,7 +1164,9 @@ export const setCodexRemoteCompaction = (
 
   lines.push(`[${targetSectionName}]`, replacementLine);
   targetSectionRange = getTomlSectionRange(lines, targetSectionName);
-  return targetSectionRange ? finalizeTomlText(lines) : normalizedText;
+  return targetSectionRange
+    ? finalizeTomlTextWithProviderRepair(lines, targetSelection)
+    : normalizedText;
 };
 
 // 从 Codex 的 TOML 配置文本中提取 base_url（支持单/双引号）
@@ -1078,10 +1230,16 @@ export const extractCodexExperimentalBearerToken = (
 
     try {
       const parsed = parseToml(text) as Record<string, any>;
-      const providerName =
-        typeof parsed.model_provider === "string"
-          ? parsed.model_provider.trim()
+      const declaredProviderName = getCodexModelProviderName(text);
+      const topLevelToken =
+        typeof parsed.experimental_bearer_token === "string"
+          ? parsed.experimental_bearer_token.trim()
           : undefined;
+      if (!declaredProviderName && topLevelToken) return topLevelToken;
+
+      const providerName = getCodexProviderSectionSelection(text, {
+        customOnly: true,
+      })?.providerName;
       const providerToken =
         providerName &&
         isCustomCodexModelProviderId(providerName) &&
@@ -1094,16 +1252,23 @@ export const extractCodexExperimentalBearerToken = (
             ].experimental_bearer_token.trim()
           : undefined;
       if (providerToken) return providerToken;
-      const topLevelToken =
-        typeof parsed.experimental_bearer_token === "string"
-          ? parsed.experimental_bearer_token.trim()
-          : undefined;
       if (topLevelToken) return topLevelToken;
     } catch {
       // Fall back to the line scanner for partially edited TOML.
     }
 
     const lines = text.split("\n");
+    const declaredProviderName = getCodexModelProviderName(text);
+    const topLevelMatch = findTomlAssignmentInRange(
+      lines,
+      TOML_EXPERIMENTAL_BEARER_TOKEN_PATTERN,
+      0,
+      getTopLevelEndIndex(lines),
+    );
+    if (!declaredProviderName && topLevelMatch?.value) {
+      return topLevelMatch.value;
+    }
+
     const targetSectionName = getCodexCustomProviderSectionName(text);
 
     if (targetSectionName) {
@@ -1122,12 +1287,6 @@ export const extractCodexExperimentalBearerToken = (
       }
     }
 
-    const topLevelMatch = findTomlAssignmentInRange(
-      lines,
-      TOML_EXPERIMENTAL_BEARER_TOKEN_PATTERN,
-      0,
-      getTopLevelEndIndex(lines),
-    );
     return topLevelMatch?.value;
   } catch {
     return undefined;
@@ -1150,7 +1309,10 @@ export const updateCodexExperimentalBearerToken = (
   }
 
   const lines = normalizedText.split("\n");
-  const targetSectionName = getCodexCustomProviderSectionName(normalizedText);
+  const targetSelection = getCodexProviderSectionSelection(normalizedText, {
+    customOnly: true,
+  });
+  const targetSectionName = targetSelection?.sectionName;
 
   let tokenLineIndex = -1;
   if (targetSectionName) {
@@ -1192,7 +1354,7 @@ export const updateCodexExperimentalBearerToken = (
         )
       : `experimental_bearer_token = "${escaped}"`;
   }
-  return finalizeTomlText(lines);
+  return finalizeTomlTextWithProviderRepair(lines, targetSelection);
 };
 
 // 从 Provider 对象中提取 Codex base_url（当 settingsConfig.config 为 TOML 字符串时）
@@ -1218,7 +1380,8 @@ export const setCodexBaseUrl = (
   const trimmed = baseUrl.trim();
   const normalizedText = normalizeTomlText(configText);
   const lines = normalizedText ? normalizedText.split("\n") : [];
-  const targetSectionName = getCodexProviderSectionName(normalizedText);
+  const targetSelection = getCodexProviderSectionSelection(normalizedText);
+  const targetSectionName = targetSelection?.sectionName;
   const allAssignments = findTomlAssignments(lines, TOML_BASE_URL_PATTERN);
   const recoverableAssignments = getRecoverableBaseUrlAssignments(
     allAssignments,
@@ -1242,7 +1405,7 @@ export const setCodexBaseUrl = (
 
       if (targetMatch) {
         lines.splice(targetMatch.index, 1);
-        return finalizeTomlText(lines);
+        return finalizeTomlTextWithProviderRepair(lines, targetSelection);
       }
     }
 
@@ -1271,7 +1434,7 @@ export const setCodexBaseUrl = (
 
     if (targetMatch) {
       lines[targetMatch.index] = replacementLine;
-      return finalizeTomlText(lines);
+      return finalizeTomlTextWithProviderRepair(lines, targetSelection);
     }
 
     if (recoverableAssignments.length === 1) {
@@ -1282,14 +1445,14 @@ export const setCodexBaseUrl = (
     if (targetSectionRange) {
       const insertIndex = getTomlSectionInsertIndex(lines, targetSectionRange);
       lines.splice(insertIndex, 0, replacementLine);
-      return finalizeTomlText(lines);
+      return finalizeTomlTextWithProviderRepair(lines, targetSelection);
     }
 
     if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
       lines.push("");
     }
     lines.push(`[${targetSectionName}]`, replacementLine);
-    return finalizeTomlText(lines);
+    return finalizeTomlTextWithProviderRepair(lines, targetSelection);
   }
 
   const topLevelEndIndex = getTopLevelEndIndex(lines);
