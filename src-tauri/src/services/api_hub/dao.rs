@@ -79,8 +79,9 @@ fn normalized_site_domain(value: &str) -> String {
 
 fn site_type_rank(site_type: &str) -> i32 {
     match site_type.to_ascii_lowercase().as_str() {
-        "new-api" | "newapi" => 0,
-        "sub2api" => 1,
+        "new-api" | "newapi" | "one-api" | "oneapi" | "one-hub" | "onehub" | "done-hub"
+        | "donehub" => 0,
+        "sub2api" | "sub2-api" => 1,
         _ => 2,
     }
 }
@@ -167,6 +168,30 @@ fn api_hub_get_models_on_conn(
         Ok(ModelInfo {
             name: row.get(0)?,
             enable_groups: groups_from_json(groups_json),
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn api_hub_get_tokens_on_conn(
+    conn: &Connection,
+    site_id: &str,
+) -> Result<Vec<TokenInfo>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT token_id, name, group_name, key, status, remain_quota, expired_at
+         FROM api_hub_tokens
+         WHERE site_id = ?1
+         ORDER BY token_id ASC",
+    )?;
+    let rows = stmt.query_map(params![site_id], |row| {
+        Ok(TokenInfo {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            group_name: row.get(2)?,
+            key: row.get(3)?,
+            status: row.get(4)?,
+            remain_quota: row.get(5)?,
+            expired_at: row.get(6)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -393,22 +418,37 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         for item in &mut items {
             item.group_count = api_hub_count_groups_with_models_on_conn(&conn, &item.id)?;
-            let aligned = conn
-                .query_row(
-                    "SELECT COUNT(*)
-                     FROM api_hub_tokens
-                     WHERE site_id = ?1
-                       AND group_name IS NOT NULL
-                       AND name = group_name
-                       AND key IS NOT NULL
-                       AND TRIM(key) <> ''
-                       AND key NOT LIKE '%*%'",
-                    params![item.id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap_or(0);
-            item.aligned_group_count = aligned;
-            item.is_aligned = item.group_count > 0 && aligned >= item.group_count;
+            let groups = api_hub_get_groups_on_conn(&conn, &item.id)?;
+            let models = api_hub_get_models_on_conn(&conn, &item.id)?;
+            let groups_with_models = group_names_with_models(&groups, &models);
+            let tokens = api_hub_get_tokens_on_conn(&conn, &item.id)?;
+            let aligned_group_count = tokens
+                .into_iter()
+                .filter_map(|token| {
+                    if !has_plain_api_key(token.key.as_deref()) {
+                        return None;
+                    }
+                    let group = token
+                        .group_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|group| !group.is_empty())
+                        .or_else(|| {
+                            let name = token.name.trim();
+                            if groups_with_models.contains(name) {
+                                Some(name)
+                            } else {
+                                None
+                            }
+                        })?;
+                    groups_with_models
+                        .contains(group)
+                        .then(|| group.to_string())
+                })
+                .collect::<HashSet<_>>()
+                .len() as i64;
+            item.aligned_group_count = aligned_group_count;
+            item.is_aligned = item.group_count > 0 && aligned_group_count >= item.group_count;
             item.model_matches = api_hub_model_matches_on_conn(&conn, &item.id, &model_search)?;
         }
         if !model_search.is_empty() {
@@ -504,24 +544,7 @@ impl Database {
 
     pub fn api_hub_get_tokens(&self, site_id: &str) -> Result<Vec<TokenInfo>, AppError> {
         let conn = lock_conn!(self.conn);
-        let mut stmt = conn.prepare(
-            "SELECT token_id, name, group_name, key, status, remain_quota, expired_at
-             FROM api_hub_tokens
-             WHERE site_id = ?1
-             ORDER BY group_name ASC, name ASC, token_id ASC",
-        )?;
-        let rows = stmt.query_map(params![site_id], |row| {
-            Ok(TokenInfo {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                group_name: row.get(2)?,
-                key: row.get(3)?,
-                status: row.get(4)?,
-                remain_quota: row.get(5)?,
-                expired_at: row.get(6)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        api_hub_get_tokens_on_conn(&conn, site_id)
     }
 
     pub fn api_hub_replace_cache(
@@ -707,26 +730,22 @@ impl Database {
         group: &str,
     ) -> Result<Option<TokenInfo>, AppError> {
         let conn = lock_conn!(self.conn);
-        conn.query_row(
-            "SELECT token_id, name, group_name, key, status, remain_quota, expired_at
-             FROM api_hub_tokens
-             WHERE site_id = ?1 AND name = ?2 AND group_name = ?2
-             LIMIT 1",
-            params![site_id, group],
-            |row| {
-                Ok(TokenInfo {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    group_name: row.get(2)?,
-                    key: row.get(3)?,
-                    status: row.get(4)?,
-                    remain_quota: row.get(5)?,
-                    expired_at: row.get(6)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(AppError::from)
+        let target = group.trim();
+        let mut tokens: Vec<TokenInfo> = api_hub_get_tokens_on_conn(&conn, site_id)?
+            .into_iter()
+            .filter(|token| {
+                token.group_name.as_deref().map(str::trim) == Some(target)
+                    || (token.group_name.is_none() && token.name.trim() == target)
+            })
+            .collect();
+        tokens.sort_by_key(|token| {
+            (
+                !has_plain_api_key(token.key.as_deref()),
+                token.name.trim() != target,
+                token.id,
+            )
+        });
+        Ok(tokens.into_iter().next())
     }
 
     pub fn api_hub_list_model_candidates(
@@ -1137,6 +1156,8 @@ mod tests {
         db.api_hub_import_accounts(&[
             backup_account_with_type("site-sub", "Sub2Api Hub", "sub2api"),
             backup_account_with_type("site-new", "New API Hub", "new-api"),
+            backup_account_with_type("site-one", "One Hub", "one-hub"),
+            backup_account_with_type("site-done", "Done Hub", "done-hub"),
             backup_account_with_type("site-other", "Other Hub", "custom"),
         ])
         .expect("import accounts");
@@ -1154,6 +1175,73 @@ mod tests {
             .expect("list sites");
 
         let ids: Vec<_> = page.items.into_iter().map(|site| site.id).collect();
-        assert_eq!(ids, vec!["site-new", "site-sub", "site-other"]);
+        assert_eq!(
+            ids,
+            vec![
+                "site-done",
+                "site-new",
+                "site-one",
+                "site-sub",
+                "site-other"
+            ]
+        );
+    }
+
+    #[test]
+    fn api_hub_list_sites_counts_unique_aligned_groups() {
+        let db = Database::memory().expect("memory database");
+        db.api_hub_import_accounts(&[backup_account("site-1", "Site One")])
+            .expect("import accounts");
+
+        db.api_hub_replace_cache(
+            "site-1",
+            &[GroupInfo {
+                name: "default".to_string(),
+                ratio: Some(1.0),
+                description: None,
+            }],
+            &[ModelInfo {
+                name: "gpt-5".to_string(),
+                enable_groups: vec!["default".to_string()],
+            }],
+            &[
+                TokenInfo {
+                    id: 10,
+                    name: "default".to_string(),
+                    group_name: Some("default".to_string()),
+                    key: Some("sk-one".to_string()),
+                    status: Some(1),
+                    remain_quota: None,
+                    expired_at: Some(-1),
+                },
+                TokenInfo {
+                    id: 11,
+                    name: "another-name".to_string(),
+                    group_name: Some("default".to_string()),
+                    key: Some("sk-two".to_string()),
+                    status: Some(1),
+                    remain_quota: None,
+                    expired_at: Some(-1),
+                },
+            ],
+            None,
+        )
+        .expect("replace cache");
+
+        let page = db
+            .api_hub_list_sites(SiteFilter {
+                search: None,
+                site_type: None,
+                sort_by: None,
+                sort_direction: None,
+                page: 1,
+                page_size: 20,
+                ..Default::default()
+            })
+            .expect("list sites");
+
+        assert_eq!(page.items[0].group_count, 1);
+        assert_eq!(page.items[0].aligned_group_count, 1);
+        assert!(page.items[0].is_aligned);
     }
 }

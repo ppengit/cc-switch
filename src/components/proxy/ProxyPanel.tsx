@@ -15,7 +15,6 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { ToggleRow } from "@/components/ui/toggle-row";
-import { CodexCompactModelSwitch } from "@/components/proxy/CodexCompactModelSwitch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { toast } from "sonner";
 import { useFailoverQueue } from "@/lib/query/failover";
@@ -36,6 +35,7 @@ import {
 import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface ProxyPanelProps {
   enableLocalProxy: boolean;
@@ -99,8 +99,12 @@ export function ProxyPanel({
         { closeButton: true },
       );
     } catch (error) {
+      const detail =
+        extractErrorMessage(error) ||
+        t("common.unknown", { defaultValue: "未知错误" });
       toast.error(
         t("proxy.takeover.failed", {
+          detail,
           defaultValue: "切换接管状态失败",
         }),
       );
@@ -259,8 +263,6 @@ export function ProxyPanel({
             disabled={isProxyPending}
           />
         </div>
-
-        <CodexCompactModelSwitch />
 
         {/* [3] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -67,6 +74,7 @@ import {
   getProviderLabel,
   getSessionKey,
 } from "./utils";
+import { cn } from "@/lib/utils";
 
 type ProviderFilter =
   | "all"
@@ -163,6 +171,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [renameValue, setRenameValue] = useState("");
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [isExportingSession, setIsExportingSession] = useState(false);
+  const [contextMenuSession, setContextMenuSession] =
+    useState<SessionMeta | null>(null);
+  const [contextMenuPosition, setContextMenuPosition] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
 
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
@@ -414,7 +428,53 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const handleOpenRenameDialog = useCallback((session: SessionMeta) => {
     setRenameSession(session);
     setRenameValue(formatSessionTitle(session));
+    setContextMenuSession(null);
+    setContextMenuPosition(null);
   }, []);
+
+  const handleSessionContextMenu = useCallback(
+    (event: MouseEvent<HTMLDivElement>, session: SessionMeta) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const menuWidth = 160;
+      const menuHeight = 96;
+      const x = Math.max(
+        8,
+        Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      );
+      const y = Math.max(
+        8,
+        Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+      );
+      setSelectedKey(getSessionKey(session));
+      setContextMenuSession(session);
+      setContextMenuPosition({ x, y });
+    },
+    [],
+  );
+
+  const closeSessionContextMenu = useCallback(() => {
+    setContextMenuSession(null);
+    setContextMenuPosition(null);
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenuPosition || !contextMenuSession) return;
+
+    const handlePointerDown = () => closeSessionContextMenu();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeSessionContextMenu();
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeSessionContextMenu, contextMenuPosition, contextMenuSession]);
 
   const handleSaveRename = useCallback(async () => {
     if (!renameSession || isSavingRename) return;
@@ -800,249 +860,241 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                     </div>
                     <div
                       data-testid="session-list-filter-row"
-                      className="flex min-w-0 flex-wrap items-center gap-1"
+                      className="grid min-w-0 grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-center gap-1"
                     >
-                      <div className="flex items-center gap-1 shrink-0">
-                        {(selectionMode ||
-                          deletableFilteredSessions.length > 0) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant={selectionMode ? "secondary" : "ghost"}
-                                size="icon"
-                                className={
-                                  selectionMode
-                                    ? "size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
-                                    : "size-7"
-                                }
-                                aria-label={
-                                  selectionMode
-                                    ? t("sessionManager.exitBatchModeTooltip", {
-                                        defaultValue: "退出批量管理",
-                                      })
-                                    : t("sessionManager.manageBatchTooltip", {
-                                        defaultValue: "批量管理",
-                                      })
-                                }
-                                onClick={() => {
-                                  if (selectionMode) {
-                                    exitSelectionMode();
-                                  } else {
-                                    setSelectionMode(true);
-                                  }
-                                }}
-                              >
-                                <CheckSquare className="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {selectionMode
-                                ? t("sessionManager.exitBatchModeTooltip", {
-                                    defaultValue: "退出批量管理",
-                                  })
-                                : t("sessionManager.manageBatchTooltip", {
-                                    defaultValue: "批量管理",
-                                  })}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
+                      {(selectionMode ||
+                        deletableFilteredSessions.length > 0) && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
-                              variant="ghost"
+                              variant={selectionMode ? "secondary" : "ghost"}
                               size="icon"
-                              className="size-7"
+                              className={
+                                selectionMode
+                                  ? "size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
+                                  : "size-7"
+                              }
+                              aria-label={
+                                selectionMode
+                                  ? t("sessionManager.exitBatchModeTooltip", {
+                                      defaultValue: "退出批量管理",
+                                    })
+                                  : t("sessionManager.manageBatchTooltip", {
+                                      defaultValue: "批量管理",
+                                    })
+                              }
                               onClick={() => {
-                                setIsSearchOpen(true);
-                                setTimeout(
-                                  () => searchInputRef.current?.focus(),
-                                  0,
-                                );
+                                if (selectionMode) {
+                                  exitSelectionMode();
+                                } else {
+                                  setSelectionMode(true);
+                                }
                               }}
                             >
-                              <Search className="size-3.5" />
+                              <CheckSquare className="size-3.5" />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            {t("sessionManager.searchSessions")}
+                            {selectionMode
+                              ? t("sessionManager.exitBatchModeTooltip", {
+                                  defaultValue: "退出批量管理",
+                                })
+                              : t("sessionManager.manageBatchTooltip", {
+                                  defaultValue: "批量管理",
+                                })}
                           </TooltipContent>
                         </Tooltip>
+                      )}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            onClick={() => {
+                              setIsSearchOpen(true);
+                              setTimeout(
+                                () => searchInputRef.current?.focus(),
+                                0,
+                              );
+                            }}
+                          >
+                            <Search className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {t("sessionManager.searchSessions")}
+                        </TooltipContent>
+                      </Tooltip>
 
+                      <Select
+                        value={providerFilter}
+                        onValueChange={(value) =>
+                          setProviderFilter(value as ProviderFilter)
+                        }
+                      >
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <SelectTrigger className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted">
+                              <ProviderIcon
+                                icon={
+                                  providerFilter === "all"
+                                    ? "apps"
+                                    : getProviderIconName(providerFilter)
+                                }
+                                name={providerFilter}
+                                size={14}
+                              />
+                            </SelectTrigger>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {providerFilter === "all"
+                              ? t("sessionManager.providerFilterAll")
+                              : providerFilter}
+                          </TooltipContent>
+                        </Tooltip>
+                        <SelectContent>
+                          <SelectItem value="all">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon icon="apps" name="all" size={14} />
+                              <span>
+                                {t("sessionManager.providerFilterAll")}
+                              </span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="codex">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon
+                                icon="openai"
+                                name="codex"
+                                size={14}
+                              />
+                              <span>Codex</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="claude">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon
+                                icon="claude"
+                                name="claude"
+                                size={14}
+                              />
+                              <span>Claude Code</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="opencode">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon
+                                icon="opencode"
+                                name="opencode"
+                                size={14}
+                              />
+                              <span>OpenCode</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="openclaw">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon
+                                icon="openclaw"
+                                name="openclaw"
+                                size={14}
+                              />
+                              <span>OpenClaw</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="gemini">
+                            <div className="flex items-center gap-2">
+                              <ProviderIcon
+                                icon="gemini"
+                                name="gemini"
+                                size={14}
+                              />
+                              <span>Gemini CLI</span>
+                            </div>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      {projectOptions.length > 0 ? (
                         <Select
-                          value={providerFilter}
-                          onValueChange={(value) =>
-                            setProviderFilter(value as ProviderFilter)
-                          }
+                          value={projectFilter}
+                          onValueChange={setProjectFilter}
                         >
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <SelectTrigger className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted">
-                                <ProviderIcon
-                                  icon={
-                                    providerFilter === "all"
-                                      ? "apps"
-                                      : getProviderIconName(providerFilter)
-                                  }
-                                  name={providerFilter}
-                                  size={14}
+                              <SelectTrigger
+                                aria-label={t("sessionManager.projectFilter", {
+                                  defaultValue: "项目筛选",
+                                })}
+                                className="h-7 min-w-0 gap-1.5 border-0 bg-transparent px-2 hover:bg-muted"
+                              >
+                                <SelectValue
+                                  placeholder={t(
+                                    "sessionManager.projectFilterAll",
+                                    {
+                                      defaultValue: "全部项目",
+                                    },
+                                  )}
                                 />
                               </SelectTrigger>
                             </TooltipTrigger>
                             <TooltipContent>
-                              {providerFilter === "all"
-                                ? t("sessionManager.providerFilterAll")
-                                : providerFilter}
+                              {projectFilter === ALL_PROJECTS_FILTER
+                                ? t("sessionManager.projectFilterAll", {
+                                    defaultValue: "全部项目",
+                                  })
+                                : projectOptions.find(
+                                    (option) => option.key === projectFilter,
+                                  )?.path || t("sessionManager.projectFilter")}
                             </TooltipContent>
                           </Tooltip>
-                          <SelectContent>
-                            <SelectItem value="all">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="apps"
-                                  name="all"
-                                  size={14}
-                                />
+                          <SelectContent className="max-w-[300px]">
+                            <SelectItem value={ALL_PROJECTS_FILTER}>
+                              <div className="flex min-w-0 items-center gap-2">
+                                <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
                                 <span>
-                                  {t("sessionManager.providerFilterAll")}
+                                  {t("sessionManager.projectFilterAll", {
+                                    defaultValue: "全部项目",
+                                  })}
                                 </span>
                               </div>
                             </SelectItem>
-                            <SelectItem value="codex">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="openai"
-                                  name="codex"
-                                  size={14}
-                                />
-                                <span>Codex</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="claude">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="claude"
-                                  name="claude"
-                                  size={14}
-                                />
-                                <span>Claude Code</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="opencode">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="opencode"
-                                  name="opencode"
-                                  size={14}
-                                />
-                                <span>OpenCode</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="openclaw">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="openclaw"
-                                  name="openclaw"
-                                  size={14}
-                                />
-                                <span>OpenClaw</span>
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="gemini">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon
-                                  icon="gemini"
-                                  name="gemini"
-                                  size={14}
-                                />
-                                <span>Gemini CLI</span>
-                              </div>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-
-                        {projectOptions.length > 0 && (
-                          <Select
-                            value={projectFilter}
-                            onValueChange={setProjectFilter}
-                          >
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <SelectTrigger
-                                  aria-label={t(
-                                    "sessionManager.projectFilter",
-                                    {
-                                      defaultValue: "项目筛选",
-                                    },
-                                  )}
-                                  className="h-7 w-[112px] gap-1.5 border-0 bg-transparent px-2 hover:bg-muted"
-                                >
-                                  <SelectValue
-                                    placeholder={t(
-                                      "sessionManager.projectFilterAll",
-                                      {
-                                        defaultValue: "全部项目",
-                                      },
-                                    )}
-                                  />
-                                </SelectTrigger>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                {projectFilter === ALL_PROJECTS_FILTER
-                                  ? t("sessionManager.projectFilterAll", {
-                                      defaultValue: "全部项目",
-                                    })
-                                  : projectOptions.find(
-                                      (option) => option.key === projectFilter,
-                                    )?.path ||
-                                    t("sessionManager.projectFilter")}
-                              </TooltipContent>
-                            </Tooltip>
-                            <SelectContent className="max-w-[300px]">
-                              <SelectItem value={ALL_PROJECTS_FILTER}>
+                            {projectOptions.map((option) => (
+                              <SelectItem
+                                key={option.key}
+                                value={option.key}
+                                title={option.path ?? option.label}
+                              >
                                 <div className="flex min-w-0 items-center gap-2">
                                   <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                                  <span>
-                                    {t("sessionManager.projectFilterAll", {
-                                      defaultValue: "全部项目",
-                                    })}
+                                  <span className="truncate">
+                                    {option.label}
+                                  </span>
+                                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                                    {option.count}
                                   </span>
                                 </div>
                               </SelectItem>
-                              {projectOptions.map((option) => (
-                                <SelectItem
-                                  key={option.key}
-                                  value={option.key}
-                                  title={option.path ?? option.label}
-                                >
-                                  <div className="flex min-w-0 items-center gap-2">
-                                    <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="truncate">
-                                      {option.label}
-                                    </span>
-                                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                                      {option.count}
-                                    </span>
-                                  </div>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        )}
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <div />
+                      )}
 
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7"
-                              onClick={() => void refetch()}
-                            >
-                              <RefreshCw className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>{t("common.refresh")}</TooltipContent>
-                        </Tooltip>
-                      </div>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            onClick={() => void refetch()}
+                          >
+                            <RefreshCw className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{t("common.refresh")}</TooltipContent>
+                      </Tooltip>
                     </div>
                     {selectionMode && (
                       <div className="grid gap-3 rounded-md border bg-muted/40 px-3 py-2.5">
@@ -1184,6 +1236,12 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                         onSelect={setSelectedKey}
                                         onToggleChecked={(checked) =>
                                           toggleSessionChecked(session, checked)
+                                        }
+                                        onContextMenu={(event) =>
+                                          handleSessionContextMenu(
+                                            event,
+                                            session,
+                                          )
                                         }
                                       />
                                     );
@@ -1525,6 +1583,51 @@ export function SessionManagerPage({ appId }: { appId: string }) {
           </div>
         </div>
       </div>
+      {contextMenuPosition && contextMenuSession && (
+        <div
+          role="menu"
+          aria-label={formatSessionTitle(contextMenuSession)}
+          className="fixed z-50 w-40 overflow-hidden rounded-md border border-border-default bg-popover p-1 text-popover-foreground shadow-md"
+          style={{
+            left: contextMenuPosition.x,
+            top: contextMenuPosition.y,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent focus:bg-accent"
+            onClick={() => {
+              handleOpenRenameDialog(contextMenuSession);
+            }}
+          >
+            <Pencil className="size-3.5" />
+            {t("sessionManager.rename", { defaultValue: "修改名称" })}
+          </button>
+          <div className="-mx-1 my-1 h-px bg-border-default" />
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!contextMenuSession.sourcePath}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent focus:bg-accent",
+              contextMenuSession.sourcePath
+                ? "text-destructive"
+                : "cursor-not-allowed opacity-50",
+            )}
+            onClick={() => {
+              if (contextMenuSession.sourcePath) {
+                setDeleteTargets([contextMenuSession]);
+                closeSessionContextMenu();
+              }
+            }}
+          >
+            <Trash2 className="size-3.5" />
+            {t("sessionManager.delete", { defaultValue: "删除会话" })}
+          </button>
+        </div>
+      )}
       <ConfirmDialog
         isOpen={Boolean(deleteTargets)}
         title={

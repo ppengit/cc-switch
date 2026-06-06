@@ -16,7 +16,6 @@ use super::{
         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
-    provider_router::LoadBalancingSlotGuard,
     providers::{
         codex_chat_history::record_responses_sse_stream, get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
@@ -43,6 +42,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 const CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
 
@@ -220,7 +220,6 @@ async fn handle_messages_for_app(
     };
 
     let connection_guard = result.connection_guard.take();
-    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let api_format = result
         .claude_api_format
@@ -243,7 +242,6 @@ async fn handle_messages_for_app(
             is_stream,
             &api_format,
             connection_guard,
-            load_balancing_guard,
         )
         .await;
     }
@@ -255,7 +253,6 @@ async fn handle_messages_for_app(
         &state,
         &CLAUDE_PARSER_CONFIG,
         connection_guard,
-        load_balancing_guard,
     )
     .await
 }
@@ -299,7 +296,6 @@ async fn handle_claude_transform(
     is_stream: bool,
     api_format: &str,
     connection_guard: Option<ActiveConnectionGuard>,
-    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
     let is_codex_oauth = ctx
@@ -347,13 +343,14 @@ async fn handle_claude_transform(
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
 
+        let status_code = status.as_u16();
+
         // 创建使用量收集器；关闭 usage logging 时不要再解析转换后的 SSE。
         let usage_collector = if usage_logging_enabled(state) {
             let state = state.clone();
             let provider_id = ctx.provider.id.clone();
             let request_model = ctx.request_model.clone();
             let provider_name = ctx.provider.name.clone();
-            let status_code = status.as_u16();
             let start_time = ctx.start_time;
             let request_id = ctx.request_id.clone();
             let session_id = ctx.session_id.clone();
@@ -427,6 +424,26 @@ async fn handle_claude_transform(
 
         // 获取流式超时配置
         let timeout_config = ctx.streaming_timeout_config();
+        let finish_activity = {
+            let proxy_activity = state.proxy_activity.clone();
+            let app_handle = state.app_handle.clone();
+            let request_id = ctx.request_id.clone();
+            Arc::new(move || {
+                let proxy_activity = proxy_activity.clone();
+                let app_handle = app_handle.clone();
+                let request_id = request_id.clone();
+                tokio::spawn(async move {
+                    finish_request(
+                        &proxy_activity,
+                        app_handle.as_ref(),
+                        &request_id,
+                        Some(status_code),
+                        None,
+                    )
+                    .await;
+                });
+            }) as Arc<dyn Fn() + Send + Sync + 'static>
+        };
 
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
@@ -434,7 +451,7 @@ async fn handle_claude_transform(
             usage_collector,
             timeout_config,
             connection_guard,
-            load_balancing_guard,
+            Some(finish_activity),
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -695,7 +712,6 @@ pub async fn handle_chat_completions(
     };
 
     let connection_guard = result.connection_guard.take();
-    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -705,7 +721,6 @@ pub async fn handle_chat_completions(
         &state,
         &OPENAI_PARSER_CONFIG,
         connection_guard,
-        load_balancing_guard,
     )
     .await
 }
@@ -763,7 +778,6 @@ pub async fn handle_responses(
     };
 
     let connection_guard = result.connection_guard.take();
-    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -774,7 +788,6 @@ pub async fn handle_responses(
             &state,
             is_stream,
             connection_guard,
-            load_balancing_guard,
             codex_tool_context,
         )
         .await;
@@ -786,7 +799,6 @@ pub async fn handle_responses(
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
-        load_balancing_guard,
     )
     .await
 }
@@ -844,7 +856,6 @@ pub async fn handle_responses_compact(
     };
 
     let connection_guard = result.connection_guard.take();
-    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -855,7 +866,6 @@ pub async fn handle_responses_compact(
             &state,
             is_stream,
             connection_guard,
-            load_balancing_guard,
             codex_tool_context,
         )
         .await;
@@ -867,7 +877,6 @@ pub async fn handle_responses_compact(
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
-        load_balancing_guard,
     )
     .await
 }
@@ -878,7 +887,6 @@ async fn handle_codex_chat_to_responses_transform(
     state: &ProxyState,
     is_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
-    load_balancing_guard: Option<LoadBalancingSlotGuard>,
     tool_context: transform_codex_chat::CodexToolContext,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
@@ -957,7 +965,27 @@ async fn handle_codex_chat_to_responses_transform(
             usage_collector,
             ctx.streaming_timeout_config(),
             connection_guard,
-            load_balancing_guard,
+            Some({
+                let proxy_activity = state.proxy_activity.clone();
+                let app_handle = state.app_handle.clone();
+                let request_id = ctx.request_id.clone();
+                let status_code = status.as_u16();
+                Arc::new(move || {
+                    let proxy_activity = proxy_activity.clone();
+                    let app_handle = app_handle.clone();
+                    let request_id = request_id.clone();
+                    tokio::spawn(async move {
+                        finish_request(
+                            &proxy_activity,
+                            app_handle.as_ref(),
+                            &request_id,
+                            Some(status_code),
+                            None,
+                        )
+                        .await;
+                    });
+                }) as Arc<dyn Fn() + Send + Sync + 'static>
+            }),
         );
 
         let mut headers = axum::http::HeaderMap::new();
@@ -975,7 +1003,6 @@ async fn handle_codex_chat_to_responses_transform(
     }
 
     let _connection_guard = connection_guard;
-    let _load_balancing_guard = load_balancing_guard;
     let body_timeout =
         if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
             std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
@@ -1199,19 +1226,39 @@ fn codex_proxy_error_json(
         return body;
     };
 
-    let cause = error_obj
-        .get("message")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or_else(|| get_error_message(error));
-
-    let status_fragment = upstream_status
-        .map(|status| format!("; upstream_status: HTTP {status}"))
-        .unwrap_or_default();
-    let message = format!(
-        "CC Switch local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {request_model}{status_fragment}; cause: {cause}"
-    );
+    let message = if upstream_status == Some(413) {
+        // 413 来自上游渠道商的网关（典型是 nginx 的 client_max_body_size），不是 CC
+        // Switch 本地代理的限制（本地 DefaultBodyLimit 已放到 200MB）。上游响应体往往是
+        // 一整段 nginx HTML，对用户毫无价值，这里替换成明确指向上游 + 可操作的指引，
+        // 避免「以为是 CC Switch 封装了 nginx / 是本地代理的锅」这种反复出现的误解。
+        format!(
+            concat!(
+                "Upstream provider rejected the request with HTTP 413 (Payload Too Large). ",
+                "The request body exceeds the upstream gateway's size limit; this is the ",
+                "provider's server-side limit, not a CC Switch limit. ",
+                "Provider: {provider}; model: {model}; endpoint: {endpoint}. ",
+                "To recover, shrink the request: run /compact, remove large pasted logs or ",
+                "inline images, or ask the provider to raise its request body limit ",
+                "(e.g. nginx client_max_body_size)."
+            ),
+            provider = provider_name,
+            model = request_model,
+            endpoint = endpoint,
+        )
+    } else {
+        let cause = error_obj
+            .get("message")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or_else(|| get_error_message(error));
+        let status_fragment = upstream_status
+            .map(|status| format!("; upstream_status: HTTP {status}"))
+            .unwrap_or_default();
+        format!(
+            "CC Switch local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {request_model}{status_fragment}; cause: {cause}"
+        )
+    };
 
     error_obj.insert(
         "message".to_string(),
@@ -1366,7 +1413,6 @@ pub async fn handle_gemini(
     };
 
     let connection_guard = result.connection_guard.take();
-    let load_balancing_guard = result.load_balancing_guard.take();
     ctx.provider = result.provider;
     let response = result.response;
 
@@ -1376,7 +1422,6 @@ pub async fn handle_gemini(
         &state,
         &GEMINI_PARSER_CONFIG,
         connection_guard,
-        load_balancing_guard,
     )
     .await
 }
@@ -1689,5 +1734,37 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
         assert!(message.contains("upstream gateway failed"));
         assert_eq!(body["error"]["code"], 2013);
         assert_eq!(body["error"]["upstream_status"], 502);
+    }
+
+    #[test]
+    fn codex_proxy_413_points_to_upstream_not_local_proxy() {
+        // 模拟上游渠道商 nginx 因 client_max_body_size 返回的 413 HTML 页面
+        // （见 issue #666：长上下文 / 大图 / 大日志撞上游体积上限）
+        let error = ProxyError::UpstreamError {
+            status: 413,
+            body: Some(
+                "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n\
+                 <body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n\
+                 <hr><center>nginx/1.29.6</center>\r\n</body>\r\n</html>"
+                    .to_string(),
+            ),
+        };
+        let body = codex_proxy_error_json("HCAI", "gpt-5.5", "/responses", &error);
+
+        let message = body["error"]["message"].as_str().unwrap();
+        // 不再误导成「本地代理失败」
+        assert!(!message.contains("CC Switch local proxy failed"));
+        // 明确指向上游 + 体积超限 + 可操作指引
+        assert!(message.contains("413"));
+        assert!(message.to_lowercase().contains("upstream"));
+        assert!(message.contains("/compact"));
+        // 关键：不把整段 nginx HTML 回显给用户
+        assert!(!message.contains("<html>"));
+        assert!(!message.contains("nginx/1.29.6"));
+        // 结构化字段仍然保留，便于程序化消费 / UI 呈现
+        assert_eq!(body["error"]["upstream_status"], 413);
+        assert_eq!(body["error"]["provider"], "HCAI");
+        assert_eq!(body["error"]["model"], "gpt-5.5");
+        assert_eq!(body["error"]["endpoint"], "/responses");
     }
 }

@@ -180,6 +180,7 @@ pub enum ErrorCategory {
     /// 可重试错误（网络问题、5xx）
     Retryable, // 网络超时、5xx 错误
     /// 不可重试错误（4xx、认证失败）
+    ProviderCapability,
     NonRetryable, // 认证失败、参数错误、4xx 错误
     #[allow(dead_code)]
     ClientAbort, // 客户端主动中断

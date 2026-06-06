@@ -387,7 +387,6 @@ mod tests {
             enabled,
             auto_failover_enabled,
             load_balancing_enabled: false,
-            force_responses_compact_gpt54: false,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,

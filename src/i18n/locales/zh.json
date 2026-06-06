@@ -469,7 +469,11 @@
         "thinkingSignature": "Thinking 签名整流",
         "thinkingSignatureDescription": "当 Anthropic 类型供应商返回 thinking 签名不兼容或非法请求等错误时，自动移除不兼容的 thinking 相关块并对同一供应商重试一次",
         "thinkingBudget": "Thinking Budget 整流",
-        "thinkingBudgetDescription": "当 Anthropic 类型供应商返回 budget_tokens 约束错误（如至少 1024）时，自动将 thinking 规范为 enabled 并将 budget 设为 32000，同时在需要时将 max_tokens 设为 64000，然后重试一次"
+        "thinkingBudgetDescription": "当 Anthropic 类型供应商返回 budget_tokens 约束错误（如至少 1024）时，自动将 thinking 规范为 enabled 并将 budget 设为 32000，同时在需要时将 max_tokens 设为 64000，然后重试一次",
+        "mediaFallback": "不支持图片降级",
+        "mediaFallbackDescription": "当供应商不支持图片输入时（已声明纯文本能力，或上游返回不支持图片的错误），自动将图片块替换为 [Unsupported Image] 标记，使对话不中断",
+        "mediaHeuristic": "启发式纯文本模型识别",
+        "mediaHeuristicDescription": "发送前按内置模型名列表预测性剥离图片。关闭后仅保留「已声明纯文本」与「上游报错兜底」两条事实驱动路径，避免内置列表把多模态模型误判为纯文本而静默丢图"
       },
       "optimizer": {
         "title": "Bedrock 请求优化器",
@@ -663,7 +667,7 @@
     "useAppWindowControls": "启用应用级窗口按钮",
     "useAppWindowControlsDescription": "开启后使用应用自建的最小化、最大化/还原、关闭按钮；关闭后沿用系统窗口模式。",
     "enableClaudePluginIntegration": "应用到 Claude Code 插件",
-    "enableClaudePluginIntegrationDescription": "开启后 Vscode Claude Code 插件的供应商将随本软件切换",
+    "enableClaudePluginIntegrationDescription": "开启后 VS Code Claude Code 插件的供应商将随本软件切换",
     "skipClaudeOnboarding": "跳过 Claude Code 初次安装确认",
     "skipClaudeOnboardingDescription": "开启后跳过 Claude Code 初次安装确认",
     "codexAuth": "Codex 应用增强",
@@ -1080,8 +1084,6 @@
     "modelHelper": "可选：指定默认使用的 Claude 模型，留空则使用系统默认。",
     "modelMappingLabel": "模型映射",
     "modelMappingHint": "如果供应商原生提供 Claude 系列模型，通常无需配置。仅在需要将请求映射到不同模型名称时填写；显示名称只影响 /model 菜单，映射在直连和代理两种模式下都会生效。",
-    "codexDisableFeaturesLabel": "屏蔽 [features] 段",
-    "codexDisableFeaturesHint": "若该供应商不兼容 Codex 的 [features] 配置，勾选后写入 config.toml 时会自动剥离整段 [features]。",
     "deleteLastRemainingProvider": "无法删除最后一个供应商，请先添加新的供应商再尝试删除。",
     "autoRotatedToNext": "已自动切换到下一个供应商",
     "modelRoleLabel": "模型角色",
@@ -1204,10 +1206,6 @@
     "empty": "暂无端点"
   },
   "providerAdvanced": {
-    "loadBalancingConfig": "分流配置",
-    "maxSessions": "最大会话数",
-    "maxSessionsPlaceholder": "留空表示无限制",
-    "maxSessionsHint": "仅在本地代理 + 故障转移 + 分流开启时生效；达到上限后优先切到后续供应商，全部满载时由队列第一个供应商承接溢出请求。",
     "testConfig": "模型测试配置",
     "useCustomConfig": "使用单独配置",
     "testConfigDesc": "为此供应商配置单独的模型测试参数，不启用时使用全局配置。",
@@ -2451,9 +2449,7 @@
       "invalidAddress": "地址无效，请输入 IPv4（如 127.0.0.1）、IPv6（如 ::1）或 localhost",
       "configSaved": "路由配置已保存",
       "configSaveFailed": "保存配置失败",
-      "restartRequired": "修改地址或端口后需要重启路由服务才能生效",
-      "codexCompactGpt54": "Codex compact 强制使用 gpt-5.4",
-      "codexCompactGpt54Description": "开启后仅在 Codex /responses/compact 请求发往上游前临时把 model 改写为 gpt-5.4，不影响普通 responses 或 chat/completions 请求。"
+      "restartRequired": "修改地址或端口后需要重启路由服务才能生效"
     },
     "switchFailed": "切换失败: {{error}}",
     "takeover": {

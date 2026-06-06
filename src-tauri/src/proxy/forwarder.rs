@@ -10,7 +10,7 @@ use super::{
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
-    provider_router::{LoadBalancingSlotGuard, ProviderRouter},
+    provider_router::ProviderRouter,
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -34,7 +34,6 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
-const FORCE_CODEX_RESPONSES_COMPACT_MODEL: &str = "gpt-5.4";
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -43,8 +42,6 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
-    /// 分流会话占用 RAII guard：成功响应时随响应生命周期释放；失败尝试在进入下一家前释放。
-    pub(crate) load_balancing_guard: Option<LoadBalancingSlotGuard>,
 }
 
 pub struct ForwardError {
@@ -131,13 +128,54 @@ pub struct RequestForwarder {
     /// 本请求开始时该应用的"是否启用故障转移"快照。
     /// 故障转移开启时本请求成功完成后绝不写 is_current（不再有"当前"概念）。
     auto_failover_enabled_at_start: bool,
-    /// 本请求开始时该应用的"是否启用分流"快照。
-    load_balancing_enabled_at_start: bool,
-    /// Codex 专用：本请求是否允许将 `/responses/compact` 上游模型强制为 gpt-5.4。
-    force_responses_compact_gpt54: bool,
 }
 
 impl RequestForwarder {
+    /// 预防式 media 降级：发送前对 text-only 模型把图片块替换为标记。
+    ///
+    /// 受 `enabled && request_media_fallback` 管辖；其中"启发式模型名单预测"
+    /// 再受 `request_media_heuristic` 单独管辖（显式声明 text-only 始终生效）。
+    /// 返回被替换的图片块数量（0 = 未触发或开关关闭）。
+    fn apply_media_prevention(&self, body: &mut Value, provider: &Provider) -> usize {
+        if !(self.rectifier_config.enabled && self.rectifier_config.request_media_fallback) {
+            return 0;
+        }
+        let replaced_images = super::media_sanitizer::replace_images_for_text_only_model(
+            body,
+            provider,
+            self.rectifier_config.request_media_heuristic,
+        );
+        if replaced_images > 0 {
+            let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+            log::info!(
+                "[Media] Replaced {replaced_images} image block(s) with {} for text-only provider={}, model={}",
+                super::media_sanitizer::UNSUPPORTED_IMAGE_MARKER,
+                provider.id,
+                model
+            );
+        }
+        replaced_images
+    }
+
+    /// 反应式 media 重试判定：上游因图片输入报错后，是否应替换图片块并对同一供应商重试一次。
+    ///
+    /// 受 `enabled && request_media_fallback` 管辖；不涉及 `request_media_heuristic`——
+    /// 这里是上游"实测"错误后的纯恢复，不是预测，故启发式开关与它无关。
+    fn media_retry_should_trigger(
+        &self,
+        adapter_name: &str,
+        already_retried: bool,
+        provider_body: &Value,
+        error: &ProxyError,
+    ) -> bool {
+        adapter_name == "Claude"
+            && self.rectifier_config.enabled
+            && self.rectifier_config.request_media_fallback
+            && !already_retried
+            && super::media_sanitizer::contains_image_blocks(provider_body)
+            && super::media_sanitizer::is_unsupported_image_error(error)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<ProviderRouter>,
@@ -162,8 +200,6 @@ impl RequestForwarder {
         switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
         request_epoch: u64,
         auto_failover_enabled_at_start: bool,
-        load_balancing_enabled_at_start: bool,
-        force_responses_compact_gpt54: bool,
         max_retries: u32,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
@@ -194,8 +230,6 @@ impl RequestForwarder {
             switch_epoch,
             request_epoch,
             auto_failover_enabled_at_start,
-            load_balancing_enabled_at_start,
-            force_responses_compact_gpt54,
         }
     }
 
@@ -381,16 +415,21 @@ impl RequestForwarder {
         let mut attempted_providers = 0usize;
 
         let provider_count = providers.len();
-        let mut remaining_providers = providers;
 
         // 非故障转移的单 Provider 场景下跳过熔断器检查，避免普通接管模式被熔断器彻底阻塞。
         // 故障转移开启时，即使队列只有 1 个 Provider，也必须尊重 HalfOpen 探测名额。
         let bypass_circuit_breaker = provider_count == 1 && !self.auto_failover_enabled_at_start;
 
         // 依次尝试每个供应商
-        while !remaining_providers.is_empty() {
+        for provider in providers {
+            // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
+            // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
+            let mut rectifier_retried = false;
+            let mut budget_rectifier_retried = false;
+            let mut media_rectifier_retried = false;
+
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
-            // 放在熔断器 allow 与分流占用之前，避免在已经超限时还占用运行时名额。
+            // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
             if attempted_providers >= self.max_attempts {
                 log::warn!(
                     "[{app_type_str}] 已达最大尝试次数上限 ({}/{}), 停止故障转移",
@@ -399,28 +438,6 @@ impl RequestForwarder {
                 );
                 break;
             }
-
-            let (provider, mut load_balancing_guard) = if self.load_balancing_enabled_at_start {
-                match self.router.acquire_load_balancing_slot_for_candidates(
-                    app_type_str,
-                    &remaining_providers,
-                    &self.session_id,
-                    self.session_client_provided,
-                    &self.request_id,
-                ) {
-                    Some((selected_index, guard)) => {
-                        (remaining_providers.remove(selected_index), Some(guard))
-                    }
-                    None => (remaining_providers.remove(0), None),
-                }
-            } else {
-                (remaining_providers.remove(0), None)
-            };
-
-            // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
-            // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
-            let mut rectifier_retried = false;
-            let mut budget_rectifier_retried = false;
 
             // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
             // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
@@ -548,7 +565,6 @@ impl RequestForwarder {
                         provider: provider.clone(),
                         claude_api_format,
                         connection_guard: None,
-                        load_balancing_guard: load_balancing_guard.take(),
                     });
                 }
                 Err(e) => {
@@ -559,6 +575,123 @@ impl RequestForwarder {
                         ProviderType::Claude | ProviderType::ClaudeAuth
                     );
                     let mut signature_rectifier_non_retryable_client_error = false;
+
+                    if self.media_retry_should_trigger(
+                        adapter.name(),
+                        media_rectifier_retried,
+                        &provider_body,
+                        &e,
+                    ) {
+                        let mut media_body = provider_body.clone();
+                        let replaced_images =
+                            super::media_sanitizer::replace_image_blocks_with_marker(
+                                &mut media_body,
+                            );
+
+                        if replaced_images > 0 {
+                            let _ = std::mem::replace(&mut media_rectifier_retried, true);
+                            let model = media_body
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            log::info!(
+                                "[{app_type_str}] [Media] Upstream rejected image input; retrying provider={} model={} with {replaced_images} image block(s) replaced by {}",
+                                provider.id,
+                                model,
+                                super::media_sanitizer::UNSUPPORTED_IMAGE_MARKER
+                            );
+
+                            match self
+                                .forward(
+                                    app_type,
+                                    &method,
+                                    &provider,
+                                    endpoint,
+                                    &media_body,
+                                    &headers,
+                                    &extensions,
+                                    adapter.as_ref(),
+                                )
+                                .await
+                            {
+                                Ok((response, claude_api_format, _effective_request_model)) => {
+                                    log::info!(
+                                        "[{app_type_str}] [Media] Unsupported-image retry succeeded"
+                                    );
+                                    self.record_success_result(
+                                        &provider.id,
+                                        app_type_str,
+                                        used_half_open_permit,
+                                    )
+                                    .await;
+
+                                    {
+                                        let mut current_providers =
+                                            self.current_providers.write().await;
+                                        current_providers.insert(
+                                            app_type_str.to_string(),
+                                            (provider.id.clone(), provider.name.clone()),
+                                        );
+                                    }
+
+                                    {
+                                        let mut status = self.status.write().await;
+                                        status.success_requests += 1;
+                                        status.last_error = None;
+                                        let should_switch =
+                                            self.current_provider_id_at_start.as_str()
+                                                != provider.id.as_str();
+                                        if should_switch {
+                                            status.failover_count += 1;
+                                            let fm = self.failover_manager.clone();
+                                            let ah = self.app_handle.clone();
+                                            let pid = provider.id.clone();
+                                            let pname = provider.name.clone();
+                                            let at = app_type_str.to_string();
+
+                                            tokio::spawn(async move {
+                                                let _ = fm
+                                                    .try_switch(ah.as_ref(), &at, &pid, &pname)
+                                                    .await;
+                                            });
+                                        }
+                                        if status.total_requests > 0 {
+                                            status.success_rate = (status.success_requests as f32
+                                                / status.total_requests as f32)
+                                                * 100.0;
+                                        }
+                                    }
+
+                                    return Ok(ForwardResult {
+                                        response,
+                                        provider: provider.clone(),
+                                        claude_api_format,
+                                        connection_guard: None,
+                                    });
+                                }
+                                Err(retry_err) => {
+                                    log::warn!(
+                                        "[{app_type_str}] [Media] Unsupported-image retry still failed: {retry_err}"
+                                    );
+                                    if let Some(err) = self
+                                        .handle_rectifier_retry_failure(
+                                            retry_err,
+                                            &provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            "media 降级",
+                                            &mut last_error,
+                                            &mut last_provider,
+                                        )
+                                        .await
+                                    {
+                                        return Err(err);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
 
                     if is_anthropic_provider {
                         let error_message = extract_error_message(&e);
@@ -685,7 +818,6 @@ impl RequestForwarder {
                                             provider: provider.clone(),
                                             claude_api_format,
                                             connection_guard: None,
-                                            load_balancing_guard: load_balancing_guard.take(),
                                         });
                                     }
                                     Err(retry_err) => {
@@ -848,7 +980,6 @@ impl RequestForwarder {
                                         provider: provider.clone(),
                                         claude_api_format,
                                         connection_guard: None,
-                                        load_balancing_guard: load_balancing_guard.take(),
                                     });
                                 }
                                 Err(retry_err) => {
@@ -903,6 +1034,37 @@ impl RequestForwarder {
                     let category = self.categorize_proxy_error(app_type, endpoint, &e);
 
                     match category {
+                        ErrorCategory::ProviderCapability => {
+                            self.router
+                                .release_permit_neutral(
+                                    &provider.id,
+                                    app_type_str,
+                                    used_half_open_permit,
+                                )
+                                .await;
+
+                            {
+                                let mut status = self.status.write().await;
+                                status.last_error = Some(format!(
+                                    "Provider {} does not support this request capability: {}",
+                                    provider.name, e
+                                ));
+                            }
+
+                            let (log_code, log_message) = build_retryable_failure_log(
+                                &provider.name,
+                                attempted_providers,
+                                provider_count,
+                                &e,
+                            );
+                            log::warn!(
+                                "[{app_type_str}] [{log_code}] {log_message} (capability mismatch; health unchanged)"
+                            );
+
+                            last_error = Some(e);
+                            last_provider = Some(provider.clone());
+                            continue;
+                        }
                         ErrorCategory::Retryable => {
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
                             let current_providers = self.current_providers.clone();
@@ -1262,6 +1424,7 @@ impl RequestForwarder {
                     provider,
                     api_format,
                 );
+                self.apply_media_prevention(&mut mapped_body, provider);
             }
         }
         let needs_transform = match resolved_claude_api_format.as_deref() {
@@ -1348,13 +1511,6 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
-
-        let request_body = force_codex_responses_compact_model_if_needed(
-            self.force_responses_compact_gpt54,
-            app_type,
-            endpoint,
-            request_body,
-        );
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
@@ -2121,7 +2277,7 @@ impl RequestForwarder {
             // Retryable —— 换一家 provider 可能持有不同的 key、配额、地域或模型映射。
             ProxyError::UpstreamError { status, body } => {
                 if is_codex_compact_provider_capability_error(app_type, endpoint, *status, body) {
-                    ErrorCategory::Retryable
+                    ErrorCategory::ProviderCapability
                 } else {
                     match *status {
                         400 | 405 | 406 | 413 | 414 | 415 | 422 | 501 => {
@@ -2315,45 +2471,22 @@ fn is_codex_responses_compact_endpoint(endpoint: &str) -> bool {
     )
 }
 
-fn force_codex_responses_compact_model_if_needed(
-    enabled: bool,
-    app_type: &AppType,
-    endpoint: &str,
-    mut body: Value,
-) -> Value {
-    if !enabled
-        || !matches!(app_type, AppType::Codex)
-        || !is_codex_responses_compact_endpoint(endpoint)
-    {
-        return body;
-    }
-
-    let Some(body_obj) = body.as_object_mut() else {
-        return body;
-    };
-
-    body_obj.insert(
-        "model".to_string(),
-        Value::String(FORCE_CODEX_RESPONSES_COMPACT_MODEL.to_string()),
-    );
-    body
-}
-
 fn is_codex_compact_provider_capability_error(
     app_type: &AppType,
     endpoint: &str,
     status: u16,
     body: &Option<String>,
 ) -> bool {
-    if !matches!(app_type, AppType::Codex)
-        || !is_codex_responses_compact_endpoint(endpoint)
-        || !matches!(status, 400 | 422 | 501)
-    {
+    if !matches!(app_type, AppType::Codex) || !is_codex_responses_compact_endpoint(endpoint) {
         return false;
     }
 
-    if status == 501 {
+    if matches!(status, 404 | 405 | 501) {
         return true;
+    }
+
+    if !matches!(status, 400 | 422 | 502) {
+        return false;
     }
 
     let Some(body) = body.as_deref() else {
@@ -2470,7 +2603,9 @@ fn apply_scoped_model_mapping(
     body: Value,
     provider: &Provider,
 ) -> (Value, Option<String>, Option<String>) {
-    if app_type_str.eq_ignore_ascii_case(AppType::Claude.as_str()) {
+    if app_type_str.eq_ignore_ascii_case(AppType::Claude.as_str())
+        || app_type_str.eq_ignore_ascii_case(AppType::Codex.as_str())
+    {
         return super::model_mapper::apply_model_mapping(body, provider);
     }
 
@@ -2869,8 +3004,6 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
-            load_balancing_enabled_at_start: false,
-            force_responses_compact_gpt54: false,
         }
     }
 
@@ -2902,8 +3035,6 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start,
-            load_balancing_enabled_at_start: false,
-            force_responses_compact_gpt54: false,
         }
     }
 
@@ -3053,49 +3184,6 @@ mod tests {
     }
 
     #[test]
-    fn force_codex_responses_compact_model_only_for_codex_compact() {
-        let original = json!({
-            "model": "gpt-5.5",
-            "input": "compact this"
-        });
-
-        let compact = force_codex_responses_compact_model_if_needed(
-            true,
-            &AppType::Codex,
-            "/v1/responses/compact?foo=bar",
-            original.clone(),
-        );
-        assert_eq!(
-            compact.get("model").and_then(|value| value.as_str()),
-            Some(FORCE_CODEX_RESPONSES_COMPACT_MODEL)
-        );
-
-        let normal_responses = force_codex_responses_compact_model_if_needed(
-            true,
-            &AppType::Codex,
-            "/v1/responses",
-            original.clone(),
-        );
-        assert_eq!(normal_responses, original);
-
-        let claude_compact = force_codex_responses_compact_model_if_needed(
-            true,
-            &AppType::Claude,
-            "/v1/responses/compact",
-            original.clone(),
-        );
-        assert_eq!(claude_compact, original);
-
-        let disabled = force_codex_responses_compact_model_if_needed(
-            false,
-            &AppType::Codex,
-            "/v1/responses/compact",
-            original.clone(),
-        );
-        assert_eq!(disabled, original);
-    }
-
-    #[test]
     fn codex_compact_provider_capability_errors_are_retryable_only_for_compact() {
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let err = ProxyError::UpstreamError {
@@ -3108,7 +3196,7 @@ mod tests {
 
         assert_eq!(
             forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses/compact", &err),
-            ErrorCategory::Retryable
+            ErrorCategory::ProviderCapability
         );
         assert_eq!(
             forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses", &err),
@@ -3129,7 +3217,7 @@ mod tests {
                 "/v1/responses/compact",
                 &model_missing,
             ),
-            ErrorCategory::Retryable
+            ErrorCategory::ProviderCapability
         );
 
         let bad_request = ProxyError::UpstreamError {
@@ -3154,6 +3242,57 @@ mod tests {
                 &AppType::Codex,
                 "/codex/v1/responses/compact?stream=true",
                 &not_implemented,
+            ),
+            ErrorCategory::ProviderCapability
+        );
+
+        let not_found = ProxyError::UpstreamError {
+            status: 404,
+            body: Some(r#"{"error":{"message":"Cannot POST /v1/responses/compact"}}"#.to_string()),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses/compact", &not_found),
+            ErrorCategory::ProviderCapability
+        );
+
+        let method_not_allowed = ProxyError::UpstreamError {
+            status: 405,
+            body: Some(r#"{"error":{"message":"Method Not Allowed"}}"#.to_string()),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/v1/responses/compact",
+                &method_not_allowed,
+            ),
+            ErrorCategory::ProviderCapability
+        );
+
+        let gateway_compact_error = ProxyError::UpstreamError {
+            status: 502,
+            body: Some(
+                r#"{"error":{"message":"upstream responses/compact endpoint unavailable"}}"#
+                    .to_string(),
+            ),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/v1/responses/compact",
+                &gateway_compact_error,
+            ),
+            ErrorCategory::ProviderCapability
+        );
+
+        let unrelated_gateway_error = ProxyError::UpstreamError {
+            status: 502,
+            body: Some(r#"{"error":{"message":"temporary gateway failure"}}"#.to_string()),
+        };
+        assert_eq!(
+            forwarder.categorize_proxy_error(
+                &AppType::Codex,
+                "/v1/responses/compact",
+                &unrelated_gateway_error,
             ),
             ErrorCategory::Retryable
         );
@@ -3581,7 +3720,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_model_is_not_rewritten_by_claude_env_mapping() {
+    fn codex_model_mapping_uses_provider_env_mapping() {
         let provider = Provider {
             id: "provider-1".to_string(),
             name: "Provider One".to_string(),
@@ -3605,9 +3744,9 @@ mod tests {
         let (mapped_body, original, mapped) =
             apply_scoped_model_mapping(AppType::Codex.as_str(), body, &provider);
 
-        assert_eq!(mapped_body["model"], "gpt-5.3-codex");
+        assert_eq!(mapped_body["model"], "gpt-5.4");
         assert_eq!(original.as_deref(), Some("gpt-5.3-codex"));
-        assert_eq!(mapped, None);
+        assert_eq!(mapped.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]
@@ -3667,6 +3806,36 @@ base_url = "https://api.example.com/v1"
 
         assert_eq!(mapped_body["model"], "gpt-5.3-codex");
         assert_eq!(default_model, None);
+    }
+
+    #[test]
+    fn codex_model_mapping_applies_before_compact_forwarding() {
+        let provider = Provider {
+            id: "provider-1".to_string(),
+            name: "Provider One".to_string(),
+            settings_config: json!({
+                "env": {
+                    "ANTHROPIC_MODEL": "upstream-compact-model"
+                }
+            }),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let body = json!({ "model": "gpt-5.5", "input": "summarize" });
+
+        let (mapped_body, original, mapped) =
+            apply_scoped_model_mapping(AppType::Codex.as_str(), body, &provider);
+
+        assert_eq!(mapped_body["model"], "upstream-compact-model");
+        assert_eq!(original.as_deref(), Some("gpt-5.5"));
+        assert_eq!(mapped.as_deref(), Some("upstream-compact-model"));
     }
 
     #[test]
@@ -3949,5 +4118,161 @@ base_url = "https://api.example.com/v1"
             let will_replace = is_copilot && !is_full_url;
             assert_eq!(will_replace, should_replace, "{desc}");
         }
+    }
+
+    // ===== P3: forwarder 层 media 开关回归测试 =====
+    // 验证 gate 在 forwarder 这一层的"接线"，而非 media_sanitizer 纯函数本身。
+
+    fn forwarder_with_rectifier(config: RectifierConfig) -> RequestForwarder {
+        let mut fwd = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        fwd.rectifier_config = config;
+        fwd
+    }
+
+    fn provider_with_settings(settings_config: Value) -> Provider {
+        let mut p = test_provider_with_type(Some("anthropic"));
+        p.settings_config = settings_config;
+        p
+    }
+
+    fn body_with_image(model: &str) -> Value {
+        json!({
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "abc" } }
+                ]
+            }]
+        })
+    }
+
+    fn image_unsupported_error() -> ProxyError {
+        ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"This model does not support image input"}}"#.to_string(),
+            ),
+        }
+    }
+    #[test]
+    fn prevention_replaces_when_all_switches_on_and_model_in_heuristic_list() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let provider = provider_with_settings(json!({}));
+        let mut body = body_with_image("deepseek-v4-pro");
+
+        let replaced = fwd.apply_media_prevention(&mut body, &provider);
+
+        assert_eq!(replaced, 1, "默认全开 + 名单内模型应预替换");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn prevention_skipped_when_media_fallback_off() {
+        // 关闭 request_media_fallback：即使名单命中也不预替换。
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            request_media_fallback: false,
+            ..RectifierConfig::default()
+        });
+        let provider = provider_with_settings(json!({}));
+        let mut body = body_with_image("deepseek-v4-pro");
+
+        let replaced = fwd.apply_media_prevention(&mut body, &provider);
+
+        assert_eq!(replaced, 0);
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image");
+    }
+
+    #[test]
+    fn prevention_skipped_when_master_switch_off() {
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            enabled: false,
+            ..RectifierConfig::default()
+        });
+        let provider = provider_with_settings(json!({}));
+        let mut body = body_with_image("deepseek-v4-pro");
+
+        assert_eq!(fwd.apply_media_prevention(&mut body, &provider), 0);
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image");
+    }
+
+    #[test]
+    fn prevention_heuristic_off_skips_list_but_keeps_explicit_text_only() {
+        // 关闭 request_media_heuristic：名单预测失效，但显式声明 text-only 仍预替换。
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            request_media_heuristic: false,
+            ..RectifierConfig::default()
+        });
+
+        // (a) 名单内模型、无显式声明 → 不再预替换
+        let bare_provider = provider_with_settings(json!({}));
+        let mut list_body = body_with_image("deepseek-v4-pro");
+        assert_eq!(
+            fwd.apply_media_prevention(&mut list_body, &bare_provider),
+            0,
+            "heuristic 关闭后名单模型不应被预替换"
+        );
+        assert_eq!(list_body["messages"][0]["content"][0]["type"], "image");
+
+        // (b) 显式声明 text-only → 仍预替换（声明驱动，不受 heuristic 开关影响）
+        let declared_provider = provider_with_settings(json!({
+            "models": [ { "id": "some-text-model", "input": ["text"] } ]
+        }));
+        let mut declared_body = body_with_image("some-text-model");
+        assert_eq!(
+            fwd.apply_media_prevention(&mut declared_body, &declared_provider),
+            1,
+            "显式 text-only 即使关闭 heuristic 也应预替换"
+        );
+        assert_eq!(declared_body["messages"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn reactive_triggers_when_all_switches_on() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let body = body_with_image("any-model");
+        assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[test]
+    fn reactive_skipped_when_media_fallback_off() {
+        // 关闭 request_media_fallback：上游报图片错误也不触发兜底重试。
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            request_media_fallback: false,
+            ..RectifierConfig::default()
+        });
+        let body = body_with_image("any-model");
+        assert!(!fwd.media_retry_should_trigger(
+            "Claude",
+            false,
+            &body,
+            &image_unsupported_error()
+        ));
+    }
+
+    #[test]
+    fn reactive_skipped_when_master_switch_off() {
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            enabled: false,
+            ..RectifierConfig::default()
+        });
+        let body = body_with_image("any-model");
+        assert!(!fwd.media_retry_should_trigger(
+            "Claude",
+            false,
+            &body,
+            &image_unsupported_error()
+        ));
+    }
+
+    #[test]
+    fn reactive_unaffected_by_heuristic_switch() {
+        // 关闭 request_media_heuristic 不影响反应式兜底——它是上游实测错误后的恢复，不是预测。
+        let fwd = forwarder_with_rectifier(RectifierConfig {
+            request_media_heuristic: false,
+            ..RectifierConfig::default()
+        });
+        let body = body_with_image("any-model");
+        assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
     }
 }

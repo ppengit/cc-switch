@@ -8,7 +8,6 @@ use super::{
     handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::ProxyResponse,
-    provider_router::LoadBalancingSlotGuard,
     server::ProxyState,
     sse::{strip_sse_field, take_sse_block},
     usage::parser::TokenUsage,
@@ -186,7 +185,6 @@ pub async fn handle_streaming(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
     connection_guard: Option<ActiveConnectionGuard>,
-    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Response {
     let status = response.status();
     log::debug!(
@@ -219,6 +217,27 @@ pub async fn handle_streaming(
 
     // 创建使用量收集器；关闭 usage logging 时不要在流式热路径上解析每个 SSE event。
     let usage_collector = create_usage_collector(ctx, state, status.as_u16(), parser_config);
+    let finish_activity = {
+        let proxy_activity = state.proxy_activity.clone();
+        let app_handle = state.app_handle.clone();
+        let request_id = ctx.request_id.clone();
+        let status_code = status.as_u16();
+        Arc::new(move || {
+            let proxy_activity = proxy_activity.clone();
+            let app_handle = app_handle.clone();
+            let request_id = request_id.clone();
+            tokio::spawn(async move {
+                finish_request(
+                    &proxy_activity,
+                    app_handle.as_ref(),
+                    &request_id,
+                    Some(status_code),
+                    None,
+                )
+                .await;
+            });
+        }) as Arc<dyn Fn() + Send + Sync + 'static>
+    };
 
     // 获取流式超时配置
     let timeout_config = ctx.streaming_timeout_config();
@@ -230,7 +249,7 @@ pub async fn handle_streaming(
         usage_collector,
         timeout_config,
         connection_guard,
-        load_balancing_guard,
+        Some(finish_activity),
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -251,7 +270,6 @@ pub async fn handle_non_streaming(
     parser_config: &UsageParserConfig,
     // guard 在函数 scope 内持有，整包响应读取完成后随函数返回一并 drop
     _connection_guard: Option<ActiveConnectionGuard>,
-    _load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<Response, ProxyError> {
     // 整包超时：仅在故障转移开启且配置值非零时生效
     let body_timeout = if ctx.app_config.enabled
@@ -384,29 +402,11 @@ pub async fn process_response(
     state: &ProxyState,
     parser_config: &UsageParserConfig,
     connection_guard: Option<ActiveConnectionGuard>,
-    load_balancing_guard: Option<LoadBalancingSlotGuard>,
 ) -> Result<Response, ProxyError> {
     if is_sse_response(&response) {
-        Ok(handle_streaming(
-            response,
-            ctx,
-            state,
-            parser_config,
-            connection_guard,
-            load_balancing_guard,
-        )
-        .await)
+        Ok(handle_streaming(response, ctx, state, parser_config, connection_guard).await)
     } else {
-        match handle_non_streaming(
-            response,
-            ctx,
-            state,
-            parser_config,
-            connection_guard,
-            load_balancing_guard,
-        )
-        .await
-        {
+        match handle_non_streaming(response, ctx, state, parser_config, connection_guard).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 finish_request(
@@ -620,6 +620,32 @@ impl Drop for SseUsageFinishGuard {
                 log::warn!("SSE 用量收尾保护触发时 Tokio runtime 不可用，跳过异步 finish");
             }
         }
+    }
+}
+
+type StreamFinishCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+struct StreamFinishGuard {
+    callback: Option<StreamFinishCallback>,
+}
+
+impl StreamFinishGuard {
+    fn new(callback: StreamFinishCallback) -> Self {
+        Self {
+            callback: Some(callback),
+        }
+    }
+
+    fn finish_now(&mut self) {
+        if let Some(callback) = self.callback.take() {
+            callback();
+        }
+    }
+}
+
+impl Drop for StreamFinishGuard {
+    fn drop(&mut self) {
+        self.finish_now();
     }
 }
 
@@ -844,15 +870,15 @@ pub fn create_logged_passthrough_stream(
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
-    load_balancing_guard: Option<LoadBalancingSlotGuard>,
+    on_finish: Option<StreamFinishCallback>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
-        let _lb_guard = load_balancing_guard;
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
+        let mut activity_finish_guard = on_finish.map(StreamFinishGuard::new);
         let inspect_sse_events =
             collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
@@ -960,6 +986,9 @@ pub fn create_logged_passthrough_stream(
         }
         if let Some(guard) = &mut finish_guard {
             guard.disarm();
+        }
+        if let Some(guard) = &mut activity_finish_guard {
+            guard.finish_now();
         }
     }
 }

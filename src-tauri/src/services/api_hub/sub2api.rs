@@ -144,9 +144,20 @@ impl ApiHubAdapter for Sub2ApiAdapter {
             .await
             .map(|value| parse_group_id_name_map(&value))
             .unwrap_or_default();
-        let value = self
+        let value = match self
             .get_json(ctx, "/api/v1/keys?page=1&page_size=200")
-            .await?;
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                log::debug!(
+                    "[ApiHub][sub2api] /api/v1/keys failed, trying legacy /api/v1/api-keys: site={}, err={err}",
+                    ctx.site_id
+                );
+                self.get_json(ctx, "/api/v1/api-keys?page=1&page_size=200")
+                    .await?
+            }
+        };
         Ok(parse_keys_response(&value, &groups))
     }
 
@@ -157,9 +168,20 @@ impl ApiHubAdapter for Sub2ApiAdapter {
     ) -> Result<TokenInfo, AppError> {
         let group_id = self.resolve_group_id(ctx, &req.group).await?;
         let body = build_create_key_body(&req, group_id);
-        let value = self
-            .send_json(ctx, reqwest::Method::POST, "/api/v1/keys", body)
-            .await?;
+        let value = match self
+            .send_json(ctx, reqwest::Method::POST, "/api/v1/keys", body.clone())
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                log::debug!(
+                    "[ApiHub][sub2api] POST /api/v1/keys failed, trying legacy /api/v1/api-keys: site={}, err={err}",
+                    ctx.site_id
+                );
+                self.send_json(ctx, reqwest::Method::POST, "/api/v1/api-keys", body)
+                    .await?
+            }
+        };
         let groups = [(group_id, req.group.clone())].into_iter().collect();
         if let Some(token) = parse_keys_response(&value, &groups).into_iter().next() {
             return Ok(token);
@@ -181,15 +203,37 @@ impl ApiHubAdapter for Sub2ApiAdapter {
         let group_id = self.resolve_group_id(ctx, group).await?;
         let path = format!("/api/v1/keys/{token_id}");
         let body = build_update_key_body(new_name, group_id);
-        self.send_json(ctx, reqwest::Method::PUT, &path, body)
-            .await?;
+        if let Err(err) = self
+            .send_json(ctx, reqwest::Method::PUT, &path, body.clone())
+            .await
+        {
+            log::debug!(
+                "[ApiHub][sub2api] PUT /api/v1/keys failed, trying legacy /api/v1/api-keys: site={}, token_id={}, err={err}",
+                ctx.site_id,
+                token_id
+            );
+            let legacy_path = format!("/api/v1/api-keys/{token_id}");
+            self.send_json(ctx, reqwest::Method::PUT, &legacy_path, body)
+                .await?;
+        }
         Ok(())
     }
 
     async fn delete_token(&self, ctx: &SiteCtx, token_id: i64) -> Result<(), AppError> {
         let path = format!("/api/v1/keys/{token_id}");
-        self.send_json(ctx, reqwest::Method::DELETE, &path, Value::Null)
-            .await?;
+        if let Err(err) = self
+            .send_json(ctx, reqwest::Method::DELETE, &path, Value::Null)
+            .await
+        {
+            log::debug!(
+                "[ApiHub][sub2api] DELETE /api/v1/keys failed, trying legacy /api/v1/api-keys: site={}, token_id={}, err={err}",
+                ctx.site_id,
+                token_id
+            );
+            let legacy_path = format!("/api/v1/api-keys/{token_id}");
+            self.send_json(ctx, reqwest::Method::DELETE, &legacy_path, Value::Null)
+                .await?;
+        }
         Ok(())
     }
 }
@@ -245,7 +289,12 @@ type ParsedGroupEntry = (Option<i64>, String, Option<f64>, Option<String>);
 
 fn parse_group_entries(value: &Value) -> Vec<ParsedGroupEntry> {
     let data = value.get("data").unwrap_or(value);
-    let Some(arr) = data.as_array() else {
+    let arr = data
+        .as_array()
+        .or_else(|| data.get("items").and_then(|v| v.as_array()))
+        .or_else(|| data.get("data").and_then(|v| v.as_array()))
+        .or_else(|| data.get("list").and_then(|v| v.as_array()));
+    let Some(arr) = arr else {
         return Vec::new();
     };
 
@@ -364,7 +413,9 @@ fn parse_keys_response(value: &Value, group_id_name: &HashMap<i64, String>) -> V
         .as_array()
         .cloned()
         .or_else(|| data.get("items").and_then(|v| v.as_array()).cloned())
+        .or_else(|| data.get("data").and_then(|v| v.as_array()).cloned())
         .or_else(|| data.get("list").and_then(|v| v.as_array()).cloned())
+        .or_else(|| data.get("rows").and_then(|v| v.as_array()).cloned())
         .or_else(|| {
             if data.get("id").is_some() {
                 Some(vec![data.clone()])
@@ -395,6 +446,7 @@ fn parse_keys_response(value: &Value, group_id_name: &HashMap<i64, String>) -> V
                 expired_at: item
                     .get("expired_at")
                     .or_else(|| item.get("expires_at"))
+                    .or_else(|| item.get("expired_time"))
                     .and_then(parse_timestamp),
             })
         })
@@ -638,6 +690,40 @@ mod tests {
         assert_eq!(tokens[0].group_name.as_deref(), Some("Claude Group"));
         assert_eq!(tokens[0].status, Some(1));
         assert_eq!(tokens[0].remain_quota, Some(-1));
+    }
+
+    #[test]
+    fn parse_keys_contract_accepts_current_paginated_data_shape() {
+        let value = json!({
+            "code": 0,
+            "message": "success",
+            "data": {
+                "data": [{
+                    "id": 101,
+                    "key": "sk_current_1234567890",
+                    "name": "Claude Group",
+                    "group": {
+                        "id": 10,
+                        "name": "Claude Group"
+                    },
+                    "status": "active",
+                    "quota": 0,
+                    "quota_used": 0,
+                    "expires_at": null
+                }],
+                "total": 1,
+                "page": 1,
+                "page_size": 20
+            }
+        });
+        let groups = [(10_i64, "Claude Group".to_string())].into_iter().collect();
+
+        let tokens = parse_keys_response(&value, &groups);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].id, 101);
+        assert_eq!(tokens[0].group_name.as_deref(), Some("Claude Group"));
+        assert_eq!(tokens[0].key.as_deref(), Some("sk_current_1234567890"));
     }
 
     #[test]

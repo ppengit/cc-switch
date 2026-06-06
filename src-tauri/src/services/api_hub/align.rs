@@ -12,7 +12,9 @@ use crate::error::AppError;
 use super::adapter::build_adapter;
 use super::grouping::group_names_with_models;
 use super::sync::{emit_progress, sync_site, API_HUB_BATCH_CONCURRENCY};
-use super::types::{has_plain_api_key, AlignOptions, CreateTokenReq, ProgressPayload};
+use super::types::{
+    has_plain_api_key, is_masked_api_key, AlignOptions, CreateTokenReq, ProgressPayload, TokenInfo,
+};
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct AlignOutcome {
@@ -36,7 +38,7 @@ pub async fn align_site_for_groups(
     db: Arc<Database>,
     site_id: &str,
     only_groups: Option<HashSet<String>>,
-    _options: AlignOptions,
+    options: AlignOptions,
 ) -> Result<AlignOutcome, AppError> {
     let site = db.api_hub_get_site_record(site_id)?;
     let mut outcome = AlignOutcome {
@@ -62,12 +64,33 @@ pub async fn align_site_for_groups(
                 continue;
             }
         }
-        let has_group_token = tokens.iter().any(|token| {
-            token.group_name.as_deref() == Some(group.name.as_str())
-                && token.name == group.name
-                && has_plain_api_key(token.key.as_deref())
-        });
-        if has_group_token {
+        let existing_group_token = tokens
+            .iter()
+            .find(|token| token_matches_group(token, &group.name));
+        if let Some(token) = existing_group_token {
+            if token.name.trim() != group.name && options.rename_existing {
+                match adapter
+                    .rename_token(&ctx, token.id, &group.name, &group.name)
+                    .await
+                {
+                    Ok(()) => outcome.renamed += 1,
+                    Err(err) => outcome.warnings.push(format!(
+                        "{} already has APIKey #{} but rename failed: {err}",
+                        group.name, token.id
+                    )),
+                }
+            }
+            if !has_plain_api_key(token.key.as_deref()) {
+                let key_hint = match token.key.as_deref().map(str::trim) {
+                    None | Some("") => "missing key",
+                    Some(value) if is_masked_api_key(value) => "masked key",
+                    Some(_) => "unusable key",
+                };
+                outcome.warnings.push(format!(
+                    "{} already has APIKey #{} but its cached value is {key_hint}; skipped creation to avoid duplicates",
+                    group.name, token.id
+                ));
+            }
             continue;
         }
 
@@ -88,6 +111,12 @@ pub async fn align_site_for_groups(
 
     let _ = sync_site(db, site_id).await?;
     Ok(outcome)
+}
+
+fn token_matches_group(token: &TokenInfo, group_name: &str) -> bool {
+    let group_name = group_name.trim();
+    token.group_name.as_deref().map(str::trim) == Some(group_name)
+        || (token.group_name.is_none() && token.name.trim() == group_name)
 }
 
 pub async fn align_sites_with_progress(

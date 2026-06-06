@@ -469,7 +469,11 @@
         "thinkingSignature": "Thinking Signature Rectification",
         "thinkingSignatureDescription": "When an Anthropic-type provider returns thinking signature incompatibility or illegal request errors, automatically removes incompatible thinking-related blocks and retries once with the same provider",
         "thinkingBudget": "Thinking Budget Rectification",
-        "thinkingBudgetDescription": "When an Anthropic-type provider returns budget_tokens constraint errors (such as at least 1024), automatically normalizes thinking to enabled, sets thinking budget to 32000, and raises max_tokens to 64000 if needed, then retries once"
+        "thinkingBudgetDescription": "When an Anthropic-type provider returns budget_tokens constraint errors (such as at least 1024), automatically normalizes thinking to enabled, sets thinking budget to 32000, and raises max_tokens to 64000 if needed, then retries once",
+        "mediaFallback": "Unsupported Image Fallback",
+        "mediaFallbackDescription": "When a provider does not support image input (it declares text-only capability, or the upstream returns an unsupported-image error), automatically replaces image blocks with an [Unsupported Image] marker so the conversation is not interrupted",
+        "mediaHeuristic": "Heuristic Text-Only Model Detection",
+        "mediaHeuristicDescription": "Predictively strips images before sending based on a built-in model-name list. When off, only the declared-text-only and upstream-error fallback paths remain, preventing the built-in list from misclassifying a multimodal model as text-only and silently dropping images"
       },
       "optimizer": {
         "title": "Bedrock Request Optimizer",
@@ -1080,8 +1084,6 @@
     "modelHelper": "Optional: Specify default Claude model to use, leave blank to use system default.",
     "modelMappingLabel": "Model Mapping",
     "modelMappingHint": "Usually not needed if the provider natively serves Claude models. Configure only when requests must map to different model names; display names only affect the /model menu. The mapping applies in both direct and proxy modes.",
-    "codexDisableFeaturesLabel": "Strip [features] section",
-    "codexDisableFeaturesHint": "Enable when this provider doesn't accept the Codex [features] block. The whole [features] section will be removed from config.toml on save.",
     "deleteLastRemainingProvider": "Cannot delete the last remaining provider. Add a new provider before deleting this one.",
     "autoRotatedToNext": "Auto-switched to the next provider",
     "modelRoleLabel": "Model role",
@@ -1204,10 +1206,6 @@
     "empty": "No endpoints"
   },
   "providerAdvanced": {
-    "loadBalancingConfig": "Load Balancing",
-    "maxSessions": "Max sessions",
-    "maxSessionsPlaceholder": "Leave empty for unlimited",
-    "maxSessionsHint": "Only applies when local proxy, failover, and load balancing are enabled. Requests move to later providers after the limit is reached; when all providers are full, overflow requests go to the first provider in the queue.",
     "testConfig": "Model Test Config",
     "useCustomConfig": "Use separate config",
     "testConfigDesc": "Configure separate model testing parameters for this provider. Uses global settings when disabled.",
@@ -2451,9 +2449,7 @@
       "invalidAddress": "Invalid address. Enter an IPv4 (e.g. 127.0.0.1), IPv6 (e.g. ::1), or localhost",
       "configSaved": "Routing configuration saved",
       "configSaveFailed": "Failed to save configuration",
-      "restartRequired": "Restart routing service for address or port changes to take effect",
-      "codexCompactGpt54": "Force gpt-5.4 for Codex compact",
-      "codexCompactGpt54Description": "When enabled, only Codex /responses/compact upstream requests have their model field temporarily rewritten to gpt-5.4. Normal responses and chat/completions requests are unaffected."
+      "restartRequired": "Restart routing service for address or port changes to take effect"
     },
     "switchFailed": "Switch failed: {{error}}",
     "takeover": {

@@ -1545,9 +1545,26 @@ impl SkillService {
 
     /// 检查路径是否为符号链接
     fn is_symlink(path: &Path) -> bool {
-        path.symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
+        let Ok(metadata) = path.symlink_metadata() else {
+            return false;
+        };
+
+        if metadata.file_type().is_symlink() {
+            return true;
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+            return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        }
+
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 
     /// 获取当前同步方式配置
@@ -1711,8 +1728,15 @@ impl SkillService {
             return false;
         }
 
+        let canonical_ssot = ssot_dir
+            .canonicalize()
+            .unwrap_or_else(|_| ssot_dir.to_path_buf());
+
         let Ok(target) = fs::read_link(path) else {
-            return false;
+            let Ok(canonical_path) = path.canonicalize() else {
+                return false;
+            };
+            return canonical_path.starts_with(&canonical_ssot);
         };
 
         if target.is_absolute() && target.starts_with(ssot_dir) {
@@ -1724,9 +1748,6 @@ impl SkillService {
             .map(|parent| parent.join(&target))
             .unwrap_or(target.clone());
 
-        let canonical_ssot = ssot_dir
-            .canonicalize()
-            .unwrap_or_else(|_| ssot_dir.to_path_buf());
         let canonical_target = resolved.canonicalize().unwrap_or(resolved);
 
         canonical_target.starts_with(&canonical_ssot)

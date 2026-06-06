@@ -302,6 +302,37 @@ describe("SessionManagerPage", () => {
     expect(toastSuccessMock).toHaveBeenCalled();
   });
 
+  it("opens rename and delete actions from the session context menu", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha Session")).toBeInTheDocument(),
+    );
+
+    const alphaItem = screen.getByRole("button", { name: /Alpha Session/i });
+    fireEvent.contextMenu(alphaItem.closest(".group") ?? alphaItem);
+
+    const menu = screen.getByRole("menu", { name: "Alpha Session" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /修改名称/i }));
+
+    expect(
+      screen.getByRole("dialog", { name: /修改会话标题/i }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /取消/i }));
+    fireEvent.contextMenu(alphaItem.closest(".group") ?? alphaItem);
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Alpha Session" })).getByRole(
+        "menuitem",
+        { name: /删除会话/i },
+      ),
+    );
+
+    const dialog = screen.getByTestId("confirm-dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText(/Alpha Session/)).toBeInTheDocument();
+  });
+
   it("groups the session list by project directory and collapses a project group", async () => {
     seedProjectSessions();
     renderPage();

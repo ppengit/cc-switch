@@ -3889,7 +3889,7 @@ impl ProxyService {
     ) -> Result<(), String> {
         if let Some(server) = self.server.read().await.as_ref() {
             server
-                .clear_provider_runtime_state(app_type, provider_id)
+                .clear_provider_runtime_state(provider_id, app_type)
                 .await;
             // 禁用/删除供应商也是一次"路由目标变化"，bump epoch 防止该供应商上正在跑的
             // 旧请求成功后回写 current_providers / 状态。

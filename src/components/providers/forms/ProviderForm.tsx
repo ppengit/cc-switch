@@ -78,7 +78,6 @@ import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
   ProviderAdvancedConfig,
-  ProviderLoadBalancingConfig,
   type PricingModelSourceOption,
 } from "./ProviderAdvancedConfig";
 import {
@@ -247,12 +246,6 @@ const getInitialCodexApiFormat = (
     ) ?? "openai_responses"
   );
 };
-
-const getInitialDisableCodexFeatures = (
-  meta: ProviderMeta | undefined,
-): boolean =>
-  Array.isArray(meta?.quirks?.strip_paths) &&
-  (meta.quirks.strip_paths as string[]).includes("config.toml:features");
 
 export interface ProviderFormProps {
   appId: AppId;
@@ -487,9 +480,6 @@ function ProviderFormFull({
   const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
     () => initialData?.meta?.testConfig ?? { enabled: false },
   );
-  const [maxSessions, setMaxSessions] = useState<number | null>(
-    () => initialData?.meta?.maxSessions ?? null,
-  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -542,7 +532,6 @@ function ProviderFormFull({
       supportsFullUrl ? (seed?.meta?.isFullUrl ?? false) : false,
     );
     setTestConfig(seed?.meta?.testConfig ?? { enabled: false });
-    setMaxSessions(seed?.meta?.maxSessions ?? null);
     setPricingConfig({
       enabled:
         seed?.meta?.costMultiplier !== undefined ||
@@ -730,11 +719,6 @@ function ProviderFormFull({
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
-  // Codex 「屏蔽 [features] 段」快捷开关：
-  // 实际存储位置是 meta.quirks.strip_paths 中是否包含 "config.toml:features"。
-  const [disableCodexFeatures, setDisableCodexFeatures] = useState<boolean>(
-    () => getInitialDisableCodexFeatures(initialData?.meta),
-  );
 
   const codexInitialData = useMemo(() => {
     if (appId !== "codex") return undefined;
@@ -819,7 +803,6 @@ function ProviderFormFull({
     );
     setSelectedCodexAccountId(resolveManagedAccountId(seedMeta, "codex_oauth"));
     setCodexFastMode(seedMeta?.codexFastMode ?? false);
-    setDisableCodexFeatures(getInitialDisableCodexFeatures(seedMeta));
     setLocalCodexApiFormat(
       getInitialCodexApiFormat(seedMeta, seedSettingsConfig),
     );
@@ -1907,7 +1890,6 @@ function ProviderFormFull({
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
-      maxSessions: maxSessions && maxSessions > 0 ? maxSessions : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
         : undefined,
@@ -1934,10 +1916,6 @@ function ProviderFormFull({
       delete nextMeta.codexFastMode;
     }
 
-    // 同步 Codex 「屏蔽 [features] 段」开关到 quirks.strip_paths。
-    // - 仅 Codex 应用启用此开关；非 Codex 不持久化此开关相关的 quirk。
-    // - 切换时增删数组里的 "config.toml:features" 单元，并在 quirks 整体为空时回收
-    //   meta.quirks，避免保存出 `quirks: {}` 这种空对象。
     if (appId === "codex") {
       const FEATURES_TOKEN = "config.toml:features";
       const existingQuirks = (nextMeta.quirks ?? {}) as Record<string, unknown>;
@@ -1946,13 +1924,10 @@ function ProviderFormFull({
             (item) => item !== FEATURES_TOKEN,
           )
         : [];
-      const nextStripPaths = disableCodexFeatures
-        ? [...existingStripPaths, FEATURES_TOKEN]
-        : existingStripPaths;
 
       const nextQuirks: Record<string, unknown> = { ...existingQuirks };
-      if (nextStripPaths.length > 0) {
-        nextQuirks.strip_paths = nextStripPaths;
+      if (existingStripPaths.length > 0) {
+        nextQuirks.strip_paths = existingStripPaths;
       } else {
         delete nextQuirks.strip_paths;
       }
@@ -2689,8 +2664,6 @@ function ProviderFormFull({
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
               speedTestEndpoints={speedTestEndpoints}
-              disableCodexFeatures={disableCodexFeatures}
-              onDisableCodexFeaturesChange={setDisableCodexFeatures}
             />
           )}
 
@@ -2815,8 +2788,6 @@ function ProviderFormFull({
               <CodexConfigEditor
                 authValue={codexAuth}
                 configValue={codexConfig}
-                providerName={form.watch("name")}
-                showRemoteCompaction={category !== "official"}
                 isProxyTakeover={isProxyTakeover}
                 onAuthChange={setCodexAuth}
                 onConfigChange={handleCodexConfigChange}
@@ -2960,11 +2931,6 @@ function ProviderFormFull({
               />
             </>
           )}
-
-          <ProviderLoadBalancingConfig
-            maxSessions={maxSessions}
-            onMaxSessionsChange={setMaxSessions}
-          />
 
           {!isAnyOmoCategory &&
             appId !== "opencode" &&

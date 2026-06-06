@@ -163,9 +163,7 @@ export function AutoFailoverConfigPanel({
         appType,
         enabled: config.enabled,
         autoFailoverEnabled: formData.autoFailoverEnabled,
-        loadBalancingEnabled:
-          config.loadBalancingEnabled && formData.autoFailoverEnabled,
-        forceResponsesCompactGpt54: config.forceResponsesCompactGpt54 ?? false,
+        loadBalancingEnabled: false,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
         streamingIdleTimeout: raw.streamingIdleTimeout,

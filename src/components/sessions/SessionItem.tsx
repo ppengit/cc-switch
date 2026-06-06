@@ -1,4 +1,5 @@
 import { ChevronRight, Clock } from "lucide-react";
+import type { MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -28,6 +29,7 @@ interface SessionItemProps {
   searchQuery?: string;
   onSelect: (key: string) => void;
   onToggleChecked: (checked: boolean) => void;
+  onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
 export function SessionItem({
@@ -39,6 +41,7 @@ export function SessionItem({
   searchQuery,
   onSelect,
   onToggleChecked,
+  onContextMenu,
 }: SessionItemProps) {
   const { t } = useTranslation();
   const title = formatSessionTitle(session);
@@ -48,6 +51,7 @@ export function SessionItem({
 
   return (
     <div
+      onContextMenu={onContextMenu}
       className={cn(
         "flex items-start gap-2 rounded-lg px-3 py-2.5 transition-all group",
         isSelected

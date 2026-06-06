@@ -68,7 +68,6 @@ import {
   useProviderHealth,
   useCircuitBreakerStats,
 } from "@/lib/query/failover";
-import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 import {
   useCurrentOmoProviderId,
   useCurrentOmoSlimProviderId,
@@ -98,6 +97,7 @@ import {
 import { pruneProxyStatusProviderActivity } from "@/lib/proxyActivity";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -1094,18 +1094,12 @@ export function ProviderList({
   );
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
-  const { data: appProxyConfig } = useAppProxyConfig(appId);
-  const updateAppProxyConfig = useUpdateAppProxyConfig();
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
-  const canEnableLoadBalancing =
-    isFailoverModeActive && Boolean(appProxyConfig);
-  const isLoadBalancingEnabled =
-    canEnableLoadBalancing && appProxyConfig?.loadBalancingEnabled === true;
   const isProxyModeResolving =
     isProxyTakeover === true && isAutoFailoverEnabled === undefined;
   const isTakeoverModeActive =
@@ -1138,17 +1132,6 @@ export function ProviderList({
           : t("provider.modeDirect", {
               defaultValue: "直连配置（未接管代理）",
             });
-
-  const handleLoadBalancingToggle = useCallback(
-    (enabled: boolean) => {
-      if (!appProxyConfig) return;
-      updateAppProxyConfig.mutate({
-        ...appProxyConfig,
-        loadBalancingEnabled: enabled && canEnableLoadBalancing,
-      });
-    },
-    [appProxyConfig, canEnableLoadBalancing, updateAppProxyConfig],
-  );
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -1813,34 +1796,41 @@ export function ProviderList({
   );
 
   const getScrollableListContainer = useCallback(() => {
-    const outer = listScrollRef.current;
-    const tableWrapper = providerTableRef.current?.parentElement;
-
-    const isVerticallyScrollable = (node: Element | null | undefined) =>
-      !!node &&
-      node instanceof HTMLElement &&
-      node.scrollHeight > node.clientHeight + 1;
-
-    if (isVerticallyScrollable(outer)) {
-      return outer;
-    }
-
-    if (isVerticallyScrollable(tableWrapper)) {
-      return tableWrapper as HTMLDivElement;
-    }
-
-    return outer ?? (tableWrapper as HTMLDivElement | null) ?? null;
+    return listScrollRef.current;
   }, []);
 
   const scrollToProviderRow = useCallback(
     (providerId: string, behavior: ScrollBehavior = "smooth") => {
       const node = rowRefs.current[providerId];
+      const container = listScrollRef.current;
       if (!node) return;
-      if (typeof node.scrollIntoView !== "function") return;
-      node.scrollIntoView({
-        behavior,
-        block: "center",
-      });
+      if (!container) {
+        node.scrollIntoView({ behavior, block: "center" });
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      const headerOffset = 48;
+      const targetTop =
+        container.scrollTop +
+        (nodeRect.top - containerRect.top) -
+        Math.max((container.clientHeight - nodeRect.height) / 2, headerOffset);
+      const maxTop = Math.max(
+        0,
+        container.scrollHeight - container.clientHeight,
+      );
+
+      const scrollTop = Math.max(0, Math.min(maxTop, targetTop));
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({
+          top: scrollTop,
+          behavior,
+        });
+        return;
+      }
+
+      container.scrollTop = scrollTop;
     },
     [],
   );
@@ -3035,48 +3025,6 @@ export function ProviderList({
           })}
         </Button>
 
-        {isSwitchModeApp && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div
-                  className={cn(
-                    "flex h-7 items-center gap-2 rounded-md border border-border-default bg-background/60 px-2 text-xs",
-                    !canEnableLoadBalancing && "opacity-60",
-                  )}
-                >
-                  <span className="whitespace-nowrap">
-                    {t("provider.loadBalancingToggle", {
-                      defaultValue: "开启分流",
-                    })}
-                  </span>
-                  <Switch
-                    checked={isLoadBalancingEnabled}
-                    onCheckedChange={handleLoadBalancingToggle}
-                    disabled={
-                      !canEnableLoadBalancing || updateAppProxyConfig.isPending
-                    }
-                    aria-label={t("provider.loadBalancingToggle", {
-                      defaultValue: "开启分流",
-                    })}
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                {canEnableLoadBalancing
-                  ? t("provider.loadBalancingHint", {
-                      defaultValue:
-                        "按故障转移队列和供应商最大会话数分流请求，并优先保持同一会话的供应商粘性。",
-                    })
-                  : t("provider.loadBalancingDisabledHint", {
-                      defaultValue:
-                        "分流仅在本地代理接管并开启故障转移后生效。",
-                    })}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
-
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
           <Popover>
             <PopoverTrigger asChild>
@@ -3149,42 +3097,116 @@ export function ProviderList({
               </ScrollArea>
             </PopoverContent>
           </Popover>
-          <div className="relative w-full max-w-[28rem]">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              ref={searchInputRef}
-              value={searchTerm}
-              onChange={(event) => {
-                setSearchTerm(event.target.value);
-                setActiveSearchMatchIndex(0);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  jumpToSearchMatch(
-                    event.shiftKey
-                      ? activeSearchMatchIndex - 1
-                      : activeSearchMatchIndex + 1,
-                  );
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setSearchTerm("");
-                  setActiveSearchMatchIndex(0);
-                }
-              }}
-              placeholder={t("provider.searchPlaceholder", {
-                defaultValue: "按名称、备注、网址或模型定位...",
-              })}
-              aria-label={t("provider.searchAriaLabel", {
-                defaultValue: "Search providers",
-              })}
-              className="h-8 pr-28 pl-9 text-sm"
-            />
-            {searchTerm && searchMatches.length > 0 ? (
-              <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-lg border border-border-default bg-background/98 shadow-lg backdrop-blur">
+          <Popover open={Boolean(searchTerm)}>
+            <PopoverAnchor asChild>
+              <div className="relative w-full max-w-[28rem]">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={searchInputRef}
+                  value={searchTerm}
+                  onChange={(event) => {
+                    setSearchTerm(event.target.value);
+                    setActiveSearchMatchIndex(0);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      jumpToSearchMatch(
+                        event.shiftKey
+                          ? activeSearchMatchIndex - 1
+                          : activeSearchMatchIndex + 1,
+                      );
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setSearchTerm("");
+                      setActiveSearchMatchIndex(0);
+                    }
+                  }}
+                  placeholder={t("provider.searchPlaceholder", {
+                    defaultValue: "按名称、备注、网址或模型定位...",
+                  })}
+                  aria-label={t("provider.searchAriaLabel", {
+                    defaultValue: "Search providers",
+                  })}
+                  className="h-8 pr-28 pl-9 text-sm"
+                />
+                {searchTerm ? (
+                  <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+                    <span className="min-w-[3.25rem] text-center font-mono text-[11px] text-muted-foreground">
+                      {searchMatches.length === 0
+                        ? "0/0"
+                        : `${activeSearchMatchIndex + 1}/${searchMatches.length}`}
+                    </span>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={() =>
+                        jumpToSearchMatch(activeSearchMatchIndex - 1)
+                      }
+                      disabled={searchMatches.length === 0}
+                      title={t("provider.searchPrev", {
+                        defaultValue: "上一个结果",
+                      })}
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={() =>
+                        jumpToSearchMatch(activeSearchMatchIndex + 1)
+                      }
+                      disabled={searchMatches.length === 0}
+                      title={t("provider.searchNext", {
+                        defaultValue: "下一个结果",
+                      })}
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </PopoverAnchor>
+            <PopoverContent
+              align="end"
+              sideOffset={8}
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              className="z-[80] w-[28rem] overflow-hidden border-border-default bg-popover p-0 text-popover-foreground shadow-xl"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-border-default bg-popover px-3 py-2">
+                <div className="min-w-0 text-xs text-muted-foreground">
+                  {searchMatches.length > 0
+                    ? t("provider.searchResultSummary", {
+                        defaultValue: "定位到 {{current}} / {{total}}",
+                        current: activeSearchMatchIndex + 1,
+                        total: searchMatches.length,
+                      })
+                    : t("provider.noSearchResults", {
+                        defaultValue: "没有找到匹配结果",
+                      })}
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    setSearchTerm("");
+                    setActiveSearchMatchIndex(0);
+                    searchInputRef.current?.focus();
+                  }}
+                >
+                  {t("common.clear", { defaultValue: "清空" })}
+                </Button>
+              </div>
+              {searchMatches.length > 0 ? (
                 <ScrollArea className="max-h-[min(22rem,calc(100vh-14rem))]">
-                  <div className="divide-y divide-border-default">
+                  <div className="divide-y divide-border-default bg-popover">
                     {searchMatches.map((match, index) => {
                       const row = displayRows[match.rowIndex];
                       if (!row) return null;
@@ -3195,12 +3217,15 @@ export function ProviderList({
                           className={cn(
                             "flex w-full flex-col gap-1 px-3 py-2 text-left transition-colors hover:bg-muted/70",
                             index === activeSearchMatchIndex &&
-                              "bg-amber-500/10",
+                              "bg-amber-500/15",
                           )}
-                          onClick={() => jumpToSearchMatch(index)}
+                          onClick={() => {
+                            jumpToSearchMatch(index);
+                            searchInputRef.current?.focus();
+                          }}
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="min-w-0 truncate text-sm font-medium">
                               {row.provider.name}
                             </span>
                             <Badge
@@ -3253,49 +3278,20 @@ export function ProviderList({
                     })}
                   </div>
                 </ScrollArea>
-              </div>
-            ) : null}
-            {searchTerm ? (
-              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
-                <span className="min-w-[3.25rem] text-center font-mono text-[11px] text-muted-foreground">
-                  {searchMatches.length === 0
-                    ? "0/0"
-                    : `${activeSearchMatchIndex + 1}/${searchMatches.length}`}
-                </span>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-6 w-6"
-                  onClick={() => jumpToSearchMatch(activeSearchMatchIndex - 1)}
-                  disabled={searchMatches.length === 0}
-                  title={t("provider.searchPrev", {
-                    defaultValue: "上一个结果",
+              ) : (
+                <div className="bg-popover px-3 py-8 text-center text-sm text-muted-foreground">
+                  {t("provider.noSearchResults", {
+                    defaultValue: "没有找到匹配结果",
                   })}
-                >
-                  <ChevronUp className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-6 w-6"
-                  onClick={() => jumpToSearchMatch(activeSearchMatchIndex + 1)}
-                  disabled={searchMatches.length === 0}
-                  title={t("provider.searchNext", {
-                    defaultValue: "下一个结果",
-                  })}
-                >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            ) : null}
-          </div>
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
-      <div className="relative flex min-h-0 flex-1 flex-col rounded-xl border border-border-default bg-card/40">
-        <div className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-border-default bg-card/95 px-3 py-2 text-[11px] text-muted-foreground backdrop-blur">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-default bg-card/40">
+        <div className="z-20 flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-card px-3 py-2 text-[11px] text-muted-foreground">
           <div className="flex min-w-0 items-center gap-2">
             <span>
               {t("provider.searchScopeHint", {
@@ -3363,8 +3359,11 @@ export function ProviderList({
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1">
-          <div ref={listScrollRef} className="h-full overflow-auto">
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div
+            ref={listScrollRef}
+            className="h-full overflow-auto overscroll-contain"
+          >
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -3387,9 +3386,9 @@ export function ProviderList({
                     <col className="w-[196px]" />
                     <col className="w-[214px]" />
                   </colgroup>
-                  <TableHeader>
+                  <TableHeader className="sticky top-0 z-20 bg-muted">
                     <TableRow className="bg-muted/40 hover:bg-muted/40">
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2">
+                      <TableHead className="h-9 bg-muted px-2 shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         <Checkbox
                           checked={
                             allDisplayedSelected
@@ -3406,16 +3405,16 @@ export function ProviderList({
                           })}
                         />
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 text-center whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         {t("provider.priority", { defaultValue: "序号" })}
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         {t("provider.name", { defaultValue: "供应商名称" })}
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         {t("provider.notes", { defaultValue: "备注" })}
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         <button
                           type="button"
                           onClick={() => void applyModelNameSort()}
@@ -3438,7 +3437,7 @@ export function ProviderList({
                           )}
                         </button>
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 text-center whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         <button
                           type="button"
                           onClick={cycleStatusSort}
@@ -3454,7 +3453,7 @@ export function ProviderList({
                           )}
                         </button>
                       </TableHead>
-                      <TableHead className="sticky top-0 z-10 h-9 bg-muted/95 px-2 text-center whitespace-nowrap">
+                      <TableHead className="h-9 bg-muted px-2 text-center whitespace-nowrap shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         {t("common.actions", { defaultValue: "操作" })}
                       </TableHead>
                     </TableRow>
@@ -4131,7 +4130,7 @@ function SortableProviderTableRow({
       }}
       style={style}
       className={cn(
-        "h-12 scroll-mt-24",
+        "h-12 scroll-mt-12",
         isDragging && "bg-muted/70",
         row.isActiveProxyProvider && "bg-emerald-500/5",
         isSearchMatch && "bg-sky-500/5",

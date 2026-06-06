@@ -282,21 +282,31 @@ async fn import_to_apps(
     }
 
     let tokens = db.api_hub_get_tokens(&req.site_id)?;
-    let group_to_key: HashMap<String, String> = tokens
-        .into_iter()
-        .filter_map(|token| {
-            let group = token.group_name?;
-            if token.name != group {
-                return None;
-            }
-            let raw_key = token.key?;
-            let normalized_key = normalize_api_key(raw_key.trim());
-            if normalized_key.is_empty() || is_masked_api_key(&normalized_key) {
-                return None;
-            }
-            Some((group, normalized_key))
-        })
-        .collect();
+    let mut group_to_key: HashMap<String, String> = HashMap::new();
+    for token in tokens {
+        let Some(raw_key) = token.key else {
+            continue;
+        };
+        let normalized_key = normalize_api_key(raw_key.trim());
+        if normalized_key.is_empty() || is_masked_api_key(&normalized_key) {
+            continue;
+        }
+        let Some(group) = token
+            .group_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+            .or_else(|| {
+                let name = token.name.trim();
+                groups.contains(name).then_some(name)
+            })
+        else {
+            continue;
+        };
+        group_to_key
+            .entry(group.to_string())
+            .or_insert(normalized_key);
+    }
 
     for app in &req.target_apps {
         let app_type = match AppType::from_str(app) {

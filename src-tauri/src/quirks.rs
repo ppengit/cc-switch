@@ -10,19 +10,16 @@
 //!
 //! `strip_paths` 用 `前缀:路径` 语法消歧义：
 //! - `env:KEY` —— `settings_config.env.KEY`
-//! - `config.toml:section.key` —— Codex `config.toml`（TOML 路径，`.` 分段）
 //! - `auth:key` —— Codex `auth.json` 的字段
 //! - `body:/json/pointer` —— 转发请求体的 JSON Pointer
 
 use serde_json::Value;
-use toml_edit::DocumentMut;
 
 use crate::provider::{JsonPatchOp, ProviderQuirks};
 
 /// `strip_paths` 中合法的前缀。其它前缀按未识别处理（写日志后跳过）。
 pub const STRIP_PREFIX_ENV: &str = "env:";
 pub const STRIP_PREFIX_AUTH: &str = "auth:";
-pub const STRIP_PREFIX_CONFIG_TOML: &str = "config.toml:";
 pub const STRIP_PREFIX_BODY: &str = "body:";
 
 /// 写盘前对 `settings_config` 应用 quirks。
@@ -30,7 +27,6 @@ pub const STRIP_PREFIX_BODY: &str = "body:";
 /// 对应 strip 前缀：
 /// - `env:KEY` 删除 `settings_config.env.KEY` 或 `settings_config.config.env.KEY`（兼容 Gemini 嵌套）
 /// - `auth:key` 删除 `settings_config.auth.key`（Codex）
-/// - `config.toml:path.to.key` 解析 `settings_config.config` 字符串为 TOML，删除路径后回写
 ///
 /// `body:` 前缀在写盘阶段会被忽略（仅转发阶段生效）。
 pub fn apply_strip_paths_to_settings(settings: &mut Value, quirks: &ProviderQuirks) {
@@ -48,8 +44,6 @@ pub fn apply_strip_paths_to_settings(settings: &mut Value, quirks: &ProviderQuir
             strip_env_key(settings, key.trim());
         } else if let Some(key) = raw.strip_prefix(STRIP_PREFIX_AUTH) {
             strip_object_field(settings, "auth", key.trim());
-        } else if let Some(path) = raw.strip_prefix(STRIP_PREFIX_CONFIG_TOML) {
-            strip_codex_config_toml_path(settings, path.trim());
         } else if raw.starts_with(STRIP_PREFIX_BODY) {
             // body: 前缀在写盘阶段不处理。
             continue;
@@ -135,65 +129,6 @@ fn strip_object_field(settings: &mut Value, top_field: &str, key: &str) {
             target.remove(key);
         }
     }
-}
-
-fn strip_codex_config_toml_path(settings: &mut Value, path: &str) {
-    if path.is_empty() {
-        return;
-    }
-
-    let Some(obj) = settings.as_object_mut() else {
-        return;
-    };
-    let Some(config_str) = obj.get("config").and_then(Value::as_str) else {
-        return;
-    };
-    if config_str.trim().is_empty() {
-        return;
-    }
-
-    let mut doc = match config_str.parse::<DocumentMut>() {
-        Ok(doc) => doc,
-        Err(err) => {
-            log::warn!("[quirks] Codex config.toml 解析失败，跳过 strip {path}: {err}");
-            return;
-        }
-    };
-
-    let segments: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
-    if segments.is_empty() {
-        return;
-    }
-
-    let removed = remove_toml_path(doc.as_table_mut(), &segments);
-    if removed {
-        obj.insert(
-            "config".to_string(),
-            Value::String(doc.to_string().trim_end_matches('\n').to_string() + "\n"),
-        );
-    }
-}
-
-fn remove_toml_path(table: &mut toml_edit::Table, segments: &[&str]) -> bool {
-    if segments.is_empty() {
-        return false;
-    }
-    let (head, rest) = segments.split_first().expect("segments not empty");
-
-    if rest.is_empty() {
-        return table.remove(head).is_some();
-    }
-
-    if let Some(item) = table.get_mut(head) {
-        if let Some(child) = item.as_table_mut() {
-            return remove_toml_path(child, rest);
-        }
-        if let Some(inline) = item.as_inline_table_mut() {
-            // Walk inline table by collecting/replacing — simplest: convert via path traversal.
-            let _ = inline; // 暂不支持 inline 表的深层删除（罕见，且 Codex 主用 standard table）
-        }
-    }
-    false
 }
 
 fn remove_by_pointer(body: &mut Value, pointer: &str) {
@@ -298,23 +233,6 @@ mod tests {
         apply_strip_paths_to_settings(&mut s, &q);
         assert_eq!(s["env"]["ANTHROPIC_API_KEY"], json!("x"));
         assert!(s["env"].get("ANTHROPIC_MODEL").is_none());
-    }
-
-    #[test]
-    fn strip_codex_features_removes_section() {
-        let mut s = json!({
-            "auth": {"OPENAI_API_KEY": "k"},
-            "config": "model = \"gpt-5\"\n[features]\nweb_search = true\n"
-        });
-        let q = ProviderQuirks {
-            strip_paths: Some(vec!["config.toml:features".to_string()]),
-            ..Default::default()
-        };
-        apply_strip_paths_to_settings(&mut s, &q);
-        let cfg = s["config"].as_str().expect("config string");
-        assert!(cfg.contains("model = \"gpt-5\""));
-        assert!(!cfg.contains("[features]"));
-        assert!(!cfg.contains("web_search"));
     }
 
     #[test]

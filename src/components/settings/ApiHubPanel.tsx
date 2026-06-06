@@ -69,6 +69,8 @@ const PAGE_SIZES = [10, 20, 50] as const;
 const SITE_TYPE_OPTIONS = [
   { value: "all", label: "全部协议" },
   { value: "new-api", label: "new-api" },
+  { value: "one-hub", label: "one-hub" },
+  { value: "done-hub", label: "done-hub" },
   { value: "sub2api", label: "sub2api" },
 ] as const;
 const CHANGE_FILTER_OPTIONS = [
@@ -244,8 +246,15 @@ function siteTypeClass(siteType: string, hasError: boolean): string {
   switch (siteType.toLowerCase()) {
     case "new-api":
     case "newapi":
+    case "one-api":
+    case "oneapi":
+    case "one-hub":
+    case "onehub":
+    case "done-hub":
+    case "donehub":
       return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700";
     case "sub2api":
+    case "sub2-api":
       return "border-violet-500/40 bg-violet-500/10 text-violet-700";
     default:
       return "border-muted-foreground/30 bg-muted text-muted-foreground";

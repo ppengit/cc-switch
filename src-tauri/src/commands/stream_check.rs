@@ -45,6 +45,14 @@ pub async fn stream_check_provider(
     )
     .await?;
 
+    if result.success {
+        state
+            .proxy_service
+            .reset_provider_recovery_state(&provider_id, app_type.as_str())
+            .await
+            .map_err(AppError::Message)?;
+    }
+
     // 记录日志
     let _ =
         state
@@ -158,6 +166,21 @@ pub async fn stream_check_all_providers(
         let _ = state
             .db
             .save_stream_check_log(&id, &provider.name, app_type.as_str(), &result);
+
+        if result.success {
+            if let Err(e) = state
+                .proxy_service
+                .reset_provider_recovery_state(&id, app_type.as_str())
+                .await
+            {
+                log::warn!(
+                    "[StreamCheck] Failed to reset provider recovery state for {}:{}: {}",
+                    app_type.as_str(),
+                    id,
+                    e
+                );
+            }
+        }
 
         results.push((id, result));
     }

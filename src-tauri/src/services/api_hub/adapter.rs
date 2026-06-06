@@ -28,7 +28,7 @@ pub trait ApiHubAdapter: Send + Sync {
 /// Adapter 工厂：未知 site_type 兜底为 new-api。
 pub fn build_adapter(site_type: &str) -> Box<dyn ApiHubAdapter> {
     match site_type.to_ascii_lowercase().as_str() {
-        "sub2api" => Box::new(Sub2ApiAdapter::new()),
+        "sub2api" | "sub2-api" => Box::new(Sub2ApiAdapter::new()),
         _ => Box::new(NewApiAdapter::new()),
     }
 }
@@ -37,6 +37,15 @@ pub fn build_adapter(site_type: &str) -> Box<dyn ApiHubAdapter> {
 pub fn is_known_site_type(site_type: &str) -> bool {
     matches!(
         site_type.to_ascii_lowercase().as_str(),
-        "new-api" | "newapi" | "sub2api"
+        "new-api"
+            | "newapi"
+            | "one-api"
+            | "oneapi"
+            | "one-hub"
+            | "onehub"
+            | "done-hub"
+            | "donehub"
+            | "sub2api"
+            | "sub2-api"
     )
 }

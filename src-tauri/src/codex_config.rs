@@ -14,6 +14,8 @@ use toml_edit::DocumentMut;
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CODEX_MODEL_CATALOG_TEMPLATE_SLUG: &str = "gpt-5.5";
+const CODEX_REMOTE_COMPACTION_PROVIDER_NAME: &str = "OpenAI";
+const CODEX_REMOTE_COMPACTION_DISABLED_FALLBACK_NAME: &str = "OpenAI Compatible";
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
 /// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
@@ -743,20 +745,18 @@ fn set_codex_model_catalog_json_field(
     let mut doc = config_text
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
-    let generated_path = get_codex_model_catalog_path();
 
     match catalog_path {
-        Some(path) => {
-            doc["model_catalog_json"] = toml_edit::value(path.to_string_lossy().as_ref());
+        Some(_) => {
+            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
         }
         None => {
             let should_remove = doc
                 .get("model_catalog_json")
                 .and_then(|item| item.as_str())
                 .map(|path| {
-                    path == generated_path.to_string_lossy().as_ref()
-                        || Path::new(path).file_name().and_then(|name| name.to_str())
-                            == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                    Path::new(path).file_name().and_then(|name| name.to_str())
+                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
                 })
                 .unwrap_or(false);
             if should_remove {
@@ -841,9 +841,8 @@ fn resolve_cc_switch_catalog_path(config_text: &str, generated_path: &Path) -> O
         .filter(|s| !s.is_empty())?;
 
     let referenced_path = Path::new(catalog_path_str);
-    let is_cc_switch_owned = catalog_path_str == generated_path.to_string_lossy().as_ref()
-        || referenced_path.file_name().and_then(|name| name.to_str())
-            == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+    let is_cc_switch_owned = referenced_path.file_name().and_then(|name| name.to_str())
+        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
     if !is_cc_switch_owned {
         return None;
     }
@@ -1038,6 +1037,60 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
     Ok(doc.to_string())
 }
 
+fn disable_codex_remote_compaction_for_custom_provider(
+    config_text: &str,
+) -> Result<String, AppError> {
+    if config_text.trim().is_empty() || !config_text.contains(CODEX_REMOTE_COMPACTION_PROVIDER_NAME)
+    {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let Some((provider_id, should_repair_model_provider)) = active_codex_model_provider(&doc)
+    else {
+        return Ok(config_text.to_string());
+    };
+
+    if !is_custom_codex_model_provider_id(&provider_id) {
+        return Ok(config_text.to_string());
+    }
+
+    if should_repair_model_provider {
+        doc["model_provider"] = toml_edit::value(provider_id.as_str());
+    }
+
+    let fallback_name = if provider_id == CODEX_REMOTE_COMPACTION_PROVIDER_NAME {
+        CODEX_REMOTE_COMPACTION_DISABLED_FALLBACK_NAME
+    } else {
+        provider_id.as_str()
+    };
+
+    let Some(provider_table) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|table| table.get_mut(provider_id.as_str()))
+        .and_then(|item| item.as_table_mut())
+    else {
+        return Ok(config_text.to_string());
+    };
+
+    let name = provider_table
+        .get("name")
+        .and_then(|item| item.as_str())
+        .map(str::trim);
+
+    if name != Some(CODEX_REMOTE_COMPACTION_PROVIDER_NAME) {
+        return Ok(config_text.to_string());
+    }
+
+    provider_table["name"] = toml_edit::value(fallback_name);
+
+    Ok(doc.to_string())
+}
+
 pub fn remove_codex_experimental_bearer_token_if(
     config_text: &str,
     predicate: impl Fn(&str) -> bool,
@@ -1124,11 +1177,23 @@ pub fn write_codex_live_for_provider(
         || (category != Some("official")
             && !crate::settings::preserve_codex_official_auth_on_switch());
 
-    if should_write_auth {
-        write_codex_live_atomic(auth, config_text)
+    let prepared_config = if category == Some("official") {
+        config_text.map(str::to_string)
+    } else if should_write_auth {
+        config_text
+            .map(disable_codex_remote_compaction_for_custom_provider)
+            .transpose()?
     } else {
-        let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
-        write_codex_live_config_atomic(Some(&live_config))
+        Some(prepare_codex_provider_live_config(
+            auth,
+            config_text.unwrap_or(""),
+        )?)
+    };
+
+    if should_write_auth {
+        write_codex_live_atomic(auth, prepared_config.as_deref())
+    } else {
+        write_codex_live_config_atomic(prepared_config.as_deref())
     }
 }
 
@@ -1145,10 +1210,12 @@ pub fn prepare_codex_provider_live_config(
     let token = extract_codex_auth_api_key(auth)
         .or_else(|| extract_codex_experimental_bearer_token(config_text));
 
-    Ok(match token {
+    let live_config = match token {
         Some(token) => set_codex_experimental_bearer_token(config_text, &token)?,
         None => config_text.to_string(),
-    })
+    };
+
+    disable_codex_remote_compaction_for_custom_provider(&live_config)
 }
 
 /// During DB backfill, lift a live `experimental_bearer_token` back into
@@ -1441,6 +1508,41 @@ wire_api = "responses"
         );
         assert_eq!(
             extract_codex_experimental_bearer_token(&output).as_deref(),
+            Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_disables_remote_compaction_for_custom_openai_name() {
+        let input = r#"model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str()),
+            Some("custom"),
+            "third-party OpenAI-compatible providers must not be named OpenAI in live config, otherwise Codex CLI enables remote /responses/compact"
+        );
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .and_then(|v| v.get("experimental_bearer_token"))
+                .and_then(|v| v.as_str()),
             Some("sk-test")
         );
     }
@@ -2069,7 +2171,7 @@ base_url = "https://production.api/v1"
     }
 
     #[test]
-    fn model_catalog_json_field_operates_on_top_level() {
+    fn model_catalog_json_field_writes_relative_filename() {
         let input = r#"model_provider = "any"
 
 [model_providers.any]
@@ -2083,7 +2185,7 @@ name = "any"
             parsed
                 .get("model_catalog_json")
                 .and_then(|value| value.as_str()),
-            Some("/tmp/cc-switch-model-catalog.json")
+            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
         );
         assert!(
             parsed
@@ -2303,5 +2405,111 @@ name = "any"
                 "static template must contain key '{key}'"
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn set_catalog_json_field_writes_filename_ignoring_unc_path() {
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+"#;
+        // Simulate a WSL UNC path as cc-switch would see it on Windows;
+        // the function now writes just the relative filename.
+        let unc_path =
+            Path::new(r"\\wsl.localhost\Ubuntu\home\user\.codex\cc-switch-model-catalog.json");
+
+        let result = set_codex_model_catalog_json_field(input, Some(unc_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        let written_path = parsed
+            .get("model_catalog_json")
+            .and_then(|v| v.as_str())
+            .expect("model_catalog_json should be set");
+        assert_eq!(
+            written_path, CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME,
+            "should write only the relative filename, not the UNC path"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_field_writes_filename_for_any_path() {
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+"#;
+        let regular_path = Path::new("/home/user/.codex/cc-switch-model-catalog.json");
+
+        let result = set_codex_model_catalog_json_field(input, Some(regular_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+            "should write only the relative filename, not the full path"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_none_removes_cc_switch_owned_by_filename() {
+        // After the WSL fix, TOML may contain a Linux-style path.
+        // The None arm must still remove it (file_name match catches any format).
+        let input = r#"model_catalog_json = "/home/user/.codex/cc-switch-model-catalog.json"
+"#;
+        let result = set_codex_model_catalog_json_field(input, None).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert!(
+            parsed.get("model_catalog_json").is_none(),
+            "None arm should remove cc-switch-owned field regardless of path format"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_none_preserves_user_owned_catalog() {
+        let input = r#"model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
+"#;
+        let result = set_codex_model_catalog_json_field(input, None).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("/Users/me/.codex/my-custom-catalog.json"),
+            "None arm should NOT remove user-owned catalog"
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_finds_relative_filename() {
+        let config_text = r#"model_provider = "custom"
+model_catalog_json = "cc-switch-model-catalog.json"
+"#;
+        let generated_path = PathBuf::from("/home/user/.codex/cc-switch-model-catalog.json");
+        let result = resolve_cc_switch_catalog_path(config_text, &generated_path);
+        assert_eq!(
+            result,
+            Some(generated_path),
+            "relative filename should resolve to generated_path for file I/O"
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_ignores_user_owned_relative() {
+        let config_text = r#"model_catalog_json = "my-custom-catalog.json"
+"#;
+        let generated_path = PathBuf::from("/home/user/.codex/cc-switch-model-catalog.json");
+        let result = resolve_cc_switch_catalog_path(config_text, &generated_path);
+        assert_eq!(
+            result, None,
+            "user-owned catalog should not be claimed by cc-switch"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_none_removes_relative_path() {
+        let input = r#"model_catalog_json = "cc-switch-model-catalog.json"
+"#;
+        let result = set_codex_model_catalog_json_field(input, None).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert!(
+            parsed.get("model_catalog_json").is_none(),
+            "None arm should remove relative cc-switch-owned field"
+        );
     }
 }

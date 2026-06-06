@@ -472,7 +472,7 @@ describe("ProviderList Component", () => {
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
     expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
     expect(screen.getByText("0/0")).toBeInTheDocument();
-    expect(screen.getByText("没有找到匹配结果")).toBeInTheDocument();
+    expect(screen.getAllByText("没有找到匹配结果").length).toBeGreaterThan(0);
   });
 
   it("keeps full API endpoints visible for search and display text", () => {
@@ -776,104 +776,5 @@ describe("ProviderList Component", () => {
     expect(switchButton).toBeDisabled();
     fireEvent.click(switchButton);
     expect(handleSwitch).not.toHaveBeenCalled();
-  });
-
-  it("enables load balancing only when proxy takeover and auto failover are active", async () => {
-    const providerA = createProvider({ id: "a", name: "A" });
-    mockAutoFailoverEnabled = true;
-    mockAppProxyConfig = {
-      appType: "claude",
-      enabled: true,
-      autoFailoverEnabled: true,
-      loadBalancingEnabled: true,
-      forceResponsesCompactGpt54: false,
-      maxRetries: 3,
-      streamingFirstByteTimeout: 60,
-      streamingIdleTimeout: 120,
-      nonStreamingTimeout: 600,
-      circuitFailureThreshold: 5,
-      circuitSuccessThreshold: 2,
-      circuitTimeoutSeconds: 60,
-      circuitErrorRateThreshold: 0.5,
-      circuitMinRequests: 10,
-    };
-
-    useDragSortMock.mockReturnValue({
-      sortedProviders: [providerA],
-      sensors: [],
-      handleDragEnd: vi.fn(),
-    });
-
-    renderWithQueryClient(
-      <ProviderList
-        providers={{ a: providerA }}
-        currentProviderId="a"
-        appId="claude"
-        isProxyTakeover
-        onSwitch={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onDuplicate={vi.fn()}
-        onOpenWebsite={vi.fn()}
-      />,
-    );
-
-    const toggle = screen.getByRole("switch", { name: "开启分流" });
-    expect(toggle).toBeEnabled();
-    expect(toggle).toHaveAttribute("aria-checked", "true");
-
-    fireEvent.click(toggle);
-
-    expect(mockUpdateAppProxyConfigMutate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        appType: "claude",
-        loadBalancingEnabled: false,
-      }),
-    );
-  });
-
-  it("keeps load balancing disabled when failover is off", () => {
-    const providerA = createProvider({ id: "a", name: "A" });
-    mockAutoFailoverEnabled = false;
-    mockAppProxyConfig = {
-      appType: "claude",
-      enabled: true,
-      autoFailoverEnabled: false,
-      loadBalancingEnabled: true,
-      forceResponsesCompactGpt54: false,
-      maxRetries: 3,
-      streamingFirstByteTimeout: 60,
-      streamingIdleTimeout: 120,
-      nonStreamingTimeout: 600,
-      circuitFailureThreshold: 5,
-      circuitSuccessThreshold: 2,
-      circuitTimeoutSeconds: 60,
-      circuitErrorRateThreshold: 0.5,
-      circuitMinRequests: 10,
-    };
-
-    useDragSortMock.mockReturnValue({
-      sortedProviders: [providerA],
-      sensors: [],
-      handleDragEnd: vi.fn(),
-    });
-
-    renderWithQueryClient(
-      <ProviderList
-        providers={{ a: providerA }}
-        currentProviderId="a"
-        appId="claude"
-        isProxyTakeover
-        onSwitch={vi.fn()}
-        onEdit={vi.fn()}
-        onDelete={vi.fn()}
-        onDuplicate={vi.fn()}
-        onOpenWebsite={vi.fn()}
-      />,
-    );
-
-    const toggle = screen.getByRole("switch", { name: "开启分流" });
-    expect(toggle).toBeDisabled();
-    expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 });

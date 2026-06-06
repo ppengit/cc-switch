@@ -226,7 +226,7 @@ export interface ProviderMeta {
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
   githubAccountId?: string;
   // per-provider 特殊配置（quirks）：
-  // - strip_paths: 写盘 / 转发前删除指定路径（前缀: env: / auth: / config.toml: / body:）
+  // - strip_paths: 写盘 / 转发前删除指定路径（前缀: env: / auth: / body:）
   // - force_model: 转发请求时强制覆盖 body.model
   // - strip_request_headers: 转发请求时删除指定 header（小写匹配）
   // - request_body_patches: JSON Patch 子集（add/replace/remove）

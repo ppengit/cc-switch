@@ -99,18 +99,28 @@ fn summarize_changes(
 ) -> Option<String> {
     let previous_group_names: BTreeSet<String> = previous_groups
         .iter()
-        .map(|group| group.name.clone())
+        .filter_map(|group| normalize_nonempty(&group.name))
         .collect();
-    let next_group_names: BTreeSet<String> =
-        next_groups.iter().map(|group| group.name.clone()).collect();
+    let next_group_names: BTreeSet<String> = next_groups
+        .iter()
+        .filter_map(|group| normalize_nonempty(&group.name))
+        .collect();
     let previous_model_names: BTreeSet<String> = previous_models
         .iter()
-        .map(|model| model.name.clone())
+        .filter_map(|model| normalize_nonempty(&model.name))
         .collect();
-    let next_model_names: BTreeSet<String> =
-        next_models.iter().map(|model| model.name.clone()).collect();
-    let previous_token_ids: BTreeSet<i64> = previous_tokens.iter().map(|token| token.id).collect();
-    let next_token_ids: BTreeSet<i64> = next_tokens.iter().map(|token| token.id).collect();
+    let next_model_names: BTreeSet<String> = next_models
+        .iter()
+        .filter_map(|model| normalize_nonempty(&model.name))
+        .collect();
+    let previous_token_keys: BTreeSet<String> = previous_tokens
+        .iter()
+        .filter_map(normalized_token_identity)
+        .collect();
+    let next_token_keys: BTreeSet<String> = next_tokens
+        .iter()
+        .filter_map(normalized_token_identity)
+        .collect();
 
     let changed_model_groups = count_model_group_changes(previous_models, next_models);
     let mut parts = Vec::new();
@@ -132,8 +142,8 @@ fn summarize_changes(
     push_added_removed(
         &mut parts,
         "APIKey",
-        previous_token_ids.difference(&next_token_ids).count(),
-        next_token_ids.difference(&previous_token_ids).count(),
+        previous_token_keys.difference(&next_token_keys).count(),
+        next_token_keys.difference(&previous_token_keys).count(),
     );
 
     if parts.is_empty() {
@@ -141,6 +151,25 @@ fn summarize_changes(
     } else {
         Some(parts.join("，"))
     }
+}
+
+fn normalize_nonempty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalized_token_identity(token: &TokenInfo) -> Option<String> {
+    let group = token.group_name.as_deref()?.trim();
+    let name = token.name.trim();
+    if group.is_empty() && name.is_empty() {
+        return None;
+    }
+    let plain_key = super::types::has_plain_api_key(token.key.as_deref());
+    Some(format!("{group}\u{1f}{name}\u{1f}{plain_key}"))
 }
 
 fn push_added_removed(parts: &mut Vec<String>, label: &str, removed: usize, added: usize) {

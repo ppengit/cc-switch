@@ -262,8 +262,6 @@ impl RequestContext {
             state.switch_epoch.clone(),
             self.request_epoch,
             effective_auto_failover_enabled,
-            effective_auto_failover_enabled && self.app_config.load_balancing_enabled,
-            self.app_config.force_responses_compact_gpt54,
             max_retries,
         )
     }

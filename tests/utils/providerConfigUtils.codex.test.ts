@@ -5,11 +5,13 @@ import {
   extractCodexModelName,
   extractCodexTopLevelInt,
   isCodexGoalModeEnabled,
+  isCodexRemoteCompactionEnabled,
   isKnownFullApiEndpoint,
   removeCodexTopLevelField,
   setCodexBaseUrl,
   setCodexGoalMode,
   setCodexModelName,
+  setCodexRemoteCompaction,
   setCodexTopLevelInt,
   updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
@@ -508,6 +510,28 @@ describe("Codex TOML utils", () => {
       /^experimental_bearer_token\s*=/m,
     );
     expect(updated).not.toContain("old-key");
+  });
+
+  it("disables Codex remote compaction by clearing OpenAI provider names", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.5"',
+      "",
+      "[model_providers.custom]",
+      'name = "OpenAI"',
+      'base_url = "https://relay.example/v1"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "",
+    ].join("\n");
+
+    expect(isCodexRemoteCompactionEnabled(input)).toBe(true);
+
+    const output = setCodexRemoteCompaction(input, false);
+
+    expect(isCodexRemoteCompactionEnabled(output)).toBe(false);
+    expect(output).toContain('name = "custom"');
+    expect(output).not.toContain('name = "OpenAI"\n');
   });
 
   it("extracts bearer token from the only renamed provider section", () => {

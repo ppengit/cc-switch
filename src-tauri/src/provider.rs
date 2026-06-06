@@ -489,7 +489,7 @@ pub struct ProviderMeta {
     /// per-provider 特殊配置（quirks）：
     ///
     /// 用于在写盘和代理转发链路上对该供应商应用统一的"特殊指令"，
-    /// 比如屏蔽 Codex `[features]` 段、强制覆盖请求 model、剥离上游不接受的字段等。
+    /// 比如强制覆盖请求 model、剥离上游不接受的字段等。
     /// 详见 [`ProviderQuirks`]。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quirks: Option<ProviderQuirks>,
@@ -508,8 +508,6 @@ pub struct ProviderQuirks {
     ///
     /// 语法（`前缀:路径`）：
     /// - `env:KEY` —— 删除 `settings_config.env.KEY`（Claude/Gemini）
-    /// - `config.toml:section.key` —— 删除 Codex `config.toml` 中的 TOML 路径
-    ///   （`section.key` 用 `.` 分段；只写 `section` 表示删整段）
     /// - `auth:key` —— 删除 Codex `auth.json` 中的字段
     /// - `body:/json/pointer` —— 转发请求体里删字段（JSON Pointer）
     #[serde(default, skip_serializing_if = "Option::is_none")]
