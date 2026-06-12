@@ -73,11 +73,35 @@ impl Database {
         Ok(())
     }
 
-    /// 从故障转移队列中移除供应商
+    /// 从故障转移队列中移除供应商（同时清除健康状态）
+    ///
+    /// 用于用户主动移除供应商的场景：退出队列后不再需要健康监控，
+    /// 一并清除 provider_health 记录。
     pub fn remove_from_failover_queue(
         &self,
         app_type: &str,
         provider_id: &str,
+    ) -> Result<(), AppError> {
+        self.remove_from_failover_queue_inner(app_type, provider_id, true)
+    }
+
+    /// 从故障转移队列中移除供应商，但保留健康状态记录
+    ///
+    /// 用于被动禁用场景（认证错误熔断）：供应商被自动移出队列，
+    /// 但需要保留 last_error 等健康信息供前端展示用户排查原因。
+    pub fn remove_from_failover_queue_keep_health(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        self.remove_from_failover_queue_inner(app_type, provider_id, false)
+    }
+
+    fn remove_from_failover_queue_inner(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        clear_health: bool,
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 
@@ -88,14 +112,22 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 2. 清除该供应商的健康状态（退出队列后不再需要健康监控）
-        conn.execute(
-            "DELETE FROM provider_health WHERE provider_id = ?1 AND app_type = ?2",
-            rusqlite::params![provider_id, app_type],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        // 2. 视场景决定是否清除该供应商的健康状态
+        if clear_health {
+            conn.execute(
+                "DELETE FROM provider_health WHERE provider_id = ?1 AND app_type = ?2",
+                rusqlite::params![provider_id, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
-        log::info!("已从故障转移队列移除供应商 {provider_id} ({app_type}), 并清除其健康状态");
+            log::info!(
+                "已从故障转移队列移除供应商 {provider_id} ({app_type}), 并清除其健康状态"
+            );
+        } else {
+            log::info!(
+                "已从故障转移队列移除供应商 {provider_id} ({app_type}), 保留其健康状态以供排查"
+            );
+        }
 
         Ok(())
     }

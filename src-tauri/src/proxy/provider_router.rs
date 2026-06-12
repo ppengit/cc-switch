@@ -267,7 +267,10 @@ impl ProviderRouter {
             let count = self.increment_api_key_error_count(&circuit_key).await;
             if count >= API_KEY_ERROR_DISABLE_THRESHOLD {
                 breaker.force_open().await;
-                self.db.remove_from_failover_queue(app_type, provider_id)?;
+                // 被动禁用（认证错误熔断）时保留 provider_health 记录，
+                // 让 last_error 仍可在供应商列表展示；仅移出故障转移队列。
+                self.db
+                    .remove_from_failover_queue_keep_health(app_type, provider_id)?;
                 log::warn!(
                     "[{app_type}] Provider {provider_id} 出现 {count} 次 API Key 认证错误，已熔断并从故障转移队列禁用"
                 );

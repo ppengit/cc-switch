@@ -4098,6 +4098,17 @@ function SortableProviderTableRow({
   ].filter(Boolean) as string[];
   const hasStatusTooltip = healthDetailLines.length > 0;
 
+  // 被动禁用（认证错误熔断等）的供应商会被移出故障转移队列，showFailoverHealth
+  // 变为 false，熔断/降级 badge 不再显示。但后端保留了 provider_health.last_error，
+  // 这里在没有其它健康 badge 时兜底显示一个"异常"标记，让用户在列表上直接看到问题，
+  // 具体错误文本仍通过状态列 tooltip 展示。
+  const hasPersistedError =
+    !isProcessing &&
+    !isCircuitOpen &&
+    !isCircuitHalfOpen &&
+    !isDegraded &&
+    Boolean(health?.last_error);
+
   const statusLabel = row.isActiveProxyProvider
     ? t("provider.currentProxy", { defaultValue: "当前代理" })
     : row.modeState === "proxy_target"
@@ -4303,6 +4314,13 @@ function SortableProviderTableRow({
                   <Badge className="h-5 border border-yellow-500/40 bg-yellow-500/10 px-1.5 text-xs text-yellow-700 hover:bg-yellow-500/10 dark:text-yellow-300">
                     {t("provider.degraded", { defaultValue: "降级" })}
                     {failureCount > 0 ? ` ${failureCount}` : ""}
+                  </Badge>
+                ) : hasPersistedError ? (
+                  <Badge
+                    variant="destructive"
+                    className="h-5 px-1.5 text-xs"
+                  >
+                    {t("provider.lastErrorBadge", { defaultValue: "异常" })}
                   </Badge>
                 ) : null}
               </div>

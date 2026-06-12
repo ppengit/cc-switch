@@ -345,7 +345,7 @@ impl ProxyServer {
         *epochs.get(app_type).unwrap_or(&0)
     }
 
-    pub async fn clear_provider_runtime_state(&self, app_type: &str, provider_id: &str) {
+    pub async fn clear_provider_runtime_state(&self, provider_id: &str, app_type: &str) {
         super::activity::clear_provider(
             &self.state.proxy_activity,
             self.state.app_handle.as_ref(),

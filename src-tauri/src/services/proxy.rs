@@ -1245,6 +1245,27 @@ impl ProxyService {
             self.sync_takeover_sidecars_from_db(&app)?;
             self.sync_failover_active_target(app_type_str).await?;
 
+            // 6.1) 重开接管时重置队列内供应商的内存熔断态。
+            //
+            // 关闭接管只清了 DB 健康记录，内存中的熔断器（可能为 Open）和
+            // api_key_error_counts（认证错误累计）不会被清。若某供应商此前被
+            // 认证错误熔断，关闭再重开接管后内存态仍残留，会导致它无法被路由
+            // 选中。这里把队列内所有供应商的内存熔断态归位，与 DB 健康记录对齐。
+            // 仅重置内存运行态，不触碰 DB health（避免误清正常历史）。
+            if let Ok(queue) = self.db.get_failover_queue(app_type_str) {
+                for item in queue {
+                    if let Err(e) = self
+                        .reset_provider_circuit_breaker(&item.provider_id, app_type_str)
+                        .await
+                    {
+                        log::warn!(
+                            "[{app_type_str}] 重开接管时重置 {} 熔断器失败: {e}",
+                            item.provider_id
+                        );
+                    }
+                }
+            }
+
             // 7) 兼容旧逻辑：写入 any-of 标志（失败不影响功能）
             let _ = self.db.set_live_takeover_active(true).await;
 

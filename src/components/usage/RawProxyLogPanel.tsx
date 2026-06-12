@@ -57,12 +57,31 @@ const normalizeRouteMode = (value?: string | null) => {
   return trimmed || undefined;
 };
 
+/**
+ * 判断错误文本是否疑似 HTML 页面。
+ *
+ * 上游 nginx/CDN/网关在 4xx/5xx 时常返回 HTML 错误页（如 413、502、504、
+ * Cloudflare 错误页等），这些内容会原样进入 error 字段。命中时提供
+ * iframe 沙箱预览，让用户看到排版后的真实错误页。
+ */
+const isLikelyHtml = (value?: string | null): boolean => {
+  if (!value) return false;
+  const sample = value.slice(0, 2000).toLowerCase();
+  return (
+    sample.includes("<!doctype html") ||
+    sample.includes("<html") ||
+    (sample.includes("<body") && sample.includes("</body>")) ||
+    (sample.includes("<head") && sample.includes("</head>"))
+  );
+};
+
 export function RawProxyLogPanel({
   appType,
   refreshIntervalMs,
 }: RawProxyLogPanelProps) {
   const { t, i18n } = useTranslation();
   const [selectedLog, setSelectedLog] = useState<ProxyRawLogEntry | null>(null);
+  const [htmlErrorPreview, setHtmlErrorPreview] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const { data, isLoading, error, refetch, isFetching } = useProxyRawLogs(
     appType,
@@ -291,12 +310,29 @@ export function RawProxyLogPanel({
                         {log.activeRequestCount}
                       </TableCell>
                       <TableCell className="max-w-[280px]">
-                        <div
-                          className="truncate text-xs text-red-600 dark:text-red-400"
-                          title={log.error || ""}
-                        >
-                          {log.error || "-"}
-                        </div>
+                        {log.error && isLikelyHtml(log.error) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs text-red-600 dark:text-red-400"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setHtmlErrorPreview(log.error || "");
+                            }}
+                          >
+                            {t("usage.viewErrorPage", {
+                              defaultValue: "查看错误页",
+                            })}
+                          </Button>
+                        ) : (
+                          <div
+                            className="truncate text-xs text-red-600 dark:text-red-400"
+                            title={log.error || ""}
+                          >
+                            {log.error || "-"}
+                          </div>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -369,6 +405,36 @@ export function RawProxyLogPanel({
             <pre className="rounded-md border bg-muted/40 p-3 text-xs leading-relaxed overflow-auto">
               {JSON.stringify(selectedLog, null, 2)}
             </pre>
+          </DialogContent>
+        </Dialog>
+      )}
+      {htmlErrorPreview !== null && (
+        <Dialog open onOpenChange={() => setHtmlErrorPreview(null)}>
+          <DialogContent
+            zIndex="top"
+            className="max-w-4xl max-h-[90vh] overflow-hidden"
+          >
+            <DialogHeader>
+              <DialogTitle>
+                {t("usage.errorPagePreview", {
+                  defaultValue: "错误页预览",
+                })}
+              </DialogTitle>
+              <DialogDescription>
+                {t("usage.errorPagePreviewDescription", {
+                  defaultValue:
+                    "上游返回的 HTML 错误页，在隔离沙箱中渲染（禁用脚本与外部请求）。",
+                })}
+              </DialogDescription>
+            </DialogHeader>
+            <iframe
+              srcDoc={htmlErrorPreview}
+              sandbox=""
+              className="h-[60vh] w-full rounded-md border bg-white"
+              title={t("usage.errorPagePreview", {
+                defaultValue: "错误页预览",
+              })}
+            />
           </DialogContent>
         </Dialog>
       )}
