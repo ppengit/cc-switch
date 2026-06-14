@@ -9,8 +9,12 @@ use crate::provider::{ClaudeDesktopMode, Provider, ProviderMeta, UsageScript};
 use crate::services::ProviderService;
 use crate::store::AppState;
 use crate::AppType;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::str::FromStr;
+
+const DEFAULT_PROVIDER_TEMPLATE_MODEL: &str = "gpt-5.5";
+const DEFAULT_CLAUDE_TEMPLATE_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_GEMINI_TEMPLATE_MODEL: &str = "gemini-3.1-pro-preview";
 
 /// Import a provider from a deep link request
 ///
@@ -97,6 +101,7 @@ pub fn import_provider_from_deeplink(
 
     // Build provider configuration based on app type
     let mut provider = build_provider_from_request(&app_type, &merged_request)?;
+    apply_provider_default_template(state, &app_type, &mut provider)?;
 
     // Generate a unique ID for the provider using timestamp + sanitized name
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -173,6 +178,474 @@ pub(crate) fn build_provider_from_request(
     };
 
     Ok(provider)
+}
+
+struct ProviderTemplateBindings {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+fn apply_provider_default_template(
+    state: &AppState,
+    app_type: &AppType,
+    provider: &mut Provider,
+) -> Result<(), AppError> {
+    let Some(template_text) = state.db.get_provider_default_template(app_type.as_str())? else {
+        return Ok(());
+    };
+    let template_text = template_text.trim();
+    if template_text.is_empty() {
+        return Ok(());
+    }
+
+    let template = serde_json::from_str::<Value>(template_text).map_err(|e| {
+        AppError::InvalidInput(format!(
+            "Invalid provider default template for {}: {e}",
+            app_type.as_str()
+        ))
+    })?;
+    if !template.is_object() {
+        return Err(AppError::InvalidInput(format!(
+            "Provider default template for {} must be a JSON object",
+            app_type.as_str()
+        )));
+    }
+
+    let bindings = provider_template_bindings(provider, app_type);
+    let rendered = render_provider_template_value(&template, &bindings, app_type, None);
+    if !rendered.is_object() {
+        return Err(AppError::InvalidInput(format!(
+            "Rendered provider default template for {} must be a JSON object",
+            app_type.as_str()
+        )));
+    }
+
+    provider.settings_config = protect_provider_template_credentials(
+        &provider.settings_config,
+        &template,
+        rendered,
+        app_type,
+    );
+    Ok(())
+}
+
+fn provider_template_bindings(provider: &Provider, app_type: &AppType) -> ProviderTemplateBindings {
+    let (base_url, api_key) = provider.resolve_usage_credentials(app_type);
+    ProviderTemplateBindings {
+        base_url,
+        api_key,
+        model: provider_template_model(provider, app_type),
+    }
+}
+
+fn first_non_empty(values: &[Option<&str>]) -> String {
+    values
+        .iter()
+        .filter_map(|value| value.map(str::trim))
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn provider_template_model(provider: &Provider, app_type: &AppType) -> String {
+    let settings = &provider.settings_config;
+    match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => {
+            let env = settings.get("env");
+            first_non_empty(&[
+                env.and_then(|v| v.get("ANTHROPIC_MODEL"))
+                    .and_then(Value::as_str),
+                env.and_then(|v| v.get("ANTHROPIC_DEFAULT_SONNET_MODEL"))
+                    .and_then(Value::as_str),
+                env.and_then(|v| v.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"))
+                    .and_then(Value::as_str),
+                env.and_then(|v| v.get("ANTHROPIC_DEFAULT_OPUS_MODEL"))
+                    .and_then(Value::as_str),
+            ])
+        }
+        AppType::Codex => settings
+            .get("config")
+            .and_then(Value::as_str)
+            .and_then(|config| {
+                toml::from_str::<toml::Value>(config)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("model")
+                            .and_then(|model| model.as_str())
+                            .map(str::to_string)
+                    })
+            })
+            .unwrap_or_default(),
+        AppType::Gemini => settings
+            .pointer("/env/GEMINI_MODEL")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        AppType::OpenCode => settings
+            .get("models")
+            .and_then(Value::as_object)
+            .and_then(|models| models.keys().next())
+            .map(|model| model.trim().to_string())
+            .unwrap_or_default(),
+        AppType::OpenClaw => settings
+            .get("models")
+            .and_then(Value::as_array)
+            .and_then(|models| models.first())
+            .and_then(|model| model.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        AppType::Hermes => settings
+            .get("models")
+            .and_then(Value::as_array)
+            .and_then(|models| models.first())
+            .and_then(|model| model.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| settings.get("model").and_then(Value::as_str))
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
+fn default_provider_template_model_for_app(app_type: &AppType) -> &'static str {
+    match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => DEFAULT_CLAUDE_TEMPLATE_MODEL,
+        AppType::Gemini => DEFAULT_GEMINI_TEMPLATE_MODEL,
+        _ => DEFAULT_PROVIDER_TEMPLATE_MODEL,
+    }
+}
+
+fn render_provider_template_value(
+    value: &Value,
+    bindings: &ProviderTemplateBindings,
+    app_type: &AppType,
+    object_key: Option<&str>,
+) -> Value {
+    match value {
+        Value::String(text) => {
+            if matches!(app_type, AppType::Codex) && object_key == Some("config") {
+                Value::String(render_codex_config_template_string(
+                    text, bindings, app_type,
+                ))
+            } else {
+                Value::String(render_provider_template_string(text, bindings, app_type))
+            }
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| render_provider_template_value(item, bindings, app_type, None))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let rendered = map
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        render_provider_template_value(value, bindings, app_type, Some(key)),
+                    )
+                })
+                .collect();
+            Value::Object(rendered)
+        }
+        other => other.clone(),
+    }
+}
+
+fn render_provider_template_string(
+    text: &str,
+    bindings: &ProviderTemplateBindings,
+    app_type: &AppType,
+) -> String {
+    let model = if bindings.model.trim().is_empty() {
+        default_provider_template_model_for_app(app_type)
+    } else {
+        bindings.model.as_str()
+    };
+
+    text.replace("{baseUrl}", &bindings.base_url)
+        .replace("{apiKey}", &bindings.api_key)
+        .replace("{model}", model)
+}
+
+fn quote_bare_codex_placeholder_assignments(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            for key in ["baseUrl", "apiKey", "model"] {
+                let marker = format!("{{{key}}}");
+                let Some(eq_index) = line.find('=') else {
+                    continue;
+                };
+                let after_eq = &line[eq_index + 1..];
+                let trimmed_after_eq = after_eq.trim_start();
+                if !trimmed_after_eq.starts_with(&marker) {
+                    continue;
+                }
+                let rest = &trimmed_after_eq[marker.len()..];
+                let rest_without_space = rest.trim_start();
+                if rest_without_space.is_empty() || rest_without_space.starts_with('#') {
+                    let leading_ws_len = after_eq.len() - trimmed_after_eq.len();
+                    return format!(
+                        "{}{}\"{}\"{}",
+                        &line[..eq_index + 1],
+                        &after_eq[..leading_ws_len],
+                        marker,
+                        rest
+                    );
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn toml_basic_string_content(value: &str) -> String {
+    let quoted = toml_edit::Value::from(value).to_string();
+    quoted
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn render_codex_config_template_string(
+    text: &str,
+    bindings: &ProviderTemplateBindings,
+    app_type: &AppType,
+) -> String {
+    let model = if bindings.model.trim().is_empty() {
+        default_provider_template_model_for_app(app_type)
+    } else {
+        bindings.model.as_str()
+    };
+
+    quote_bare_codex_placeholder_assignments(text)
+        .replace("{baseUrl}", &toml_basic_string_content(&bindings.base_url))
+        .replace("{apiKey}", &toml_basic_string_content(&bindings.api_key))
+        .replace("{model}", &toml_basic_string_content(model))
+}
+
+fn value_string_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor.as_str()
+}
+
+fn template_uses_placeholder(template: &Value, path: &[&str], placeholder: &str) -> bool {
+    value_string_at_path(template, path)
+        .map(|value| value.contains(&format!("{{{placeholder}}}")))
+        .unwrap_or(false)
+}
+
+fn set_string_at_path(value: &mut Value, path: &[&str], next_value: &str) {
+    if path.is_empty() {
+        return;
+    }
+    if !value.is_object() {
+        *value = json!({});
+    }
+
+    let mut cursor = value;
+    for key in &path[..path.len() - 1] {
+        let obj = cursor
+            .as_object_mut()
+            .expect("cursor should be normalized to object");
+        cursor = obj.entry((*key).to_string()).or_insert_with(|| json!({}));
+        if !cursor.is_object() {
+            *cursor = json!({});
+        }
+    }
+
+    let obj = cursor
+        .as_object_mut()
+        .expect("cursor should be normalized to object");
+    obj.insert(
+        path[path.len() - 1].to_string(),
+        Value::String(next_value.to_string()),
+    );
+}
+
+fn preserve_non_empty_string(
+    current: &Value,
+    next: &mut Value,
+    template: &Value,
+    path: &[&str],
+    placeholder: &str,
+) {
+    let current_value = value_string_at_path(current, path)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(current_value) = current_value else {
+        return;
+    };
+
+    let next_value = value_string_at_path(next, path)
+        .map(str::trim)
+        .unwrap_or_default();
+    if next_value.is_empty() || !template_uses_placeholder(template, path, placeholder) {
+        set_string_at_path(next, path, current_value);
+    }
+}
+
+fn protect_provider_template_credentials(
+    current_settings: &Value,
+    template: &Value,
+    mut rendered: Value,
+    app_type: &AppType,
+) -> Value {
+    match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "ANTHROPIC_BASE_URL"],
+                "baseUrl",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "ANTHROPIC_AUTH_TOKEN"],
+                "apiKey",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "ANTHROPIC_API_KEY"],
+                "apiKey",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "OPENAI_API_KEY"],
+                "apiKey",
+            );
+        }
+        AppType::Codex => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["auth", "OPENAI_API_KEY"],
+                "apiKey",
+            );
+
+            let current_base_url = current_settings
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(crate::codex_config::extract_codex_base_url)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+
+            if let Some(current_base_url) = current_base_url {
+                let next_base_url = rendered
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .and_then(crate::codex_config::extract_codex_base_url)
+                    .map(|value| value.trim().to_string())
+                    .unwrap_or_default();
+                let template_uses_base_url = template
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .map(|config| config.contains("{baseUrl}"))
+                    .unwrap_or(false);
+
+                if next_base_url.is_empty() || !template_uses_base_url {
+                    if let Some(config_text) = rendered.get("config").and_then(Value::as_str) {
+                        if let Ok(updated) = crate::codex_config::update_codex_toml_field(
+                            config_text,
+                            "base_url",
+                            &current_base_url,
+                        ) {
+                            set_string_at_path(&mut rendered, &["config"], &updated);
+                        }
+                    } else if let Some(current_config) =
+                        current_settings.get("config").and_then(Value::as_str)
+                    {
+                        set_string_at_path(&mut rendered, &["config"], current_config);
+                    }
+                }
+            }
+        }
+        AppType::Gemini => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "GOOGLE_GEMINI_BASE_URL"],
+                "baseUrl",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["env", "GEMINI_API_KEY"],
+                "apiKey",
+            );
+        }
+        AppType::OpenCode => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["options", "baseURL"],
+                "baseUrl",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["options", "apiKey"],
+                "apiKey",
+            );
+        }
+        AppType::OpenClaw => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["baseUrl"],
+                "baseUrl",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["apiKey"],
+                "apiKey",
+            );
+        }
+        AppType::Hermes => {
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["base_url"],
+                "baseUrl",
+            );
+            preserve_non_empty_string(
+                current_settings,
+                &mut rendered,
+                template,
+                &["api_key"],
+                "apiKey",
+            );
+        }
+    }
+
+    rendered
 }
 
 /// Get primary endpoint from request (first one if comma-separated)

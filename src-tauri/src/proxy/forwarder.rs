@@ -2552,9 +2552,8 @@ impl RequestForwarder {
                 break;
             };
 
-            let next = next.map_err(|e| {
-                ProxyError::ForwardFailed(format!("读取流式响应观察窗口失败: {e}"))
-            })?;
+            let next = next
+                .map_err(|e| ProxyError::ForwardFailed(format!("读取流式响应观察窗口失败: {e}")))?;
             observed_body.extend_from_slice(&next);
             observed_chunks.push(next);
         }
@@ -3241,8 +3240,7 @@ fn count_observed_sse_events(body: &[u8]) -> usize {
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            trimmed.starts_with("data:")
-                && !trimmed.trim_start_matches("data:").trim().is_empty()
+            trimmed.starts_with("data:") && !trimmed.trim_start_matches("data:").trim().is_empty()
         })
         .count()
 }
