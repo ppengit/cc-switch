@@ -281,6 +281,14 @@ fn schema_create_tables_include_pricing_model_columns() {
         Some("0")
     );
 
+    let sticky_minutes = get_column_info(&conn, "proxy_config", "load_balancing_sticky_minutes");
+    assert_eq!(sticky_minutes.r#type, "INTEGER");
+    assert_eq!(sticky_minutes.notnull, 1);
+    assert_eq!(
+        normalize_default(&sticky_minutes.default).as_deref(),
+        Some("10")
+    );
+
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
     assert_eq!(multiplier.r#type, "TEXT");
     assert_eq!(multiplier.notnull, 1);
@@ -336,6 +344,14 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     assert_eq!(
         normalize_default(&load_balancing.default).as_deref(),
         Some("0")
+    );
+
+    let sticky_minutes = get_column_info(&conn, "proxy_config", "load_balancing_sticky_minutes");
+    assert_eq!(sticky_minutes.r#type, "INTEGER");
+    assert_eq!(sticky_minutes.notnull, 1);
+    assert_eq!(
+        normalize_default(&sticky_minutes.default).as_deref(),
+        Some("10")
     );
 
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
@@ -396,6 +412,11 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
         Database::has_column(&conn, "proxy_config", "load_balancing_enabled")
             .expect("check load_balancing_enabled"),
         "proxy_config should include load_balancing_enabled after repair"
+    );
+    assert!(
+        Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")
+            .expect("check load_balancing_sticky_minutes"),
+        "proxy_config should include load_balancing_sticky_minutes after repair"
     );
 
     let count: i32 = conn
@@ -564,6 +585,17 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
     assert_eq!(
         load_balancing_rows, 0,
         "load balancing should remain off after full legacy migration"
+    );
+    let sticky_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_sticky_minutes = 10",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count sticky minute rows");
+    assert_eq!(
+        sticky_rows, 3,
+        "load balancing sticky minutes should default to 10 after full legacy migration"
     );
 
     // model_pricing 应具备默认数据（迁移时会 seed）

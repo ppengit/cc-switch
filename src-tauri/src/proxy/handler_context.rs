@@ -245,6 +245,7 @@ impl RequestContext {
             state.status.clone(),
             state.current_providers.clone(),
             state.proxy_activity.clone(),
+            state.load_balancing_affinity.clone(),
             state.gemini_shadow.clone(),
             state.codex_chat_history.clone(),
             state.failover_manager.clone(),
@@ -262,6 +263,8 @@ impl RequestContext {
             state.switch_epoch.clone(),
             self.request_epoch,
             effective_auto_failover_enabled,
+            self.app_config.load_balancing_enabled,
+            self.app_config.load_balancing_sticky_minutes,
             max_retries,
         )
     }

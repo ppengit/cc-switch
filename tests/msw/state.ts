@@ -263,6 +263,7 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   enabled: false,
   autoFailoverEnabled: false,
   loadBalancingEnabled: false,
+  loadBalancingStickyMinutes: 10,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
   streamingIdleTimeout: 60,
@@ -784,7 +785,7 @@ const createDefaultWebdavRemoteInfo = (): WebdavRemoteInfoState => ({
   compatible: true,
   artifacts: ["db.sql", "skills.zip"],
   layout: "current",
-  remotePath: "/cc-switch-sync/v2/db-v6/default",
+  remotePath: "/cc-switch-sync/v2/db-v7/default",
 });
 
 const createDefaultDbBackups = (): DbBackupEntry[] => [

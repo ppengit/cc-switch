@@ -127,6 +127,7 @@ impl Database {
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
+            load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -343,6 +344,10 @@ impl Database {
         );
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10",
             [],
         );
 
@@ -576,6 +581,11 @@ impl Database {
                         Self::migrate_v14_to_v15(conn)?;
                         Self::set_user_version(conn, 15)?;
                     }
+                    15 => {
+                        log::info!("迁移数据库从 v15 到 v16（代理分流会话粘性配置）");
+                        Self::migrate_v15_to_v16(conn)?;
+                        Self::set_user_version(conn, 16)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -706,6 +716,18 @@ impl Database {
                 "proxy_config",
                 "enable_logging",
                 "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "load_balancing_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "load_balancing_sticky_minutes",
+                "INTEGER NOT NULL DEFAULT 10",
             )?;
 
             Self::add_column_if_missing(
@@ -898,6 +920,7 @@ impl Database {
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
+            load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -1539,6 +1562,24 @@ impl Database {
         )?;
 
         log::info!("v14 -> v15 迁移完成：已添加 proxy_config.force_responses_compact_gpt54");
+        Ok(())
+    }
+
+    /// v15 -> v16 迁移：代理分流会话粘性配置。
+    fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::info!("v15 -> v16 迁移跳过：proxy_config 表不存在");
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "load_balancing_sticky_minutes",
+            "INTEGER NOT NULL DEFAULT 10",
+        )?;
+
+        log::info!("v15 -> v16 迁移完成：已添加 proxy_config.load_balancing_sticky_minutes");
         Ok(())
     }
 

@@ -120,9 +120,7 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-            log::info!(
-                "已从故障转移队列移除供应商 {provider_id} ({app_type}), 并清除其健康状态"
-            );
+            log::info!("已从故障转移队列移除供应商 {provider_id} ({app_type}), 并清除其健康状态");
         } else {
             log::info!(
                 "已从故障转移队列移除供应商 {provider_id} ({app_type}), 保留其健康状态以供排查"

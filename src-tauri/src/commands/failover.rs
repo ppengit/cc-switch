@@ -387,6 +387,7 @@ mod tests {
             enabled,
             auto_failover_enabled,
             load_balancing_enabled: false,
+            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,

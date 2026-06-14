@@ -256,7 +256,9 @@ export function useSetAutoFailoverEnabled() {
             ? {
                 ...current,
                 autoFailoverEnabled: enabled,
-                loadBalancingEnabled: false,
+                loadBalancingEnabled: enabled
+                  ? current.loadBalancingEnabled
+                  : false,
               }
             : current,
       );

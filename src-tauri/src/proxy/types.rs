@@ -282,6 +282,9 @@ pub struct AppProxyConfig {
     /// 该 app 分流开关；仅在 enabled + auto_failover_enabled 同时开启时生效
     #[serde(default)]
     pub load_balancing_enabled: bool,
+    /// 会话粘性保持时间（分钟）；0 表示不启用粘性。
+    #[serde(default = "default_load_balancing_sticky_minutes")]
+    pub load_balancing_sticky_minutes: u32,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）
@@ -338,6 +341,10 @@ pub struct RectifierConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_load_balancing_sticky_minutes() -> u32 {
+    10
 }
 
 fn default_log_level() -> String {

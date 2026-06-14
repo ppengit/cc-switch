@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Switch } from "@/components/ui/switch";
 import { Save, Loader2, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
@@ -24,6 +25,8 @@ export function AutoFailoverConfigPanel({
   // 使用字符串状态以支持完全清空数字输入框
   const [formData, setFormData] = useState({
     autoFailoverEnabled: false,
+    loadBalancingEnabled: false,
+    loadBalancingStickyMinutes: "10",
     maxRetries: "3",
     streamingFirstByteTimeout: "60",
     streamingIdleTimeout: "120",
@@ -39,6 +42,10 @@ export function AutoFailoverConfigPanel({
     if (config) {
       setFormData({
         autoFailoverEnabled: config.autoFailoverEnabled,
+        loadBalancingEnabled: config.loadBalancingEnabled,
+        loadBalancingStickyMinutes: String(
+          config.loadBalancingStickyMinutes ?? 10,
+        ),
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
         streamingIdleTimeout: String(config.streamingIdleTimeout),
@@ -75,6 +82,7 @@ export function AutoFailoverConfigPanel({
       circuitTimeoutSeconds: { min: 0, max: 300 },
       circuitErrorRateThreshold: { min: 0, max: 100 },
       circuitMinRequests: { min: 5, max: 100 },
+      loadBalancingStickyMinutes: { min: 0, max: 1440 },
     };
 
     // 解析原始值
@@ -88,6 +96,9 @@ export function AutoFailoverConfigPanel({
       circuitTimeoutSeconds: parseNum(formData.circuitTimeoutSeconds),
       circuitErrorRateThreshold: parseNum(formData.circuitErrorRateThreshold),
       circuitMinRequests: parseNum(formData.circuitMinRequests),
+      loadBalancingStickyMinutes: parseNum(
+        formData.loadBalancingStickyMinutes,
+      ),
     };
 
     // 校验是否超出范围（NaN 也视为无效）
@@ -147,6 +158,11 @@ export function AutoFailoverConfigPanel({
       ranges.circuitMinRequests,
       t("proxy.autoFailover.minRequests", "最小请求数"),
     );
+    checkRange(
+      raw.loadBalancingStickyMinutes,
+      ranges.loadBalancingStickyMinutes,
+      t("proxy.autoFailover.loadBalancingSticky", "会话粘性时间"),
+    );
 
     if (errors.length > 0) {
       toast.error(
@@ -163,7 +179,9 @@ export function AutoFailoverConfigPanel({
         appType,
         enabled: config.enabled,
         autoFailoverEnabled: formData.autoFailoverEnabled,
-        loadBalancingEnabled: false,
+        loadBalancingEnabled:
+          formData.autoFailoverEnabled && formData.loadBalancingEnabled,
+        loadBalancingStickyMinutes: raw.loadBalancingStickyMinutes,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
         streamingIdleTimeout: raw.streamingIdleTimeout,
@@ -189,6 +207,10 @@ export function AutoFailoverConfigPanel({
     if (config) {
       setFormData({
         autoFailoverEnabled: config.autoFailoverEnabled,
+        loadBalancingEnabled: config.loadBalancingEnabled,
+        loadBalancingStickyMinutes: String(
+          config.loadBalancingStickyMinutes ?? 10,
+        ),
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
         streamingIdleTimeout: String(config.streamingIdleTimeout),
@@ -213,6 +235,7 @@ export function AutoFailoverConfigPanel({
   }
 
   const isDisabled = disabled || updateConfig.isPending;
+  const loadBalancingDisabled = isDisabled || !formData.autoFailoverEnabled;
   return (
     <div className="border-0 rounded-none shadow-none bg-transparent">
       <div className="space-y-4">
@@ -231,6 +254,59 @@ export function AutoFailoverConfigPanel({
             )}
           </AlertDescription>
         </Alert>
+
+        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor={`loadBalancing-${appType}`}>
+                {t("proxy.autoFailover.loadBalancing", "请求分流")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "proxy.autoFailover.loadBalancingHint",
+                  "按供应商最大并发数分配请求，满载时尝试下一个队列供应商。",
+                )}
+              </p>
+            </div>
+            <Switch
+              id={`loadBalancing-${appType}`}
+              checked={formData.loadBalancingEnabled}
+              onCheckedChange={(checked) =>
+                setFormData({ ...formData, loadBalancingEnabled: checked })
+              }
+              disabled={loadBalancingDisabled}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`loadBalancingSticky-${appType}`}>
+              {t(
+                "proxy.autoFailover.loadBalancingSticky",
+                "会话粘性时间（分钟）",
+              )}
+            </Label>
+            <Input
+              id={`loadBalancingSticky-${appType}`}
+              type="number"
+              min="0"
+              max="1440"
+              value={formData.loadBalancingStickyMinutes}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  loadBalancingStickyMinutes: e.target.value,
+                })
+              }
+              disabled={loadBalancingDisabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "proxy.autoFailover.loadBalancingStickyHint",
+                "相同会话优先保持在同一供应商；填 0 禁用粘性。",
+              )}
+            </p>
+          </div>
+        </div>
 
         {/* 重试与超时配置 */}
         <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">

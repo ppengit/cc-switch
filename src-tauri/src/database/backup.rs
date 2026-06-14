@@ -690,9 +690,39 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::Database;
+    use crate::config::get_app_config_dir;
+    use crate::database::SCHEMA_VERSION;
     use crate::error::AppError;
     use crate::settings::{update_settings, AppSettings};
+    use rusqlite::Connection;
     use serial_test::serial;
+    use std::fs;
+
+    struct TestHomeGuard {
+        old_home: Option<std::ffi::OsString>,
+        path: std::path::PathBuf,
+    }
+
+    impl TestHomeGuard {
+        fn new(name: &str) -> Self {
+            let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+            let path = std::env::temp_dir().join(name);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("create test home");
+            std::env::set_var("CC_SWITCH_TEST_HOME", &path);
+            Self { old_home, path }
+        }
+    }
+
+    impl Drop for TestHomeGuard {
+        fn drop(&mut self) {
+            match self.old_home.as_ref() {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     #[test]
     fn sync_import_preserves_local_only_tables() -> Result<(), AppError> {
@@ -777,6 +807,75 @@ mod tests {
             stream_logs, 1,
             "local stream check logs should be preserved"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn restore_from_legacy_backup_runs_schema_migrations() -> Result<(), AppError> {
+        let _guard = TestHomeGuard::new("cc-switch-restore-legacy-backup-test");
+        let db = Database::init()?;
+        let backup_dir = get_app_config_dir().join("backups");
+        fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+
+        let legacy_backup = backup_dir.join("legacy_v15.db");
+        {
+            let conn =
+                Connection::open(&legacy_backup).map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute_batch(
+                r#"
+                PRAGMA user_version=15;
+                CREATE TABLE proxy_config (
+                    app_type TEXT PRIMARY KEY,
+                    listen_port INTEGER NOT NULL DEFAULT 15721,
+                    enable_logging INTEGER NOT NULL DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                    load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                    streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                    non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                    circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                    circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                    circuit_timeout_seconds INTEGER NOT NULL DEFAULT 30,
+                    circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.5,
+                    circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO proxy_config (
+                    app_type,
+                    enabled,
+                    auto_failover_enabled,
+                    load_balancing_enabled
+                ) VALUES ('claude', 1, 1, 1);
+                "#,
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        let safety_id = db.restore_from_backup("legacy_v15.db")?;
+        assert!(
+            !safety_id.is_empty(),
+            "restore should create a safety backup before replacing the database"
+        );
+
+        let conn = crate::database::lock_conn!(db.conn);
+        assert!(
+            Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")?,
+            "restored legacy backup should be migrated to include sticky minutes"
+        );
+        let sticky_minutes: i64 = conn.query_row(
+            "SELECT load_balancing_sticky_minutes FROM proxy_config WHERE app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(sticky_minutes, 10);
+
+        let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(user_version, SCHEMA_VERSION);
 
         Ok(())
     }

@@ -1201,6 +1201,7 @@ mod tests {
             proxy_activity: Arc::new(RwLock::new(
                 crate::proxy::activity::ProxyActivityState::default(),
             )),
+            load_balancing_affinity: Arc::new(RwLock::new(HashMap::new())),
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
         }
     }

@@ -51,6 +51,9 @@ pub struct ProxyState {
     pub failover_manager: Arc<FailoverSwitchManager>,
     /// 实时代理活动（仅内存态，不落库）
     pub proxy_activity: Arc<RwLock<ProxyActivityState>>,
+    /// 分流模式下的会话粘性路由表：app+session -> (provider_id, expires_at)。
+    pub load_balancing_affinity:
+        Arc<RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>,
     /// 切换代次（per-app 单调递增）：每次显式切换/启停供应商时 +1。
     ///
     /// 转发请求在开始时 snapshot 此值；请求成功完成后写
@@ -100,6 +103,7 @@ impl ProxyServer {
             proxy_activity: Arc::new(RwLock::new(
                 ProxyActivityState::with_raw_log_retention_minutes(raw_log_retention_minutes),
             )),
+            load_balancing_affinity: Arc::new(RwLock::new(std::collections::HashMap::new())),
             switch_epoch: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
 
@@ -363,6 +367,12 @@ impl ProxyServer {
         if should_clear {
             current_providers.remove(app_type);
         }
+
+        let mut affinity = self.state.load_balancing_affinity.write().await;
+        let prefix = format!("{app_type}:");
+        affinity.retain(|key, (target_provider_id, _)| {
+            !key.starts_with(&prefix) || target_provider_id != provider_id
+        });
     }
 
     fn build_router(&self) -> Router {

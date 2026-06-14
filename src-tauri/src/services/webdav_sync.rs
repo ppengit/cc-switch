@@ -31,8 +31,8 @@ use archive::{
 
 const PROTOCOL_FORMAT: &str = "cc-switch-webdav-sync";
 const PROTOCOL_VERSION: u32 = 2;
-const DB_COMPAT_VERSION: u32 = 6;
-const LEGACY_DB_COMPAT_VERSION: u32 = 5;
+const DB_COMPAT_VERSION: u32 = 7;
+const LEGACY_DB_COMPAT_VERSION: u32 = 6;
 const REMOTE_DB_SQL: &str = "db.sql";
 const REMOTE_SKILLS_ZIP: &str = "skills.zip";
 const REMOTE_MANIFEST: &str = "manifest.json";
@@ -707,7 +707,7 @@ mod tests {
             ..WebDavSyncSettings::default()
         };
         let segs = remote_dir_segments(&settings, RemoteLayout::Current);
-        assert_eq!(segs, vec!["cc-switch-sync", "v2", "db-v6", "default"]);
+        assert_eq!(segs, vec!["cc-switch-sync", "v2", "db-v7", "default"]);
     }
 
     #[test]
@@ -818,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_db_compat_version_defaults_legacy_layout_to_v5() {
+    fn effective_db_compat_version_defaults_legacy_layout_to_v6() {
         let manifest = manifest_with(PROTOCOL_FORMAT, PROTOCOL_VERSION, None);
         assert_eq!(
             effective_db_compat_version(&manifest, RemoteLayout::Legacy),

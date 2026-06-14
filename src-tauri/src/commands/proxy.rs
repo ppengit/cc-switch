@@ -11,7 +11,9 @@ fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
     if !config.enabled {
         config.auto_failover_enabled = false;
     }
-    config.load_balancing_enabled = false;
+    if !(config.enabled && config.auto_failover_enabled) {
+        config.load_balancing_enabled = false;
+    }
     config
 }
 
@@ -475,6 +477,7 @@ mod tests {
             enabled: false,
             auto_failover_enabled: true,
             load_balancing_enabled: true,
+            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -505,6 +508,7 @@ mod tests {
             enabled: true,
             auto_failover_enabled: false,
             load_balancing_enabled: true,
+            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -532,6 +536,7 @@ mod tests {
             enabled: true,
             auto_failover_enabled: true,
             load_balancing_enabled: true,
+            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -547,8 +552,8 @@ mod tests {
         assert!(sanitized.enabled);
         assert!(sanitized.auto_failover_enabled);
         assert!(
-            !sanitized.load_balancing_enabled,
-            "load balancing runtime has been removed; saves keep the compatibility column off"
+            sanitized.load_balancing_enabled,
+            "load balancing should persist when takeover + auto failover are both enabled"
         );
     }
 }
