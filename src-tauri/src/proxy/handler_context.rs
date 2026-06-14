@@ -265,6 +265,10 @@ impl RequestContext {
             effective_auto_failover_enabled,
             self.app_config.load_balancing_enabled,
             self.app_config.load_balancing_sticky_minutes,
+            self.app_config.response_rescue_enabled,
+            self.app_config.response_rescue_empty_2xx_enabled,
+            self.app_config.response_rescue_429_enabled,
+            self.app_config.response_rescue_max_retries,
             max_retries,
         )
     }

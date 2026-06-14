@@ -867,12 +867,27 @@ mod tests {
             Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")?,
             "restored legacy backup should be migrated to include sticky minutes"
         );
+        assert!(
+            Database::has_column(&conn, "proxy_config", "response_rescue_enabled")?,
+            "restored legacy backup should be migrated to include response rescue"
+        );
+        assert!(
+            Database::has_column(&conn, "proxy_config", "response_rescue_max_retries")?,
+            "restored legacy backup should be migrated to include response rescue retries"
+        );
         let sticky_minutes: i64 = conn.query_row(
             "SELECT load_balancing_sticky_minutes FROM proxy_config WHERE app_type = 'claude'",
             [],
             |row| row.get(0),
         )?;
         assert_eq!(sticky_minutes, 10);
+        let (rescue_enabled, rescue_retries): (i64, i64) = conn.query_row(
+            "SELECT response_rescue_enabled, response_rescue_max_retries FROM proxy_config WHERE app_type = 'claude'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(rescue_enabled, 1);
+        assert_eq!(rescue_retries, 2);
 
         let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         assert_eq!(user_version, SCHEMA_VERSION);

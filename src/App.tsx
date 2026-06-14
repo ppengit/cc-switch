@@ -941,8 +941,29 @@ function App() {
   };
 
   const handleDuplicateProvider = async (provider: Provider) => {
-    const newSortIndex =
-      provider.sortIndex !== undefined ? provider.sortIndex + 1 : undefined;
+    let latestProviders = providers;
+    try {
+      latestProviders = await providersApi.getAll(activeApp);
+    } catch (error) {
+      console.warn("[App] Failed to refresh providers before duplication", error);
+    }
+
+    const sortedForDuplicate = Object.values(latestProviders).sort((a, b) => {
+      const sortDiff =
+        (a.sortIndex ?? Number.MAX_SAFE_INTEGER) -
+        (b.sortIndex ?? Number.MAX_SAFE_INTEGER);
+      if (sortDiff !== 0) return sortDiff;
+      const createdDiff =
+        (a.createdAt ?? Number.MAX_SAFE_INTEGER) -
+        (b.createdAt ?? Number.MAX_SAFE_INTEGER);
+      if (createdDiff !== 0) return createdDiff;
+      return a.id.localeCompare(b.id);
+    });
+
+    const sourceIndex = sortedForDuplicate.findIndex(
+      (item) => item.id === provider.id,
+    );
+    const newSortIndex = sourceIndex >= 0 ? sourceIndex + 1 : undefined;
 
     const duplicatedProvider: Omit<Provider, "id" | "createdAt"> & {
       providerKey?: string;
@@ -952,7 +973,7 @@ function App() {
       settingsConfig: deepClone(provider.settingsConfig),
       websiteUrl: provider.websiteUrl,
       category: provider.category,
-      sortIndex: newSortIndex, // 复制原 sortIndex + 1
+      sortIndex: newSortIndex,
       meta: provider.meta ? deepClone(provider.meta) : undefined,
       icon: provider.icon,
       iconColor: provider.iconColor,
@@ -1003,35 +1024,46 @@ function App() {
       duplicatedProvider.addToLive = false;
     }
 
-    if (provider.sortIndex !== undefined) {
-      const updates = Object.values(providers)
-        .filter(
-          (p) =>
-            p.sortIndex !== undefined &&
-            p.sortIndex >= newSortIndex! &&
-            p.id !== provider.id,
-        )
-        .map((p) => ({
-          id: p.id,
-          sortIndex: p.sortIndex! + 1,
+    const createdDuplicate = await addProvider(duplicatedProvider);
+
+    if (createdDuplicate && newSortIndex !== undefined) {
+      const refreshedProviders = await providersApi.getAll(activeApp);
+      const duplicate =
+        refreshedProviders[createdDuplicate.id] ?? createdDuplicate;
+
+      if (duplicate) {
+        const withoutDuplicate = sortedForDuplicate.filter(
+          (item) => item.id !== duplicate.id,
+        );
+        const reordered = [
+          ...withoutDuplicate.slice(0, newSortIndex),
+          duplicate,
+          ...withoutDuplicate.slice(newSortIndex),
+        ];
+        const updates = reordered.map((item, index) => ({
+          id: item.id,
+          sortIndex: index,
         }));
 
-      if (updates.length > 0) {
         try {
           await providersApi.updateSortOrder(updates, activeApp);
+          await queryClient.invalidateQueries({
+            queryKey: ["providers", activeApp],
+          });
+          await queryClient.invalidateQueries({
+            queryKey: ["failoverQueue", activeApp],
+          });
+          await providersApi.updateTrayMenu().catch(() => undefined);
         } catch (error) {
-          console.error("[App] Failed to update sort order", error);
+          console.error("[App] Failed to update duplicate sort order", error);
           toast.error(
             t("provider.sortUpdateFailed", {
               defaultValue: "排序更新失败",
             }),
           );
-          return; // 如果排序更新失败，不继续添加
         }
       }
     }
-
-    await addProvider(duplicatedProvider);
   };
 
   const handleOpenTerminal = async (provider: Provider) => {

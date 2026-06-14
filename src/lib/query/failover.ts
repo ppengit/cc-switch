@@ -259,6 +259,12 @@ export function useSetAutoFailoverEnabled() {
                 loadBalancingEnabled: enabled
                   ? current.loadBalancingEnabled
                   : false,
+                responseRescueEnabled: enabled
+                  ? current.responseRescueEnabled
+                  : false,
+                responseRescueEmpty2xxEnabled:
+                  current.responseRescueEmpty2xxEnabled,
+                responseRescue429Enabled: current.responseRescue429Enabled,
               }
             : current,
       );

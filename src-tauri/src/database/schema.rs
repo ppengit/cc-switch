@@ -128,6 +128,10 @@ impl Database {
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10,
+            response_rescue_enabled INTEGER NOT NULL DEFAULT 1,
+            response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0,
+            response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1,
+            response_rescue_max_retries INTEGER NOT NULL DEFAULT 2,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -348,6 +352,22 @@ impl Database {
         );
         let _ = conn.execute(
             "ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN response_rescue_enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE proxy_config ADD COLUMN response_rescue_max_retries INTEGER NOT NULL DEFAULT 2",
             [],
         );
 
@@ -586,6 +606,11 @@ impl Database {
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
                     }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（代理响应救援配置）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -728,6 +753,30 @@ impl Database {
                 "proxy_config",
                 "load_balancing_sticky_minutes",
                 "INTEGER NOT NULL DEFAULT 10",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "response_rescue_enabled",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "response_rescue_empty_2xx_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "response_rescue_429_enabled",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "proxy_config",
+                "response_rescue_max_retries",
+                "INTEGER NOT NULL DEFAULT 2",
             )?;
 
             Self::add_column_if_missing(
@@ -921,6 +970,10 @@ impl Database {
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
             load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10,
+            response_rescue_enabled INTEGER NOT NULL DEFAULT 1,
+            response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0,
+            response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1,
+            response_rescue_max_retries INTEGER NOT NULL DEFAULT 2,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -1580,6 +1633,42 @@ impl Database {
         )?;
 
         log::info!("v15 -> v16 迁移完成：已添加 proxy_config.load_balancing_sticky_minutes");
+        Ok(())
+    }
+
+    /// v16 -> v17 迁移：代理响应救援配置。
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::info!("v16 -> v17 迁移跳过：proxy_config 表不存在");
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "response_rescue_enabled",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "response_rescue_empty_2xx_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "response_rescue_429_enabled",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "response_rescue_max_retries",
+            "INTEGER NOT NULL DEFAULT 2",
+        )?;
+
+        log::info!("v16 -> v17 迁移完成：已添加代理响应救援配置列");
         Ok(())
     }
 

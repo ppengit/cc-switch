@@ -534,7 +534,7 @@ export function WebdavSyncSection({
   const lastError = config?.status?.lastError?.trim();
   const showAutoSyncError =
     !!lastError && config?.status?.lastErrorSource === "auto";
-  const currentRemotePath = `/${form.remoteRoot.trim() || "cc-switch-sync"}/v2/db-v7/${form.profile.trim() || "default"}`;
+  const currentRemotePath = `/${form.remoteRoot.trim() || "cc-switch-sync"}/v2/db-v8/${form.profile.trim() || "default"}`;
   const remoteDbCompatDisplay = formatDbCompatVersion(
     remoteInfo?.dbCompatVersion,
   );

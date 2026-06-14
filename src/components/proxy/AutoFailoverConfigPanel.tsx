@@ -27,6 +27,10 @@ export function AutoFailoverConfigPanel({
     autoFailoverEnabled: false,
     loadBalancingEnabled: false,
     loadBalancingStickyMinutes: "10",
+    responseRescueEnabled: true,
+    responseRescueEmpty2xxEnabled: false,
+    responseRescue429Enabled: true,
+    responseRescueMaxRetries: "2",
     maxRetries: "3",
     streamingFirstByteTimeout: "60",
     streamingIdleTimeout: "120",
@@ -45,6 +49,13 @@ export function AutoFailoverConfigPanel({
         loadBalancingEnabled: config.loadBalancingEnabled,
         loadBalancingStickyMinutes: String(
           config.loadBalancingStickyMinutes ?? 10,
+        ),
+        responseRescueEnabled: config.responseRescueEnabled ?? true,
+        responseRescueEmpty2xxEnabled:
+          config.responseRescueEmpty2xxEnabled ?? false,
+        responseRescue429Enabled: config.responseRescue429Enabled ?? true,
+        responseRescueMaxRetries: String(
+          config.responseRescueMaxRetries ?? 2,
         ),
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
@@ -83,6 +94,7 @@ export function AutoFailoverConfigPanel({
       circuitErrorRateThreshold: { min: 0, max: 100 },
       circuitMinRequests: { min: 5, max: 100 },
       loadBalancingStickyMinutes: { min: 0, max: 1440 },
+      responseRescueMaxRetries: { min: 0, max: 10 },
     };
 
     // 解析原始值
@@ -99,6 +111,7 @@ export function AutoFailoverConfigPanel({
       loadBalancingStickyMinutes: parseNum(
         formData.loadBalancingStickyMinutes,
       ),
+      responseRescueMaxRetries: parseNum(formData.responseRescueMaxRetries),
     };
 
     // 校验是否超出范围（NaN 也视为无效）
@@ -163,6 +176,11 @@ export function AutoFailoverConfigPanel({
       ranges.loadBalancingStickyMinutes,
       t("proxy.autoFailover.loadBalancingSticky", "会话粘性时间"),
     );
+    checkRange(
+      raw.responseRescueMaxRetries,
+      ranges.responseRescueMaxRetries,
+      t("proxy.autoFailover.responseRescueMaxRetries", "响应救援重发次数"),
+    );
 
     if (errors.length > 0) {
       toast.error(
@@ -182,6 +200,11 @@ export function AutoFailoverConfigPanel({
         loadBalancingEnabled:
           formData.autoFailoverEnabled && formData.loadBalancingEnabled,
         loadBalancingStickyMinutes: raw.loadBalancingStickyMinutes,
+        responseRescueEnabled:
+          formData.autoFailoverEnabled && formData.responseRescueEnabled,
+        responseRescueEmpty2xxEnabled: formData.responseRescueEmpty2xxEnabled,
+        responseRescue429Enabled: formData.responseRescue429Enabled,
+        responseRescueMaxRetries: raw.responseRescueMaxRetries,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,
         streamingIdleTimeout: raw.streamingIdleTimeout,
@@ -211,6 +234,13 @@ export function AutoFailoverConfigPanel({
         loadBalancingStickyMinutes: String(
           config.loadBalancingStickyMinutes ?? 10,
         ),
+        responseRescueEnabled: config.responseRescueEnabled ?? true,
+        responseRescueEmpty2xxEnabled:
+          config.responseRescueEmpty2xxEnabled ?? false,
+        responseRescue429Enabled: config.responseRescue429Enabled ?? true,
+        responseRescueMaxRetries: String(
+          config.responseRescueMaxRetries ?? 2,
+        ),
         maxRetries: String(config.maxRetries),
         streamingFirstByteTimeout: String(config.streamingFirstByteTimeout),
         streamingIdleTimeout: String(config.streamingIdleTimeout),
@@ -236,6 +266,9 @@ export function AutoFailoverConfigPanel({
 
   const isDisabled = disabled || updateConfig.isPending;
   const loadBalancingDisabled = isDisabled || !formData.autoFailoverEnabled;
+  const responseRescueDisabled = isDisabled || !formData.autoFailoverEnabled;
+  const responseRescueChildDisabled =
+    responseRescueDisabled || !formData.responseRescueEnabled;
   return (
     <div className="border-0 rounded-none shadow-none bg-transparent">
       <div className="space-y-4">
@@ -303,6 +336,111 @@ export function AutoFailoverConfigPanel({
               {t(
                 "proxy.autoFailover.loadBalancingStickyHint",
                 "相同会话优先保持在同一供应商；填 0 禁用粘性。",
+              )}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor={`responseRescue-${appType}`}>
+                {t("proxy.autoFailover.responseRescue", "响应救援")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "proxy.autoFailover.responseRescueHint",
+                  "上游返回已配置的可恢复响应时，在代理内部受控重发，减少调用方收到异常。",
+                )}
+              </p>
+            </div>
+            <Switch
+              id={`responseRescue-${appType}`}
+              checked={formData.responseRescueEnabled}
+              onCheckedChange={(checked) =>
+                setFormData({ ...formData, responseRescueEnabled: checked })
+              }
+              disabled={responseRescueDisabled}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+              <div className="min-w-0 space-y-0.5">
+                <Label htmlFor={`responseRescue429-${appType}`}>
+                  {t("proxy.autoFailover.responseRescue429", "429 Too Many Requests")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "proxy.autoFailover.responseRescue429Hint",
+                    "上游限流时不立即返回给调用方，先按阈值重发。",
+                  )}
+                </p>
+              </div>
+              <Switch
+                id={`responseRescue429-${appType}`}
+                checked={formData.responseRescue429Enabled}
+                onCheckedChange={(checked) =>
+                  setFormData({
+                    ...formData,
+                    responseRescue429Enabled: checked,
+                  })
+                }
+                disabled={responseRescueChildDisabled}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+              <div className="min-w-0 space-y-0.5">
+                <Label htmlFor={`responseRescueEmpty2xx-${appType}`}>
+                  {t("proxy.autoFailover.responseRescueEmpty2xx", "200 + 空回")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "proxy.autoFailover.responseRescueEmpty2xxHint",
+                    "成功状态但没有有效内容且 token 为 0 时重发；流式响应会先缓冲判定。",
+                  )}
+                </p>
+              </div>
+              <Switch
+                id={`responseRescueEmpty2xx-${appType}`}
+                checked={formData.responseRescueEmpty2xxEnabled}
+                onCheckedChange={(checked) =>
+                  setFormData({
+                    ...formData,
+                    responseRescueEmpty2xxEnabled: checked,
+                  })
+                }
+                disabled={responseRescueChildDisabled}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`responseRescueRetries-${appType}`}>
+              {t(
+                "proxy.autoFailover.responseRescueMaxRetries",
+                "响应救援重发次数",
+              )}
+            </Label>
+            <Input
+              id={`responseRescueRetries-${appType}`}
+              type="number"
+              min="0"
+              max="10"
+              value={formData.responseRescueMaxRetries}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  responseRescueMaxRetries: e.target.value,
+                })
+              }
+              disabled={responseRescueChildDisabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "proxy.autoFailover.responseRescueMaxRetriesHint",
+                "普通故障转移仍会先执行；所有可用供应商都失败后，最多额外重发这些次数。",
               )}
             </p>
           </div>
