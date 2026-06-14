@@ -266,6 +266,18 @@ describe("ProviderForm edit mode", () => {
       "body:debug",
     ]);
   });
+
+  it("saves provider max sessions into meta for load balancing", async () => {
+    const { onSubmit } = renderProviderForm();
+
+    fireEvent.change(screen.getByLabelText("最大请求数"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.maxSessions).toBe(2);
+  });
 });
 
 describe("ProviderForm create mode", () => {

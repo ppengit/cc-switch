@@ -265,10 +265,15 @@ export function AutoFailoverConfigPanel({
   }
 
   const isDisabled = disabled || updateConfig.isPending;
-  const loadBalancingDisabled = isDisabled || !formData.autoFailoverEnabled;
-  const responseRescueDisabled = isDisabled || !formData.autoFailoverEnabled;
-  const responseRescueChildDisabled =
-    responseRescueDisabled || !formData.responseRescueEnabled;
+  const loadBalancingDisabled =
+    isDisabled ||
+    !formData.autoFailoverEnabled ||
+    !formData.loadBalancingEnabled;
+  const responseRescueDisabled =
+    isDisabled ||
+    !formData.autoFailoverEnabled ||
+    !formData.responseRescueEnabled;
+  const responseRescueChildDisabled = responseRescueDisabled;
   return (
     <div className="border-0 rounded-none shadow-none bg-transparent">
       <div className="space-y-4">
@@ -289,26 +294,16 @@ export function AutoFailoverConfigPanel({
         </Alert>
 
         <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <Label htmlFor={`loadBalancing-${appType}`}>
-                {t("proxy.autoFailover.loadBalancing", "请求分流")}
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "proxy.autoFailover.loadBalancingHint",
-                  "按供应商最大并发数分配请求，满载时尝试下一个队列供应商。",
-                )}
-              </p>
-            </div>
-            <Switch
-              id={`loadBalancing-${appType}`}
-              checked={formData.loadBalancingEnabled}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, loadBalancingEnabled: checked })
-              }
-              disabled={loadBalancingDisabled}
-            />
+          <div className="space-y-1">
+            <Label>
+              {t("proxy.autoFailover.loadBalancing", "请求分流")}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "proxy.autoFailover.loadBalancingAdvancedHint",
+                "总开关已移到上方供应商列表区域，这里保留分流细项配置。",
+              )}
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -342,26 +337,16 @@ export function AutoFailoverConfigPanel({
         </div>
 
         <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <Label htmlFor={`responseRescue-${appType}`}>
-                {t("proxy.autoFailover.responseRescue", "响应救援")}
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "proxy.autoFailover.responseRescueHint",
-                  "上游返回已配置的可恢复响应时，在代理内部受控重发，减少调用方收到异常。",
-                )}
-              </p>
-            </div>
-            <Switch
-              id={`responseRescue-${appType}`}
-              checked={formData.responseRescueEnabled}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, responseRescueEnabled: checked })
-              }
-              disabled={responseRescueDisabled}
-            />
+          <div className="space-y-1">
+            <Label>
+              {t("proxy.autoFailover.responseRescue", "响应救援")}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "proxy.autoFailover.responseRescueAdvancedHint",
+                "总开关已移到上方供应商列表区域，这里保留触发条件和重发次数配置。",
+              )}
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

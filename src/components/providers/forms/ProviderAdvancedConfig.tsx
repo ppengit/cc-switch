@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FlaskConical,
   Coins,
+  GitBranch,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -30,6 +31,9 @@ interface ProviderPricingConfig {
 interface ProviderAdvancedConfigProps {
   testConfig: ProviderTestConfig;
   pricingConfig: ProviderPricingConfig;
+  showConcurrencyConfig?: boolean;
+  maxSessions: string;
+  onMaxSessionsChange: (value: string) => void;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
 }
@@ -37,6 +41,9 @@ interface ProviderAdvancedConfigProps {
 export function ProviderAdvancedConfig({
   testConfig,
   pricingConfig,
+  showConcurrencyConfig = false,
+  maxSessions,
+  onMaxSessionsChange,
   onTestConfigChange,
   onPricingConfigChange,
 }: ProviderAdvancedConfigProps) {
@@ -56,6 +63,53 @@ export function ProviderAdvancedConfig({
 
   return (
     <div className="space-y-4">
+      {showConcurrencyConfig && (
+        <div className="rounded-lg border border-border/50 bg-muted/20">
+          <div className="flex items-center gap-3 p-4">
+            <GitBranch className="h-4 w-4 text-muted-foreground" />
+            <div className="space-y-1">
+              <div className="font-medium">
+                {t("providerAdvanced.loadBalancingConfig", {
+                  defaultValue: "请求分流配置",
+                })}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t("providerAdvanced.loadBalancingConfigDesc", {
+                  defaultValue:
+                    "只在启用请求分流时生效。留空或填 0 表示该供应商不限制并发请求数。",
+                })}
+              </p>
+            </div>
+          </div>
+          <div className="border-t border-border/50 p-4">
+            <div className="space-y-2">
+              <Label htmlFor="provider-max-sessions">
+                {t("providerAdvanced.maxSessions", {
+                  defaultValue: "最大请求数",
+                })}
+              </Label>
+              <Input
+                id="provider-max-sessions"
+                type="number"
+                min={0}
+                max={999}
+                value={maxSessions}
+                onChange={(e) => onMaxSessionsChange(e.target.value)}
+                placeholder={t("providerAdvanced.maxSessionsPlaceholder", {
+                  defaultValue: "0 或留空表示不限制",
+                })}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("providerAdvanced.maxSessionsHint", {
+                  defaultValue:
+                    "例如填 2，则该供应商满 2 个并发请求后，新的请求会尝试分流到下一个供应商。",
+                })}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-lg border border-border/50 bg-muted/20">
         <div
           role="button"

@@ -503,6 +503,41 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     );
   }, 20_000);
 
+  it("moves load balancing quick switch above the failover queue and saves immediately", async () => {
+    const user = userEvent.setup();
+
+    setSettings({
+      enableLocalProxy: true,
+      proxyConfirmed: true,
+      enableFailoverToggle: true,
+      failoverConfirmed: true,
+    });
+    setAppProxyConfigState({
+      ...getAppProxyConfigState("claude"),
+      enabled: true,
+      autoFailoverEnabled: true,
+      loadBalancingEnabled: false,
+    });
+    startProxyServerState();
+
+    await openProxySection(user);
+    await waitFor(() =>
+      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
+    );
+
+    await openFailoverSection(user);
+    await user.click(screen.getByRole("tab", { name: "Claude" }));
+
+    await clickSwitchNear(user, "请求分流");
+
+    await waitFor(() =>
+      expect(getAppProxyConfigState("claude")).toMatchObject({
+        appType: "claude",
+        loadBalancingEnabled: true,
+      }),
+    );
+  }, 20_000);
+
   it("saves Claude auto failover timing and circuit breaker settings without drifting live config", async () => {
     const user = userEvent.setup();
 
