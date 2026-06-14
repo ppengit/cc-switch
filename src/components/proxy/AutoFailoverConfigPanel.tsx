@@ -8,15 +8,18 @@ import { Switch } from "@/components/ui/switch";
 import { Save, Loader2, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
+import { cn } from "@/lib/utils";
 
 export interface AutoFailoverConfigPanelProps {
   appType: string;
   disabled?: boolean;
+  mode?: "all" | "failover" | "loadBalancing" | "responseRescue";
 }
 
 export function AutoFailoverConfigPanel({
   appType,
   disabled = false,
+  mode = "all",
 }: AutoFailoverConfigPanelProps) {
   const { t } = useTranslation();
   const { data: config, isLoading, error } = useAppProxyConfig(appType);
@@ -274,6 +277,9 @@ export function AutoFailoverConfigPanel({
     !formData.autoFailoverEnabled ||
     !formData.responseRescueEnabled;
   const responseRescueChildDisabled = responseRescueDisabled;
+  const showLoadBalancing = mode === "all" || mode === "loadBalancing";
+  const showResponseRescue = mode === "all" || mode === "responseRescue";
+  const showSharedSections = mode === "all" || mode === "failover";
   return (
     <div className="border-0 rounded-none shadow-none bg-transparent">
       <div className="space-y-4">
@@ -293,146 +299,185 @@ export function AutoFailoverConfigPanel({
           </AlertDescription>
         </Alert>
 
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
-          <div className="space-y-1">
-            <Label>
-              {t("proxy.autoFailover.loadBalancing", "请求分流")}
-            </Label>
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "proxy.autoFailover.loadBalancingAdvancedHint",
-                "总开关已移到上方供应商列表区域，这里保留分流细项配置。",
-              )}
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor={`loadBalancingSticky-${appType}`}>
-              {t(
-                "proxy.autoFailover.loadBalancingSticky",
-                "会话粘性时间（分钟）",
-              )}
-            </Label>
-            <Input
-              id={`loadBalancingSticky-${appType}`}
-              type="number"
-              min="0"
-              max="1440"
-              value={formData.loadBalancingStickyMinutes}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  loadBalancingStickyMinutes: e.target.value,
-                })
-              }
-              disabled={loadBalancingDisabled}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "proxy.autoFailover.loadBalancingStickyHint",
-                "相同会话优先保持在同一供应商；填 0 禁用粘性。",
-              )}
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
-          <div className="space-y-1">
-            <Label>
-              {t("proxy.autoFailover.responseRescue", "响应救援")}
-            </Label>
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "proxy.autoFailover.responseRescueAdvancedHint",
-                "总开关已移到上方供应商列表区域，这里保留触发条件和重发次数配置。",
-              )}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+        {showLoadBalancing ? (
+          <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+            <div className="flex items-start justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
               <div className="min-w-0 space-y-0.5">
-                <Label htmlFor={`responseRescue429-${appType}`}>
-                  {t("proxy.autoFailover.responseRescue429", "429 Too Many Requests")}
+                <Label>
+                  {t("proxy.autoFailover.loadBalancing", "请求分流")}
                 </Label>
                 <p className="text-xs text-muted-foreground">
                   {t(
-                    "proxy.autoFailover.responseRescue429Hint",
-                    "上游限流时不立即返回给调用方，先按阈值重发。",
+                    "proxy.autoFailover.loadBalancingAdvancedHint",
+                    "总开关已移到上方供应商列表区域，这里保留分流细项配置。",
                   )}
                 </p>
               </div>
-              <Switch
-                id={`responseRescue429-${appType}`}
-                checked={formData.responseRescue429Enabled}
-                onCheckedChange={(checked) =>
+              <span
+                className={cn(
+                  "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                  formData.loadBalancingEnabled
+                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                {formData.loadBalancingEnabled
+                  ? t("common.enabled", { defaultValue: "已开启" })
+                  : t("common.disabled", { defaultValue: "已关闭" })}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor={`loadBalancingSticky-${appType}`}>
+                {t(
+                  "proxy.autoFailover.loadBalancingSticky",
+                  "会话粘性时间（分钟）",
+                )}
+              </Label>
+              <Input
+                id={`loadBalancingSticky-${appType}`}
+                type="number"
+                min="0"
+                max="1440"
+                value={formData.loadBalancingStickyMinutes}
+                onChange={(e) =>
                   setFormData({
                     ...formData,
-                    responseRescue429Enabled: checked,
+                    loadBalancingStickyMinutes: e.target.value,
+                  })
+                }
+                disabled={loadBalancingDisabled}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "proxy.autoFailover.loadBalancingStickyHint",
+                  "相同会话优先保持在同一供应商；填 0 禁用粘性。",
+                )}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {showResponseRescue ? (
+          <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+            <div className="flex items-start justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+              <div className="min-w-0 space-y-0.5">
+                <Label>
+                  {t("proxy.autoFailover.responseRescue", "响应救援")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "proxy.autoFailover.responseRescueAdvancedHint",
+                    "总开关已移到上方供应商列表区域，这里保留触发条件和重发次数配置。",
+                  )}
+                </p>
+              </div>
+              <span
+                className={cn(
+                  "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                  formData.responseRescueEnabled
+                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                {formData.responseRescueEnabled
+                  ? t("common.enabled", { defaultValue: "已开启" })
+                  : t("common.disabled", { defaultValue: "已关闭" })}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+                <div className="min-w-0 space-y-0.5">
+                  <Label htmlFor={`responseRescue429-${appType}`}>
+                    {t(
+                      "proxy.autoFailover.responseRescue429",
+                      "429 Too Many Requests",
+                    )}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "proxy.autoFailover.responseRescue429Hint",
+                      "上游限流时不立即返回给调用方，先按阈值重发。",
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  id={`responseRescue429-${appType}`}
+                  checked={formData.responseRescue429Enabled}
+                  onCheckedChange={(checked) =>
+                    setFormData({
+                      ...formData,
+                      responseRescue429Enabled: checked,
+                    })
+                  }
+                  disabled={responseRescueChildDisabled}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
+                <div className="min-w-0 space-y-0.5">
+                  <Label htmlFor={`responseRescueEmpty2xx-${appType}`}>
+                    {t(
+                      "proxy.autoFailover.responseRescueEmpty2xx",
+                      "200 + 空回",
+                    )}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "proxy.autoFailover.responseRescueEmpty2xxHint",
+                      "成功状态但没有有效内容且 token 为 0 时重发；流式响应会先缓冲判定。",
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  id={`responseRescueEmpty2xx-${appType}`}
+                  checked={formData.responseRescueEmpty2xxEnabled}
+                  onCheckedChange={(checked) =>
+                    setFormData({
+                      ...formData,
+                      responseRescueEmpty2xxEnabled: checked,
+                    })
+                  }
+                  disabled={responseRescueChildDisabled}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor={`responseRescueRetries-${appType}`}>
+                {t(
+                  "proxy.autoFailover.responseRescueMaxRetries",
+                  "响应救援重发次数",
+                )}
+              </Label>
+              <Input
+                id={`responseRescueRetries-${appType}`}
+                type="number"
+                min="0"
+                max="10"
+                value={formData.responseRescueMaxRetries}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    responseRescueMaxRetries: e.target.value,
                   })
                 }
                 disabled={responseRescueChildDisabled}
               />
-            </div>
-
-            <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-background/40 px-3 py-2">
-              <div className="min-w-0 space-y-0.5">
-                <Label htmlFor={`responseRescueEmpty2xx-${appType}`}>
-                  {t("proxy.autoFailover.responseRescueEmpty2xx", "200 + 空回")}
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {t(
-                    "proxy.autoFailover.responseRescueEmpty2xxHint",
-                    "成功状态但没有有效内容且 token 为 0 时重发；流式响应会先缓冲判定。",
-                  )}
-                </p>
-              </div>
-              <Switch
-                id={`responseRescueEmpty2xx-${appType}`}
-                checked={formData.responseRescueEmpty2xxEnabled}
-                onCheckedChange={(checked) =>
-                  setFormData({
-                    ...formData,
-                    responseRescueEmpty2xxEnabled: checked,
-                  })
-                }
-                disabled={responseRescueChildDisabled}
-              />
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "proxy.autoFailover.responseRescueMaxRetriesHint",
+                  "普通故障转移仍会先执行；所有可用供应商都失败后，最多额外重发这些次数。",
+                )}
+              </p>
             </div>
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor={`responseRescueRetries-${appType}`}>
-              {t(
-                "proxy.autoFailover.responseRescueMaxRetries",
-                "响应救援重发次数",
-              )}
-            </Label>
-            <Input
-              id={`responseRescueRetries-${appType}`}
-              type="number"
-              min="0"
-              max="10"
-              value={formData.responseRescueMaxRetries}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  responseRescueMaxRetries: e.target.value,
-                })
-              }
-              disabled={responseRescueChildDisabled}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "proxy.autoFailover.responseRescueMaxRetriesHint",
-                "普通故障转移仍会先执行；所有可用供应商都失败后，最多额外重发这些次数。",
-              )}
-            </p>
-          </div>
-        </div>
+        ) : null}
 
         {/* 重试与超时配置 */}
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+        {showSharedSections ? (
+          <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
           <h4 className="text-sm font-semibold">
             {t("proxy.autoFailover.retrySettings", "重试与超时设置")}
           </h4>
@@ -487,10 +532,12 @@ export function AutoFailoverConfigPanel({
               </p>
             </div>
           </div>
-        </div>
+          </div>
+        ) : null}
 
         {/* 超时配置 */}
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+        {showSharedSections ? (
+          <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
           <h4 className="text-sm font-semibold">
             {t("proxy.autoFailover.timeoutSettings", "超时配置")}
           </h4>
@@ -577,10 +624,12 @@ export function AutoFailoverConfigPanel({
               </p>
             </div>
           </div>
-        </div>
+          </div>
+        ) : null}
 
         {/* 熔断器配置 */}
-        <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
+        {showSharedSections ? (
+          <div className="space-y-4 rounded-lg border border-white/10 bg-muted/30 p-4">
           <h4 className="text-sm font-semibold">
             {t("proxy.autoFailover.circuitBreakerSettings", "熔断器配置")}
           </h4>
@@ -691,7 +740,8 @@ export function AutoFailoverConfigPanel({
               </p>
             </div>
           </div>
-        </div>
+          </div>
+        ) : null}
 
         {/* 操作按钮 */}
         <div className="flex justify-end gap-3 pt-2">

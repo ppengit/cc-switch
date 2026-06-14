@@ -5,6 +5,7 @@ import {
   within,
   waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { http, HttpResponse } from "msw";
@@ -25,7 +26,7 @@ const mockAddToFailoverQueueMutateAsync = vi.fn();
 const mockRemoveFromFailoverQueueMutateAsync = vi.fn();
 let mockAutoFailoverEnabled: boolean | undefined = false;
 let mockAppProxyConfig: AppProxyConfig | undefined = undefined;
-const mockUpdateAppProxyConfigMutate = vi.fn();
+const mockUpdateAppProxyConfigMutateAsync = vi.fn();
 let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
 let mockProviderHealth: unknown = undefined;
 let mockCircuitBreakerStats: unknown = undefined;
@@ -79,7 +80,7 @@ vi.mock("@/hooks/useProxyStatus", () => ({
 vi.mock("@/lib/query/proxy", () => ({
   useAppProxyConfig: () => ({ data: mockAppProxyConfig }),
   useUpdateAppProxyConfig: () => ({
-    mutate: mockUpdateAppProxyConfigMutate,
+    mutateAsync: mockUpdateAppProxyConfigMutateAsync,
     isPending: false,
   }),
 }));
@@ -136,7 +137,8 @@ beforeEach(() => {
   mockAddToFailoverQueueMutateAsync.mockResolvedValue(undefined);
   mockRemoveFromFailoverQueueMutateAsync.mockReset();
   mockRemoveFromFailoverQueueMutateAsync.mockResolvedValue(undefined);
-  mockUpdateAppProxyConfigMutate.mockReset();
+  mockUpdateAppProxyConfigMutateAsync.mockReset();
+  mockUpdateAppProxyConfigMutateAsync.mockResolvedValue(undefined);
   mockAutoFailoverEnabled = false;
   mockAppProxyConfig = undefined;
   mockFailoverQueue = [];
@@ -158,6 +160,37 @@ beforeEach(() => {
     handleDragEnd: vi.fn(),
   });
 });
+
+const createAppProxyConfig = (
+  overrides: Partial<AppProxyConfig> = {},
+): AppProxyConfig => ({
+  appType: "claude",
+  enabled: true,
+  autoFailoverEnabled: true,
+  loadBalancingEnabled: false,
+  loadBalancingStickyMinutes: 10,
+  responseRescueEnabled: false,
+  responseRescueEmpty2xxEnabled: false,
+  responseRescue429Enabled: true,
+  responseRescueMaxRetries: 2,
+  maxRetries: 3,
+  streamingFirstByteTimeout: 60,
+  streamingIdleTimeout: 120,
+  nonStreamingTimeout: 600,
+  circuitFailureThreshold: 5,
+  circuitSuccessThreshold: 2,
+  circuitTimeoutSeconds: 60,
+  circuitErrorRateThreshold: 0.5,
+  circuitMinRequests: 10,
+  ...overrides,
+});
+
+const openProviderConfigMenu = async () => {
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "应用接入配置模板" }),
+  );
+};
 
 describe("ProviderList Component", () => {
   it("should render skeleton placeholders when loading", () => {
@@ -435,6 +468,56 @@ describe("ProviderList Component", () => {
     ]);
   });
 
+  it("saves routing quick switches from the provider toolbar", async () => {
+    const user = userEvent.setup();
+    const provider = createProvider({ id: "alpha", name: "Alpha" });
+
+    mockAutoFailoverEnabled = true;
+    mockAppProxyConfig = createAppProxyConfig({
+      appType: "claude",
+      loadBalancingEnabled: false,
+      responseRescueEnabled: false,
+    });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ alpha: provider }}
+        currentProviderId=""
+        appId="claude"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("switch", { name: "请求分流" }));
+
+    await waitFor(() =>
+      expect(mockUpdateAppProxyConfigMutateAsync).toHaveBeenCalledWith({
+        ...mockAppProxyConfig,
+        loadBalancingEnabled: true,
+      }),
+    );
+
+    await user.click(screen.getByRole("switch", { name: "响应救援" }));
+
+    await waitFor(() =>
+      expect(mockUpdateAppProxyConfigMutateAsync).toHaveBeenLastCalledWith({
+        ...mockAppProxyConfig,
+        responseRescueEnabled: true,
+      }),
+    );
+  });
+
   it("locates providers with the search input without filtering rows", () => {
     const providerAlpha = createProvider({ id: "alpha", name: "Alpha Labs" });
     const providerBeta = createProvider({ id: "beta", name: "Beta Works" });
@@ -639,7 +722,10 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+    await openProviderConfigMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "供应商配置模板" }),
+    );
 
     const applyAllButton = await screen.findByRole("button", {
       name: "应用到当前应用全部 (1)",
@@ -720,7 +806,10 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+    await openProviderConfigMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "供应商配置模板" }),
+    );
 
     const applyAllButton = await screen.findByRole("button", {
       name: "应用到当前应用全部 (1)",

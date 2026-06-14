@@ -29,6 +29,7 @@ use crate::commands::{CodexOAuthState, CopilotAuthState};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
+use bytes::BytesMut;
 use futures::StreamExt;
 use http::Extensions;
 use serde_json::Value;
@@ -40,6 +41,9 @@ const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 const LOAD_BALANCING_AFFINITY_MAX_ENTRIES: usize = 4096;
 const RESPONSE_RESCUE_BASE_DELAY_MS: u64 = 350;
 const RESPONSE_RESCUE_MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const RESPONSE_RESCUE_STREAM_OBSERVE_MAX_BYTES: usize = 16 * 1024;
+const RESPONSE_RESCUE_STREAM_OBSERVE_MAX_EVENTS: usize = 4;
+const RESPONSE_RESCUE_STREAM_OBSERVE_WINDOW_MS: u64 = 250;
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -2425,6 +2429,12 @@ impl RequestForwarder {
     ) -> Result<ProxyResponse, ProxyError> {
         let status = response.status();
         let headers = response.headers().clone();
+        if request_is_streaming {
+            return self
+                .observe_streaming_success_response(status, headers, response)
+                .await;
+        }
+
         let body_timeout = if request_is_streaming {
             self.streaming_idle_timeout
         } else {
@@ -2458,6 +2468,99 @@ impl RequestForwarder {
         }
 
         Ok(ProxyResponse::buffered(status, headers, body))
+    }
+
+    async fn observe_streaming_success_response(
+        &self,
+        status: http::StatusCode,
+        headers: http::HeaderMap,
+        response: ProxyResponse,
+    ) -> Result<ProxyResponse, ProxyError> {
+        if self.streaming_first_byte_timeout.is_zero() {
+            return Ok(response);
+        }
+
+        let mut stream = Box::pin(response.bytes_stream());
+        let first_timeout = self.streaming_first_byte_timeout;
+        let first = tokio::time::timeout(first_timeout, stream.next())
+            .await
+            .map_err(|_| {
+                ProxyError::Timeout(format!(
+                    "流式响应首包超时: {}s（上游已返回响应头但未返回数据）",
+                    first_timeout.as_secs()
+                ))
+            })?;
+
+        let Some(first) = first else {
+            return Err(ProxyError::EmptySuccessResponse(format!(
+                "status={}, stream=true, bytes=0",
+                status.as_u16()
+            )));
+        };
+
+        let first =
+            first.map_err(|e| ProxyError::ForwardFailed(format!("读取流式响应首包失败: {e}")))?;
+        let mut observed_chunks = vec![first];
+        let mut observed_body = BytesMut::new();
+        observed_body.extend_from_slice(&observed_chunks[0]);
+
+        let observe_deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(RESPONSE_RESCUE_STREAM_OBSERVE_WINDOW_MS);
+
+        loop {
+            match classify_streaming_observation(&observed_body) {
+                StreamingObservation::Meaningful => {
+                    break;
+                }
+                StreamingObservation::CompletedEmpty => {
+                    return Err(ProxyError::EmptySuccessResponse(format!(
+                        "status={}, stream=true, bytes={}",
+                        status.as_u16(),
+                        observed_body.len()
+                    )));
+                }
+                StreamingObservation::Pending => {}
+            }
+
+            if observed_body.len() >= RESPONSE_RESCUE_STREAM_OBSERVE_MAX_BYTES
+                || count_observed_sse_events(&observed_body)
+                    >= RESPONSE_RESCUE_STREAM_OBSERVE_MAX_EVENTS
+            {
+                break;
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= observe_deadline {
+                break;
+            }
+
+            let remaining = observe_deadline - now;
+            let next = tokio::time::timeout(remaining, stream.next()).await;
+            let next = match next {
+                Ok(next) => next,
+                Err(_) => break,
+            };
+
+            let Some(next) = next else {
+                if is_empty_success_response_body(&observed_body, true) {
+                    return Err(ProxyError::EmptySuccessResponse(format!(
+                        "status={}, stream=true, bytes={}",
+                        status.as_u16(),
+                        observed_body.len()
+                    )));
+                }
+                break;
+            };
+
+            let next = next.map_err(|e| {
+                ProxyError::ForwardFailed(format!("读取流式响应观察窗口失败: {e}"))
+            })?;
+            observed_body.extend_from_slice(&next);
+            observed_chunks.push(next);
+        }
+
+        let replay = futures::stream::iter(observed_chunks.into_iter().map(Ok)).chain(stream);
+        Ok(ProxyResponse::streamed(status, headers, replay))
     }
 
     async fn prime_streaming_response(
@@ -3081,6 +3184,67 @@ fn is_empty_success_response_body(body: &[u8], request_is_streaming: bool) -> bo
         Ok(value) => is_empty_success_json(&value),
         Err(_) => false,
     }
+}
+
+enum StreamingObservation {
+    Pending,
+    Meaningful,
+    CompletedEmpty,
+}
+
+fn classify_streaming_observation(body: &[u8]) -> StreamingObservation {
+    let text = String::from_utf8_lossy(body);
+    let mut saw_json = false;
+    let mut saw_content = false;
+    let mut saw_nonzero_usage = false;
+    let mut saw_done = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("data:") {
+            continue;
+        }
+
+        let data = trimmed.trim_start_matches("data:").trim();
+        if data.is_empty() {
+            continue;
+        }
+        if data == "[DONE]" {
+            saw_done = true;
+            continue;
+        }
+
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            saw_content = true;
+            continue;
+        };
+        saw_json = true;
+        if json_has_nonzero_usage(&value) {
+            saw_nonzero_usage = true;
+        }
+        if json_has_meaningful_output(&value) {
+            saw_content = true;
+        }
+    }
+
+    if saw_content || saw_nonzero_usage {
+        StreamingObservation::Meaningful
+    } else if saw_json && saw_done {
+        StreamingObservation::CompletedEmpty
+    } else {
+        StreamingObservation::Pending
+    }
+}
+
+fn count_observed_sse_events(body: &[u8]) -> usize {
+    String::from_utf8_lossy(body)
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("data:")
+                && !trimmed.trim_start_matches("data:").trim().is_empty()
+        })
+        .count()
 }
 
 fn is_empty_success_sse(text: &str) -> bool {
@@ -4150,6 +4314,94 @@ mod tests {
         assert_eq!(
             prepared.bytes().await.unwrap(),
             Bytes::from_static(b"firstsecond")
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_empty_2xx_rescue_is_not_observed_when_child_switch_disabled() {
+        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        forwarder.auto_failover_enabled_at_start = true;
+        forwarder.response_rescue_enabled_at_start = true;
+        forwarder.response_rescue_empty_2xx_enabled_at_start = false;
+        let response = ProxyResponse::streamed(
+            StatusCode::OK,
+            HeaderMap::new(),
+            futures::stream::iter(vec![
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                    b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n",
+                )),
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
+            ]),
+        );
+
+        let prepared = forwarder
+            .prepare_success_response_for_failover(response, true)
+            .await
+            .expect("stream should use normal prime path");
+
+        assert_eq!(
+            prepared.bytes().await.unwrap(),
+            Bytes::from_static(
+                b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\ndata: [DONE]\n\n",
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_empty_2xx_rescue_observation_retries_completed_empty_sse() {
+        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        forwarder.auto_failover_enabled_at_start = true;
+        forwarder.response_rescue_enabled_at_start = true;
+        forwarder.response_rescue_empty_2xx_enabled_at_start = true;
+        let response = ProxyResponse::streamed(
+            StatusCode::OK,
+            HeaderMap::new(),
+            futures::stream::iter(vec![
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                    b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n",
+                )),
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
+            ]),
+        );
+
+        let err = match forwarder
+            .prepare_success_response_for_failover(response, true)
+            .await
+        {
+            Ok(_) => panic!("completed empty stream should trigger rescue"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, ProxyError::EmptySuccessResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn streaming_empty_2xx_rescue_observation_replays_meaningful_sse() {
+        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        forwarder.auto_failover_enabled_at_start = true;
+        forwarder.response_rescue_enabled_at_start = true;
+        forwarder.response_rescue_empty_2xx_enabled_at_start = true;
+        let response = ProxyResponse::streamed(
+            StatusCode::OK,
+            HeaderMap::new(),
+            futures::stream::iter(vec![
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                    b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+                )),
+                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
+            ]),
+        );
+
+        let prepared = forwarder
+            .prepare_success_response_for_failover(response, true)
+            .await
+            .expect("meaningful stream should pass through");
+
+        assert_eq!(
+            prepared.bytes().await.unwrap(),
+            Bytes::from_static(
+                b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\ndata: [DONE]\n\n",
+            )
         );
     }
 

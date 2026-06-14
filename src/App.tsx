@@ -1214,10 +1214,12 @@ function App() {
 
         case "sessions":
           return (
-            <SessionManagerPage
-              key={sharedFeatureApp}
-              appId={sharedFeatureApp}
-            />
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden px-1 pb-4">
+              <SessionManagerPage
+                key={sharedFeatureApp}
+                appId={sharedFeatureApp}
+              />
+            </div>
           );
         case "workspace":
           return <WorkspaceFilesPanel />;

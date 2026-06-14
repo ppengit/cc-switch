@@ -313,7 +313,8 @@ describe("App with real ProviderList current-config interactions", () => {
       expect(screen.getByText("Gemini Base")).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole("button", { name: "当前配置" }));
+    await user.click(screen.getByRole("button", { name: "应用接入配置模板" }));
+    await user.click(screen.getByRole("menuitem", { name: "当前配置" }));
 
     const envTextarea = (await screen.findByDisplayValue(
       /GOOGLE_GEMINI_BASE_URL=https:\/\/gemini\.live\/v1/,
@@ -464,7 +465,8 @@ describe("App with real ProviderList current-config interactions", () => {
       expect(screen.getByText("Claude Base")).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole("button", { name: "当前配置" }));
+    await user.click(screen.getByRole("button", { name: "应用接入配置模板" }));
+    await user.click(screen.getByRole("menuitem", { name: "当前配置" }));
 
     expect(
       await screen.findByText(
@@ -602,7 +604,8 @@ describe("App with real ProviderList current-config interactions", () => {
       expect(screen.getByText("Codex Alpha")).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole("button", { name: "当前配置" }));
+    await user.click(screen.getByRole("button", { name: "应用接入配置模板" }));
+    await user.click(screen.getByRole("menuitem", { name: "当前配置" }));
 
     expect(
       await screen.findByText(
