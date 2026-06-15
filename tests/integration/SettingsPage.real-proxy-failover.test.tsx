@@ -503,7 +503,7 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     );
   }, 20_000);
 
-  it("shows load balancing details in its separate route section", async () => {
+  it("moves load balancing quick switch above the failover queue and saves immediately", async () => {
     const user = userEvent.setup();
 
     setSettings({
@@ -516,8 +516,7 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
       ...getAppProxyConfigState("claude"),
       enabled: true,
       autoFailoverEnabled: true,
-      loadBalancingEnabled: true,
-      loadBalancingStickyMinutes: 10,
+      loadBalancingEnabled: false,
     });
     startProxyServerState();
 
@@ -526,26 +525,17 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
       expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
     );
 
-    await user.click(
-      screen.getByRole("button", {
-        name: /请求分流/,
-      }),
-    );
+    await openFailoverSection(user);
     await user.click(screen.getByRole("tab", { name: "Claude" }));
 
-    const stickyInput = document.querySelector<HTMLInputElement>(
-      "#loadBalancingSticky-claude",
+    await clickSwitchNear(user, "请求分流");
+
+    await waitFor(() =>
+      expect(getAppProxyConfigState("claude")).toMatchObject({
+        appType: "claude",
+        loadBalancingEnabled: true,
+      }),
     );
-    if (!stickyInput) {
-      throw new Error("Load balancing sticky input not found");
-    }
-    expect(stickyInput).toHaveValue(10);
-    expect(screen.getAllByText("已开启").length).toBeGreaterThan(0);
-    expect(getAppProxyConfigState("claude")).toMatchObject({
-      appType: "claude",
-      loadBalancingEnabled: true,
-      loadBalancingStickyMinutes: 10,
-    });
   }, 20_000);
 
   it("saves Claude auto failover timing and circuit breaker settings without drifting live config", async () => {

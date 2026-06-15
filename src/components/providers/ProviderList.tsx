@@ -79,13 +79,6 @@ import { settingsApi } from "@/lib/api/settings";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Table,
   TableBody,
   TableCell,
@@ -112,10 +105,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
-import {
-  useAppProxyConfig,
-  useUpdateAppProxyConfig,
-} from "@/lib/query/proxy";
 import {
   Tooltip,
   TooltipContent,
@@ -1108,8 +1097,6 @@ export function ProviderList({
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
-  const { data: appProxyConfig } = useAppProxyConfig(appId);
-  const updateAppProxyConfig = useUpdateAppProxyConfig();
 
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
@@ -1255,43 +1242,9 @@ export function ProviderList({
   const isSwitchModeApp = !isAdditiveMode;
   const isCurrentAppTakeoverActive =
     isSwitchModeApp &&
-    (Boolean(isProxyTakeover) ||
-      Boolean(takeoverStatus?.[appId as keyof typeof takeoverStatus]));
+    Boolean(takeoverStatus?.[appId as keyof typeof takeoverStatus]);
   const canSyncTemplateToLive = isCurrentAppTakeoverActive;
   const canImportCurrentConfigMcp = appId !== "openclaw";
-  const canToggleRoutingQuickConfig =
-    isCurrentAppTakeoverActive &&
-    isAutoFailoverEnabled === true &&
-    Boolean(appProxyConfig);
-
-  const handleRoutingQuickToggle = useCallback(
-    async (
-      key: "loadBalancingEnabled" | "responseRescueEnabled",
-      enabled: boolean,
-    ) => {
-      if (!appProxyConfig) return;
-
-      const nextConfig = {
-        ...appProxyConfig,
-        [key]: enabled,
-      };
-
-      queryClient.setQueryData(["appProxyConfig", appId], nextConfig);
-
-      try {
-        await updateAppProxyConfig.mutateAsync(nextConfig);
-      } catch (error) {
-        queryClient.setQueryData(["appProxyConfig", appId], appProxyConfig);
-        toast.error(
-          t("proxy.settings.toast.saveFailed", {
-            error:
-              error instanceof Error ? error.message : String(error ?? ""),
-          }),
-        );
-      }
-    },
-    [appId, appProxyConfig, queryClient, t, updateAppProxyConfig],
-  );
 
   const {
     data: persistedTemplate,
@@ -3038,95 +2991,39 @@ export function ProviderList({
           </PopoverContent>
         </Popover>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 text-xs"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              {t("provider.commonConfigTemplate", {
-                defaultValue: "应用接入配置模板",
-              })}
-              <ChevronDown className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuLabel>
-              {t("provider.commonConfigTemplate", {
-                defaultValue: "应用接入配置模板",
-              })}
-            </DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => setTemplateDialogOpen(true)}>
-              <FileText className="h-3.5 w-3.5" />
-              {t("provider.commonConfigTemplate", {
-                defaultValue: "应用接入配置模板",
-              })}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCurrentConfigDialogOpen(true)}>
-              <FileText className="h-3.5 w-3.5" />
-              {t("provider.currentConfig", { defaultValue: "当前配置" })}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => setProviderTemplateDialogOpen(true)}
-            >
-              <FileText className="h-3.5 w-3.5" />
-              {t("provider.providerDefaultTemplate", {
-                defaultValue: "供应商配置模板",
-              })}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setTemplateDialogOpen(true)}
+        >
+          <FileText className="h-3.5 w-3.5 mr-1" />
+          {t("provider.commonConfigTemplate", {
+            defaultValue: "接管代理配置模板",
+          })}
+        </Button>
 
-        {isSwitchModeApp ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5 py-1.5">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">
-                {t("settings.tabProxy", { defaultValue: "路由" })}
-              </span>
-              <div className="h-4 w-px bg-border" />
-            </div>
-            <label className="flex items-center gap-2 text-xs font-medium">
-              <span>{t("proxy.autoFailover.loadBalancing", "请求分流")}</span>
-              <Switch
-                checked={Boolean(appProxyConfig?.loadBalancingEnabled)}
-                onCheckedChange={(checked) => {
-                  void handleRoutingQuickToggle(
-                    "loadBalancingEnabled",
-                    checked,
-                  );
-                }}
-                disabled={
-                  !canToggleRoutingQuickConfig || updateAppProxyConfig.isPending
-                }
-                aria-label={t(
-                  "proxy.autoFailover.loadBalancing",
-                  "请求分流",
-                )}
-              />
-            </label>
-            <label className="flex items-center gap-2 text-xs font-medium">
-              <span>{t("proxy.autoFailover.responseRescue", "响应救援")}</span>
-              <Switch
-                checked={Boolean(appProxyConfig?.responseRescueEnabled)}
-                onCheckedChange={(checked) => {
-                  void handleRoutingQuickToggle(
-                    "responseRescueEnabled",
-                    checked,
-                  );
-                }}
-                disabled={
-                  !canToggleRoutingQuickConfig || updateAppProxyConfig.isPending
-                }
-                aria-label={t(
-                  "proxy.autoFailover.responseRescue",
-                  "响应救援",
-                )}
-              />
-            </label>
-          </div>
-        ) : null}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setCurrentConfigDialogOpen(true)}
+        >
+          <FileText className="h-3.5 w-3.5 mr-1" />
+          {t("provider.currentConfig", { defaultValue: "当前配置" })}
+        </Button>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setProviderTemplateDialogOpen(true)}
+        >
+          <FileText className="h-3.5 w-3.5 mr-1" />
+          {t("provider.providerDefaultTemplate", {
+            defaultValue: "供应商配置模板",
+          })}
+        </Button>
 
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
           <Popover>

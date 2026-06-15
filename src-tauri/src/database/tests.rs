@@ -289,23 +289,6 @@ fn schema_create_tables_include_pricing_model_columns() {
         Some("10")
     );
 
-    let response_rescue_enabled = get_column_info(&conn, "proxy_config", "response_rescue_enabled");
-    assert_eq!(response_rescue_enabled.r#type, "INTEGER");
-    assert_eq!(response_rescue_enabled.notnull, 1);
-    assert_eq!(
-        normalize_default(&response_rescue_enabled.default).as_deref(),
-        Some("1")
-    );
-
-    let response_rescue_retries =
-        get_column_info(&conn, "proxy_config", "response_rescue_max_retries");
-    assert_eq!(response_rescue_retries.r#type, "INTEGER");
-    assert_eq!(response_rescue_retries.notnull, 1);
-    assert_eq!(
-        normalize_default(&response_rescue_retries.default).as_deref(),
-        Some("2")
-    );
-
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
     assert_eq!(multiplier.r#type, "TEXT");
     assert_eq!(multiplier.notnull, 1);
@@ -369,23 +352,6 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     assert_eq!(
         normalize_default(&sticky_minutes.default).as_deref(),
         Some("10")
-    );
-
-    let response_rescue_enabled = get_column_info(&conn, "proxy_config", "response_rescue_enabled");
-    assert_eq!(response_rescue_enabled.r#type, "INTEGER");
-    assert_eq!(response_rescue_enabled.notnull, 1);
-    assert_eq!(
-        normalize_default(&response_rescue_enabled.default).as_deref(),
-        Some("1")
-    );
-
-    let response_rescue_retries =
-        get_column_info(&conn, "proxy_config", "response_rescue_max_retries");
-    assert_eq!(response_rescue_retries.r#type, "INTEGER");
-    assert_eq!(response_rescue_retries.notnull, 1);
-    assert_eq!(
-        normalize_default(&response_rescue_retries.default).as_deref(),
-        Some("2")
     );
 
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
@@ -452,17 +418,6 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
             .expect("check load_balancing_sticky_minutes"),
         "proxy_config should include load_balancing_sticky_minutes after repair"
     );
-    assert!(
-        Database::has_column(&conn, "proxy_config", "response_rescue_enabled")
-            .expect("check response_rescue_enabled"),
-        "proxy_config should include response_rescue_enabled after repair"
-    );
-    assert!(
-        Database::has_column(&conn, "proxy_config", "response_rescue_max_retries")
-            .expect("check response_rescue_max_retries"),
-        "proxy_config should include response_rescue_max_retries after repair"
-    );
-
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count rows");
@@ -641,18 +596,6 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         sticky_rows, 3,
         "load balancing sticky minutes should default to 10 after full legacy migration"
     );
-    let response_rescue_rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE response_rescue_enabled = 1 AND response_rescue_max_retries = 2",
-            [],
-            |r| r.get(0),
-        )
-        .expect("count response rescue rows");
-    assert_eq!(
-        response_rescue_rows, 3,
-        "response rescue should default on with 2 retries after full legacy migration"
-    );
-
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM model_pricing", [], |r| r.get(0))

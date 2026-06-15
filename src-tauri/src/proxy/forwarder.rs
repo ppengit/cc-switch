@@ -29,7 +29,6 @@ use crate::commands::{CodexOAuthState, CopilotAuthState};
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{app_config::AppType, provider::Provider};
-use bytes::BytesMut;
 use futures::StreamExt;
 use http::Extensions;
 use serde_json::Value;
@@ -39,11 +38,6 @@ use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 const LOAD_BALANCING_AFFINITY_MAX_ENTRIES: usize = 4096;
-const RESPONSE_RESCUE_BASE_DELAY_MS: u64 = 350;
-const RESPONSE_RESCUE_MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-const RESPONSE_RESCUE_STREAM_OBSERVE_MAX_BYTES: usize = 16 * 1024;
-const RESPONSE_RESCUE_STREAM_OBSERVE_MAX_EVENTS: usize = 4;
-const RESPONSE_RESCUE_STREAM_OBSERVE_WINDOW_MS: u64 = 250;
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -131,8 +125,6 @@ pub struct RequestForwarder {
     non_streaming_timeout: std::time::Duration,
     /// 流式请求响应头等待超时（秒）
     streaming_first_byte_timeout: std::time::Duration,
-    /// 流式请求 body 静默超时（秒）
-    streaming_idle_timeout: std::time::Duration,
     /// 单个客户端请求最多尝试的 provider 数。
     max_attempts: usize,
     /// per-app 切换代次共享 map（用于回写状态前的 epoch 比较）
@@ -146,14 +138,6 @@ pub struct RequestForwarder {
     load_balancing_enabled_at_start: bool,
     /// 分流会话粘性保持时间（分钟）；0 表示禁用粘性。
     load_balancing_sticky_minutes: u32,
-    /// 响应救援开关快照；自动故障转移开启时才生效。
-    response_rescue_enabled_at_start: bool,
-    /// 2xx 空响应救援开关快照。
-    response_rescue_empty_2xx_enabled_at_start: bool,
-    /// 429 Too Many Requests 救援开关快照。
-    response_rescue_429_enabled_at_start: bool,
-    /// 响应救援最多额外重发次数。
-    response_rescue_max_retries: u32,
 }
 
 impl RequestForwarder {
@@ -222,7 +206,6 @@ impl RequestForwarder {
         session_id: String,
         session_client_provided: bool,
         streaming_first_byte_timeout: u64,
-        streaming_idle_timeout: u64,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
         copilot_optimizer_config: CopilotOptimizerConfig,
@@ -231,10 +214,6 @@ impl RequestForwarder {
         auto_failover_enabled_at_start: bool,
         load_balancing_enabled_at_start: bool,
         load_balancing_sticky_minutes: u32,
-        response_rescue_enabled_at_start: bool,
-        response_rescue_empty_2xx_enabled_at_start: bool,
-        response_rescue_429_enabled_at_start: bool,
-        response_rescue_max_retries: u32,
         max_retries: u32,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
@@ -262,17 +241,12 @@ impl RequestForwarder {
             streaming_first_byte_timeout: std::time::Duration::from_secs(
                 streaming_first_byte_timeout,
             ),
-            streaming_idle_timeout: std::time::Duration::from_secs(streaming_idle_timeout),
             max_attempts,
             switch_epoch,
             request_epoch,
             auto_failover_enabled_at_start,
             load_balancing_enabled_at_start,
             load_balancing_sticky_minutes,
-            response_rescue_enabled_at_start,
-            response_rescue_empty_2xx_enabled_at_start,
-            response_rescue_429_enabled_at_start,
-            response_rescue_max_retries: response_rescue_max_retries.min(10),
         }
     }
 
@@ -289,38 +263,6 @@ impl RequestForwarder {
 
     fn load_balancing_active(&self) -> bool {
         self.auto_failover_enabled_at_start && self.load_balancing_enabled_at_start
-    }
-
-    fn response_rescue_active(&self) -> bool {
-        self.auto_failover_enabled_at_start
-            && self.response_rescue_enabled_at_start
-            && self.response_rescue_max_retries > 0
-    }
-
-    fn should_schedule_response_rescue_retry(&self, error: &ProxyError) -> bool {
-        if !self.response_rescue_active() {
-            return false;
-        }
-
-        match error {
-            ProxyError::UpstreamError { status: 429, .. } => {
-                self.response_rescue_429_enabled_at_start
-            }
-            ProxyError::EmptySuccessResponse(_) => self.response_rescue_empty_2xx_enabled_at_start,
-            _ => false,
-        }
-    }
-
-    async fn wait_before_response_rescue_retry(&self, retry_index: usize, error: &ProxyError) {
-        let delay_ms = match error {
-            ProxyError::UpstreamError { status: 429, .. } => {
-                RESPONSE_RESCUE_BASE_DELAY_MS.saturating_mul(retry_index as u64 + 1)
-            }
-            _ => RESPONSE_RESCUE_BASE_DELAY_MS,
-        }
-        .min(2_000);
-
-        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
     fn load_balancing_affinity_key(&self, app_type_str: &str) -> Option<String> {
@@ -641,8 +583,6 @@ impl RequestForwarder {
             .order_providers_for_load_balancing(app_type_str, providers)
             .await;
         let mut providers = providers.into_iter();
-        let mut response_rescue_queue = std::collections::VecDeque::new();
-        let mut response_rescue_retries_used = 0usize;
         let mut saw_load_balancing_capacity_limit = false;
         let mut tried_overflow_fallback = false;
 
@@ -654,12 +594,6 @@ impl RequestForwarder {
         loop {
             let (provider, enforce_load_balancing_limit) = match providers.next() {
                 Some(provider) => (provider, true),
-                None if !response_rescue_queue.is_empty() => {
-                    let Some(provider) = response_rescue_queue.pop_front() else {
-                        break;
-                    };
-                    (provider, true)
-                }
                 None if self.load_balancing_active()
                     && attempted_providers == 0
                     && saw_load_balancing_capacity_limit
@@ -686,9 +620,7 @@ impl RequestForwarder {
 
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
             // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
-            let max_attempts_allowed = self
-                .max_attempts
-                .saturating_add(response_rescue_retries_used);
+            let max_attempts_allowed = self.max_attempts;
             if attempted_providers >= max_attempts_allowed {
                 log::warn!(
                     "[{app_type_str}] 已达最大尝试次数上限 ({}/{}), 停止故障转移",
@@ -1431,25 +1363,6 @@ impl RequestForwarder {
                             last_provider = Some(provider.clone());
                             if let Some(error) = last_error.as_ref() {
                                 self.finish_load_balanced_failed_attempt(error).await;
-                                if self.should_schedule_response_rescue_retry(error)
-                                    && response_rescue_retries_used
-                                        < self.response_rescue_max_retries as usize
-                                {
-                                    response_rescue_retries_used += 1;
-                                    log::warn!(
-                                        "[{app_type_str}] Provider {} 返回可救援错误，安排第 {}/{} 次响应救援重发: {}",
-                                        provider.name,
-                                        response_rescue_retries_used,
-                                        self.response_rescue_max_retries,
-                                        summarize_proxy_error(error)
-                                    );
-                                    self.wait_before_response_rescue_retry(
-                                        response_rescue_retries_used - 1,
-                                        error,
-                                    )
-                                    .await;
-                                    response_rescue_queue.push_back(provider.clone());
-                                }
                             }
                             // 继续尝试下一个供应商
                             continue;
@@ -2393,12 +2306,6 @@ impl RequestForwarder {
         response: ProxyResponse,
         request_is_streaming: bool,
     ) -> Result<ProxyResponse, ProxyError> {
-        if self.response_rescue_active() && self.response_rescue_empty_2xx_enabled_at_start {
-            return self
-                .buffer_and_validate_non_empty_success_response(response, request_is_streaming)
-                .await;
-        }
-
         if request_is_streaming {
             return self.prime_streaming_response(response).await;
         }
@@ -2420,146 +2327,6 @@ impl RequestForwarder {
             })??;
 
         Ok(ProxyResponse::buffered(status, headers, body))
-    }
-
-    async fn buffer_and_validate_non_empty_success_response(
-        &self,
-        response: ProxyResponse,
-        request_is_streaming: bool,
-    ) -> Result<ProxyResponse, ProxyError> {
-        let status = response.status();
-        let headers = response.headers().clone();
-        if request_is_streaming {
-            return self
-                .observe_streaming_success_response(status, headers, response)
-                .await;
-        }
-
-        let body_timeout = if request_is_streaming {
-            self.streaming_idle_timeout
-        } else {
-            self.non_streaming_timeout
-        };
-
-        let body = if body_timeout.is_zero() {
-            response.bytes().await?
-        } else {
-            tokio::time::timeout(body_timeout, response.bytes())
-                .await
-                .map_err(|_| {
-                    ProxyError::Timeout(format!(
-                        "响应救援读取 2xx 响应体超时: {}s",
-                        body_timeout.as_secs()
-                    ))
-                })??
-        };
-
-        if body.len() > RESPONSE_RESCUE_MAX_BUFFER_BYTES {
-            return Ok(ProxyResponse::buffered(status, headers, body));
-        }
-
-        if is_empty_success_response_body(&body, request_is_streaming) {
-            return Err(ProxyError::EmptySuccessResponse(format!(
-                "status={}, stream={}, bytes={}",
-                status.as_u16(),
-                request_is_streaming,
-                body.len()
-            )));
-        }
-
-        Ok(ProxyResponse::buffered(status, headers, body))
-    }
-
-    async fn observe_streaming_success_response(
-        &self,
-        status: http::StatusCode,
-        headers: http::HeaderMap,
-        response: ProxyResponse,
-    ) -> Result<ProxyResponse, ProxyError> {
-        if self.streaming_first_byte_timeout.is_zero() {
-            return Ok(response);
-        }
-
-        let mut stream = Box::pin(response.bytes_stream());
-        let first_timeout = self.streaming_first_byte_timeout;
-        let first = tokio::time::timeout(first_timeout, stream.next())
-            .await
-            .map_err(|_| {
-                ProxyError::Timeout(format!(
-                    "流式响应首包超时: {}s（上游已返回响应头但未返回数据）",
-                    first_timeout.as_secs()
-                ))
-            })?;
-
-        let Some(first) = first else {
-            return Err(ProxyError::EmptySuccessResponse(format!(
-                "status={}, stream=true, bytes=0",
-                status.as_u16()
-            )));
-        };
-
-        let first =
-            first.map_err(|e| ProxyError::ForwardFailed(format!("读取流式响应首包失败: {e}")))?;
-        let mut observed_chunks = vec![first];
-        let mut observed_body = BytesMut::new();
-        observed_body.extend_from_slice(&observed_chunks[0]);
-
-        let observe_deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_millis(RESPONSE_RESCUE_STREAM_OBSERVE_WINDOW_MS);
-
-        loop {
-            match classify_streaming_observation(&observed_body) {
-                StreamingObservation::Meaningful => {
-                    break;
-                }
-                StreamingObservation::CompletedEmpty => {
-                    return Err(ProxyError::EmptySuccessResponse(format!(
-                        "status={}, stream=true, bytes={}",
-                        status.as_u16(),
-                        observed_body.len()
-                    )));
-                }
-                StreamingObservation::Pending => {}
-            }
-
-            if observed_body.len() >= RESPONSE_RESCUE_STREAM_OBSERVE_MAX_BYTES
-                || count_observed_sse_events(&observed_body)
-                    >= RESPONSE_RESCUE_STREAM_OBSERVE_MAX_EVENTS
-            {
-                break;
-            }
-
-            let now = tokio::time::Instant::now();
-            if now >= observe_deadline {
-                break;
-            }
-
-            let remaining = observe_deadline - now;
-            let next = tokio::time::timeout(remaining, stream.next()).await;
-            let next = match next {
-                Ok(next) => next,
-                Err(_) => break,
-            };
-
-            let Some(next) = next else {
-                if is_empty_success_response_body(&observed_body, true) {
-                    return Err(ProxyError::EmptySuccessResponse(format!(
-                        "status={}, stream=true, bytes={}",
-                        status.as_u16(),
-                        observed_body.len()
-                    )));
-                }
-                break;
-            };
-
-            let next = next
-                .map_err(|e| ProxyError::ForwardFailed(format!("读取流式响应观察窗口失败: {e}")))?;
-            observed_body.extend_from_slice(&next);
-            observed_chunks.push(next);
-        }
-
-        let replay = futures::stream::iter(observed_chunks.into_iter().map(Ok)).chain(stream);
-        Ok(ProxyResponse::streamed(status, headers, replay))
     }
 
     async fn prime_streaming_response(
@@ -2712,7 +2479,6 @@ impl RequestForwarder {
             // 网络和上游错误：都应该尝试下一个供应商
             ProxyError::Timeout(_) => ErrorCategory::Retryable,
             ProxyError::ForwardFailed(_) => ErrorCategory::Retryable,
-            ProxyError::EmptySuccessResponse(_) => ErrorCategory::Retryable,
             ProxyError::ProviderUnhealthy(_) => ErrorCategory::Retryable,
             // 上游 HTTP 错误：按状态码分桶。
             //
@@ -3164,201 +2930,8 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
 fn proxy_error_status(error: &ProxyError) -> Option<u16> {
     match error {
         ProxyError::UpstreamError { status, .. } => Some(*status),
-        ProxyError::EmptySuccessResponse(_) => Some(200),
         _ => None,
     }
-}
-
-fn is_empty_success_response_body(body: &[u8], request_is_streaming: bool) -> bool {
-    let text = String::from_utf8_lossy(body);
-    if text.trim().is_empty() {
-        return true;
-    }
-
-    if request_is_streaming {
-        return is_empty_success_sse(&text);
-    }
-
-    match serde_json::from_slice::<Value>(body) {
-        Ok(value) => is_empty_success_json(&value),
-        Err(_) => false,
-    }
-}
-
-enum StreamingObservation {
-    Pending,
-    Meaningful,
-    CompletedEmpty,
-}
-
-fn classify_streaming_observation(body: &[u8]) -> StreamingObservation {
-    let text = String::from_utf8_lossy(body);
-    let mut saw_json = false;
-    let mut saw_content = false;
-    let mut saw_nonzero_usage = false;
-    let mut saw_done = false;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("data:") {
-            continue;
-        }
-
-        let data = trimmed.trim_start_matches("data:").trim();
-        if data.is_empty() {
-            continue;
-        }
-        if data == "[DONE]" {
-            saw_done = true;
-            continue;
-        }
-
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            saw_content = true;
-            continue;
-        };
-        saw_json = true;
-        if json_has_nonzero_usage(&value) {
-            saw_nonzero_usage = true;
-        }
-        if json_has_meaningful_output(&value) {
-            saw_content = true;
-        }
-    }
-
-    if saw_content || saw_nonzero_usage {
-        StreamingObservation::Meaningful
-    } else if saw_json && saw_done {
-        StreamingObservation::CompletedEmpty
-    } else {
-        StreamingObservation::Pending
-    }
-}
-
-fn count_observed_sse_events(body: &[u8]) -> usize {
-    String::from_utf8_lossy(body)
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            trimmed.starts_with("data:") && !trimmed.trim_start_matches("data:").trim().is_empty()
-        })
-        .count()
-}
-
-fn is_empty_success_sse(text: &str) -> bool {
-    let mut saw_json = false;
-    let mut saw_content = false;
-    let mut saw_nonzero_usage = false;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("data:") {
-            continue;
-        }
-
-        let data = trimmed.trim_start_matches("data:").trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
-        }
-
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            saw_content = true;
-            continue;
-        };
-        saw_json = true;
-        if json_has_nonzero_usage(&value) {
-            saw_nonzero_usage = true;
-        }
-        if json_has_meaningful_output(&value) {
-            saw_content = true;
-        }
-    }
-
-    saw_json && !saw_content && !saw_nonzero_usage
-}
-
-fn is_empty_success_json(value: &Value) -> bool {
-    !json_has_meaningful_output(value) && !json_has_nonzero_usage(value)
-}
-
-fn json_has_nonzero_usage(value: &Value) -> bool {
-    let usage = value
-        .get("usage")
-        .or_else(|| value.pointer("/response/usage"))
-        .or_else(|| value.get("usageMetadata"));
-    let Some(usage) = usage else {
-        return false;
-    };
-
-    [
-        "input_tokens",
-        "output_tokens",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "totalTokenCount",
-        "promptTokenCount",
-        "candidatesTokenCount",
-    ]
-    .iter()
-    .any(|key| usage.get(*key).and_then(Value::as_u64).unwrap_or(0) > 0)
-}
-
-fn json_has_meaningful_output(value: &Value) -> bool {
-    if let Some(text) = value.as_str() {
-        return !text.trim().is_empty();
-    }
-
-    match value {
-        Value::Array(items) => items.iter().any(json_has_meaningful_output),
-        Value::Object(map) => {
-            if map
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_meaningful_stream_event_type)
-            {
-                return true;
-            }
-
-            for key in [
-                "text",
-                "content",
-                "delta",
-                "reasoning",
-                "reasoning_content",
-                "thinking",
-                "partial_json",
-                "arguments",
-                "tool_calls",
-                "function_call",
-                "output",
-                "choices",
-                "candidates",
-                "parts",
-            ] {
-                if let Some(child) = map.get(key) {
-                    if json_has_meaningful_output(child) {
-                        return true;
-                    }
-                }
-            }
-
-            false
-        }
-        _ => false,
-    }
-}
-
-fn is_meaningful_stream_event_type(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "content_block_delta"
-            | "response.output_text.delta"
-            | "response.reasoning.delta"
-            | "response.function_call_arguments.delta"
-            | "response.output_item.added"
-            | "tool_call_delta"
-    )
 }
 
 fn sanitize_activity_upstream_url(raw_url: &str) -> String {
@@ -3664,17 +3237,12 @@ mod tests {
             copilot_optimizer_config: CopilotOptimizerConfig::default(),
             non_streaming_timeout,
             streaming_first_byte_timeout,
-            streaming_idle_timeout: streaming_first_byte_timeout,
             max_attempts: 1,
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
             load_balancing_enabled_at_start: false,
             load_balancing_sticky_minutes: 10,
-            response_rescue_enabled_at_start: true,
-            response_rescue_empty_2xx_enabled_at_start: false,
-            response_rescue_429_enabled_at_start: true,
-            response_rescue_max_retries: 2,
         }
     }
 
@@ -3683,10 +3251,6 @@ mod tests {
         forwarder.auto_failover_enabled_at_start = true;
         forwarder.load_balancing_enabled_at_start = true;
         forwarder.load_balancing_sticky_minutes = 10;
-        forwarder.response_rescue_enabled_at_start = false;
-        forwarder.response_rescue_empty_2xx_enabled_at_start = false;
-        forwarder.response_rescue_429_enabled_at_start = false;
-        forwarder.response_rescue_max_retries = 0;
         forwarder.session_id = "session-1".to_string();
         forwarder.session_client_provided = true;
         forwarder
@@ -3717,17 +3281,12 @@ mod tests {
             copilot_optimizer_config: CopilotOptimizerConfig::default(),
             non_streaming_timeout: Duration::from_secs(1),
             streaming_first_byte_timeout: Duration::from_secs(1),
-            streaming_idle_timeout: Duration::from_secs(1),
             max_attempts: 1,
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start,
             load_balancing_enabled_at_start: false,
             load_balancing_sticky_minutes: 10,
-            response_rescue_enabled_at_start: true,
-            response_rescue_empty_2xx_enabled_at_start: false,
-            response_rescue_429_enabled_at_start: true,
-            response_rescue_max_retries: 2,
         }
     }
 
@@ -4012,71 +3571,6 @@ mod tests {
     }
 
     #[test]
-    fn response_rescue_classifies_429_as_rescuable_only_when_enabled() {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        let err = ProxyError::UpstreamError {
-            status: 429,
-            body: Some("too many requests".to_string()),
-        };
-
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.response_rescue_enabled_at_start = true;
-        forwarder.response_rescue_429_enabled_at_start = true;
-        forwarder.response_rescue_max_retries = 2;
-        assert!(forwarder.should_schedule_response_rescue_retry(&err));
-
-        forwarder.response_rescue_429_enabled_at_start = false;
-        assert!(!forwarder.should_schedule_response_rescue_retry(&err));
-
-        forwarder.response_rescue_429_enabled_at_start = true;
-        forwarder.response_rescue_max_retries = 0;
-        assert!(!forwarder.should_schedule_response_rescue_retry(&err));
-
-        forwarder.response_rescue_max_retries = 2;
-        forwarder.response_rescue_enabled_at_start = false;
-        assert!(!forwarder.should_schedule_response_rescue_retry(&err));
-    }
-
-    #[test]
-    fn response_rescue_classifies_empty_2xx_only_when_child_switch_enabled() {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        let err = ProxyError::EmptySuccessResponse("status=200".to_string());
-
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.response_rescue_enabled_at_start = true;
-        forwarder.response_rescue_max_retries = 2;
-        forwarder.response_rescue_empty_2xx_enabled_at_start = false;
-        assert!(!forwarder.should_schedule_response_rescue_retry(&err));
-
-        forwarder.response_rescue_empty_2xx_enabled_at_start = true;
-        assert!(forwarder.should_schedule_response_rescue_retry(&err));
-    }
-
-    #[test]
-    fn empty_success_response_detection_requires_no_content_and_zero_usage() {
-        assert!(is_empty_success_response_body(
-            br#"{"id":"resp","output":[],"usage":{"input_tokens":0,"output_tokens":0}}"#,
-            false
-        ));
-        assert!(!is_empty_success_response_body(
-            br#"{"id":"resp","output":[{"content":[{"text":"hello"}]}],"usage":{"input_tokens":0,"output_tokens":0}}"#,
-            false
-        ));
-        assert!(!is_empty_success_response_body(
-            br#"{"id":"resp","output":[],"usage":{"input_tokens":3,"output_tokens":0}}"#,
-            false
-        ));
-        assert!(is_empty_success_response_body(
-            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\ndata: [DONE]\n\n",
-            true
-        ));
-        assert!(!is_empty_success_response_body(
-            b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
-            true
-        ));
-    }
-
-    #[test]
     fn codex_compact_provider_capability_errors_are_retryable_only_for_compact() {
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let err = ProxyError::UpstreamError {
@@ -4312,94 +3806,6 @@ mod tests {
         assert_eq!(
             prepared.bytes().await.unwrap(),
             Bytes::from_static(b"firstsecond")
-        );
-    }
-
-    #[tokio::test]
-    async fn streaming_empty_2xx_rescue_is_not_observed_when_child_switch_disabled() {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.response_rescue_enabled_at_start = true;
-        forwarder.response_rescue_empty_2xx_enabled_at_start = false;
-        let response = ProxyResponse::streamed(
-            StatusCode::OK,
-            HeaderMap::new(),
-            futures::stream::iter(vec![
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                    b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n",
-                )),
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
-            ]),
-        );
-
-        let prepared = forwarder
-            .prepare_success_response_for_failover(response, true)
-            .await
-            .expect("stream should use normal prime path");
-
-        assert_eq!(
-            prepared.bytes().await.unwrap(),
-            Bytes::from_static(
-                b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\ndata: [DONE]\n\n",
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn streaming_empty_2xx_rescue_observation_retries_completed_empty_sse() {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.response_rescue_enabled_at_start = true;
-        forwarder.response_rescue_empty_2xx_enabled_at_start = true;
-        let response = ProxyResponse::streamed(
-            StatusCode::OK,
-            HeaderMap::new(),
-            futures::stream::iter(vec![
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                    b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n",
-                )),
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
-            ]),
-        );
-
-        let err = match forwarder
-            .prepare_success_response_for_failover(response, true)
-            .await
-        {
-            Ok(_) => panic!("completed empty stream should trigger rescue"),
-            Err(err) => err,
-        };
-
-        assert!(matches!(err, ProxyError::EmptySuccessResponse(_)));
-    }
-
-    #[tokio::test]
-    async fn streaming_empty_2xx_rescue_observation_replays_meaningful_sse() {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.response_rescue_enabled_at_start = true;
-        forwarder.response_rescue_empty_2xx_enabled_at_start = true;
-        let response = ProxyResponse::streamed(
-            StatusCode::OK,
-            HeaderMap::new(),
-            futures::stream::iter(vec![
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                    b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
-                )),
-                Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n")),
-            ]),
-        );
-
-        let prepared = forwarder
-            .prepare_success_response_for_failover(response, true)
-            .await
-            .expect("meaningful stream should pass through");
-
-        assert_eq!(
-            prepared.bytes().await.unwrap(),
-            Bytes::from_static(
-                b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\ndata: [DONE]\n\n",
-            )
         );
     }
 

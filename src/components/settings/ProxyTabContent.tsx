@@ -200,112 +200,17 @@ export function ProxyTabContent({
                           disabled={failoverDisabled}
                         />
                       </div>
-                      <AutoFailoverConfigPanel
-                        appType={appType}
-                        disabled={failoverDisabled}
-                        mode="failover"
-                      />
+                      <div className="border-t border-border/50 pt-6">
+                        <AutoFailoverConfigPanel
+                          appType={appType}
+                          disabled={failoverDisabled}
+                        />
+                      </div>
                     </TabsContent>
                   );
                 })}
               </Tabs>
             </div>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem
-          value="loadBalancing"
-          className="rounded-xl glass-card overflow-hidden"
-        >
-          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-            <div className="flex items-center gap-3">
-              <Activity className="h-5 w-5 text-sky-500" />
-              <div className="text-left">
-                <h3 className="text-base font-semibold">
-                  {t("proxy.autoFailover.loadBalancing", "请求分流")}
-                </h3>
-                <p className="text-sm text-muted-foreground font-normal">
-                  {t(
-                    "proxy.autoFailover.loadBalancingHint",
-                    "按供应商最大并发数分配请求，满载时尝试下一个队列供应商。",
-                  )}
-                </p>
-              </div>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <Tabs defaultValue="claude" className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="claude">Claude</TabsTrigger>
-                <TabsTrigger value="codex">Codex</TabsTrigger>
-                <TabsTrigger value="gemini">Gemini</TabsTrigger>
-              </TabsList>
-              {(["claude", "codex", "gemini"] as const).map((appType) => {
-                const panelDisabled =
-                  !isRunning || !(takeoverStatus?.[appType] ?? false);
-                return (
-                  <TabsContent
-                    key={appType}
-                    value={appType}
-                    className="mt-4 space-y-6"
-                  >
-                    <AutoFailoverConfigPanel
-                      appType={appType}
-                      disabled={panelDisabled}
-                      mode="loadBalancing"
-                    />
-                  </TabsContent>
-                );
-              })}
-            </Tabs>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem
-          value="responseRescue"
-          className="rounded-xl glass-card overflow-hidden"
-        >
-          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-            <div className="flex items-center gap-3">
-              <ShieldAlert className="h-5 w-5 text-emerald-500" />
-              <div className="text-left">
-                <h3 className="text-base font-semibold">
-                  {t("proxy.autoFailover.responseRescue", "响应救援")}
-                </h3>
-                <p className="text-sm text-muted-foreground font-normal">
-                  {t(
-                    "proxy.autoFailover.responseRescueHint",
-                    "当上游返回已配置的可恢复响应时，在代理内部先受控重发，尽量避免把异常直接返回给调用方。",
-                  )}
-                </p>
-              </div>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <Tabs defaultValue="claude" className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="claude">Claude</TabsTrigger>
-                <TabsTrigger value="codex">Codex</TabsTrigger>
-                <TabsTrigger value="gemini">Gemini</TabsTrigger>
-              </TabsList>
-              {(["claude", "codex", "gemini"] as const).map((appType) => {
-                const panelDisabled =
-                  !isRunning || !(takeoverStatus?.[appType] ?? false);
-                return (
-                  <TabsContent
-                    key={appType}
-                    value={appType}
-                    className="mt-4 space-y-6"
-                  >
-                    <AutoFailoverConfigPanel
-                      appType={appType}
-                      disabled={panelDisabled}
-                      mode="responseRescue"
-                    />
-                  </TabsContent>
-                );
-              })}
-            </Tabs>
           </AccordionContent>
         </AccordionItem>
 

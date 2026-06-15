@@ -215,22 +215,20 @@ impl RequestContext {
     pub fn create_forwarder(&self, state: &ProxyState) -> RequestForwarder {
         let effective_auto_failover_enabled =
             self.app_config.enabled && self.app_config.auto_failover_enabled;
-        let (non_streaming_timeout, first_byte_timeout, idle_timeout) =
-            if effective_auto_failover_enabled {
-                // 故障转移开启：使用配置的值（0 = 禁用超时）
-                (
-                    self.app_config.non_streaming_timeout as u64,
-                    self.app_config.streaming_first_byte_timeout as u64,
-                    self.app_config.streaming_idle_timeout as u64,
-                )
-            } else {
-                // 故障转移关闭：不启用超时配置
-                log::debug!(
-                    "[{}] Failover disabled, timeout configs are bypassed",
-                    self.tag
-                );
-                (0, 0, 0)
-            };
+        let (non_streaming_timeout, first_byte_timeout) = if effective_auto_failover_enabled {
+            // 故障转移开启：使用配置的值（0 = 禁用超时）
+            (
+                self.app_config.non_streaming_timeout as u64,
+                self.app_config.streaming_first_byte_timeout as u64,
+            )
+        } else {
+            // 故障转移关闭：不启用超时配置
+            log::debug!(
+                "[{}] Failover disabled, timeout configs are bypassed",
+                self.tag
+            );
+            (0, 0)
+        };
 
         // 故障转移关闭时强制 max_retries=0（仅尝试 1 个 provider），与「不超时 + 不切换」语义一致。
         let max_retries = if self.app_config.auto_failover_enabled {
@@ -256,7 +254,6 @@ impl RequestContext {
             self.session_id.clone(),
             self.session_client_provided,
             first_byte_timeout,
-            idle_timeout,
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
@@ -265,10 +262,6 @@ impl RequestContext {
             effective_auto_failover_enabled,
             self.app_config.load_balancing_enabled,
             self.app_config.load_balancing_sticky_minutes,
-            self.app_config.response_rescue_enabled,
-            self.app_config.response_rescue_empty_2xx_enabled,
-            self.app_config.response_rescue_429_enabled,
-            self.app_config.response_rescue_max_retries,
             max_retries,
         )
     }

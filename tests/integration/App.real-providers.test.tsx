@@ -910,10 +910,7 @@ describe("App with real ProviderList", () => {
     await expectProviderVisible("Codex Alpha");
 
     await user.click(
-      screen.getByRole("button", { name: "应用接入配置模板" }),
-    );
-    await user.click(
-      screen.getByRole("menuitem", { name: "供应商配置模板" }),
+      screen.getByRole("button", { name: "供应商配置模板" }),
     );
     await screen.findByDisplayValue(/https:\/\/template\.example\/v1/);
     await user.click(

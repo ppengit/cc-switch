@@ -285,18 +285,6 @@ pub struct AppProxyConfig {
     /// 会话粘性保持时间（分钟）；0 表示不启用粘性。
     #[serde(default = "default_load_balancing_sticky_minutes")]
     pub load_balancing_sticky_minutes: u32,
-    /// 响应救援开关；仅在自动故障转移开启时生效。
-    #[serde(default = "default_true")]
-    pub response_rescue_enabled: bool,
-    /// 2xx 成功但内容为空时是否救援。
-    #[serde(default)]
-    pub response_rescue_empty_2xx_enabled: bool,
-    /// 429 Too Many Requests 是否救援。
-    #[serde(default = "default_true")]
-    pub response_rescue_429_enabled: bool,
-    /// 响应救援最多额外重发次数。
-    #[serde(default = "default_response_rescue_max_retries")]
-    pub response_rescue_max_retries: u32,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）
@@ -357,10 +345,6 @@ fn default_true() -> bool {
 
 fn default_load_balancing_sticky_minutes() -> u32 {
     10
-}
-
-fn default_response_rescue_max_retries() -> u32 {
-    2
 }
 
 fn default_log_level() -> String {
