@@ -480,11 +480,6 @@ function ProviderFormFull({
   const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
     () => initialData?.meta?.testConfig ?? { enabled: false },
   );
-  const [maxSessions, setMaxSessions] = useState<string>(() =>
-    initialData?.meta?.maxSessions && initialData.meta.maxSessions > 0
-      ? String(initialData.meta.maxSessions)
-      : "",
-  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -502,6 +497,9 @@ function ProviderFormFull({
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
     );
+  const [customUserAgent, setCustomUserAgent] = useState<string>(
+    () => initialData?.meta?.customUserAgent ?? "",
+  );
 
   const { category } = useProviderCategory({
     appId,
@@ -537,11 +535,6 @@ function ProviderFormFull({
       supportsFullUrl ? (seed?.meta?.isFullUrl ?? false) : false,
     );
     setTestConfig(seed?.meta?.testConfig ?? { enabled: false });
-    setMaxSessions(
-      seed?.meta?.maxSessions && seed.meta.maxSessions > 0
-        ? String(seed.meta.maxSessions)
-        : "",
-    );
     setPricingConfig({
       enabled:
         seed?.meta?.costMultiplier !== undefined ||
@@ -552,6 +545,7 @@ function ProviderFormFull({
       ),
     });
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
+    setCustomUserAgent(seed?.meta?.customUserAgent ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, formSeedKey, supportsFullUrl]);
 
@@ -673,6 +667,8 @@ function ProviderFormFull({
     defaultSonnetModelName,
     defaultOpusModel,
     defaultOpusModelName,
+    defaultFableModel,
+    defaultFableModelName,
     handleModelChange,
   } = useModelState({
     settingsConfig: form.getValues("settingsConfig"),
@@ -729,8 +725,6 @@ function ProviderFormFull({
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
-  const supportsMaxSessionsConfig =
-    appId === "claude" || appId === "codex" || appId === "gemini";
 
   const codexInitialData = useMemo(() => {
     if (appId !== "codex") return undefined;
@@ -1400,32 +1394,6 @@ function ProviderFormFull({
       return;
     }
 
-    const normalizedMaxSessions = maxSessions.trim();
-    let parsedMaxSessions: number | undefined;
-    if (supportsMaxSessionsConfig && normalizedMaxSessions) {
-      if (!/^\d+$/.test(normalizedMaxSessions)) {
-        toast.error(
-          t("providerAdvanced.maxSessionsInvalid", {
-            defaultValue: "最大请求数必须为 0-999 的整数",
-          }),
-        );
-        return;
-      }
-      parsedMaxSessions = Number.parseInt(normalizedMaxSessions, 10);
-      if (
-        !Number.isSafeInteger(parsedMaxSessions) ||
-        parsedMaxSessions < 0 ||
-        parsedMaxSessions > 999
-      ) {
-        toast.error(
-          t("providerAdvanced.maxSessionsInvalid", {
-            defaultValue: "最大请求数必须为 0-999 的整数",
-          }),
-        );
-        return;
-      }
-    }
-
     // opencode / openclaw / hermes: providerKey 相关
     // A 类（空）归到 issues；B 类（正则不合法 / 重复 / 状态加载中）仍硬拒绝
     const keyPattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -1669,11 +1637,6 @@ function ProviderFormFull({
       supportsFullUrl &&
       category !== "official" &&
       (localIsFullUrl || isKnownFullApiEndpoint(effectiveEndpointUrl));
-    const parsedMaxSessions =
-      supportsMaxSessionsConfig && /^\d+$/.test(maxSessions.trim())
-        ? Number.parseInt(maxSessions.trim(), 10)
-        : undefined;
-
     let settingsConfig: string;
 
     if (appId === "codex") {
@@ -1931,6 +1894,10 @@ function ProviderFormFull({
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
+      customUserAgent:
+        (appId === "claude" || appId === "codex") && category !== "official"
+          ? customUserAgent.trim() || undefined
+          : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
@@ -1979,13 +1946,6 @@ function ProviderFormFull({
       } else {
         nextMeta.quirks = nextQuirks as ProviderMeta["quirks"];
       }
-    }
-
-    if (supportsMaxSessionsConfig) {
-      nextMeta.maxSessions =
-        parsedMaxSessions && parsedMaxSessions > 0
-          ? parsedMaxSessions
-          : undefined;
     }
 
     payload.meta = nextMeta;
@@ -2673,6 +2633,8 @@ function ProviderFormFull({
               defaultSonnetModelName={defaultSonnetModelName}
               defaultOpusModel={defaultOpusModel}
               defaultOpusModelName={defaultOpusModelName}
+              defaultFableModel={defaultFableModel}
+              defaultFableModelName={defaultFableModelName}
               onModelChange={handleModelChange}
               speedTestEndpoints={speedTestEndpoints}
               apiFormat={localApiFormat}
@@ -2681,6 +2643,8 @@ function ProviderFormFull({
               onApiKeyFieldChange={handleApiKeyFieldChange}
               isFullUrl={localIsFullUrl}
               onFullUrlChange={setLocalIsFullUrl}
+              customUserAgent={customUserAgent}
+              onCustomUserAgentChange={setCustomUserAgent}
             />
           )}
 
@@ -2713,6 +2677,8 @@ function ProviderFormFull({
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
               speedTestEndpoints={speedTestEndpoints}
+              customUserAgent={customUserAgent}
+              onCustomUserAgentChange={setCustomUserAgent}
             />
           )}
 
@@ -2988,9 +2954,6 @@ function ProviderFormFull({
               <ProviderAdvancedConfig
                 testConfig={testConfig}
                 pricingConfig={pricingConfig}
-                showConcurrencyConfig={supportsMaxSessionsConfig}
-                maxSessions={maxSessions}
-                onMaxSessionsChange={setMaxSessions}
                 onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
               />

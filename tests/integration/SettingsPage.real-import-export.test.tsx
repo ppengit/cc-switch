@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -82,9 +82,6 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => <div>about-section</div>,
 }));
 
-vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => <div>api-hub-panel</div>,
-}));
 
 vi.mock("@/components/settings/ProxyTabContent", () => ({
   ProxyTabContent: () => <div>proxy-tab-content</div>,

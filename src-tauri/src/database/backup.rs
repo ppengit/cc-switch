@@ -864,15 +864,13 @@ mod tests {
 
         let conn = crate::database::lock_conn!(db.conn);
         assert!(
-            Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")?,
-            "restored legacy backup should be migrated to include sticky minutes"
+            !Database::has_column(&conn, "proxy_config", "load_balancing_enabled")?,
+            "restored legacy backup should drop load balancing enabled"
         );
-        let sticky_minutes: i64 = conn.query_row(
-            "SELECT load_balancing_sticky_minutes FROM proxy_config WHERE app_type = 'claude'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(sticky_minutes, 10);
+        assert!(
+            !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")?,
+            "restored legacy backup should drop load balancing sticky minutes"
+        );
 
         let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         assert_eq!(user_version, SCHEMA_VERSION);

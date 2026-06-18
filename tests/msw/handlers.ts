@@ -878,7 +878,7 @@ export const handlers = [
     const tools =
       payload.tools && payload.tools.length > 0
         ? payload.tools
-        : ["claude", "codex", "gemini", "opencode"];
+        : ["claude", "codex", "gemini", "opencode", "openclaw", "hermes"];
     return success(
       tools.map((name) => ({
         name,

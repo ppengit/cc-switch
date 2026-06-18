@@ -154,6 +154,8 @@ export function ProxyPanel({
         return false;
       }
     };
+    const normalizedAddress =
+      addressTrimmed === "localhost" ? "127.0.0.1" : addressTrimmed;
     const isValidAddress =
       addressTrimmed === "localhost" ||
       addressTrimmed === "0.0.0.0" ||
@@ -191,7 +193,7 @@ export function ProxyPanel({
     try {
       await updateGlobalConfig.mutateAsync({
         ...globalConfig,
-        listenAddress: addressTrimmed,
+        listenAddress: normalizedAddress,
         listenPort: port,
       });
       toast.success(
@@ -428,9 +430,6 @@ export function ProxyPanel({
                               </span>
                               <span className="font-medium text-foreground">
                                 {target.inflight_requests}
-                                {target.max_sessions && target.max_sessions > 0
-                                  ? `/${target.max_sessions}`
-                                  : "x"}
                               </span>
                             </div>
                             <div

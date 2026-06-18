@@ -90,7 +90,6 @@ export function normalizeActiveRequestTargets(
       ...(incomingIsNewer
         ? {
             provider_name: target.provider_name,
-            max_sessions: target.max_sessions ?? existing.max_sessions,
             request_model: target.request_model ?? existing.request_model,
             upstream_model: target.upstream_model ?? existing.upstream_model,
             route_mode: target.route_mode ?? existing.route_mode,

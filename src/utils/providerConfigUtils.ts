@@ -605,7 +605,11 @@ const getCodexProviderSectionSelection = (
   );
 
   if (declaredSectionName && !getTomlSectionRange(lines, declaredSectionName)) {
-    if (definedSections.length === 1) {
+    if (
+      definedSections.length === 1 &&
+      providerName &&
+      isCustomCodexModelProviderId(providerName)
+    ) {
       const sectionName = definedSections[0];
       return {
         providerName: providerNameFromSectionName(sectionName),

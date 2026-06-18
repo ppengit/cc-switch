@@ -262,8 +262,6 @@ const createDefaultAppProxyConfig = (appType: AppId): AppProxyConfig => ({
   appType,
   enabled: false,
   autoFailoverEnabled: false,
-  loadBalancingEnabled: false,
-  loadBalancingStickyMinutes: 10,
   maxRetries: 3,
   streamingFirstByteTimeout: 30,
   streamingIdleTimeout: 60,
@@ -852,10 +850,6 @@ let streamCheckConfigState = {
   timeoutSecs: 45,
   maxRetries: 2,
   degradedThresholdMs: 6000,
-  claudeModel: "claude-haiku-4-5-20251001",
-  codexModel: "gpt-5.5@low",
-  geminiModel: "gemini-3-flash-preview",
-  testPrompt: "Who are you?",
 };
 let lastPromptUpsertRequest: PromptUpsertRequest | null = null;
 let lastPromptEnableRequest: PromptEnableRequest | null = null;
@@ -893,13 +887,16 @@ let lastAutoLaunchRequest: boolean | null = null;
 let lastClaudeOnboardingSkipAction: "apply" | "clear" | null = null;
 let externalOpenRequests: string[] = [];
 let lastWindowThemeRequest: string | null = null;
-let lastToolVersionsRequest: {
+type ToolVersionsRequest = {
   tools?: string[];
   wslShellByTool?: Record<
     string,
     { wslShell?: string | null; wslShellFlag?: string | null }
   >;
-} | null = null;
+};
+
+let lastToolVersionsRequest: ToolVersionsRequest | null = null;
+let toolVersionsRequests: ToolVersionsRequest[] = [];
 let appConfigDirOverride: string | null = null;
 const createDefaultProxyStatus = (): ProxyStatus => ({
   running: false,
@@ -1086,10 +1083,6 @@ export const resetProviderState = () => {
     timeoutSecs: 45,
     maxRetries: 2,
     degradedThresholdMs: 6000,
-    claudeModel: "claude-haiku-4-5-20251001",
-    codexModel: "gpt-5.5@low",
-    geminiModel: "gemini-3-flash-preview",
-    testPrompt: "Who are you?",
   };
   lastPromptUpsertRequest = null;
   lastPromptEnableRequest = null;
@@ -1130,6 +1123,7 @@ export const resetProviderState = () => {
   clipboardWrites = [];
   lastWindowThemeRequest = null;
   lastToolVersionsRequest = null;
+  toolVersionsRequests = [];
   appConfigDirOverride = null;
   proxyStatusState = createDefaultProxyStatus();
   mcpConfigs = {
@@ -1734,10 +1728,6 @@ export const getStreamCheckConfigState = () =>
     timeoutSecs: number;
     maxRetries: number;
     degradedThresholdMs: number;
-    claudeModel: string;
-    codexModel: string;
-    geminiModel: string;
-    testPrompt: string;
   };
 
 export const setStreamCheckConfigState = (
@@ -2282,7 +2272,6 @@ export const setAutoFailoverEnabledState = (
   appProxyConfigsByApp[appType] = {
     ...(appProxyConfigsByApp[appType] ?? createDefaultAppProxyConfig(appType)),
     autoFailoverEnabled: enabled,
-    loadBalancingEnabled: false,
   };
 
   if (enabled) {
@@ -2756,32 +2745,22 @@ export const recordWindowThemeRequest = (theme: string) => {
 
 export const getLastWindowThemeRequest = () => lastWindowThemeRequest;
 
-export const recordToolVersionsRequest = (request: {
-  tools?: string[];
-  wslShellByTool?: Record<
-    string,
-    { wslShell?: string | null; wslShellFlag?: string | null }
-  >;
-}) => {
-  lastToolVersionsRequest = JSON.parse(JSON.stringify(request)) as {
-    tools?: string[];
-    wslShellByTool?: Record<
-      string,
-      { wslShell?: string | null; wslShellFlag?: string | null }
-    >;
-  };
+export const recordToolVersionsRequest = (request: ToolVersionsRequest) => {
+  lastToolVersionsRequest = JSON.parse(
+    JSON.stringify(request),
+  ) as ToolVersionsRequest;
+  toolVersionsRequests.push(
+    JSON.parse(JSON.stringify(request)) as ToolVersionsRequest,
+  );
 };
 
 export const getLastToolVersionsRequest = () =>
   lastToolVersionsRequest
-    ? (JSON.parse(JSON.stringify(lastToolVersionsRequest)) as {
-        tools?: string[];
-        wslShellByTool?: Record<
-          string,
-          { wslShell?: string | null; wslShellFlag?: string | null }
-        >;
-      })
+    ? (JSON.parse(JSON.stringify(lastToolVersionsRequest)) as ToolVersionsRequest)
     : null;
+
+export const getToolVersionsRequests = () =>
+  JSON.parse(JSON.stringify(toolVersionsRequests)) as ToolVersionsRequest[];
 
 export const getAppConfigDirOverride = () => appConfigDirOverride;
 

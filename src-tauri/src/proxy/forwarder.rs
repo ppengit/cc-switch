@@ -4,10 +4,7 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{
-        clear_provider, finish_request, reserve_provider_slot, route_request_with_metadata,
-        ProxyActivityState,
-    },
+    activity::{clear_provider, route_request_with_metadata, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     error::*,
     failover_switch::FailoverSwitchManager,
@@ -37,12 +34,15 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
-const LOAD_BALANCING_AFFINITY_MAX_ENTRIES: usize = 4096;
-
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
     pub claude_api_format: Option<String>,
+    /// 实际发往上游的模型名（路由接管/模型映射后的真值）。
+    ///
+    /// usage 归因不能依赖 ctx.request_model（映射前的客户端别名）：上游响应
+    /// 缺失 model 或回显别名时，接管流量会被记成 claude-* 并按其定价计费。
+    pub outbound_model: Option<String>,
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
@@ -97,8 +97,6 @@ pub struct RequestForwarder {
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     proxy_activity: Arc<RwLock<ProxyActivityState>>,
-    load_balancing_affinity:
-        Arc<RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>,
     gemini_shadow: Arc<GeminiShadowStore>,
     codex_chat_history: Arc<CodexChatHistoryStore>,
     /// 故障转移切换管理器
@@ -134,10 +132,6 @@ pub struct RequestForwarder {
     /// 本请求开始时该应用的"是否启用故障转移"快照。
     /// 故障转移开启时本请求成功完成后绝不写 is_current（不再有"当前"概念）。
     auto_failover_enabled_at_start: bool,
-    /// 本请求开始时该应用的"是否启用请求分流"快照。
-    load_balancing_enabled_at_start: bool,
-    /// 分流会话粘性保持时间（分钟）；0 表示禁用粘性。
-    load_balancing_sticky_minutes: u32,
 }
 
 impl RequestForwarder {
@@ -178,7 +172,7 @@ impl RequestForwarder {
         provider_body: &Value,
         error: &ProxyError,
     ) -> bool {
-        adapter_name == "Claude"
+        matches!(adapter_name, "Claude" | "Codex")
             && self.rectifier_config.enabled
             && self.rectifier_config.request_media_fallback
             && !already_retried
@@ -193,9 +187,6 @@ impl RequestForwarder {
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
         proxy_activity: Arc<RwLock<ProxyActivityState>>,
-        load_balancing_affinity: Arc<
-            RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>,
-        >,
         gemini_shadow: Arc<GeminiShadowStore>,
         codex_chat_history: Arc<CodexChatHistoryStore>,
         failover_manager: Arc<FailoverSwitchManager>,
@@ -212,8 +203,6 @@ impl RequestForwarder {
         switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
         request_epoch: u64,
         auto_failover_enabled_at_start: bool,
-        load_balancing_enabled_at_start: bool,
-        load_balancing_sticky_minutes: u32,
         max_retries: u32,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
@@ -224,7 +213,6 @@ impl RequestForwarder {
             status,
             current_providers,
             proxy_activity,
-            load_balancing_affinity,
             gemini_shadow,
             codex_chat_history,
             failover_manager,
@@ -245,8 +233,6 @@ impl RequestForwarder {
             switch_epoch,
             request_epoch,
             auto_failover_enabled_at_start,
-            load_balancing_enabled_at_start,
-            load_balancing_sticky_minutes,
         }
     }
 
@@ -259,148 +245,6 @@ impl RequestForwarder {
     async fn epoch_is_current(&self, app_type_str: &str) -> bool {
         let epochs = self.switch_epoch.read().await;
         epochs.get(app_type_str).copied().unwrap_or(0) == self.request_epoch
-    }
-
-    fn load_balancing_active(&self) -> bool {
-        self.auto_failover_enabled_at_start && self.load_balancing_enabled_at_start
-    }
-
-    fn load_balancing_affinity_key(&self, app_type_str: &str) -> Option<String> {
-        if !self.session_client_provided || self.session_id.trim().is_empty() {
-            return None;
-        }
-        Some(format!("{app_type_str}:{}", self.session_id))
-    }
-
-    async fn sticky_provider_id(&self, app_type_str: &str) -> Option<String> {
-        if !self.load_balancing_active() || self.load_balancing_sticky_minutes == 0 {
-            return None;
-        }
-
-        let key = self.load_balancing_affinity_key(app_type_str)?;
-        let now = std::time::Instant::now();
-        let mut affinity = self.load_balancing_affinity.write().await;
-        let Some((provider_id, expires_at)) = affinity.get(&key).cloned() else {
-            return None;
-        };
-
-        if expires_at > now {
-            Some(provider_id)
-        } else {
-            affinity.remove(&key);
-            None
-        }
-    }
-
-    async fn order_providers_for_load_balancing(
-        &self,
-        app_type_str: &str,
-        providers: Vec<Provider>,
-    ) -> Vec<Provider> {
-        let Some(sticky_provider_id) = self.sticky_provider_id(app_type_str).await else {
-            return providers;
-        };
-        let Some(position) = providers
-            .iter()
-            .position(|provider| provider.id == sticky_provider_id)
-        else {
-            return providers;
-        };
-
-        let mut ordered = Vec::with_capacity(providers.len());
-        ordered.push(providers[position].clone());
-        ordered.extend(
-            providers
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, provider)| (index != position).then_some(provider)),
-        );
-        ordered
-    }
-
-    async fn record_load_balancing_affinity(&self, app_type_str: &str, provider_id: &str) {
-        if !self.load_balancing_active() || self.load_balancing_sticky_minutes == 0 {
-            return;
-        }
-        let Some(key) = self.load_balancing_affinity_key(app_type_str) else {
-            return;
-        };
-
-        let ttl_secs = u64::from(self.load_balancing_sticky_minutes).saturating_mul(60);
-        if ttl_secs == 0 {
-            return;
-        }
-
-        let now = std::time::Instant::now();
-        let expires_at = now + std::time::Duration::from_secs(ttl_secs);
-        let mut affinity = self.load_balancing_affinity.write().await;
-
-        if affinity.len() >= LOAD_BALANCING_AFFINITY_MAX_ENTRIES {
-            affinity.retain(|_, (_, expires)| *expires > now);
-        }
-        if affinity.len() >= LOAD_BALANCING_AFFINITY_MAX_ENTRIES {
-            if let Some(oldest_key) = affinity
-                .iter()
-                .min_by_key(|(_, (_, expires))| *expires)
-                .map(|(key, _)| key.clone())
-            {
-                affinity.remove(&oldest_key);
-            }
-        }
-
-        affinity.insert(key, (provider_id.to_string(), expires_at));
-    }
-
-    fn provider_max_sessions(provider: &Provider) -> Option<u32> {
-        provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.max_sessions)
-            .filter(|value| *value > 0)
-    }
-
-    async fn reserve_provider_for_attempt(
-        &self,
-        app_type_str: &str,
-        provider: &Provider,
-        enforce_limit: bool,
-    ) -> bool {
-        if !self.load_balancing_active() {
-            return true;
-        }
-
-        let reserved = reserve_provider_slot(
-            &self.proxy_activity,
-            &self.request_id,
-            app_type_str,
-            &provider.id,
-            &provider.name,
-            Self::provider_max_sessions(provider),
-            enforce_limit,
-        )
-        .await;
-
-        if reserved {
-            self.record_load_balancing_affinity(app_type_str, &provider.id)
-                .await;
-        }
-
-        reserved
-    }
-
-    async fn finish_load_balanced_failed_attempt(&self, error: &ProxyError) {
-        if !self.load_balancing_active() {
-            return;
-        }
-
-        finish_request(
-            &self.proxy_activity,
-            self.app_handle.as_ref(),
-            &self.request_id,
-            proxy_error_status(error),
-            Some(error.to_string()),
-        )
-        .await;
     }
 
     async fn record_success_result(
@@ -482,16 +326,12 @@ impl RequestForwarder {
             }
             *last_error = Some(retry_err);
             *last_provider = Some(provider.clone());
-            if let Some(error) = last_error.as_ref() {
-                self.finish_load_balanced_failed_attempt(error).await;
-            }
             return None;
         }
 
         self.router
             .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
             .await;
-        self.finish_load_balanced_failed_attempt(&retry_err).await;
         let mut status = self.status.write().await;
         status.failed_requests += 1;
         status.last_error = Some(retry_err.to_string());
@@ -578,13 +418,7 @@ impl RequestForwarder {
         let mut attempted_providers = 0usize;
 
         let provider_count = providers.len();
-        let overflow_fallback_provider = providers.first().cloned();
-        let providers = self
-            .order_providers_for_load_balancing(app_type_str, providers)
-            .await;
         let mut providers = providers.into_iter();
-        let mut saw_load_balancing_capacity_limit = false;
-        let mut tried_overflow_fallback = false;
 
         // 非故障转移的单 Provider 场景下跳过熔断器检查，避免普通接管模式被熔断器彻底阻塞。
         // 故障转移开启时，即使队列只有 1 个 Provider，也必须尊重 HalfOpen 探测名额。
@@ -592,24 +426,8 @@ impl RequestForwarder {
 
         // 依次尝试每个供应商
         loop {
-            let (provider, enforce_load_balancing_limit) = match providers.next() {
-                Some(provider) => (provider, true),
-                None if self.load_balancing_active()
-                    && attempted_providers == 0
-                    && saw_load_balancing_capacity_limit
-                    && !tried_overflow_fallback =>
-                {
-                    tried_overflow_fallback = true;
-                    let Some(provider) = overflow_fallback_provider.clone() else {
-                        break;
-                    };
-                    log::warn!(
-                        "[{app_type_str}] 所有分流供应商均已达到并发上限，使用队列首个供应商 {} 兜底",
-                        provider.name
-                    );
-                    (provider, false)
-                }
-                None => break,
+            let Some(provider) = providers.next() else {
+                break;
             };
 
             // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
@@ -643,21 +461,6 @@ impl RequestForwarder {
             };
 
             if !allowed {
-                continue;
-            }
-
-            if !self
-                .reserve_provider_for_attempt(app_type_str, &provider, enforce_load_balancing_limit)
-                .await
-            {
-                saw_load_balancing_capacity_limit = true;
-                self.router
-                    .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
-                    .await;
-                log::debug!(
-                    "[{app_type_str}] Provider {} 已达分流并发上限，跳过本次请求",
-                    provider.name
-                );
                 continue;
             }
 
@@ -717,7 +520,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format, _effective_request_model)) => {
+                Ok((response, claude_api_format, outbound_model)) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
@@ -770,6 +573,7 @@ impl RequestForwarder {
                         response,
                         provider: provider.clone(),
                         claude_api_format,
+                        outbound_model,
                         connection_guard: None,
                     });
                 }
@@ -820,7 +624,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, _effective_request_model)) => {
+                                Ok((response, claude_api_format, outbound_model)) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
@@ -872,6 +676,7 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
+                                        outbound_model,
                                         connection_guard: None,
                                     });
                                 }
@@ -916,7 +721,6 @@ impl RequestForwarder {
                                         used_half_open_permit,
                                     )
                                     .await;
-                                self.finish_load_balanced_failed_attempt(&e).await;
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
                                 status.last_error = Some(e.to_string());
@@ -966,7 +770,7 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format, _effective_request_model)) => {
+                                    Ok((response, claude_api_format, outbound_model)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
                                             &provider.id,
@@ -1024,6 +828,7 @@ impl RequestForwarder {
                                             response,
                                             provider: provider.clone(),
                                             claude_api_format,
+                                            outbound_model,
                                             connection_guard: None,
                                         });
                                     }
@@ -1071,7 +876,6 @@ impl RequestForwarder {
                                         used_half_open_permit,
                                     )
                                     .await;
-                                self.finish_load_balanced_failed_attempt(&e).await;
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
                                 status.last_error = Some(e.to_string());
@@ -1098,7 +902,6 @@ impl RequestForwarder {
                                         used_half_open_permit,
                                     )
                                     .await;
-                                self.finish_load_balanced_failed_attempt(&e).await;
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
                                 status.last_error = Some(e.to_string());
@@ -1136,7 +939,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, _effective_request_model)) => {
+                                Ok((response, claude_api_format, outbound_model)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
                                         &provider.id,
@@ -1188,6 +991,7 @@ impl RequestForwarder {
                                         response,
                                         provider: provider.clone(),
                                         claude_api_format,
+                                        outbound_model,
                                         connection_guard: None,
                                     });
                                 }
@@ -1223,7 +1027,6 @@ impl RequestForwarder {
                                 used_half_open_permit,
                             )
                             .await;
-                        self.finish_load_balanced_failed_attempt(&e).await;
                         let mut status = self.status.write().await;
                         status.failed_requests += 1;
                         status.last_error = Some(e.to_string());
@@ -1273,9 +1076,6 @@ impl RequestForwarder {
 
                             last_error = Some(e);
                             last_provider = Some(provider.clone());
-                            if let Some(error) = last_error.as_ref() {
-                                self.finish_load_balanced_failed_attempt(error).await;
-                            }
                             continue;
                         }
                         ErrorCategory::Retryable => {
@@ -1361,9 +1161,6 @@ impl RequestForwarder {
 
                             last_error = Some(e);
                             last_provider = Some(provider.clone());
-                            if let Some(error) = last_error.as_ref() {
-                                self.finish_load_balanced_failed_attempt(error).await;
-                            }
                             // 继续尝试下一个供应商
                             continue;
                         }
@@ -1376,7 +1173,6 @@ impl RequestForwarder {
                                     used_half_open_permit,
                                 )
                                 .await;
-                            self.finish_load_balanced_failed_attempt(&e).await;
                             {
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
@@ -1438,6 +1234,9 @@ impl RequestForwarder {
     }
 
     /// 转发单个请求（使用适配器）
+    ///
+    /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
+    /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
@@ -1636,7 +1435,7 @@ impl RequestForwarder {
         };
         if adapter.name() == "Claude" {
             if let Some(api_format) = resolved_claude_api_format.as_deref() {
-                super::providers::normalize_anthropic_tool_thinking_history_for_provider(
+                super::providers::normalize_anthropic_messages_for_provider(
                     &mut mapped_body,
                     provider,
                     api_format,
@@ -1690,8 +1489,17 @@ impl RequestForwarder {
         };
         let activity_upstream_url = sanitize_activity_upstream_url(&url);
 
+        // 记录映射后的出站模型名（此时 mapped_body 已完成接管映射 / [1m] 剥离 /
+        // Copilot 归一化）。格式转换后若 body 仍带 model 字段会在下方刷新覆盖；
+        // gemini_native 等模型在 URL 中的格式则保留此处的转换前真值。
+        let mut outbound_model = mapped_body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(str::to_string);
+
         // 转换请求体（如果需要）
-        let request_body = if codex_responses_to_chat {
+        let mut request_body = if codex_responses_to_chat {
             let mut mapped_body = mapped_body;
             let restored = self
                 .codex_chat_history
@@ -1729,21 +1537,29 @@ impl RequestForwarder {
             mapped_body
         };
 
+        if matches!(app_type, AppType::Codex) {
+            self.apply_media_prevention(&mut request_body, provider);
+        }
+
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let filtered_body = prepare_upstream_request_body(request_body);
-        let effective_request_model = filtered_body
+        // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
+        if let Some(m) = filtered_body
             .get("model")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .or_else(|| {
-                let trimmed = self.request_model.trim();
-                if trimmed.is_empty() || trimmed == "unknown" {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+        {
+            outbound_model = Some(m.to_string());
+        }
+        let effective_request_model = outbound_model.clone().or_else(|| {
+            let trimmed = self.request_model.trim();
+            if trimmed.is_empty() || trimmed == "unknown" {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
         let activity_request_model = if normalize_activity_model(&self.request_model).is_none() {
             effective_request_model.clone()
         } else {
@@ -1760,11 +1576,6 @@ impl RequestForwarder {
             effective_request_model.clone(),
             Some(route_mode.to_string()),
             Some(activity_upstream_url),
-            provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.max_sessions)
-                .filter(|value| *value > 0),
         )
         .await;
         log_prompt_cache_trace(
@@ -1911,6 +1722,18 @@ impl RequestForwarder {
                 Vec::new()
             };
 
+        // 自定义 User-Agent：与 stream_check / model_fetch 共用 parse_custom_user_agent，
+        // 运行时静默忽略非法值（前端在输入处给非阻断提示，不在保存时阻断）。
+        // Copilot 指纹 UA 不可覆盖。
+        let custom_user_agent = if is_copilot {
+            None
+        } else {
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
+        };
+
         // --- Copilot 优化器：动态 header 注入 ---
         if let Some((ref classification, ref det_request_id, ref interaction_id)) =
             copilot_optimization
@@ -2005,6 +1828,7 @@ impl RequestForwarder {
         let mut ordered_headers = http::HeaderMap::new();
         let mut saw_auth = false;
         let mut saw_accept_encoding = false;
+        let mut saw_user_agent = false;
         let mut saw_anthropic_beta = false;
         let mut saw_anthropic_version = false;
 
@@ -2085,6 +1909,19 @@ impl RequestForwarder {
                 continue;
             }
 
+            // --- user-agent: provider-level override for local proxy routing ---
+            if !is_copilot && key_str.eq_ignore_ascii_case("user-agent") {
+                if !saw_user_agent {
+                    saw_user_agent = true;
+                    if let Some(ref ua) = custom_user_agent {
+                        ordered_headers.append(http::header::USER_AGENT, ua.clone());
+                    } else {
+                        ordered_headers.append(key.clone(), value.clone());
+                    }
+                }
+                continue;
+            }
+
             // --- anthropic-beta — 用重建值替换（确保含 claude-code 标记） ---
             if key_str.eq_ignore_ascii_case("anthropic-beta") {
                 if !saw_anthropic_beta {
@@ -2132,6 +1969,12 @@ impl RequestForwarder {
                 http::header::ACCEPT_ENCODING,
                 http::HeaderValue::from_static("identity"),
             );
+        }
+
+        if !saw_user_agent {
+            if let Some(ref ua) = custom_user_agent {
+                ordered_headers.append(http::header::USER_AGENT, ua.clone());
+            }
         }
 
         // 如果原始请求中没有 anthropic-beta 且有值需要添加，追加
@@ -2281,11 +2124,7 @@ impl RequestForwarder {
             let response = self
                 .prepare_success_response_for_failover(response, request_is_streaming)
                 .await?;
-            Ok((
-                response,
-                resolved_claude_api_format,
-                effective_request_model,
-            ))
+            Ok((response, resolved_claude_api_format, outbound_model))
         } else {
             let status_code = status.as_u16();
             let body_text = String::from_utf8(response.bytes().await?.to_vec()).ok();
@@ -2927,13 +2766,6 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
-fn proxy_error_status(error: &ProxyError) -> Option<u16> {
-    match error {
-        ProxyError::UpstreamError { status, .. } => Some(*status),
-        _ => None,
-    }
-}
-
 fn sanitize_activity_upstream_url(raw_url: &str) -> String {
     let sensitive_query_keys = [
         "key",
@@ -3199,18 +3031,6 @@ mod tests {
         }
     }
 
-    fn test_provider_with_id_and_max_sessions(id: &str, max_sessions: Option<u32>) -> Provider {
-        let mut provider = test_provider_with_type(Some("anthropic"));
-        provider.id = id.to_string();
-        provider.name = format!("Provider {id}");
-        provider.meta = Some(crate::provider::ProviderMeta {
-            provider_type: Some("anthropic".to_string()),
-            max_sessions,
-            ..Default::default()
-        });
-        provider
-    }
-
     fn test_forwarder(
         non_streaming_timeout: Duration,
         streaming_first_byte_timeout: Duration,
@@ -3222,7 +3042,6 @@ mod tests {
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
-            load_balancing_affinity: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
@@ -3241,19 +3060,7 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
-            load_balancing_enabled_at_start: false,
-            load_balancing_sticky_minutes: 10,
         }
-    }
-
-    fn test_load_balancing_forwarder() -> RequestForwarder {
-        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
-        forwarder.auto_failover_enabled_at_start = true;
-        forwarder.load_balancing_enabled_at_start = true;
-        forwarder.load_balancing_sticky_minutes = 10;
-        forwarder.session_id = "session-1".to_string();
-        forwarder.session_client_provided = true;
-        forwarder
     }
 
     fn test_forwarder_with_router(
@@ -3266,7 +3073,6 @@ mod tests {
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             proxy_activity: Arc::new(RwLock::new(ProxyActivityState::default())),
-            load_balancing_affinity: Arc::new(RwLock::new(HashMap::new())),
             gemini_shadow: Arc::new(GeminiShadowStore::new()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
@@ -3285,8 +3091,6 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start,
-            load_balancing_enabled_at_start: false,
-            load_balancing_sticky_minutes: 10,
         }
     }
 
@@ -3432,141 +3236,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&prepared).unwrap(),
             r#"{"a":2,"tools":[{"name":"lookup","parameters":{"properties":{"_id":{"type":"string"},"a":{"type":"string"},"b":{"type":"number"}},"type":"object"}}],"z":1}"#
-        );
-    }
-
-    #[tokio::test]
-    async fn load_balancing_skips_full_provider_and_reserves_next_provider() {
-        let forwarder = test_load_balancing_forwarder();
-        let provider_a = test_provider_with_id_and_max_sessions("provider-a", Some(1));
-        let provider_b = test_provider_with_id_and_max_sessions("provider-b", Some(1));
-
-        assert!(
-            reserve_provider_slot(
-                &forwarder.proxy_activity,
-                "existing-a",
-                "claude",
-                &provider_a.id,
-                &provider_a.name,
-                Some(1),
-                true,
-            )
-            .await
-        );
-
-        assert!(
-            !forwarder
-                .reserve_provider_for_attempt("claude", &provider_a, true)
-                .await,
-            "full provider should be skipped by load balancing"
-        );
-        assert!(
-            forwarder
-                .reserve_provider_for_attempt("claude", &provider_b, true)
-                .await,
-            "next provider should be reserved when it has capacity"
-        );
-
-        let (_count, targets) = crate::proxy::activity::snapshot(&forwarder.proxy_activity).await;
-        let target_b = targets
-            .iter()
-            .find(|target| target.provider_id == provider_b.id)
-            .expect("provider-b should be active");
-        assert_eq!(target_b.inflight_requests, 1);
-        assert_eq!(target_b.max_sessions, Some(1));
-    }
-
-    #[tokio::test]
-    async fn load_balancing_overflow_fallback_ignores_first_provider_limit() {
-        let forwarder = test_load_balancing_forwarder();
-        let provider_a = test_provider_with_id_and_max_sessions("provider-a", Some(1));
-        let provider_b = test_provider_with_id_and_max_sessions("provider-b", Some(1));
-
-        assert!(
-            reserve_provider_slot(
-                &forwarder.proxy_activity,
-                "existing-a",
-                "claude",
-                &provider_a.id,
-                &provider_a.name,
-                Some(1),
-                true,
-            )
-            .await
-        );
-        assert!(
-            reserve_provider_slot(
-                &forwarder.proxy_activity,
-                "existing-b",
-                "claude",
-                &provider_b.id,
-                &provider_b.name,
-                Some(1),
-                true,
-            )
-            .await
-        );
-
-        let err = match forwarder
-            .forward_with_retry_inner(
-                &AppType::Claude,
-                http::Method::POST,
-                "/v1/messages",
-                json!({ "model": "claude-test", "messages": [] }),
-                HeaderMap::new(),
-                Extensions::new(),
-                vec![provider_a.clone(), provider_b],
-            )
-            .await
-        {
-            Ok(_) => panic!("invalid test provider should fail after fallback reservation"),
-            Err(err) => err,
-        };
-
-        assert!(
-            matches!(
-                err.provider.as_ref().map(|provider| provider.id.as_str()),
-                Some("provider-a")
-            ),
-            "overflow fallback should attempt the first failover provider"
-        );
-
-        let (_count, targets) = crate::proxy::activity::snapshot(&forwarder.proxy_activity).await;
-        let target_a = targets
-            .iter()
-            .find(|target| target.provider_id == provider_a.id)
-            .expect("provider-a should remain active");
-        assert_eq!(
-            target_a.inflight_requests, 1,
-            "failed fallback attempt should release its temporary provider-a reservation"
-        );
-        assert_eq!(target_a.max_sessions, Some(1));
-    }
-
-    #[tokio::test]
-    async fn load_balancing_sticky_session_prioritizes_previous_provider() {
-        let forwarder = test_load_balancing_forwarder();
-        let provider_a = test_provider_with_id_and_max_sessions("provider-a", Some(2));
-        let provider_b = test_provider_with_id_and_max_sessions("provider-b", Some(2));
-        let provider_c = test_provider_with_id_and_max_sessions("provider-c", Some(2));
-
-        assert!(
-            forwarder
-                .reserve_provider_for_attempt("claude", &provider_b, true)
-                .await
-        );
-
-        let ordered = forwarder
-            .order_providers_for_load_balancing(
-                "claude",
-                vec![provider_a, provider_b.clone(), provider_c],
-            )
-            .await;
-
-        assert_eq!(
-            ordered.first().map(|provider| provider.id.as_str()),
-            Some(provider_b.id.as_str()),
-            "same client-provided session should prefer the previous provider within sticky TTL"
         );
     }
 
@@ -4534,6 +4203,18 @@ base_url = "https://api.example.com/v1"
         })
     }
 
+    fn body_with_codex_input_image(model: &str) -> Value {
+        json!({
+            "model": model,
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                ]
+            }]
+        })
+    }
+
     fn image_unsupported_error() -> ProxyError {
         ProxyError::UpstreamError {
             status: 400,
@@ -4619,6 +4300,21 @@ base_url = "https://api.example.com/v1"
         let fwd = forwarder_with_rectifier(RectifierConfig::default());
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+
+    #[test]
+    fn reactive_triggers_for_codex_image_url_deserialize_errors() {
+        let fwd = forwarder_with_rectifier(RectifierConfig::default());
+        let body = body_with_codex_input_image("deepseek-v4-flash");
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
+                    .to_string(),
+            ),
+        };
+
+        assert!(fwd.media_retry_should_trigger("Codex", false, &body, &error));
     }
 
     #[test]

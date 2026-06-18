@@ -11,9 +11,6 @@ fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
     if !config.enabled {
         config.auto_failover_enabled = false;
     }
-    if !(config.enabled && config.auto_failover_enabled) {
-        config.load_balancing_enabled = false;
-    }
     config
 }
 
@@ -476,8 +473,6 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: false,
             auto_failover_enabled: true,
-            load_balancing_enabled: true,
-            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -495,20 +490,14 @@ mod tests {
             !sanitized.auto_failover_enabled,
             "saving app proxy config must not persist failover=true while takeover=false"
         );
-        assert!(
-            !sanitized.load_balancing_enabled,
-            "saving app proxy config must not persist load balancing when takeover is off"
-        );
     }
 
     #[test]
-    fn sanitize_app_proxy_config_disables_load_balancing_when_failover_is_off() {
+    fn sanitize_app_proxy_config_keeps_auto_failover_only_when_takeover_is_on() {
         let config = AppProxyConfig {
             app_type: "claude".to_string(),
             enabled: true,
             auto_failover_enabled: false,
-            load_balancing_enabled: true,
-            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -523,10 +512,6 @@ mod tests {
         let sanitized = sanitize_app_proxy_config(config);
         assert!(sanitized.enabled);
         assert!(!sanitized.auto_failover_enabled);
-        assert!(
-            !sanitized.load_balancing_enabled,
-            "load balancing requires takeover + auto failover"
-        );
     }
 
     #[test]
@@ -535,8 +520,6 @@ mod tests {
             app_type: "codex".to_string(),
             enabled: true,
             auto_failover_enabled: true,
-            load_balancing_enabled: true,
-            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -551,10 +534,6 @@ mod tests {
         let sanitized = sanitize_app_proxy_config(config);
         assert!(sanitized.enabled);
         assert!(sanitized.auto_failover_enabled);
-        assert!(
-            sanitized.load_balancing_enabled,
-            "load balancing should persist when takeover + auto failover are both enabled"
-        );
     }
 }
 

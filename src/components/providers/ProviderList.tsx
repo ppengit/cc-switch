@@ -75,7 +75,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { settingsApi } from "@/lib/api/settings";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -1155,9 +1154,6 @@ export function ProviderList({
   const providerTableRef = useRef<HTMLTableElement>(null);
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
   const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
-  const [showStreamCheckConfirm, setShowStreamCheckConfirm] = useState(false);
-  const [pendingTestProvider, setPendingTestProvider] =
-    useState<Provider | null>(null);
   const { data: claudeDesktopStatus } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
@@ -1214,10 +1210,6 @@ export function ProviderList({
   const [isImportingCurrentConfigMcp, setIsImportingCurrentConfigMcp] =
     useState(false);
 
-  const { data: settings } = useQuery({
-    queryKey: ["settings"],
-    queryFn: () => settingsApi.get(),
-  });
   const { takeoverStatus } = useProxyStatus();
 
   const { data: recentSessions = [], isFetching: isRecentSessionsLoading } =
@@ -1265,36 +1257,15 @@ export function ProviderList({
     enabled: providerTemplateDialogOpen,
   });
 
+  // 连通性检查不发真实请求、无封号/计费风险，直接执行（无需确认弹窗）。
   const handleTest = useCallback(
     (provider: Provider) => {
-      if (!settings?.streamCheckConfirmed) {
-        setPendingTestProvider(provider);
-        setShowStreamCheckConfirm(true);
-      } else {
-        checkProvider(provider.id, provider.name);
-      }
+      checkProvider(provider.id, provider.name);
     },
-    [checkProvider, settings?.streamCheckConfirmed],
+    [checkProvider],
   );
 
-  const handleStreamCheckConfirm = async () => {
-    setShowStreamCheckConfirm(false);
-    try {
-      if (settings) {
-        const { webdavSync: _, ...rest } = settings;
-        await settingsApi.save({ ...rest, streamCheckConfirmed: true });
-        await queryClient.invalidateQueries({ queryKey: ["settings"] });
-      }
-    } catch (error) {
-      console.error("Failed to save stream check confirmed:", error);
-    }
-
-    if (pendingTestProvider) {
-      checkProvider(pendingTestProvider.id, pendingTestProvider.name);
-      setPendingTestProvider(null);
-    }
-  };
-
+  // Import current live config as default provider
   const importMutation = useMutation({
     mutationFn: async (): Promise<boolean> => {
       if (appId === "opencode") {
@@ -3533,19 +3504,6 @@ export function ProviderList({
           </div>
         </div>
       </div>
-
-      <ConfirmDialog
-        isOpen={showStreamCheckConfirm}
-        variant="info"
-        title={t("confirm.streamCheck.title")}
-        message={t("confirm.streamCheck.message")}
-        confirmText={t("confirm.streamCheck.confirm")}
-        onConfirm={() => void handleStreamCheckConfirm()}
-        onCancel={() => {
-          setShowStreamCheckConfirm(false);
-          setPendingTestProvider(null);
-        }}
-      />
 
       <ConfirmDialog
         isOpen={showBulkDeleteConfirm}

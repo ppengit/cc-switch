@@ -1,12 +1,12 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import {
-  getLastToolVersionsRequest,
   getOpenExternalRequests,
+  getToolVersionsRequests,
   resetProviderState,
 } from "../msw/state";
 
@@ -94,9 +94,6 @@ vi.mock("@/components/settings/WebdavSyncSection", () => ({
   WebdavSyncSection: () => <div>webdav-sync-section</div>,
 }));
 
-vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => <div>api-hub-panel</div>,
-}));
 
 vi.mock("@/components/settings/ProxyTabContent", () => ({
   ProxyTabContent: () => <div>proxy-tab-content</div>,
@@ -164,14 +161,27 @@ describe("SettingsPage real about section", () => {
     await waitFor(() =>
       expect(screen.getByText("Claude Code")).toBeInTheDocument(),
     );
+
+    await user.click(
+      await screen.findByRole("button", { name: "common.refresh" }),
+    );
+
     await waitFor(() =>
-      expect(getLastToolVersionsRequest()?.tools).toEqual([
+      expect(
+        Array.from(
+          new Set(
+            getToolVersionsRequests().flatMap(
+              (request) => request.tools ?? [],
+            ),
+          ),
+        ).sort(),
+      ).toEqual([
         "claude",
         "codex",
         "gemini",
-        "opencode",
-        "openclaw",
         "hermes",
+        "openclaw",
+        "opencode",
       ]),
     );
 

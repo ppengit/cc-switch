@@ -9,7 +9,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Loader2, Info, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -32,10 +31,6 @@ import {
   useAutoFailoverEnabled,
   useSetAutoFailoverEnabled,
 } from "@/lib/query/failover";
-import {
-  useAppProxyConfig,
-  useUpdateAppProxyConfig,
-} from "@/lib/query/proxy";
 
 interface FailoverQueueManagerProps {
   appType: AppId;
@@ -47,14 +42,11 @@ export function FailoverQueueManager({
   disabled = false,
 }: FailoverQueueManagerProps) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
 
   // 故障转移开关状态（每个应用独立）
   const { data: isFailoverEnabled = false } = useAutoFailoverEnabled(appType);
   const setFailoverEnabled = useSetAutoFailoverEnabled();
-  const { data: appProxyConfig } = useAppProxyConfig(appType);
-  const updateAppProxyConfig = useUpdateAppProxyConfig();
 
   // 查询数据
   const {
@@ -72,27 +64,6 @@ export function FailoverQueueManager({
   // 切换故障转移开关
   const handleToggleFailover = (enabled: boolean) => {
     setFailoverEnabled.mutate({ appType, enabled });
-  };
-
-  const handleQuickConfigToggle = async (
-    key: "loadBalancingEnabled",
-    enabled: boolean,
-  ) => {
-    if (!appProxyConfig) return;
-
-    const nextConfig = {
-      ...appProxyConfig,
-      [key]: enabled,
-    };
-
-    queryClient.setQueryData(["appProxyConfig", appType], nextConfig);
-
-    try {
-      await updateAppProxyConfig.mutateAsync(nextConfig);
-    } catch (error) {
-      queryClient.setQueryData(["appProxyConfig", appType], appProxyConfig);
-      throw error;
-    }
   };
 
   // 添加供应商到队列
@@ -182,43 +153,6 @@ export function FailoverQueueManager({
             defaultValue: "自动故障转移",
           })}
         />
-      </div>
-
-      <div className="grid grid-cols-1 gap-3">
-        <div className="rounded-lg border border-border/50 bg-muted/30 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
-              <div className="text-sm font-medium">
-                {t("proxy.autoFailover.loadBalancing", "请求分流")}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  "proxy.autoFailover.loadBalancingHint",
-                  "按供应商最大并发数分配请求，满载时尝试下一个队列供应商。",
-                )}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                {t(
-                  "proxy.failoverQueue.loadBalancingProviderHint",
-                  "每个供应商的最大请求数可在编辑供应商的高级配置中设置。",
-                )}
-              </p>
-            </div>
-            <Switch
-              checked={Boolean(appProxyConfig?.loadBalancingEnabled)}
-              onCheckedChange={(checked) => {
-                void handleQuickConfigToggle("loadBalancingEnabled", checked);
-              }}
-              disabled={
-                disabled ||
-                !isFailoverEnabled ||
-                !appProxyConfig ||
-                updateAppProxyConfig.isPending
-              }
-              aria-label={t("proxy.autoFailover.loadBalancing", "请求分流")}
-            />
-          </div>
-        </div>
       </div>
 
       {/* 说明信息 */}

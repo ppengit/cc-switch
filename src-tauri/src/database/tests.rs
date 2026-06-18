@@ -273,20 +273,28 @@ fn schema_create_tables_include_pricing_model_columns() {
     let conn = Connection::open_in_memory().expect("open memory db");
     Database::create_tables_on_conn(&conn).expect("create tables");
 
-    let load_balancing = get_column_info(&conn, "proxy_config", "load_balancing_enabled");
-    assert_eq!(load_balancing.r#type, "INTEGER");
-    assert_eq!(load_balancing.notnull, 1);
-    assert_eq!(
-        normalize_default(&load_balancing.default).as_deref(),
-        Some("0")
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_enabled").unwrap(),
+        "proxy_config should no longer include load_balancing_enabled"
     );
-
-    let sticky_minutes = get_column_info(&conn, "proxy_config", "load_balancing_sticky_minutes");
-    assert_eq!(sticky_minutes.r#type, "INTEGER");
-    assert_eq!(sticky_minutes.notnull, 1);
-    assert_eq!(
-        normalize_default(&sticky_minutes.default).as_deref(),
-        Some("10")
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes").unwrap(),
+        "proxy_config should no longer include load_balancing_sticky_minutes"
+    );
+    for table in [
+        "api_hub_sites",
+        "api_hub_groups",
+        "api_hub_models",
+        "api_hub_tokens",
+    ] {
+        assert!(
+            !Database::table_exists(&conn, table).unwrap(),
+            "{table} should no longer be created"
+        );
+    }
+    assert!(
+        !Database::has_column(&conn, "providers", "api_hub_origin").unwrap(),
+        "providers should no longer include api_hub_origin"
     );
 
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
@@ -305,6 +313,83 @@ fn schema_create_tables_include_pricing_model_columns() {
     let request_model = get_column_info(&conn, "proxy_request_logs", "request_model");
     assert_eq!(request_model.r#type, "TEXT");
     assert_eq!(request_model.notnull, 0);
+}
+
+#[test]
+fn schema_migration_cleans_removed_tables_and_columns_from_legacy_v18() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE providers (
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            settings_config TEXT NOT NULL DEFAULT '{}',
+            meta TEXT NOT NULL DEFAULT '{}',
+            api_hub_origin TEXT,
+            PRIMARY KEY (id, app_type)
+        );
+        CREATE TABLE proxy_config (
+            app_type TEXT PRIMARY KEY,
+            load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
+            load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10,
+            default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+            pricing_model_source TEXT NOT NULL DEFAULT 'response'
+        );
+        CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
+        CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
+        CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
+        CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
+        CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY, model TEXT NOT NULL);
+        CREATE TABLE usage_daily_rollups (
+            date TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            request_model TEXT NOT NULL DEFAULT '',
+            pricing_model TEXT NOT NULL DEFAULT '',
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
+        );
+        "#,
+    )
+    .expect("seed legacy v18 schema");
+    Database::set_user_version(&conn, 18).expect("set user_version=18");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+    for table in [
+        "api_hub_sites",
+        "api_hub_groups",
+        "api_hub_models",
+        "api_hub_tokens",
+    ] {
+        assert!(
+            !Database::table_exists(&conn, table).expect("check removed table"),
+            "{table} should be dropped by migration"
+        );
+    }
+    for (table, column) in [
+        ("providers", "api_hub_origin"),
+        ("proxy_config", "load_balancing_enabled"),
+        ("proxy_config", "load_balancing_sticky_minutes"),
+    ] {
+        assert!(
+            !Database::has_column(&conn, table, column).expect("check removed column"),
+            "{table}.{column} should be dropped by migration"
+        );
+    }
 }
 
 #[test]
@@ -338,20 +423,13 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     Database::set_user_version(&conn, 4).expect("set user_version=4");
     Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
 
-    let load_balancing = get_column_info(&conn, "proxy_config", "load_balancing_enabled");
-    assert_eq!(load_balancing.r#type, "INTEGER");
-    assert_eq!(load_balancing.notnull, 1);
-    assert_eq!(
-        normalize_default(&load_balancing.default).as_deref(),
-        Some("0")
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_enabled").unwrap(),
+        "proxy_config should not keep removed load balancing columns after migration"
     );
-
-    let sticky_minutes = get_column_info(&conn, "proxy_config", "load_balancing_sticky_minutes");
-    assert_eq!(sticky_minutes.r#type, "INTEGER");
-    assert_eq!(sticky_minutes.notnull, 1);
-    assert_eq!(
-        normalize_default(&sticky_minutes.default).as_deref(),
-        Some("10")
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes").unwrap(),
+        "proxy_config should not keep removed load balancing columns after migration"
     );
 
     let multiplier = get_column_info(&conn, "proxy_config", "default_cost_multiplier");
@@ -370,6 +448,97 @@ fn schema_migration_v4_adds_pricing_model_columns() {
     let request_model = get_column_info(&conn, "proxy_request_logs", "request_model");
     assert_eq!(request_model.r#type, "TEXT");
     assert_eq!(request_model.notnull, 0);
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn migration_v10_to_v11_rebuilds_rollups_with_request_model_dimension() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+
+    // 模拟 v10 形状的 rollup 表（主键不含 request_model）+ 一行历史聚合数据，
+    // 以及 v10 形状的明细表（无 pricing_model 列）
+    conn.execute_batch(
+        r#"
+        CREATE TABLE proxy_request_logs (
+            request_id TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
+            request_model TEXT
+        );
+        CREATE TABLE providers (
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            settings_config TEXT NOT NULL,
+            meta TEXT NOT NULL DEFAULT '{}',
+            is_current BOOLEAN NOT NULL DEFAULT 0,
+            in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+            PRIMARY KEY (id, app_type)
+        );
+        CREATE TABLE usage_daily_rollups (
+            date TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, app_type, provider_id, model)
+        );
+        INSERT INTO usage_daily_rollups
+            (date, app_type, provider_id, model, request_count, success_count,
+             input_tokens, output_tokens, total_cost_usd, avg_latency_ms)
+        VALUES ('2026-05-01', 'claude', 'p1', 'kimi-k2', 7, 7, 1000, 500, '0.07', 120);
+        "#,
+    )
+    .expect("seed v10 rollup table");
+
+    Database::set_user_version(&conn, 10).expect("set user_version=10");
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    // 新列存在且 NOT NULL DEFAULT ''
+    let request_model = get_column_info(&conn, "usage_daily_rollups", "request_model");
+    assert_eq!(request_model.r#type, "TEXT");
+    assert_eq!(request_model.notnull, 1);
+    let rollup_pricing_model = get_column_info(&conn, "usage_daily_rollups", "pricing_model");
+    assert_eq!(rollup_pricing_model.r#type, "TEXT");
+    assert_eq!(rollup_pricing_model.notnull, 1);
+
+    // 明细表补上 pricing_model 列（可空，历史行 NULL）
+    let pricing_model = get_column_info(&conn, "proxy_request_logs", "pricing_model");
+    assert_eq!(pricing_model.r#type, "TEXT");
+    assert_eq!(pricing_model.notnull, 0);
+
+    // 历史行保留，request_model 填 ''（未知）
+    let (rm, count, input, cost): (String, i64, i64, String) = conn
+        .query_row(
+            "SELECT request_model, request_count, input_tokens, total_cost_usd
+             FROM usage_daily_rollups WHERE model = 'kimi-k2'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("migrated row");
+    assert_eq!(rm, "");
+    assert_eq!(count, 7);
+    assert_eq!(input, 1000);
+    assert_eq!(cost, "0.07");
+
+    // 主键包含 request_model：同 model 不同别名可共存
+    conn.execute(
+        "INSERT INTO usage_daily_rollups
+            (date, app_type, provider_id, model, request_model, request_count)
+         VALUES ('2026-05-01', 'claude', 'p1', 'kimi-k2', 'claude-sonnet-4-6', 1)",
+        [],
+    )
+    .expect("insert row with same model but different request_model");
 
     assert_eq!(
         Database::get_user_version(&conn).expect("version after migration"),
@@ -409,31 +578,19 @@ fn schema_create_tables_repairs_legacy_proxy_config_singleton_to_per_app() {
         "proxy_config should be migrated to per-app structure"
     );
     assert!(
-        Database::has_column(&conn, "proxy_config", "load_balancing_enabled")
-            .expect("check load_balancing_enabled"),
-        "proxy_config should include load_balancing_enabled after repair"
+        !Database::has_column(&conn, "proxy_config", "load_balancing_enabled")
+            .expect("check removed load_balancing_enabled"),
+        "proxy_config should no longer include load_balancing_enabled after repair"
     );
     assert!(
-        Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")
-            .expect("check load_balancing_sticky_minutes"),
-        "proxy_config should include load_balancing_sticky_minutes after repair"
+        !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")
+            .expect("check removed load_balancing_sticky_minutes"),
+        "proxy_config should no longer include load_balancing_sticky_minutes after repair"
     );
     let count: i32 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count rows");
     assert_eq!(count, 3, "per-app proxy_config should have 3 rows");
-
-    let enabled_load_balancing_count: i32 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_enabled = 1",
-            [],
-            |r| r.get(0),
-        )
-        .expect("count load balancing rows");
-    assert_eq!(
-        enabled_load_balancing_count, 0,
-        "load balancing should default to off after legacy repair"
-    );
 
     // 新结构下应能按 app_type 查询
     let _: i32 = conn
@@ -574,27 +731,15 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count proxy_config rows");
     assert_eq!(proxy_rows, 3);
-    let load_balancing_rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_enabled = 1",
-            [],
-            |r| r.get(0),
-        )
-        .expect("count load balancing rows");
-    assert_eq!(
-        load_balancing_rows, 0,
-        "load balancing should remain off after full legacy migration"
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_enabled")
+            .expect("check removed load_balancing_enabled"),
+        "legacy migration should drop load balancing enabled column"
     );
-    let sticky_rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE load_balancing_sticky_minutes = 10",
-            [],
-            |r| r.get(0),
-        )
-        .expect("count sticky minute rows");
-    assert_eq!(
-        sticky_rows, 3,
-        "load balancing sticky minutes should default to 10 after full legacy migration"
+    assert!(
+        !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")
+            .expect("check removed load_balancing_sticky_minutes"),
+        "legacy migration should drop load balancing sticky minutes column"
     );
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn

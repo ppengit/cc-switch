@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -73,9 +73,6 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => <div>about-section</div>,
 }));
 
-vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => <div>api-hub-panel</div>,
-}));
 
 vi.mock("@/components/settings/ProxyTabContent", () => ({
   ProxyTabContent: () => <div>proxy-tab-content</div>,
@@ -132,9 +129,7 @@ const openModelTestAccordion = async (
   }
   await user.click(modelTestTrigger);
   await waitFor(() =>
-    expect(
-      screen.getByLabelText("streamCheck.claudeModel"),
-    ).toBeInTheDocument(),
+    expect(screen.getByLabelText("streamCheck.timeout")).toBeInTheDocument(),
   );
 };
 
@@ -154,16 +149,12 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
       timeoutSecs: 45,
       maxRetries: 2,
       degradedThresholdMs: 6000,
-      claudeModel: "claude-haiku-4-5-20251001",
-      codexModel: "gpt-5.5@low",
-      geminiModel: "gemini-3-flash-preview",
-      testPrompt: "Who are you?",
     });
     window.localStorage.clear();
     window.sessionStorage.clear();
   });
 
-  it("loads, edits, and saves model test config through the real advanced settings entry", async () => {
+  it("loads, edits, and saves connectivity check config through the real advanced settings entry", async () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
@@ -177,38 +168,22 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
 
     await openModelTestAccordion(user);
 
-    const claudeModelInput = screen.getByLabelText("streamCheck.claudeModel");
-    const codexModelInput = screen.getByLabelText("streamCheck.codexModel");
-    const geminiModelInput = screen.getByLabelText("streamCheck.geminiModel");
     const timeoutInput = screen.getByLabelText("streamCheck.timeout");
     const maxRetriesInput = screen.getByLabelText("streamCheck.maxRetries");
     const degradedThresholdInput = screen.getByLabelText(
       "streamCheck.degradedThreshold",
     );
-    const promptInput = screen.getByLabelText("streamCheck.testPrompt");
 
-    expect(claudeModelInput).toHaveValue("claude-haiku-4-5-20251001");
-    expect(codexModelInput).toHaveValue("gpt-5.5@low");
-    expect(geminiModelInput).toHaveValue("gemini-3-flash-preview");
     expect(timeoutInput).toHaveValue(45);
     expect(maxRetriesInput).toHaveValue(2);
     expect(degradedThresholdInput).toHaveValue(6000);
-    expect(promptInput).toHaveValue("Who are you?");
 
-    await user.clear(claudeModelInput);
-    await user.type(claudeModelInput, "claude-opus-4-20260101");
-    await user.clear(codexModelInput);
-    await user.type(codexModelInput, "gpt-5.5@high");
-    await user.clear(geminiModelInput);
-    await user.type(geminiModelInput, "gemini-3-pro");
     await user.clear(timeoutInput);
     await user.type(timeoutInput, "60");
     await user.clear(maxRetriesInput);
     await user.type(maxRetriesInput, "4");
     await user.clear(degradedThresholdInput);
     await user.type(degradedThresholdInput, "9000");
-    await user.clear(promptInput);
-    await user.type(promptInput, "Return health check.");
 
     await user.click(
       within(getModelTestPanelRoot()).getByRole("button", {
@@ -223,10 +198,6 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
             timeoutSecs: 60,
             maxRetries: 4,
             degradedThresholdMs: 9000,
-            claudeModel: "claude-opus-4-20260101",
-            codexModel: "gpt-5.5@high",
-            geminiModel: "gemini-3-pro",
-            testPrompt: "Return health check.",
           },
         },
       ),
@@ -237,15 +208,11 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
         timeoutSecs: 60,
         maxRetries: 4,
         degradedThresholdMs: 9000,
-        claudeModel: "claude-opus-4-20260101",
-        codexModel: "gpt-5.5@high",
-        geminiModel: "gemini-3-pro",
-        testPrompt: "Return health check.",
       }),
     );
   });
 
-  it("falls back to default numeric values and prompt when inputs are cleared", async () => {
+  it("falls back to default numeric values when inputs are cleared", async () => {
     const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
@@ -264,12 +231,10 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
     const degradedThresholdInput = screen.getByLabelText(
       "streamCheck.degradedThreshold",
     );
-    const promptInput = screen.getByLabelText("streamCheck.testPrompt");
 
     await user.clear(timeoutInput);
     await user.clear(maxRetriesInput);
     await user.clear(degradedThresholdInput);
-    await user.clear(promptInput);
 
     await user.click(
       within(getModelTestPanelRoot()).getByRole("button", {
@@ -281,13 +246,9 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
       expect(getLastCommandBody(fetchSpy, "save_stream_check_config")).toEqual(
         {
           config: {
-            timeoutSecs: 45,
-            maxRetries: 2,
+            timeoutSecs: 8,
+            maxRetries: 1,
             degradedThresholdMs: 6000,
-            claudeModel: "claude-haiku-4-5-20251001",
-            codexModel: "gpt-5.5@low",
-            geminiModel: "gemini-3-flash-preview",
-            testPrompt: "Who are you?",
           },
         },
       ),
@@ -295,13 +256,9 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
 
     await waitFor(() =>
       expect(getStreamCheckConfigState()).toEqual({
-        timeoutSecs: 45,
-        maxRetries: 2,
+        timeoutSecs: 8,
+        maxRetries: 1,
         degradedThresholdMs: 6000,
-        claudeModel: "claude-haiku-4-5-20251001",
-        codexModel: "gpt-5.5@low",
-        geminiModel: "gemini-3-flash-preview",
-        testPrompt: "Who are you?",
       }),
     );
   });

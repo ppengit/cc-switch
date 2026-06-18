@@ -449,11 +449,11 @@ mod tests {
             serde_json::to_string_pretty(&serde_json::json!({
                 "agent:main:main": {
                     "sessionId": "session-123",
-                    "sessionFile": session_path.display().to_string()
+                    "sessionFile": session_path.to_string_lossy().to_string()
                 },
                 "agent:main:other": {
                     "sessionId": "session-456",
-                    "sessionFile": sessions_dir.join("session-456.jsonl").display().to_string()
+                    "sessionFile": sessions_dir.join("session-456.jsonl").to_string_lossy().to_string()
                 }
             }))
             .expect("serialize index"),

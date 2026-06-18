@@ -1,14 +1,10 @@
 import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { http, HttpResponse } from "msw";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { server } from "../msw/server";
 import { resetProviderState } from "../msw/state";
 
-const TAURI_ENDPOINT = "http://tauri.local";
 const translationMocks = vi.hoisted(() => ({
   changeLanguage: vi.fn(),
   i18n: {
@@ -131,96 +127,39 @@ const renderSettingsPage = (
   );
 };
 
-const getPanelForTab = (container: HTMLElement, tabName: string) => {
-  const tab = screen.getByRole("tab", { name: tabName });
-  const panel = Array.from(
-    container.querySelectorAll<HTMLElement>('[role="tabpanel"]'),
-  ).find((element) => element.getAttribute("aria-labelledby") === tab.id);
-  expect(panel).toBeDefined();
-  return panel as HTMLElement;
-};
-
 describe("SettingsPage real tab structure", () => {
   beforeEach(() => {
     translationMocks.i18n.changeLanguage.mockReset();
     resetProviderState();
     window.sessionStorage.clear();
-    server.use(
-      http.post(`${TAURI_ENDPOINT}/api_hub_list_sites`, () =>
-        HttpResponse.json({
-          items: [
-            {
-              id: "site-1",
-              site_name: "Demo Hub",
-              site_url: "https://hub.example.com",
-              site_type: "new-api",
-              exchange_rate: 1,
-              username: "demo",
-              imported_apps: [],
-              last_synced_at: null,
-              last_sync_error: null,
-              sort_index: 0,
-              group_count: 2,
-              model_count: 8,
-              token_count: 1,
-            },
-          ],
-          total: 1,
-          page: 1,
-          page_size: 20,
-        }),
-      ),
-    );
   });
 
-  it("keeps Api-Hub content inaccessible on other tabs while preserving panel state", async () => {
-    const user = userEvent.setup();
+  it("does not expose removed aggregation-import tabs or actions", async () => {
     renderSettingsPage();
 
     await waitFor(() =>
       expect(screen.getByText("language-settings")).toBeInTheDocument(),
     );
-    expect(
-      screen.queryByRole("button", { name: "导入 JSON" }),
-    ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Api-Hub" }));
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
-    );
-    await waitFor(() =>
-      expect(screen.getByText("Demo Hub")).toBeInTheDocument(),
-    );
-
-    const searchInput = screen.getByPlaceholderText(
-      "搜索站点名称或 URL",
-    ) as HTMLInputElement;
-    fireEvent.change(searchInput, { target: { value: "demo filter" } });
-    fireEvent.change(screen.getByLabelText("站点类型"), {
-      target: { value: "sub2api" },
-    });
-
-    await user.click(screen.getByRole("tab", { name: "settings.tabGeneral" }));
-
-    expect(screen.getByText("language-settings")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "导入 JSON" }),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Api-Hub" }));
-
-    expect(screen.getByPlaceholderText("搜索站点名称或 URL")).toHaveValue(
-      "demo filter",
-    );
-    expect(screen.getByLabelText("站点类型")).toHaveValue("sub2api");
+    const tabLabels = screen
+      .getAllByRole("tab")
+      .map((element) => element.textContent?.trim() ?? "");
+    expect(tabLabels).toEqual([
+      "settings.tabGeneral",
+      "settings.tabProxy",
+      "认证",
+      "settings.tabAdvanced",
+      "usage.title",
+      "common.about",
+    ]);
+    expect(screen.queryByRole("button", { name: "导入 JSON" })).not.toBeInTheDocument();
   });
 
-  it("honors defaultTab with the real tabs implementation and keeps Api-Hub between usage and about", async () => {
-    renderSettingsPage({ defaultTab: "apiHub" });
+  it("honors defaultTab with the real tabs implementation and keeps usage before about", async () => {
+    renderSettingsPage({ defaultTab: "usage" });
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument(),
+      expect(screen.getByText("usage-dashboard")).toBeInTheDocument(),
     );
 
     const tabLabels = screen
@@ -228,16 +167,11 @@ describe("SettingsPage real tab structure", () => {
       .map((element) => element.textContent?.trim() ?? "");
 
     expect(tabLabels.indexOf("usage.title")).toBeLessThan(
-      tabLabels.indexOf("Api-Hub"),
-    );
-    expect(tabLabels.indexOf("Api-Hub")).toBeLessThan(
       tabLabels.indexOf("common.about"),
     );
 
     expect(screen.queryByText("language-settings")).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByText("Demo Hub")).toBeInTheDocument(),
-    );
+    expect(screen.getByText("usage-dashboard")).toBeInTheDocument();
   });
 
   it("keeps the settings tab bar in a single scrollable row for narrow windows", async () => {
@@ -257,41 +191,22 @@ describe("SettingsPage real tab structure", () => {
     }
   });
 
-  it("keeps the force-mounted Api-Hub panel visually hidden outside the Api-Hub tab", async () => {
-    const user = userEvent.setup();
-    const { container } = renderSettingsPage();
+  it("renders exactly the current settings tabs", async () => {
+    renderSettingsPage();
 
     await waitFor(() =>
       expect(screen.getByText("language-settings")).toBeInTheDocument(),
     );
 
-    const apiHubPanel = getPanelForTab(container, "Api-Hub");
-    expect(apiHubPanel).toHaveAttribute("data-state", "inactive");
-    expect(apiHubPanel).toHaveAttribute("hidden");
-    expect(apiHubPanel).toHaveAttribute("aria-hidden", "true");
-    expect(apiHubPanel).toHaveClass("data-[state=inactive]:hidden");
     expect(
-      screen.queryByRole("button", { name: "导入 JSON" }),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Api-Hub" }));
-
-    await waitFor(() =>
-      expect(apiHubPanel).toHaveAttribute("data-state", "active"),
-    );
-    expect(apiHubPanel).not.toHaveAttribute("hidden");
-    expect(apiHubPanel).toHaveAttribute("aria-hidden", "false");
-    expect(screen.getByRole("button", { name: "导入 JSON" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
-
-    await waitFor(() =>
-      expect(apiHubPanel).toHaveAttribute("data-state", "inactive"),
-    );
-    expect(apiHubPanel).toHaveAttribute("hidden");
-    expect(apiHubPanel).toHaveAttribute("aria-hidden", "true");
-    expect(
-      screen.queryByRole("button", { name: "导入 JSON" }),
-    ).not.toBeInTheDocument();
+      screen.getAllByRole("tab").map((element) => element.textContent?.trim() ?? ""),
+    ).toEqual([
+      "settings.tabGeneral",
+      "settings.tabProxy",
+      "认证",
+      "settings.tabAdvanced",
+      "usage.title",
+      "common.about",
+    ]);
   });
 });

@@ -5,9 +5,7 @@ import {
   ChevronRight,
   FlaskConical,
   Coins,
-  GitBranch,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -16,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { ProviderTestConfig } from "@/types";
@@ -31,9 +30,6 @@ interface ProviderPricingConfig {
 interface ProviderAdvancedConfigProps {
   testConfig: ProviderTestConfig;
   pricingConfig: ProviderPricingConfig;
-  showConcurrencyConfig?: boolean;
-  maxSessions: string;
-  onMaxSessionsChange: (value: string) => void;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
 }
@@ -41,9 +37,6 @@ interface ProviderAdvancedConfigProps {
 export function ProviderAdvancedConfig({
   testConfig,
   pricingConfig,
-  showConcurrencyConfig = false,
-  maxSessions,
-  onMaxSessionsChange,
   onTestConfigChange,
   onPricingConfigChange,
 }: ProviderAdvancedConfigProps) {
@@ -63,53 +56,6 @@ export function ProviderAdvancedConfig({
 
   return (
     <div className="space-y-4">
-      {showConcurrencyConfig && (
-        <div className="rounded-lg border border-border/50 bg-muted/20">
-          <div className="flex items-center gap-3 p-4">
-            <GitBranch className="h-4 w-4 text-muted-foreground" />
-            <div className="space-y-1">
-              <div className="font-medium">
-                {t("providerAdvanced.loadBalancingConfig", {
-                  defaultValue: "请求分流配置",
-                })}
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {t("providerAdvanced.loadBalancingConfigDesc", {
-                  defaultValue:
-                    "只在启用请求分流时生效。留空或填 0 表示该供应商不限制并发请求数。",
-                })}
-              </p>
-            </div>
-          </div>
-          <div className="border-t border-border/50 p-4">
-            <div className="space-y-2">
-              <Label htmlFor="provider-max-sessions">
-                {t("providerAdvanced.maxSessions", {
-                  defaultValue: "最大请求数",
-                })}
-              </Label>
-              <Input
-                id="provider-max-sessions"
-                type="number"
-                min={0}
-                max={999}
-                value={maxSessions}
-                onChange={(e) => onMaxSessionsChange(e.target.value)}
-                placeholder={t("providerAdvanced.maxSessionsPlaceholder", {
-                  defaultValue: "0 或留空表示不限制",
-                })}
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("providerAdvanced.maxSessionsHint", {
-                  defaultValue:
-                    "例如填 2，则该供应商满 2 个并发请求后，新的请求会尝试分流到下一个供应商。",
-                })}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="rounded-lg border border-border/50 bg-muted/20">
         <div
           role="button"
@@ -127,7 +73,7 @@ export function ProviderAdvancedConfig({
             <FlaskConical className="h-4 w-4 text-muted-foreground" />
             <span className="font-medium">
               {t("providerAdvanced.testConfig", {
-                defaultValue: "模型测试配置",
+                defaultValue: "连通检测配置",
               })}
             </span>
           </div>
@@ -172,31 +118,10 @@ export function ProviderAdvancedConfig({
             <p className="text-sm text-muted-foreground">
               {t("providerAdvanced.testConfigDesc", {
                 defaultValue:
-                  "为此供应商配置单独的模型测试参数，不启用时使用全局配置。",
+                  "为此供应商配置单独的连通检测参数（超时/阈值/重试），不启用时使用全局配置。",
               })}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="test-model">
-                  {t("providerAdvanced.testModel", {
-                    defaultValue: "测试模型",
-                  })}
-                </Label>
-                <Input
-                  id="test-model"
-                  value={testConfig.testModel || ""}
-                  onChange={(e) =>
-                    onTestConfigChange({
-                      ...testConfig,
-                      testModel: e.target.value || undefined,
-                    })
-                  }
-                  placeholder={t("providerAdvanced.testModelPlaceholder", {
-                    defaultValue: "留空使用全局配置",
-                  })}
-                  disabled={!testConfig.enabled}
-                />
-              </div>
               <div className="space-y-2">
                 <Label htmlFor="test-timeout">
                   {t("providerAdvanced.timeoutSecs", {
@@ -207,7 +132,7 @@ export function ProviderAdvancedConfig({
                   id="test-timeout"
                   type="number"
                   min={1}
-                  max={300}
+                  max={60}
                   value={testConfig.timeoutSecs || ""}
                   onChange={(e) =>
                     onTestConfigChange({
@@ -217,26 +142,7 @@ export function ProviderAdvancedConfig({
                         : undefined,
                     })
                   }
-                  placeholder="45"
-                  disabled={!testConfig.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="test-prompt">
-                  {t("providerAdvanced.testPrompt", {
-                    defaultValue: "测试提示词",
-                  })}
-                </Label>
-                <Input
-                  id="test-prompt"
-                  value={testConfig.testPrompt || ""}
-                  onChange={(e) =>
-                    onTestConfigChange({
-                      ...testConfig,
-                      testPrompt: e.target.value || undefined,
-                    })
-                  }
-                  placeholder="Who are you?"
+                  placeholder="8"
                   disabled={!testConfig.enabled}
                 />
               </div>
@@ -274,7 +180,7 @@ export function ProviderAdvancedConfig({
                   id="max-retries"
                   type="number"
                   min={0}
-                  max={10}
+                  max={5}
                   value={testConfig.maxRetries ?? ""}
                   onChange={(e) =>
                     onTestConfigChange({
@@ -284,7 +190,7 @@ export function ProviderAdvancedConfig({
                         : undefined,
                     })
                   }
-                  placeholder="2"
+                  placeholder="1"
                   disabled={!testConfig.enabled}
                 />
               </div>

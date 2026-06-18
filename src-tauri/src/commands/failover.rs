@@ -247,9 +247,6 @@ pub async fn set_auto_failover_enabled(
 
     // 更新 auto_failover_enabled 字段
     config.auto_failover_enabled = enabled;
-    if !enabled {
-        config.load_balancing_enabled = false;
-    }
 
     // 写回数据库
     state
@@ -386,8 +383,6 @@ mod tests {
             app_type: "claude".to_string(),
             enabled,
             auto_failover_enabled,
-            load_balancing_enabled: false,
-            load_balancing_sticky_minutes: 10,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,

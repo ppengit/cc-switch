@@ -848,7 +848,7 @@ mod tests {
         let db = Database::memory()?;
         sync_single_hermes_db(&db, &db_path)?;
 
-        let provider_stats = db.get_provider_stats(None, None, Some("hermes"))?;
+        let provider_stats = db.get_provider_stats(None, None, Some("hermes"), None, None)?;
         assert_eq!(provider_stats.len(), 1);
         assert_eq!(provider_stats[0].provider_id, HERMES_PROVIDER_ID);
         assert_eq!(provider_stats[0].provider_name, "Hermes (Session)");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractCodexBaseUrl,
   isCodexRemoteCompactionEnabled,
   setCodexRemoteCompaction,
 } from "./providerConfigUtils";
@@ -109,5 +110,17 @@ wire_api = "responses"
 `;
 
     expect(isCodexRemoteCompactionEnabled(input)).toBe(true);
+  });
+});
+
+describe("Codex base URL config helpers", () => {
+  it("ignores leftover custom provider sections when a built-in provider is active", () => {
+    const input = `model_provider = "openai"
+
+[model_providers.custom]
+base_url = "https://leftover.example/v1"
+`;
+
+    expect(extractCodexBaseUrl(input)).toBeUndefined();
   });
 });

@@ -193,6 +193,14 @@ export function RequestDetailPanel({
               </div>
               <div>
                 <dt className="text-muted-foreground">
+                  {t("usage.pricingModel", "计价模型")}
+                </dt>
+                <dd className="font-mono text-xs">
+                  {resolvedRequest.pricingModel || "-"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
                   {t("usage.sessionId", "会话 ID")}
                 </dt>
                 <dd className="font-mono text-xs">

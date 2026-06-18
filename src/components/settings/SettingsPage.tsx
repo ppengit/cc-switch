@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { motion } from "framer-motion";
 import {
   Loader2,
@@ -39,7 +46,6 @@ import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
-import { ApiHubPanel } from "@/components/settings/ApiHubPanel";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
 import { ModelTestConfigPanel } from "@/components/usage/ModelTestConfigPanel";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
@@ -107,6 +113,7 @@ export function SettingsPage({
   const [activeTab, setActiveTab] = useState<string>("general");
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
   const wasOpenRef = useRef(false);
+  const settingsContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
@@ -121,6 +128,18 @@ export function SettingsPage({
       setShowRestartPrompt(true);
     }
   }, [requiresRestart]);
+
+  useLayoutEffect(() => {
+    const activePanel = settingsContentRef.current?.querySelector<HTMLElement>(
+      '[data-state="active"]',
+    );
+    if (!activePanel) return;
+    if (typeof activePanel.scrollTo === "function") {
+      activePanel.scrollTo({ top: 0 });
+    } else {
+      activePanel.scrollTop = 0;
+    }
+  }, [activeTab]);
 
   const closeAfterSave = useCallback(() => {
     // 保存成功后关闭：不再重置语言，避免需要“保存两次”才生效
@@ -169,19 +188,34 @@ export function SettingsPage({
 
   // 通用设置即时保存（无需手动点击）
   // 使用 autoSaveSettings 避免误触发系统 API（开机自启、Claude 插件等）
+  // 返回保存是否成功：需要在保存成功后追加动作的调用方（如统一会话历史
+  // 关闭后的备份还原）据此短路，其余调用方可忽略返回值。
   const handleAutoSave = useCallback(
-    async (updates: Partial<SettingsFormState>) => {
-      if (!settings) return;
+    async (updates: Partial<SettingsFormState>): Promise<boolean> => {
+      if (!settings) return false;
+      // 乐观更新前捕获旧值：autoSaveSettings 发送的是全量表单状态，后端按
+      // diff 触发副作用（如统一会话开关的 live 重写与历史迁移）。保存失败
+      // 不回滚的话，失败的变更会滞留在表单里，被之后任意一次无关保存原样
+      // 重放，绕过确认弹窗。
+      const previousValues = Object.fromEntries(
+        Object.keys(updates).map((key) => [
+          key,
+          settings[key as keyof SettingsFormState],
+        ]),
+      ) as Partial<SettingsFormState>;
       updateSettings(updates);
       try {
         await autoSaveSettings(updates);
+        return true;
       } catch (error) {
         console.error("[SettingsPage] Failed to autosave settings", error);
+        updateSettings(previousValues);
         toast.error(
           t("settings.saveFailedGeneric", {
             defaultValue: "保存失败，请重试",
           }),
         );
+        return false;
       }
     },
     [autoSaveSettings, settings, t, updateSettings],
@@ -217,15 +251,15 @@ export function SettingsPage({
             <TabsTrigger value="usage" className="shrink-0">
               {t("usage.title")}
             </TabsTrigger>
-            <TabsTrigger value="apiHub" className="shrink-0">
-              {t("settings.tabApiHub", { defaultValue: "Api-Hub" })}
-            </TabsTrigger>
             <TabsTrigger value="about" className="shrink-0">
               {t("common.about")}
             </TabsTrigger>
           </TabsList>
 
-          <div className="flex-1 min-h-0 flex flex-col">
+          <div
+            ref={settingsContentRef}
+            className="flex-1 min-h-0 flex flex-col"
+          >
             <TabsContent
               value="general"
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
@@ -441,6 +475,7 @@ export function SettingsPage({
                       <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
                         <WebdavSyncSection
                           config={settings?.webdavSync}
+                          s3Config={settings?.s3Sync}
                           settings={settings}
                           onAutoSave={handleAutoSave}
                         />
@@ -500,16 +535,6 @@ export function SettingsPage({
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
             >
               <UsageDashboard onOpenRequestDetail={onOpenRequestDetail} />
-            </TabsContent>
-
-            <TabsContent
-              value="apiHub"
-              forceMount
-              hidden={activeTab !== "apiHub"}
-              aria-hidden={activeTab !== "apiHub"}
-              className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2 data-[state=inactive]:hidden"
-            >
-              <ApiHubPanel />
             </TabsContent>
 
             <TabsContent

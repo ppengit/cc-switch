@@ -237,83 +237,7 @@ impl ProxyActivityState {
             upstream_model,
             None,
             None,
-            None,
         )
-    }
-
-    fn reserve_provider_slot(
-        &mut self,
-        request_id: &str,
-        app_type: &str,
-        provider_id: &str,
-        provider_name: &str,
-        max_sessions: Option<u32>,
-        enforce_limit: bool,
-    ) -> bool {
-        let limit = max_sessions.filter(|value| *value > 0);
-        let key = (app_type.to_string(), provider_id.to_string());
-        let existing_for_request = self.requests.get(request_id).cloned();
-
-        if let Some(existing) = existing_for_request.as_ref() {
-            if existing.app_type == app_type && existing.provider_id == provider_id {
-                return true;
-            }
-        }
-
-        let current_inflight = self
-            .targets
-            .get(&key)
-            .map(|target| target.inflight_requests)
-            .unwrap_or(0);
-
-        if let Some(limit) = limit.filter(|_| enforce_limit) {
-            if current_inflight >= limit as usize {
-                return false;
-            }
-        }
-
-        if let Some(existing) = existing_for_request {
-            self.requests.remove(request_id);
-            self.decrement_target(&existing.app_type, &existing.provider_id);
-        }
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let entry = self
-            .targets
-            .entry(key)
-            .or_insert_with(|| ActiveRequestTarget {
-                app_type: app_type.to_string(),
-                provider_id: provider_id.to_string(),
-                provider_name: provider_name.to_string(),
-                inflight_requests: 0,
-                max_sessions: None,
-                request_model: None,
-                upstream_model: None,
-                route_mode: None,
-                upstream_url: None,
-                last_request_model: None,
-                last_request_at: now.clone(),
-            });
-        entry.provider_name = provider_name.to_string();
-        entry.inflight_requests += 1;
-        entry.max_sessions = limit;
-        entry.last_request_at = now;
-
-        self.requests.insert(
-            request_id.to_string(),
-            ActiveRequestMeta {
-                app_type: app_type.to_string(),
-                provider_id: provider_id.to_string(),
-                provider_name: provider_name.to_string(),
-                started_at: Instant::now(),
-                request_model: None,
-                upstream_model: None,
-                route_mode: None,
-                upstream_url: None,
-            },
-        );
-
-        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -327,7 +251,6 @@ impl ProxyActivityState {
         upstream_model: Option<String>,
         route_mode: Option<String>,
         upstream_url: Option<String>,
-        max_sessions: Option<u32>,
     ) -> ProxyActivityEvent {
         if let Some(existing) = self.requests.get(request_id).cloned() {
             if existing.app_type == app_type && existing.provider_id == provider_id {
@@ -362,9 +285,6 @@ impl ProxyActivityState {
                     }
                     if upstream_url.is_some() {
                         target.upstream_url = upstream_url.clone();
-                    }
-                    if max_sessions.is_some() {
-                        target.max_sessions = max_sessions;
                     }
                     target.last_request_model = Self::derive_display_model(
                         target.request_model.as_ref(),
@@ -406,7 +326,6 @@ impl ProxyActivityState {
                 provider_id: provider_id.to_string(),
                 provider_name: provider_name.to_string(),
                 inflight_requests: 0,
-                max_sessions: None,
                 request_model: None,
                 upstream_model: None,
                 route_mode: None,
@@ -416,7 +335,6 @@ impl ProxyActivityState {
             });
         entry.provider_name = provider_name.to_string();
         entry.inflight_requests += 1;
-        entry.max_sessions = max_sessions;
         entry.request_model = request_model.clone();
         entry.upstream_model = upstream_model.clone();
         entry.route_mode = route_mode.clone();
@@ -702,7 +620,6 @@ pub async fn route_request_with_metadata(
     upstream_model: Option<String>,
     route_mode: Option<String>,
     upstream_url: Option<String>,
-    max_sessions: Option<u32>,
 ) {
     let event = {
         let mut state = activity.write().await;
@@ -715,30 +632,9 @@ pub async fn route_request_with_metadata(
             upstream_model,
             route_mode,
             upstream_url,
-            max_sessions,
         )
     };
     emit_activity_event(app_handle, &event);
-}
-
-pub async fn reserve_provider_slot(
-    activity: &Arc<RwLock<ProxyActivityState>>,
-    request_id: &str,
-    app_type: &str,
-    provider_id: &str,
-    provider_name: &str,
-    max_sessions: Option<u32>,
-    enforce_limit: bool,
-) -> bool {
-    let mut state = activity.write().await;
-    state.reserve_provider_slot(
-        request_id,
-        app_type,
-        provider_id,
-        provider_name,
-        max_sessions,
-        enforce_limit,
-    )
 }
 
 pub async fn observe_request(

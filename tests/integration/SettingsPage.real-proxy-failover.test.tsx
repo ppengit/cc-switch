@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -81,9 +81,6 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => <div>about-section</div>,
 }));
 
-vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => <div>api-hub-panel</div>,
-}));
 
 vi.mock("@/components/usage/ModelTestConfigPanel", () => ({
   ModelTestConfigPanel: () => <div>model-test-config-panel</div>,
@@ -503,41 +500,6 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     );
   }, 20_000);
 
-  it("moves load balancing quick switch above the failover queue and saves immediately", async () => {
-    const user = userEvent.setup();
-
-    setSettings({
-      enableLocalProxy: true,
-      proxyConfirmed: true,
-      enableFailoverToggle: true,
-      failoverConfirmed: true,
-    });
-    setAppProxyConfigState({
-      ...getAppProxyConfigState("claude"),
-      enabled: true,
-      autoFailoverEnabled: true,
-      loadBalancingEnabled: false,
-    });
-    startProxyServerState();
-
-    await openProxySection(user);
-    await waitFor(() =>
-      expect(screen.getByText("http://127.0.0.1:15721")).toBeInTheDocument(),
-    );
-
-    await openFailoverSection(user);
-    await user.click(screen.getByRole("tab", { name: "Claude" }));
-
-    await clickSwitchNear(user, "请求分流");
-
-    await waitFor(() =>
-      expect(getAppProxyConfigState("claude")).toMatchObject({
-        appType: "claude",
-        loadBalancingEnabled: true,
-      }),
-    );
-  }, 20_000);
-
   it("saves Claude auto failover timing and circuit breaker settings without drifting live config", async () => {
     const user = userEvent.setup();
 
@@ -593,7 +555,7 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     expectClaudeLiveOnProxy();
   }, 20_000);
 
-  it("clears load balancing when auto failover is turned off", async () => {
+  it("turns off auto failover without drifting live config", async () => {
     const user = userEvent.setup();
 
     setSettings({
@@ -606,7 +568,6 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
       ...getAppProxyConfigState("claude"),
       enabled: true,
       autoFailoverEnabled: true,
-      loadBalancingEnabled: true,
     });
     startProxyServerState();
 
@@ -630,7 +591,6 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
         appType: "claude",
         enabled: true,
         autoFailoverEnabled: false,
-        loadBalancingEnabled: false,
       }),
     );
   }, 20_000);

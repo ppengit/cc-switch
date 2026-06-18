@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
@@ -344,19 +345,13 @@ fn launch_windows_terminal(
     cwd: Option<&str>,
     custom_config: Option<&str>,
 ) -> Result<(), String> {
+    let cwd = valid_windows_cwd(cwd);
+
     if target == "custom" {
-        return launch_custom_windows(command, cwd, custom_config);
+        return launch_custom_windows(command, cwd.as_deref(), custom_config);
     }
 
     let command = command.trim();
-    let cmd_chain = if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
-        format!(
-            "cd /d \"{}\" && {command}",
-            escape_cmd_double_quotes(cwd_value.trim())
-        )
-    } else {
-        command.to_string()
-    };
 
     let result = match target {
         "powershell" => {
@@ -365,8 +360,8 @@ fn launch_windows_terminal(
             // 启动的 PowerShell 进程加上 `-ExecutionPolicy Bypass`，作用域仅限
             // 本次会话，不修改系统策略，避免拉脚本时报 PSSecurityException。
             let escaped = escape_powershell_single_quote(command);
-            if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
-                let escaped_cwd = escape_powershell_single_quote(cwd_value.trim());
+            if let Some(cwd_value) = cwd.as_deref() {
+                let escaped_cwd = escape_powershell_single_quote(cwd_value);
                 let script = format!(
                     "Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'"
                 );
@@ -396,10 +391,17 @@ fn launch_windows_terminal(
             }
         }
         "wt" => run_windows_start_owned(
-            &build_windows_terminal_args(command, cwd),
+            &build_windows_terminal_args(command, cwd.as_deref()),
             "Windows Terminal",
         ),
-        _ => run_windows_start(&["cmd", "/K", &cmd_chain], "cmd"),
+        "cmd" => {
+            if let Some(cwd_value) = cwd.as_deref() {
+                run_windows_start(&["/D", cwd_value, "cmd", "/K", command], "cmd")
+            } else {
+                run_windows_start(&["cmd", "/K", command], "cmd")
+            }
+        }
+        _ => run_windows_start(&["cmd", "/K", command], "cmd"),
     };
 
     if result.is_ok() {
@@ -407,9 +409,42 @@ fn launch_windows_terminal(
     }
 
     if target != "cmd" {
-        run_windows_start(&["cmd", "/K", &cmd_chain], "cmd")
+        if let Some(cwd_value) = cwd.as_deref() {
+            run_windows_start(&["/D", cwd_value, "cmd", "/K", command], "cmd")
+        } else {
+            run_windows_start(&["cmd", "/K", command], "cmd")
+        }
     } else {
         result
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn valid_windows_cwd(cwd: Option<&str>) -> Option<String> {
+    let raw = cwd?.trim();
+    if raw.is_empty() || raw.contains('\n') || raw.contains('\r') {
+        return None;
+    }
+
+    let path = Path::new(raw);
+    if !path.is_dir() {
+        return None;
+    }
+
+    let resolved = path.canonicalize().unwrap_or_else(|_| PathBuf::from(raw));
+    let value = strip_windows_extended_length_prefix(&resolved);
+    Some(value.to_string_lossy().to_string())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn strip_windows_extended_length_prefix(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(stripped) = value.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -468,22 +503,15 @@ fn run_windows_start(args: &[&str], terminal_name: &str) -> Result<(), String> {
 #[cfg(any(target_os = "windows", test))]
 fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> {
     let command = command.trim();
-    let cmd_chain = if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
-        format!(
-            "cd /d \"{}\" && {command}",
-            escape_cmd_double_quotes(cwd_value.trim())
-        )
-    } else {
-        command.to_string()
-    };
+    let cwd = valid_windows_cwd(cwd);
     let mut args = vec!["wt".to_string()];
 
-    if let Some(cwd_value) = cwd.filter(|value| !value.trim().is_empty()) {
+    if let Some(cwd_value) = cwd.as_deref() {
         args.push("-d".to_string());
-        args.push(cwd_value.trim().to_string());
+        args.push(cwd_value.to_string());
     }
 
-    args.extend(["cmd".to_string(), "/K".to_string(), cmd_chain]);
+    args.extend(["cmd".to_string(), "/K".to_string(), command.to_string()]);
     args
 }
 
@@ -491,11 +519,6 @@ fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> 
 fn run_windows_start_owned(args: &[String], terminal_name: &str) -> Result<(), String> {
     let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
     run_windows_start(&borrowed, terminal_name)
-}
-
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn escape_cmd_double_quotes(value: &str) -> String {
-    value.replace('"', "\"\"")
 }
 
 #[cfg(target_os = "windows")]
@@ -669,17 +692,22 @@ mod tests {
 
     #[test]
     fn windows_terminal_runs_resume_command_in_cmd_inside_windows_terminal() {
-        let args =
-            build_windows_terminal_args("codex resume abc-123", Some("C:\\Users\\me\\Project"));
+        let cwd = std::env::current_dir()
+            .expect("current dir")
+            .to_string_lossy()
+            .to_string();
+        let expected_cwd = valid_windows_cwd(Some(&cwd)).expect("valid cwd");
+        let args = build_windows_terminal_args("codex resume abc-123", Some(&cwd));
 
         assert_eq!(args[0], "wt");
         assert_eq!(args[1], "-d");
-        assert_eq!(args[2], "C:\\Users\\me\\Project");
+        assert_eq!(args[2], expected_cwd);
         assert_eq!(args[3], "cmd");
         assert_eq!(args[4], "/K");
-        assert_eq!(
-            args[5],
-            "cd /d \"C:\\Users\\me\\Project\" && codex resume abc-123"
+        assert_eq!(args[5], "codex resume abc-123");
+        assert!(
+            args.iter().all(|arg| !arg.contains("cd /d")),
+            "Windows Terminal cwd should be passed with -d, not embedded in cmd /K"
         );
     }
 
@@ -693,6 +721,16 @@ mod tests {
                 .any(|arg| arg.eq_ignore_ascii_case("powershell")),
             "Windows Terminal resume should open cmd inside Windows Terminal, not PowerShell"
         );
+        assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);
+    }
+
+    #[test]
+    fn windows_terminal_ignores_missing_cwd() {
+        let args = build_windows_terminal_args(
+            "codex resume abc-123",
+            Some("Z:\\cc-switch\\missing\\session\\cwd"),
+        );
+
         assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);
     }
 }

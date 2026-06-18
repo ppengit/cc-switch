@@ -4,7 +4,6 @@ import "@testing-library/jest-dom";
 import {
   createContext,
   useContext,
-  useState,
   type ComponentProps,
 } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -189,6 +188,7 @@ vi.mock("@/components/ui/tabs", () => {
       return (
         <div
           data-testid={`tab-${value}`}
+          data-state={ctx.value === value ? "active" : "inactive"}
           hidden={ctx.value !== value}
           className={className}
         >
@@ -252,26 +252,14 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
 }));
 
-vi.mock("@/components/settings/ApiHubPanel", () => ({
-  ApiHubPanel: () => {
-    const [value, setValue] = useState("");
-    return (
-      <div>
-        <span>api-hub-panel</span>
-        <input
-          aria-label="api-hub-state-probe"
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-        />
-      </div>
-    );
-  },
-}));
-
 vi.mock("@/components/settings/WebdavSyncSection", () => ({
   WebdavSyncSection: ({ config }: any) => (
     <div>webdav-sync-section:{config?.baseUrl ?? "none"}</div>
   ),
+}));
+
+vi.mock("@/components/usage/UsageDashboard", () => ({
+  UsageDashboard: () => <div>usage-dashboard</div>,
 }));
 
 let settingsApi: any;
@@ -389,16 +377,7 @@ describe("SettingsPage Component", () => {
     expect(importExportMock.clearSelection).toHaveBeenCalled();
   });
 
-  it("keeps Api-Hub mounted without letting inactive content join other settings tabs", () => {
-    renderSettingsPage();
-
-    const apiHubTab = screen.getByTestId("tab-apiHub");
-    expect(apiHubTab).toHaveAttribute("hidden");
-    expect(apiHubTab).toHaveClass("data-[state=inactive]:hidden");
-    expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
-  });
-
-  it("should render Api-Hub tab between usage and about tabs", () => {
+  it("should render usage before about in the settings tabs", () => {
     renderSettingsPage();
 
     const tabLabels = screen
@@ -406,15 +385,15 @@ describe("SettingsPage Component", () => {
       .map((button) => button.textContent);
 
     expect(tabLabels.indexOf("usage.title")).toBeLessThan(
-      tabLabels.indexOf("settings.tabApiHub"),
-    );
-    expect(tabLabels.indexOf("settings.tabApiHub")).toBeLessThan(
       tabLabels.indexOf("common.about"),
     );
 
-    fireEvent.click(screen.getByText("settings.tabApiHub"));
+    fireEvent.click(screen.getByText("usage.title"));
 
-    expect(screen.getByText("api-hub-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-usage")).toHaveAttribute(
+      "data-state",
+      "active",
+    );
   });
 
   it("keeps settings tab content order aligned with tab triggers", () => {
@@ -426,7 +405,6 @@ describe("SettingsPage Component", () => {
       "auth",
       "advanced",
       "usage",
-      "apiHub",
       "about",
     ];
     const declaredTabContentOrder = renderedTabContentValues.filter(
@@ -436,17 +414,18 @@ describe("SettingsPage Component", () => {
     expect(declaredTabContentOrder).toEqual(expectedTabOrder);
   });
 
-  it("should keep Api-Hub panel state when switching settings tabs", () => {
+  it("should reset tab content scroll position when switching settings tabs", () => {
     renderSettingsPage();
 
-    fireEvent.click(screen.getByText("settings.tabApiHub"));
-    const probe = screen.getByLabelText("api-hub-state-probe");
-    fireEvent.change(probe, { target: { value: "new-api" } });
+    fireEvent.click(screen.getByText("usage.title"));
+    const usageTab = screen.getByTestId("tab-usage") as HTMLDivElement;
+    usageTab.scrollTop = 640;
 
     fireEvent.click(screen.getByText("settings.tabGeneral"));
-    fireEvent.click(screen.getByText("settings.tabApiHub"));
+    fireEvent.click(screen.getByText("usage.title"));
 
-    expect(screen.getByLabelText("api-hub-state-probe")).toHaveValue("new-api");
+    const reloadedUsageTab = screen.getByTestId("tab-usage") as HTMLDivElement;
+    expect(reloadedUsageTab.scrollTop).toBe(0);
   });
 
   it("should pass onImportSuccess callback to useImportExport hook", async () => {

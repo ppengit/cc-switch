@@ -51,9 +51,6 @@ pub struct ProxyState {
     pub failover_manager: Arc<FailoverSwitchManager>,
     /// 实时代理活动（仅内存态，不落库）
     pub proxy_activity: Arc<RwLock<ProxyActivityState>>,
-    /// 分流模式下的会话粘性路由表：app+session -> (provider_id, expires_at)。
-    pub load_balancing_affinity:
-        Arc<RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>,
     /// 切换代次（per-app 单调递增）：每次显式切换/启停供应商时 +1。
     ///
     /// 转发请求在开始时 snapshot 此值；请求成功完成后写
@@ -103,7 +100,6 @@ impl ProxyServer {
             proxy_activity: Arc::new(RwLock::new(
                 ProxyActivityState::with_raw_log_retention_minutes(raw_log_retention_minutes),
             )),
-            load_balancing_affinity: Arc::new(RwLock::new(std::collections::HashMap::new())),
             switch_epoch: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
 
@@ -136,11 +132,15 @@ impl ProxyServer {
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .map_err(|e| ProxyError::BindFailed(e.to_string()))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| ProxyError::BindFailed(e.to_string()))?;
+        let actual_port = local_addr.port();
 
-        log::info!("[{}] 代理服务器启动于 {addr}", log_srv::STARTED);
+        log::info!("[{}] 代理服务器启动于 {local_addr}", log_srv::STARTED);
 
         // 更新全局代理端口，用于系统代理检测
-        crate::proxy::http_client::set_proxy_port(self.config.listen_port);
+        crate::proxy::http_client::set_proxy_port(actual_port);
 
         // 保存关闭句柄
         *self.shutdown_tx.write().await = Some(shutdown_tx);
@@ -149,7 +149,7 @@ impl ProxyServer {
         let mut status = self.state.status.write().await;
         status.running = true;
         status.address = self.config.listen_address.clone();
-        status.port = self.config.listen_port;
+        status.port = actual_port;
         drop(status);
 
         // 记录启动时间
@@ -237,7 +237,7 @@ impl ProxyServer {
 
         Ok(ProxyServerInfo {
             address: self.config.listen_address.clone(),
-            port: self.config.listen_port,
+            port: actual_port,
             started_at: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -367,12 +367,6 @@ impl ProxyServer {
         if should_clear {
             current_providers.remove(app_type);
         }
-
-        let mut affinity = self.state.load_balancing_affinity.write().await;
-        let prefix = format!("{app_type}:");
-        affinity.retain(|key, (target_provider_id, _)| {
-            !key.starts_with(&prefix) || target_provider_id != provider_id
-        });
     }
 
     fn build_router(&self) -> Router {
