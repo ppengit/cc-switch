@@ -333,12 +333,54 @@ fn codex_state_db_paths(config_dir: &Path, config_text: &str) -> Vec<PathBuf> {
 }
 
 fn sqlite_home_from_codex_config(config_text: &str) -> Option<PathBuf> {
-    let doc = config_text.parse::<DocumentMut>().ok()?;
-    let raw = doc.get("sqlite_home")?.as_str()?.trim();
+    if let Ok(doc) = config_text.parse::<DocumentMut>() {
+        if let Some(raw) = doc.get("sqlite_home").and_then(|item| item.as_str()) {
+            let raw = raw.trim();
+            if !raw.is_empty() {
+                return Some(resolve_user_path(raw));
+            }
+        }
+    }
+
+    let raw = top_level_toml_string_value(config_text, "sqlite_home")?;
     if raw.is_empty() {
         return None;
     }
-    Some(resolve_user_path(raw))
+    Some(resolve_user_path(&raw))
+}
+
+fn top_level_toml_string_value(config_text: &str, key: &str) -> Option<String> {
+    for line in config_text.lines() {
+        let line = line.trim_start();
+        if line.starts_with('[') {
+            break;
+        }
+
+        let Some((candidate_key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if candidate_key.trim() != key {
+            continue;
+        }
+
+        let raw = lenient_toml_string_value(value.trim())?.trim().to_string();
+        if !raw.is_empty() {
+            return Some(raw);
+        }
+    }
+
+    None
+}
+
+fn lenient_toml_string_value(value: &str) -> Option<&str> {
+    let quote = value.chars().next()?;
+    if quote == '"' || quote == '\'' {
+        let rest = &value[quote.len_utf8()..];
+        let end = rest.find(quote)?;
+        return Some(&rest[..end]);
+    }
+
+    Some(value.split('#').next().unwrap_or(value).trim())
 }
 
 fn resolve_user_path(raw: &str) -> PathBuf {
@@ -729,6 +771,23 @@ mod tests {
         assert_eq!(
             lookup_codex_thread_title(Some(&titles), "missing-id", &session_path).as_deref(),
             Some("State DB Title")
+        );
+    }
+
+    #[test]
+    fn codex_state_db_paths_reads_raw_windows_sqlite_home() {
+        let config_dir = PathBuf::from(r"C:\Users\tester\.codex");
+        let config_text = r#"sqlite_home = "C:\Users\tester\AppData\Local\Codex State""#;
+
+        let paths = codex_state_db_paths(&config_dir, config_text);
+
+        assert_eq!(
+            paths,
+            vec![
+                config_dir.join(CODEX_STATE_DB_FILENAME),
+                PathBuf::from(r"C:\Users\tester\AppData\Local\Codex State")
+                    .join(CODEX_STATE_DB_FILENAME),
+            ]
         );
     }
 

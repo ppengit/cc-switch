@@ -119,6 +119,7 @@ import {
   DEFAULT_PROVIDER_MODEL,
   DEFAULT_PROVIDER_MODEL_LABEL,
 } from "@/config/defaultModels";
+import { isTextEditableTarget } from "@/utils/domUtils";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -1304,8 +1305,13 @@ export function ProviderList({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+
       const key = event.key.toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "f") {
+        // 正在输入框/可编辑区域中时不抢占 Ctrl+F（例如添加供应商表单里
+        // ProviderPresetSelector 的搜索框），避免与其同名快捷键冲突。
+        if (isTextEditableTarget(document.activeElement)) return;
         event.preventDefault();
         const input = searchInputRef.current;
         input?.focus();
@@ -1320,8 +1326,8 @@ export function ProviderList({
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    globalThis.addEventListener("keydown", handleKeyDown);
+    return () => globalThis.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   useEffect(() => {
@@ -4274,10 +4280,7 @@ function SortableProviderTableRow({
                     {failureCount > 0 ? ` ${failureCount}` : ""}
                   </Badge>
                 ) : hasPersistedError ? (
-                  <Badge
-                    variant="destructive"
-                    className="h-5 px-1.5 text-xs"
-                  >
+                  <Badge variant="destructive" className="h-5 px-1.5 text-xs">
                     {t("provider.lastErrorBadge", { defaultValue: "异常" })}
                   </Badge>
                 ) : null}

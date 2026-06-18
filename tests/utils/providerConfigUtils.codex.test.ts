@@ -88,6 +88,26 @@ describe("Codex TOML utils", () => {
     expect(output.match(/base_url\s*=/g)).toHaveLength(1);
   });
 
+  it("updates a double-quoted base_url containing single quotes without duplicating it", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'base_url = "https://su\'us.codes/v1"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://su'us'd.codes/v1");
+
+    expect(extractCodexBaseUrl(output)).toBe("https://su'us'd.codes/v1");
+    expect(output.match(/^\s*base_url\s*=/gm)).toHaveLength(1);
+    expect(output).toContain("base_url = \"https://su'us'd.codes/v1\"");
+  });
+
   it("replaces an empty top-level model placeholder instead of appending a duplicate line", () => {
     const input = [
       'model_provider = "custom"',
@@ -137,6 +157,28 @@ describe("Codex TOML utils", () => {
     );
     expect(isKnownFullApiEndpoint("https://relay.example/v1")).toBe(false);
     expect(isKnownFullApiEndpoint("https://relay.example/api")).toBe(false);
+  });
+
+  it("collapses duplicate base_url lines when editing the active provider section", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "gpt-5.4"',
+      "",
+      "[model_providers.custom]",
+      'name = "custom"',
+      'base_url = "https://old.example/v1"',
+      'base_url = "https://older.example/v1"',
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "",
+    ].join("\n");
+
+    const output = setCodexBaseUrl(input, "https://new.example/v1");
+
+    expect(extractCodexBaseUrl(output)).toBe("https://new.example/v1");
+    expect(output.match(/^\s*base_url\s*=/gm)).toHaveLength(1);
+    expect(output).toContain('base_url = "https://new.example/v1"');
+    expect(output).not.toContain("older.example");
   });
 
   it("reads and writes base_url in the active provider section", () => {

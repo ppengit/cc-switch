@@ -2805,8 +2805,9 @@ impl Database {
         }
 
         let sql = format!("ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";");
-        conn.execute(&sql, [])
-            .map_err(|e| AppError::Database(format!("移除表 {table} 的废弃列 {column} 失败: {e}")))?;
+        conn.execute(&sql, []).map_err(|e| {
+            AppError::Database(format!("移除表 {table} 的废弃列 {column} 失败: {e}"))
+        })?;
 
         log::info!("已从表 {table} 移除废弃列 {column}");
         Ok(true)
