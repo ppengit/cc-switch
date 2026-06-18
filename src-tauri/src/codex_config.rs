@@ -280,15 +280,6 @@ pub fn extract_codex_base_url(config_text: &str) -> Option<String> {
         }
     }
 
-    if let Some(providers) = providers {
-        let mut provider_tables = providers.iter().filter(|(_, value)| value.is_table());
-        if let (Some((_, provider)), None) = (provider_tables.next(), provider_tables.next()) {
-            if let Some(base_url) = provider.get("base_url").and_then(|v| v.as_str()) {
-                return Some(base_url.to_string());
-            }
-        }
-    }
-
     doc.get("base_url")
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
@@ -1919,7 +1910,7 @@ wire_api = "responses"
     }
 
     #[test]
-    fn extract_base_url_uses_single_renamed_provider_section() {
+    fn extract_base_url_ignores_single_renamed_provider_section_until_repaired() {
         let input = r#"model_provider = "custom"
 model = "gpt-5.5"
 
@@ -1929,10 +1920,7 @@ base_url = "https://relay.example/v1"
 wire_api = "responses"
 "#;
 
-        assert_eq!(
-            extract_codex_base_url(input).as_deref(),
-            Some("https://relay.example/v1")
-        );
+        assert_eq!(extract_codex_base_url(input), None);
     }
 
     #[test]

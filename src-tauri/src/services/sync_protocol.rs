@@ -418,12 +418,194 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::{Database, SCHEMA_VERSION};
+    use serial_test::serial;
+    use std::fs;
+
+    struct TestHomeGuard {
+        old_home: Option<std::ffi::OsString>,
+        path: std::path::PathBuf,
+    }
+
+    impl TestHomeGuard {
+        fn new(name: &str) -> Self {
+            let old_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+            let path = std::env::temp_dir().join(name);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("create test home");
+            std::env::set_var("CC_SWITCH_TEST_HOME", &path);
+            Self { old_home, path }
+        }
+    }
+
+    impl Drop for TestHomeGuard {
+        fn drop(&mut self) {
+            match self.old_home.as_ref() {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn artifact(sha256: &str, size: u64) -> ArtifactMeta {
         ArtifactMeta {
             sha256: sha256.to_string(),
             size,
         }
+    }
+
+    fn legacy_sql_with_removed_objects(current_export: &str) -> String {
+        let legacy_objects = r#"
+ALTER TABLE providers ADD COLUMN api_hub_origin TEXT;
+ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10;
+CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
+CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
+CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
+CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
+"#;
+        current_export
+            .replace(
+                &format!("-- user_version: {SCHEMA_VERSION}"),
+                "-- user_version: 18",
+            )
+            .replace(
+                &format!("PRAGMA user_version={SCHEMA_VERSION};"),
+                "PRAGMA user_version=18;",
+            )
+            .replace("COMMIT;\n", &format!("{legacy_objects}COMMIT;\n"))
+    }
+
+    #[test]
+    #[serial]
+    fn build_local_snapshot_omits_removed_schema_objects() -> Result<(), AppError> {
+        let _guard = TestHomeGuard::new("cc-switch-sync-build-snapshot-clean-schema-test");
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('sync-provider', 'claude', 'Sync Provider', '{}', '{}')",
+                [],
+            )?;
+            Database::set_user_version(&conn, SCHEMA_VERSION)?;
+        }
+
+        let snapshot = build_local_snapshot(&db)?;
+        let sql = std::str::from_utf8(&snapshot.db_sql).expect("sync db.sql should be UTF-8");
+
+        for removed in [
+            "api_hub_sites",
+            "api_hub_groups",
+            "api_hub_models",
+            "api_hub_tokens",
+            "api_hub_origin",
+            "load_balancing_enabled",
+            "load_balancing_sticky_minutes",
+        ] {
+            assert!(
+                !sql.contains(removed),
+                "cloud sync db.sql should not include removed schema object {removed}"
+            );
+        }
+
+        let manifest: SyncManifest =
+            serde_json::from_slice(&snapshot.manifest_bytes).expect("parse manifest");
+        assert_eq!(manifest.db_compat_version, Some(DB_COMPAT_VERSION));
+        assert!(manifest.artifacts.contains_key(REMOTE_DB_SQL));
+        assert!(manifest.artifacts.contains_key(REMOTE_SKILLS_ZIP));
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn apply_snapshot_migrates_legacy_sync_sql_and_preserves_local_tables() -> Result<(), AppError>
+    {
+        let _guard = TestHomeGuard::new("cc-switch-sync-apply-legacy-sql-cleanup-test");
+        let remote_db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(remote_db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('remote-provider', 'claude', 'Remote Provider', '{}', '{}')",
+                [],
+            )?;
+            Database::set_user_version(&conn, SCHEMA_VERSION)?;
+        }
+        let remote_snapshot = build_local_snapshot(&remote_db)?;
+        let current_sql =
+            std::str::from_utf8(&remote_snapshot.db_sql).expect("sync db.sql should be UTF-8");
+        let legacy_sql = legacy_sql_with_removed_objects(current_sql);
+
+        let local_db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(local_db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('local-provider', 'claude', 'Local Provider', '{}', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES ('local-req', 'local-provider', 'claude', 'claude-3', 10, 5, '0.01', 100, 200, 1000)",
+                [],
+            )?;
+        }
+
+        apply_snapshot(
+            &local_db,
+            legacy_sql.as_bytes(),
+            &remote_snapshot.skills_zip,
+        )?;
+
+        let conn = crate::database::lock_conn!(local_db.conn);
+        assert_eq!(
+            Database::get_user_version(&conn)?,
+            SCHEMA_VERSION,
+            "cloud sync snapshot import should migrate legacy db.sql"
+        );
+        let remote_provider_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM providers WHERE id = 'remote-provider'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remote_provider_count, 1);
+        let preserved_logs: i64 =
+            conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(
+            preserved_logs, 1,
+            "cloud sync download should preserve local-only request logs"
+        );
+        for table in [
+            "api_hub_sites",
+            "api_hub_groups",
+            "api_hub_models",
+            "api_hub_tokens",
+        ] {
+            assert!(
+                !Database::table_exists(&conn, table)?,
+                "{table} should be dropped by cloud sync import"
+            );
+        }
+        for (table, column) in [
+            ("providers", "api_hub_origin"),
+            ("proxy_config", "load_balancing_enabled"),
+            ("proxy_config", "load_balancing_sticky_minutes"),
+        ] {
+            assert!(
+                !Database::has_column(&conn, table, column)?,
+                "{table}.{column} should be dropped by cloud sync import"
+            );
+        }
+
+        Ok(())
     }
 
     #[test]

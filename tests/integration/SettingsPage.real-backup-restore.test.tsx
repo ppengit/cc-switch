@@ -178,8 +178,8 @@ describe("SettingsPage backup restore with real BackupListSection", () => {
     );
 
     await user.click(
-      screen.getByRole("button", {
-        name: /Backup & Restore/,
+      await screen.findByRole("button", {
+        name: /settings\.advanced\.backup\.title|Backup & Restore/,
       }),
     );
 

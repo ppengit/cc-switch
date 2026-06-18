@@ -812,6 +812,114 @@ mod tests {
     }
 
     #[test]
+    fn export_sql_omits_removed_schema_objects() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('current-provider', 'claude', 'Current Provider', '{}', '{}')",
+                [],
+            )?;
+        }
+
+        let export = db.export_sql_string()?;
+
+        for removed in [
+            "api_hub_sites",
+            "api_hub_groups",
+            "api_hub_models",
+            "api_hub_tokens",
+            "api_hub_origin",
+            "load_balancing_enabled",
+            "load_balancing_sticky_minutes",
+        ] {
+            assert!(
+                !export.contains(removed),
+                "current SQL export should not include removed schema object {removed}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn import_legacy_sql_export_runs_removed_schema_cleanup() -> Result<(), AppError> {
+        let _guard = TestHomeGuard::new("cc-switch-import-legacy-sql-cleanup-test");
+        let source_db = Database::memory()?;
+        {
+            let conn = crate::database::lock_conn!(source_db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('legacy-provider', 'claude', 'Legacy Provider', '{}', '{}')",
+                [],
+            )?;
+            Database::set_user_version(&conn, SCHEMA_VERSION)?;
+        }
+
+        let current_export = source_db.export_sql_string()?;
+        let legacy_objects = r#"
+ALTER TABLE providers ADD COLUMN api_hub_origin TEXT;
+ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10;
+CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
+CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
+CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
+CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
+"#;
+        let legacy_export = current_export
+            .replace(
+                &format!("-- user_version: {SCHEMA_VERSION}"),
+                "-- user_version: 18",
+            )
+            .replace(
+                &format!("PRAGMA user_version={SCHEMA_VERSION};"),
+                "PRAGMA user_version=18;",
+            )
+            .replace("COMMIT;\n", &format!("{legacy_objects}COMMIT;\n"));
+
+        let imported_db = Database::memory()?;
+        imported_db.import_sql_string(&legacy_export)?;
+
+        let conn = crate::database::lock_conn!(imported_db.conn);
+        assert_eq!(
+            Database::get_user_version(&conn)?,
+            SCHEMA_VERSION,
+            "SQL import should migrate legacy exports to the current schema version"
+        );
+        for table in [
+            "api_hub_sites",
+            "api_hub_groups",
+            "api_hub_models",
+            "api_hub_tokens",
+        ] {
+            assert!(
+                !Database::table_exists(&conn, table)?,
+                "{table} should be dropped during SQL import migration"
+            );
+        }
+        for (table, column) in [
+            ("providers", "api_hub_origin"),
+            ("proxy_config", "load_balancing_enabled"),
+            ("proxy_config", "load_balancing_sticky_minutes"),
+        ] {
+            assert!(
+                !Database::has_column(&conn, table, column)?,
+                "{table}.{column} should be dropped during SQL import migration"
+            );
+        }
+        let provider_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM providers WHERE id = 'legacy-provider'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(provider_count, 1, "valid provider data should be retained");
+
+        Ok(())
+    }
+
+    #[test]
     #[serial]
     fn restore_from_legacy_backup_runs_schema_migrations() -> Result<(), AppError> {
         let _guard = TestHomeGuard::new("cc-switch-restore-legacy-backup-test");
@@ -826,6 +934,15 @@ mod tests {
             conn.execute_batch(
                 r#"
                 PRAGMA user_version=15;
+                CREATE TABLE providers (
+                    id TEXT NOT NULL,
+                    app_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    settings_config TEXT NOT NULL DEFAULT '{}',
+                    meta TEXT NOT NULL DEFAULT '{}',
+                    api_hub_origin TEXT,
+                    PRIMARY KEY (id, app_type)
+                );
                 CREATE TABLE proxy_config (
                     app_type TEXT PRIMARY KEY,
                     listen_port INTEGER NOT NULL DEFAULT 15721,
@@ -845,6 +962,10 @@ mod tests {
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
+                CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
+                CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
+                CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
                 INSERT INTO proxy_config (
                     app_type,
                     enabled,
@@ -871,6 +992,21 @@ mod tests {
             !Database::has_column(&conn, "proxy_config", "load_balancing_sticky_minutes")?,
             "restored legacy backup should drop load balancing sticky minutes"
         );
+        assert!(
+            !Database::has_column(&conn, "providers", "api_hub_origin")?,
+            "restored legacy backup should drop providers.api_hub_origin"
+        );
+        for table in [
+            "api_hub_sites",
+            "api_hub_groups",
+            "api_hub_models",
+            "api_hub_tokens",
+        ] {
+            assert!(
+                !Database::table_exists(&conn, table)?,
+                "{table} should be dropped after restoring a legacy backup"
+            );
+        }
 
         let user_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         assert_eq!(user_version, SCHEMA_VERSION);

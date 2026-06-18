@@ -3967,14 +3967,14 @@ mod tests {
         #[test]
         fn windows_path_with_space_is_double_quoted() {
             // 含空格的路径(`C:\Program Files\...`)在生成命令时必须用双引号包,否则
-            // bat / cmd /C 解析会把第一个空格当 token 分隔符,后续参数串错。**精确等值断言
-            // 锁定引号位置**(starts_with+contains 会放过"双引号位置错了但仍能命中"的回归)。
+            // bat / cmd /C 解析会把第一个空格当 token 分隔符,后续参数串错。Codex
+            // Windows 升级直接锚定同目录包管理器,避免 `codex update` 假成功掩盖
+            // optional dependency 缺失。精确等值断言锁定引号位置。
             let (_dir, sub, bin_path) = setup_sibling("Program Files", "codex.cmd", &["npm.cmd"]);
             let cmd = anchored_command_from_paths("codex", &bin_path, &bin_path);
             let npm_full = format!("{}\\npm.cmd", sub.to_string_lossy());
             let expected = format!(
-                "{} update || call {} i -g @openai/codex@latest",
-                expect_quoted_path(&bin_path),
+                "{} i -g @openai/codex@latest",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(cmd.as_deref(), Some(expected.as_str()));
@@ -3997,8 +3997,7 @@ mod tests {
             // 会让 expected 漏引号、假失败)。
             let npm_full = format!("{}\\npm.cmd", sub.to_string_lossy());
             let expected = format!(
-                "call {} update || call {} i -g @openai/codex@latest",
-                expect_quoted_path(&bin_path),
+                "call {} i -g @openai/codex@latest",
                 expect_quoted_path(&npm_full)
             );
             assert_eq!(batch_line, expected);
