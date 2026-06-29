@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeCodexCatalogModelsForSave,
   normalizeCodexModelRoutesForSave,
+  normalizeUrlForSave,
 } from "@/components/providers/forms/ProviderForm";
 
 describe("ProviderForm Codex catalog helpers", () => {
@@ -29,5 +30,17 @@ describe("ProviderForm Codex catalog helpers", () => {
     ).toEqual({
       "gpt-5.4-mini": { model: "gpt-5.5" },
     });
+  });
+
+  it("adds https scheme to provider request URLs before saving", () => {
+    expect(normalizeUrlForSave(" api.example.com/v1/ ")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(normalizeUrlForSave("//api.example.com/v1/")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(normalizeUrlForSave("http://localhost:11434/v1/")).toBe(
+      "http://localhost:11434/v1",
+    );
   });
 });

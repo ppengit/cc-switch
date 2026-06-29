@@ -19,6 +19,7 @@ import type {
   ProviderCategory,
   ProviderMeta,
   ProviderTestConfig,
+  ProviderUpstreamAdmissionRetry,
   ClaudeApiFormat,
   CodexApiFormat,
   CodexCatalogModel,
@@ -150,6 +151,40 @@ const codexApiFormatFromWireApi = (
     default:
       return undefined;
   }
+};
+
+const normalizeAdmissionRetryConfigForSave = (
+  config: ProviderUpstreamAdmissionRetry,
+): ProviderUpstreamAdmissionRetry | undefined => {
+  const clamp = (
+    value: number | undefined,
+    min: number,
+    max: number,
+  ): number | undefined => {
+    if (value === undefined || Number.isNaN(value)) return undefined;
+    return Math.min(max, Math.max(min, Math.trunc(value)));
+  };
+
+  const normalized: ProviderUpstreamAdmissionRetry = {
+    enabled: config.enabled === true,
+  };
+  const maxRetries = clamp(config.maxRetries, 0, 1_000_000);
+  const initialDelayMs = clamp(config.initialDelayMs, 0, 10_000);
+  const maxDelayMs = clamp(config.maxDelayMs, 0, 30_000);
+  const jitterMs = clamp(config.jitterMs, 0, 5_000);
+
+  if (maxRetries !== undefined) normalized.maxRetries = maxRetries;
+  if (initialDelayMs !== undefined) normalized.initialDelayMs = initialDelayMs;
+  if (maxDelayMs !== undefined) normalized.maxDelayMs = maxDelayMs;
+  if (jitterMs !== undefined) normalized.jitterMs = jitterMs;
+
+  return normalized.enabled ||
+    maxRetries !== undefined ||
+    initialDelayMs !== undefined ||
+    maxDelayMs !== undefined ||
+    jitterMs !== undefined
+    ? normalized
+    : undefined;
 };
 
 // 从已保存的 settingsConfig 推断 Codex 模型目录条目数（用于决定本地路由初始开关）。
@@ -356,11 +391,17 @@ const getSeededGeminiTemplate = (
   return { env, config };
 };
 
-const normalizeUrlForSave = (value: string): string => {
+export const normalizeUrlForSave = (value: string): string => {
   const trimmed = value.trim();
   if (!trimmed) return "";
   if (/^https?:\/\/$/i.test(trimmed)) return trimmed;
-  return trimmed.replace(/\/+$/, "");
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`.replace(/\/+$/, "");
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  return withScheme.replace(/\/+$/, "");
 };
 
 const normalizeWebsiteFromEndpoint = (endpoint: string): string => {
@@ -547,6 +588,11 @@ function ProviderFormFull({
       initialData?.meta?.pricingModelSource,
     ),
   }));
+  const [admissionRetryConfig, setAdmissionRetryConfig] =
+    useState<ProviderUpstreamAdmissionRetry>(() => ({
+      ...(initialData?.meta?.upstreamAdmissionRetry ?? {}),
+      enabled: initialData?.meta?.upstreamAdmissionRetry?.enabled ?? false,
+    }));
   const [codexChatReasoning, setCodexChatReasoning] =
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
@@ -612,6 +658,10 @@ function ProviderFormFull({
       pricingModelSource: normalizePricingSource(
         seed?.meta?.pricingModelSource,
       ),
+    });
+    setAdmissionRetryConfig({
+      ...(seed?.meta?.upstreamAdmissionRetry ?? {}),
+      enabled: seed?.meta?.upstreamAdmissionRetry?.enabled ?? false,
     });
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
     setCodexModelRoutes(seed?.meta?.codexModelRoutes ?? {});
@@ -2034,6 +2084,8 @@ function ProviderFormFull({
       localProxyRequestOverrides: shouldApplyLocalProxyRequestOverrides
         ? overridesResult.overrides
         : undefined,
+      upstreamAdmissionRetry:
+        normalizeAdmissionRetryConfigForSave(admissionRetryConfig),
       testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
@@ -3112,8 +3164,10 @@ function ProviderFormFull({
               <ProviderAdvancedConfig
                 testConfig={testConfig}
                 pricingConfig={pricingConfig}
+                admissionRetryConfig={admissionRetryConfig}
                 onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
+                onAdmissionRetryConfigChange={setAdmissionRetryConfig}
               />
             )}
 

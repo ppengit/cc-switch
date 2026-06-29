@@ -352,6 +352,7 @@ fn launch_windows_terminal(
     }
 
     let command = command.trim();
+    let batch_file = write_windows_resume_batch(command, cwd.as_deref())?;
 
     let result = match target {
         "powershell" => {
@@ -359,64 +360,38 @@ fn launch_windows_terminal(
             // ExecutionPolicy=Restricted 的 PowerShell 中被拒绝加载。临时给当前
             // 启动的 PowerShell 进程加上 `-ExecutionPolicy Bypass`，作用域仅限
             // 本次会话，不修改系统策略，避免拉脚本时报 PSSecurityException。
-            let escaped = escape_powershell_single_quote(command);
-            if let Some(cwd_value) = cwd.as_deref() {
-                let escaped_cwd = escape_powershell_single_quote(cwd_value);
-                let script = format!(
-                    "Set-Location -LiteralPath '{escaped_cwd}'; Invoke-Expression '{escaped}'"
-                );
-                run_windows_start(
-                    &[
-                        "powershell",
-                        "-NoExit",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-Command",
-                        &script,
-                    ],
-                    "PowerShell",
-                )
-            } else {
-                run_windows_start(
-                    &[
-                        "powershell",
-                        "-NoExit",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-Command",
-                        &format!("Invoke-Expression '{escaped}'"),
-                    ],
-                    "PowerShell",
-                )
-            }
+            let script = build_powershell_batch_invocation(&batch_file);
+            run_windows_start(
+                &[
+                    "powershell",
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &script,
+                ],
+                "PowerShell",
+            )
         }
         "wt" => run_windows_start_owned(
-            &build_windows_terminal_args(command, cwd.as_deref()),
+            &build_windows_terminal_args_for_script(&batch_file, cwd.as_deref()),
             "Windows Terminal",
         ),
-        "cmd" => {
-            if let Some(cwd_value) = cwd.as_deref() {
-                run_windows_start(&["/D", cwd_value, "cmd", "/K", command], "cmd")
-            } else {
-                run_windows_start(&["cmd", "/K", command], "cmd")
-            }
-        }
-        _ => run_windows_start(&["cmd", "/K", command], "cmd"),
+        "cmd" => run_windows_start_owned(&build_windows_cmd_args_for_script(&batch_file), "cmd"),
+        _ => run_windows_start_owned(&build_windows_cmd_args_for_script(&batch_file), "cmd"),
     };
 
-    if result.is_ok() {
-        return Ok(());
-    }
-
-    if target != "cmd" {
-        if let Some(cwd_value) = cwd.as_deref() {
-            run_windows_start(&["/D", cwd_value, "cmd", "/K", command], "cmd")
-        } else {
-            run_windows_start(&["cmd", "/K", command], "cmd")
-        }
+    let final_result = if result.is_err() && target != "cmd" {
+        run_windows_start_owned(&build_windows_cmd_args_for_script(&batch_file), "cmd")
     } else {
         result
+    };
+
+    if final_result.is_err() {
+        let _ = std::fs::remove_file(&batch_file);
     }
+
+    final_result
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -446,6 +421,68 @@ fn strip_windows_extended_length_prefix(path: &Path) -> PathBuf {
     } else {
         path.to_path_buf()
     }
+}
+
+#[cfg(target_os = "windows")]
+fn write_windows_resume_batch(command: &str, cwd: Option<&str>) -> Result<PathBuf, String> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let batch_file = std::env::temp_dir().join(format!(
+        "cc_switch_resume_{}_{}.bat",
+        std::process::id(),
+        unique
+    ));
+    let content = build_windows_resume_batch_content(command, cwd);
+
+    std::fs::write(&batch_file, content)
+        .map_err(|e| format!("Failed to write resume launcher batch file: {e}"))?;
+
+    Ok(batch_file)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_resume_batch_content(command: &str, cwd: Option<&str>) -> String {
+    let cwd_command = build_windows_cwd_command(cwd);
+    format!(
+        "@echo off\r\n{cwd_command}call {command}\r\nset CC_SWITCH_RESUME_EXIT=%ERRORLEVEL%\r\necho.\r\necho [cc-switch] Resume command exited with code %CC_SWITCH_RESUME_EXIT%.\r\ndel \"%~f0\" >nul 2>&1\r\nexit /b %CC_SWITCH_RESUME_EXIT%\r\n",
+        command = command.trim()
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_cwd_command(cwd: Option<&str>) -> String {
+    cwd.map(build_windows_cwd_command_str).unwrap_or_default()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_cwd_command_str(path: &str) -> String {
+    let escaped = escape_windows_batch_value(path);
+
+    if is_windows_unc_path(path) {
+        format!("pushd \"{escaped}\" || exit /b 1\r\n")
+    } else {
+        format!("cd /d \"{escaped}\" || exit /b 1\r\n")
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_windows_unc_path(path: &str) -> bool {
+    path.starts_with(r"\\")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn escape_windows_batch_value(value: &str) -> String {
+    value
+        .replace('^', "^^")
+        .replace('%', "%%")
+        .replace('&', "^&")
+        .replace('|', "^|")
+        .replace('<', "^<")
+        .replace('>', "^>")
+        .replace('(', "^(")
+        .replace(')', "^)")
 }
 
 #[cfg(target_os = "windows")]
@@ -501,8 +538,7 @@ fn run_windows_start(args: &[&str], terminal_name: &str) -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> {
-    let command = command.trim();
+fn build_windows_terminal_args_for_script(script_path: &Path, cwd: Option<&str>) -> Vec<String> {
     let cwd = valid_windows_cwd(cwd);
     let mut args = vec!["wt".to_string()];
 
@@ -511,8 +547,17 @@ fn build_windows_terminal_args(command: &str, cwd: Option<&str>) -> Vec<String> 
         args.push(cwd_value.to_string());
     }
 
-    args.extend(["cmd".to_string(), "/K".to_string(), command.to_string()]);
+    args.extend(build_windows_cmd_args_for_script(script_path));
     args
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_cmd_args_for_script(script_path: &Path) -> Vec<String> {
+    vec![
+        "cmd".to_string(),
+        "/K".to_string(),
+        script_path.to_string_lossy().to_string(),
+    ]
 }
 
 #[cfg(target_os = "windows")]
@@ -521,9 +566,17 @@ fn run_windows_start_owned(args: &[String], terminal_name: &str) -> Result<(), S
     run_windows_start(&borrowed, terminal_name)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn escape_powershell_single_quote(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn build_powershell_batch_invocation(script_path: &Path) -> String {
+    format!(
+        "& '{}'",
+        escape_powershell_single_quote(script_path.to_string_lossy().as_ref())
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -691,20 +744,43 @@ mod tests {
     }
 
     #[test]
-    fn windows_terminal_runs_resume_command_in_cmd_inside_windows_terminal() {
+    fn windows_resume_batch_runs_command_via_call_and_cleans_itself() {
+        let content =
+            build_windows_resume_batch_content("codex resume abc-123", Some(r"C:\work\repo"));
+
+        assert!(content.contains("cd /d \"C:\\work\\repo\" || exit /b 1\r\n"));
+        assert!(content.contains("call codex resume abc-123\r\n"));
+        assert!(content.contains("set CC_SWITCH_RESUME_EXIT=%ERRORLEVEL%"));
+        assert!(content.contains("del \"%~f0\" >nul 2>&1"));
+    }
+
+    #[test]
+    fn windows_resume_batch_uses_pushd_for_unc_cwd() {
+        let content = build_windows_resume_batch_content(
+            "claude --resume abc-123",
+            Some(r"\\wsl$\Ubuntu\home\coder\repo"),
+        );
+
+        assert!(content.contains("pushd \"\\\\wsl$\\Ubuntu\\home\\coder\\repo\" || exit /b 1\r\n"));
+        assert!(content.contains("call claude --resume abc-123\r\n"));
+    }
+
+    #[test]
+    fn windows_terminal_runs_resume_batch_in_cmd_inside_windows_terminal() {
         let cwd = std::env::current_dir()
             .expect("current dir")
             .to_string_lossy()
             .to_string();
         let expected_cwd = valid_windows_cwd(Some(&cwd)).expect("valid cwd");
-        let args = build_windows_terminal_args("codex resume abc-123", Some(&cwd));
+        let script_path = Path::new(r"C:\Temp\cc_switch_resume_1.bat");
+        let args = build_windows_terminal_args_for_script(script_path, Some(&cwd));
 
         assert_eq!(args[0], "wt");
         assert_eq!(args[1], "-d");
         assert_eq!(args[2], expected_cwd);
         assert_eq!(args[3], "cmd");
         assert_eq!(args[4], "/K");
-        assert_eq!(args[5], "codex resume abc-123");
+        assert_eq!(args[5], script_path.to_string_lossy().as_ref());
         assert!(
             args.iter().all(|arg| !arg.contains("cd /d")),
             "Windows Terminal cwd should be passed with -d, not embedded in cmd /K"
@@ -713,7 +789,8 @@ mod tests {
 
     #[test]
     fn windows_terminal_does_not_use_powershell_when_wt_is_selected() {
-        let args = build_windows_terminal_args("codex resume abc-123", None);
+        let script_path = Path::new(r"C:\Temp\cc_switch_resume_1.bat");
+        let args = build_windows_terminal_args_for_script(script_path, None);
 
         assert!(
             !args
@@ -721,16 +798,43 @@ mod tests {
                 .any(|arg| arg.eq_ignore_ascii_case("powershell")),
             "Windows Terminal resume should open cmd inside Windows Terminal, not PowerShell"
         );
-        assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);
+        assert_eq!(
+            args,
+            vec![
+                "wt".to_string(),
+                "cmd".to_string(),
+                "/K".to_string(),
+                script_path.to_string_lossy().to_string(),
+            ]
+        );
     }
 
     #[test]
     fn windows_terminal_ignores_missing_cwd() {
-        let args = build_windows_terminal_args(
-            "codex resume abc-123",
+        let script_path = Path::new(r"C:\Temp\cc_switch_resume_1.bat");
+        let args = build_windows_terminal_args_for_script(
+            script_path,
             Some("Z:\\cc-switch\\missing\\session\\cwd"),
         );
 
-        assert_eq!(args, vec!["wt", "cmd", "/K", "codex resume abc-123"]);
+        assert_eq!(
+            args,
+            vec![
+                "wt".to_string(),
+                "cmd".to_string(),
+                "/K".to_string(),
+                script_path.to_string_lossy().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn powershell_batch_invocation_escapes_single_quotes() {
+        let script_path = Path::new(r"C:\Temp\it's\cc_switch_resume.bat");
+
+        assert_eq!(
+            build_powershell_batch_invocation(script_path),
+            r"& 'C:\Temp\it''s\cc_switch_resume.bat'"
+        );
     }
 }

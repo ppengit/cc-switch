@@ -29,15 +29,57 @@ use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{
     app_config::AppType,
     provider::{LocalProxyRequestOverrides, Provider},
+    store::AppState,
 };
 use futures::StreamExt;
 use http::Extensions;
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+type ForwardAttemptOutput = (ProxyResponse, Option<String>, Option<String>);
+
+#[derive(Debug)]
+enum AdmissionRetryForwardError {
+    /// Normal routing semantics: the admission retry switch was off or was
+    /// turned off while retrying, so the caller should resume failover/health
+    /// handling exactly as before.
+    Normal(ProxyError),
+    /// Admission retry handled this provider attempt. The caller should return
+    /// the error to the client without failover, degradation, circuit breaking,
+    /// or provider disable/error bookkeeping.
+    Neutral(ProxyError),
+}
+
+impl AdmissionRetryForwardError {
+    fn into_inner(self) -> ProxyError {
+        match self {
+            Self::Normal(error) | Self::Neutral(error) => error,
+        }
+    }
+
+    fn is_neutral(&self) -> bool {
+        matches!(self, Self::Neutral(_))
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAdmissionRetryEvent {
+    request_id: String,
+    event: &'static str,
+    app_type: String,
+    provider_id: String,
+    provider_name: String,
+    retry_count: u32,
+    delay_ms: u64,
+    status: Option<u16>,
+    error: Option<String>,
+}
+
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -285,6 +327,28 @@ impl RequestForwarder {
         });
     }
 
+    async fn admission_retry_neutral_failure(
+        &self,
+        provider: &Provider,
+        app_type_str: &str,
+        used_half_open_permit: bool,
+        error: ProxyError,
+    ) -> ForwardError {
+        self.router
+            .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
+            .await;
+        log::warn!(
+            "[{}] 上游入场重试中性结束，不触发故障转移/降级/熔断: provider={}, error={}",
+            app_type_str,
+            provider.name,
+            summarize_proxy_error(&error)
+        );
+        ForwardError {
+            error,
+            provider: Some(provider.clone()),
+        }
+    }
+
     /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
     ///
     /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`，
@@ -425,8 +489,9 @@ impl RequestForwarder {
         let mut providers = providers.into_iter();
 
         // 非故障转移的单 Provider 场景下跳过熔断器检查，避免普通接管模式被熔断器彻底阻塞。
-        // 故障转移开启时，即使队列只有 1 个 Provider，也必须尊重 HalfOpen 探测名额。
-        let bypass_circuit_breaker = provider_count == 1 && !self.auto_failover_enabled_at_start;
+        // 故障转移开启时，即使队列只有 1 个 Provider，也默认尊重 HalfOpen 探测名额。
+        let bypass_circuit_breaker_for_single_takeover =
+            provider_count == 1 && !self.auto_failover_enabled_at_start;
 
         // 依次尝试每个供应商
         loop {
@@ -452,8 +517,15 @@ impl RequestForwarder {
                 break;
             }
 
-            // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
-            // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
+            // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）。
+            // 入场重试是用户显式临时开启的“挤入上游”模式：开启后不应被既有熔断
+            // 拦截，也不应占用 HalfOpen 探测名额；拥挤类失败会在同一 provider
+            // 内部持续重试，直到成功、关闭开关或遇到非入场类错误。
+            let admission_retry_enabled_at_attempt = self
+                .current_admission_retry_policy(app_type, &provider)
+                .is_some();
+            let bypass_circuit_breaker =
+                bypass_circuit_breaker_for_single_takeover || admission_retry_enabled_at_attempt;
             let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
                 (true, false)
             } else {
@@ -510,9 +582,10 @@ impl RequestForwarder {
                 status.current_provider_id = Some(provider.id.clone());
             }
 
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
+            // 转发请求。供应商级入场重试只在 overloaded/capacity/rate-limit
+            // 类错误上持续重试同一 provider；关闭开关后立即回到原有 failover 流程。
             match self
-                .forward(
+                .forward_with_admission_retry(
                     app_type,
                     &method,
                     &provider,
@@ -581,7 +654,20 @@ impl RequestForwarder {
                         connection_guard: None,
                     });
                 }
-                Err(e) => {
+                Err(admission_error) => {
+                    let admission_retry_neutral = admission_error.is_neutral();
+                    let e = admission_error.into_inner();
+                    if admission_retry_neutral {
+                        return Err(self
+                            .admission_retry_neutral_failure(
+                                &provider,
+                                app_type_str,
+                                used_half_open_permit,
+                                e,
+                            )
+                            .await);
+                    }
+
                     // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
                     let provider_type = ProviderType::from_app_type_and_config(app_type, &provider);
                     let is_anthropic_provider = matches!(
@@ -616,7 +702,7 @@ impl RequestForwarder {
                             );
 
                             match self
-                                .forward(
+                                .forward_with_admission_retry(
                                     app_type,
                                     &method,
                                     &provider,
@@ -684,10 +770,22 @@ impl RequestForwarder {
                                         connection_guard: None,
                                     });
                                 }
-                                Err(retry_err) => {
+                                Err(retry_error) => {
+                                    let admission_retry_neutral = retry_error.is_neutral();
+                                    let retry_err = retry_error.into_inner();
                                     log::warn!(
                                         "[{app_type_str}] [Media] Unsupported-image retry still failed: {retry_err}"
                                     );
+                                    if admission_retry_neutral {
+                                        return Err(self
+                                            .admission_retry_neutral_failure(
+                                                &provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                retry_err,
+                                            )
+                                            .await);
+                                    }
                                     if let Some(err) = self
                                         .handle_rectifier_retry_failure(
                                             retry_err,
@@ -762,7 +860,7 @@ impl RequestForwarder {
 
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
-                                    .forward(
+                                    .forward_with_admission_retry(
                                         app_type,
                                         &method,
                                         &provider,
@@ -836,10 +934,22 @@ impl RequestForwarder {
                                             connection_guard: None,
                                         });
                                     }
-                                    Err(retry_err) => {
+                                    Err(retry_error) => {
+                                        let admission_retry_neutral = retry_error.is_neutral();
+                                        let retry_err = retry_error.into_inner();
                                         log::warn!(
                                             "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
                                         );
+                                        if admission_retry_neutral {
+                                            return Err(self
+                                                .admission_retry_neutral_failure(
+                                                    &provider,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    retry_err,
+                                                )
+                                                .await);
+                                        }
                                         if let Some(err) = self
                                             .handle_rectifier_retry_failure(
                                                 retry_err,
@@ -931,7 +1041,7 @@ impl RequestForwarder {
 
                             // 使用同一供应商重试（不计入熔断器）
                             match self
-                                .forward(
+                                .forward_with_admission_retry(
                                     app_type,
                                     &method,
                                     &provider,
@@ -999,10 +1109,22 @@ impl RequestForwarder {
                                         connection_guard: None,
                                     });
                                 }
-                                Err(retry_err) => {
+                                Err(retry_error) => {
+                                    let admission_retry_neutral = retry_error.is_neutral();
+                                    let retry_err = retry_error.into_inner();
                                     log::warn!(
                                         "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
                                     );
+                                    if admission_retry_neutral {
+                                        return Err(self
+                                            .admission_retry_neutral_failure(
+                                                &provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                retry_err,
+                                            )
+                                            .await);
+                                    }
                                     if let Some(err) = self
                                         .handle_rectifier_retry_failure(
                                             retry_err,
@@ -1235,6 +1357,195 @@ impl RequestForwarder {
             error: last_error.unwrap_or(ProxyError::MaxRetriesExceeded),
             provider: last_provider,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn forward_with_admission_retry(
+        &self,
+        app_type: &AppType,
+        method: &http::Method,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &axum::http::HeaderMap,
+        extensions: &Extensions,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
+        if self
+            .current_admission_retry_policy(app_type, provider)
+            .is_none()
+        {
+            return self
+                .forward(
+                    app_type, method, provider, endpoint, body, headers, extensions, adapter,
+                )
+                .await
+                .map_err(AdmissionRetryForwardError::Normal);
+        }
+
+        let mut retries_used = 0u32;
+        loop {
+            match self
+                .forward(
+                    app_type, method, provider, endpoint, body, headers, extensions, adapter,
+                )
+                .await
+            {
+                Ok(result) => {
+                    if retries_used > 0 {
+                        self.emit_admission_retry_event(
+                            app_type,
+                            provider,
+                            retries_used,
+                            0,
+                            None,
+                            false,
+                        );
+                    }
+                    return Ok(result);
+                }
+                Err(error) => {
+                    let Some(policy) = self.current_admission_retry_policy(app_type, provider)
+                    else {
+                        if retries_used > 0 {
+                            self.emit_admission_retry_event(
+                                app_type,
+                                provider,
+                                retries_used,
+                                0,
+                                Some(&error),
+                                false,
+                            );
+                        }
+                        return Err(AdmissionRetryForwardError::Normal(error));
+                    };
+
+                    if !is_upstream_admission_retryable(&error) {
+                        if retries_used > 0 {
+                            self.emit_admission_retry_event(
+                                app_type,
+                                provider,
+                                retries_used,
+                                0,
+                                Some(&error),
+                                false,
+                            );
+                        }
+                        return Err(AdmissionRetryForwardError::Neutral(error));
+                    }
+
+                    if policy.retry_limit_reached(retries_used) {
+                        self.emit_admission_retry_event(
+                            app_type,
+                            provider,
+                            retries_used,
+                            0,
+                            Some(&error),
+                            false,
+                        );
+                        log::warn!(
+                            "[{}] 上游入场重试达到阈值，中性返回: provider={}, retries={}, error={}",
+                            app_type.as_str(),
+                            provider.name,
+                            retries_used,
+                            summarize_proxy_error(&error)
+                        );
+                        return Err(AdmissionRetryForwardError::Neutral(error));
+                    }
+
+                    retries_used = retries_used.saturating_add(1);
+                    let delay_ms = policy.delay_ms(retries_used);
+                    log::warn!(
+                        "[{}] 上游入场拥挤，持续重试同一 Provider: provider={}, retry={}, delay_ms={}, error={}",
+                        app_type.as_str(),
+                        provider.name,
+                        retries_used,
+                        delay_ms,
+                        summarize_proxy_error(&error)
+                    );
+                    self.emit_admission_retry_event(
+                        app_type,
+                        provider,
+                        retries_used,
+                        delay_ms,
+                        Some(&error),
+                        true,
+                    );
+                    if delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    if self
+                        .current_admission_retry_policy(app_type, provider)
+                        .is_none()
+                    {
+                        self.emit_admission_retry_event(
+                            app_type,
+                            provider,
+                            retries_used,
+                            0,
+                            Some(&error),
+                            false,
+                        );
+                        return Err(AdmissionRetryForwardError::Normal(error));
+                    }
+                }
+            }
+        }
+    }
+
+    fn current_admission_retry_policy(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Option<AdmissionRetryPolicy> {
+        if let Some(app_handle) = self.app_handle.as_ref() {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                match state.db.get_provider_by_id(&provider.id, app_type.as_str()) {
+                    Ok(Some(latest)) => return AdmissionRetryPolicy::from_provider(&latest),
+                    Ok(None) => return None,
+                    Err(error) => {
+                        log::warn!(
+                            "[{}] 读取 Provider 入场重试开关失败，使用请求开始时快照: provider={}, error={}",
+                            app_type.as_str(),
+                            provider.id,
+                            error
+                        );
+                    }
+                }
+            }
+        }
+
+        AdmissionRetryPolicy::from_provider(provider)
+    }
+
+    fn emit_admission_retry_event(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        retry_count: u32,
+        delay_ms: u64,
+        error: Option<&ProxyError>,
+        active: bool,
+    ) {
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return;
+        };
+
+        let payload = ProviderAdmissionRetryEvent {
+            request_id: self.request_id.clone(),
+            event: if active { "retrying" } else { "cleared" },
+            app_type: app_type.as_str().to_string(),
+            provider_id: provider.id.clone(),
+            provider_name: provider.name.clone(),
+            retry_count,
+            delay_ms,
+            status: error.and_then(proxy_error_status),
+            error: error.map(summarize_proxy_error),
+        };
+
+        if let Err(err) = app_handle.emit("provider-admission-retry", payload) {
+            log::debug!("emit provider-admission-retry failed: {err}");
+        }
     }
 
     /// 转发单个请求（使用适配器）
@@ -2393,6 +2704,131 @@ impl RequestForwarder {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AdmissionRetryPolicy {
+    max_retries: Option<u32>,
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_ms: u64,
+}
+
+impl AdmissionRetryPolicy {
+    fn from_provider(provider: &Provider) -> Option<Self> {
+        let config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.upstream_admission_retry.as_ref())?;
+
+        if !config.enabled {
+            return None;
+        }
+
+        let max_retries = config.max_retries.filter(|value| *value > 0);
+        let initial_delay_ms = config.initial_delay_ms.unwrap_or(500).min(10_000);
+        let max_delay_ms = config
+            .max_delay_ms
+            .unwrap_or(3_000)
+            .min(30_000)
+            .max(initial_delay_ms);
+        let jitter_ms = config.jitter_ms.unwrap_or(250).min(5_000);
+
+        Some(Self {
+            max_retries,
+            initial_delay_ms,
+            max_delay_ms,
+            jitter_ms,
+        })
+    }
+
+    fn retry_limit_reached(&self, retries_used: u32) -> bool {
+        self.max_retries
+            .is_some_and(|max_retries| retries_used >= max_retries)
+    }
+
+    fn delay_ms(&self, retry_number: u32) -> u64 {
+        let exponent = retry_number.saturating_sub(1).min(16);
+        let multiplier = 1u64 << exponent;
+        let base = self
+            .initial_delay_ms
+            .saturating_mul(multiplier)
+            .min(self.max_delay_ms);
+        let jitter = if self.jitter_ms == 0 {
+            0
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.subsec_nanos() as u64 % (self.jitter_ms + 1))
+                .unwrap_or(0)
+        };
+
+        base.saturating_add(jitter).min(self.max_delay_ms)
+    }
+}
+
+fn is_upstream_admission_retryable(error: &ProxyError) -> bool {
+    let ProxyError::UpstreamError { status, body } = error else {
+        return false;
+    };
+
+    let text = body.as_deref().unwrap_or("").to_ascii_lowercase();
+    if contains_any(
+        &text,
+        &[
+            "insufficient_quota",
+            "insufficient quota",
+            "quota exceeded",
+            "billing",
+            "credit",
+            "payment required",
+            "invalid_api_key",
+            "invalid api key",
+            "unauthorized",
+            "forbidden",
+            "permission",
+            "model_not_found",
+            "model not found",
+            "context_length",
+            "context length",
+            "maximum context",
+            "too many tokens",
+            "unsupported",
+            "invalid_request",
+            "bad request",
+        ],
+    ) {
+        return false;
+    }
+
+    let admission_keywords = [
+        "overload",
+        "overloaded",
+        "capacity",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "temporarily unavailable",
+        "try again later",
+        "busy",
+        "throttle",
+        "throttled",
+        "congestion",
+        "high load",
+        "upstream load",
+        "server is overloaded",
+    ];
+
+    match *status {
+        429 | 529 => text.is_empty() || contains_any(&text, &admission_keywords),
+        503 => text.is_empty() || contains_any(&text, &admission_keywords),
+        500 | 502 | 504 => contains_any(&text, &admission_keywords),
+        _ => false,
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
 /// 从 ProxyError 中提取错误消息
 fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
@@ -2454,6 +2890,13 @@ fn build_terminal_failure_log(
             "已尝试 {attempted_providers}/{total_providers} 个 Provider，均失败。最后错误: {error_summary}"
         ),
     ))
+}
+
+fn proxy_error_status(error: &ProxyError) -> Option<u16> {
+    match error {
+        ProxyError::UpstreamError { status, .. } => Some(*status),
+        _ => None,
+    }
 }
 
 fn summarize_proxy_error(error: &ProxyError) -> String {
@@ -3189,7 +3632,7 @@ fn value_for_log(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::database::Database;
-    use crate::provider::LocalProxyRequestOverrides;
+    use crate::provider::{LocalProxyRequestOverrides, ProviderMeta, UpstreamAdmissionRetryConfig};
     use crate::proxy::CircuitBreakerConfig;
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
@@ -3324,6 +3767,88 @@ mod tests {
         assert_eq!(code, log_fwd::ALL_PROVIDERS_FAILED);
         assert!(message.contains("已尝试 2/2 个 Provider，均失败"));
         assert!(message.contains("connection reset by peer"));
+    }
+
+    #[test]
+    fn upstream_admission_retry_matches_capacity_errors_only() {
+        let overloaded = ProxyError::UpstreamError {
+            status: 503,
+            body: Some(r#"{"error":{"message":"server is overloaded"}}"#.to_string()),
+        };
+        assert!(is_upstream_admission_retryable(&overloaded));
+
+        let rate_limited = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"rate limit reached"}}"#.to_string()),
+        };
+        assert!(is_upstream_admission_retryable(&rate_limited));
+
+        let gateway_capacity = ProxyError::UpstreamError {
+            status: 502,
+            body: Some(
+                r#"{"error":{"message":"upstream capacity temporarily unavailable"}}"#.to_string(),
+            ),
+        };
+        assert!(is_upstream_admission_retryable(&gateway_capacity));
+
+        let quota = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"code":"insufficient_quota"}}"#.to_string()),
+        };
+        assert!(!is_upstream_admission_retryable(&quota));
+
+        let invalid_model = ProxyError::UpstreamError {
+            status: 404,
+            body: Some(r#"{"error":{"message":"model not found"}}"#.to_string()),
+        };
+        assert!(!is_upstream_admission_retryable(&invalid_model));
+    }
+
+    #[test]
+    fn admission_retry_policy_normalizes_timing_and_zero_means_unlimited() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(20_000),
+                max_delay_ms: Some(100),
+                jitter_ms: Some(0),
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        assert_eq!(policy.max_retries, None);
+        assert!(!policy.retry_limit_reached(u32::MAX));
+        assert_eq!(policy.initial_delay_ms, 10_000);
+        assert_eq!(policy.max_delay_ms, 10_000);
+        assert_eq!(policy.jitter_ms, 0);
+        assert_eq!(policy.delay_ms(1), 10_000);
+        assert_eq!(policy.delay_ms(2), 10_000);
+    }
+
+    #[test]
+    fn admission_retry_policy_honors_finite_retry_limit() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(3),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        assert_eq!(policy.max_retries, Some(3));
+        assert!(!policy.retry_limit_reached(0));
+        assert!(!policy.retry_limit_reached(2));
+        assert!(policy.retry_limit_reached(3));
     }
 
     #[test]
@@ -3751,6 +4276,75 @@ mod tests {
         };
 
         assert!(matches!(err.error, ProxyError::NoAvailableProvider));
+    }
+
+    #[tokio::test]
+    async fn upstream_admission_retry_bypasses_existing_half_open_probe_limit() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.update_circuit_breaker_config(&CircuitBreakerConfig {
+            failure_threshold: 1,
+            timeout_seconds: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", &provider.id).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        router
+            .record_result(
+                &provider.id,
+                "claude",
+                false,
+                false,
+                Some("trip breaker".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let occupied_probe = router.allow_provider_request(&provider.id, "claude").await;
+        assert!(occupied_probe.allowed);
+        assert!(occupied_probe.used_half_open_permit);
+
+        let forwarder = test_forwarder_with_router(router, db, true);
+        let err = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Claude,
+                http::Method::POST,
+                "/v1/messages",
+                json!({ "messages": [] }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider],
+            )
+            .await
+        {
+            Ok(_) => panic!("invalid test provider should not produce a successful response"),
+            Err(err) => err,
+        };
+
+        assert!(
+            !matches!(err.error, ProxyError::NoAvailableProvider),
+            "admission retry must not degrade into circuit-open no-provider before trying provider"
+        );
     }
 
     #[tokio::test]

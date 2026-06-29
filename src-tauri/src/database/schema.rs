@@ -1495,6 +1495,10 @@ impl Database {
         Self::drop_column_if_exists(conn, "providers", "api_hub_origin")?;
         Self::drop_column_if_exists(conn, "proxy_config", "load_balancing_enabled")?;
         Self::drop_column_if_exists(conn, "proxy_config", "load_balancing_sticky_minutes")?;
+        Self::drop_column_if_exists(conn, "proxy_config", "response_rescue_enabled")?;
+        Self::drop_column_if_exists(conn, "proxy_config", "response_rescue_empty_2xx_enabled")?;
+        Self::drop_column_if_exists(conn, "proxy_config", "response_rescue_429_enabled")?;
+        Self::drop_column_if_exists(conn, "proxy_config", "response_rescue_max_retries")?;
         Ok(())
     }
 

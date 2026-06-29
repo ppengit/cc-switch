@@ -693,6 +693,7 @@ mod tests {
     use crate::config::get_app_config_dir;
     use crate::database::SCHEMA_VERSION;
     use crate::error::AppError;
+    use crate::provider::{Provider, ProviderMeta, UpstreamAdmissionRetryConfig};
     use crate::settings::{update_settings, AppSettings};
     use rusqlite::Connection;
     use serial_test::serial;
@@ -812,6 +813,61 @@ mod tests {
     }
 
     #[test]
+    fn provider_meta_admission_retry_survives_sql_export_import_and_sync() -> Result<(), AppError> {
+        let _guard = TestHomeGuard::new("cc-switch-admission-retry-meta-export-test");
+        let source_db = Database::memory()?;
+        let mut provider = Provider::with_id(
+            "codex-admission".to_string(),
+            "Codex Admission".to_string(),
+            serde_json::json!({}),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(250),
+                max_delay_ms: Some(1500),
+                jitter_ms: Some(100),
+            }),
+            ..Default::default()
+        });
+        source_db.save_provider("codex", &provider)?;
+
+        let full_sql = source_db.export_sql_string()?;
+        let sync_sql = source_db.export_sql_string_for_sync()?;
+        assert!(full_sql.contains("upstreamAdmissionRetry"));
+        assert!(sync_sql.contains("upstreamAdmissionRetry"));
+
+        for (label, sql, sync_import) in [
+            ("full", full_sql.as_str(), false),
+            ("sync", sync_sql.as_str(), true),
+        ] {
+            let target_db = Database::memory()?;
+            if sync_import {
+                target_db.import_sql_string_for_sync(sql)?;
+            } else {
+                target_db.import_sql_string(sql)?;
+            }
+
+            let imported = target_db
+                .get_provider_by_id("codex-admission", "codex")?
+                .unwrap_or_else(|| panic!("{label} import should preserve provider"));
+            let retry = imported
+                .meta
+                .and_then(|meta| meta.upstream_admission_retry)
+                .unwrap_or_else(|| panic!("{label} import should preserve admission retry meta"));
+            assert!(retry.enabled, "{label} import should preserve enabled flag");
+            assert_eq!(retry.max_retries, Some(0));
+            assert_eq!(retry.initial_delay_ms, Some(250));
+            assert_eq!(retry.max_delay_ms, Some(1500));
+            assert_eq!(retry.jitter_ms, Some(100));
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn export_sql_omits_removed_schema_objects() -> Result<(), AppError> {
         let db = Database::memory()?;
         {
@@ -833,6 +889,10 @@ mod tests {
             "api_hub_origin",
             "load_balancing_enabled",
             "load_balancing_sticky_minutes",
+            "response_rescue_enabled",
+            "response_rescue_empty_2xx_enabled",
+            "response_rescue_429_enabled",
+            "response_rescue_max_retries",
         ] {
             assert!(
                 !export.contains(removed),
@@ -863,6 +923,10 @@ mod tests {
 ALTER TABLE providers ADD COLUMN api_hub_origin TEXT;
 ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_max_retries INTEGER NOT NULL DEFAULT 2;
 CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
 CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
 CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
@@ -903,6 +967,10 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
             ("providers", "api_hub_origin"),
             ("proxy_config", "load_balancing_enabled"),
             ("proxy_config", "load_balancing_sticky_minutes"),
+            ("proxy_config", "response_rescue_enabled"),
+            ("proxy_config", "response_rescue_empty_2xx_enabled"),
+            ("proxy_config", "response_rescue_429_enabled"),
+            ("proxy_config", "response_rescue_max_retries"),
         ] {
             assert!(
                 !Database::has_column(&conn, table, column)?,
@@ -950,6 +1018,10 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
                     enabled INTEGER NOT NULL DEFAULT 0,
                     auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
                     load_balancing_enabled INTEGER NOT NULL DEFAULT 0,
+                    response_rescue_enabled INTEGER NOT NULL DEFAULT 1,
+                    response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0,
+                    response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1,
+                    response_rescue_max_retries INTEGER NOT NULL DEFAULT 2,
                     max_retries INTEGER NOT NULL DEFAULT 3,
                     streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
                     streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
@@ -970,8 +1042,12 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
                     app_type,
                     enabled,
                     auto_failover_enabled,
-                    load_balancing_enabled
-                ) VALUES ('claude', 1, 1, 1);
+                    load_balancing_enabled,
+                    response_rescue_enabled,
+                    response_rescue_empty_2xx_enabled,
+                    response_rescue_429_enabled,
+                    response_rescue_max_retries
+                ) VALUES ('claude', 1, 1, 1, 1, 0, 1, 2);
                 "#,
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -996,6 +1072,17 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
             !Database::has_column(&conn, "providers", "api_hub_origin")?,
             "restored legacy backup should drop providers.api_hub_origin"
         );
+        for column in [
+            "response_rescue_enabled",
+            "response_rescue_empty_2xx_enabled",
+            "response_rescue_429_enabled",
+            "response_rescue_max_retries",
+        ] {
+            assert!(
+                !Database::has_column(&conn, "proxy_config", column)?,
+                "restored legacy backup should drop proxy_config.{column}"
+            );
+        }
         for table in [
             "api_hub_sites",
             "api_hub_groups",

@@ -95,7 +95,9 @@ impl ProviderRouter {
                 let circuit_key = format!("{app_type}:{}", provider.id);
                 let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
 
-                if breaker.is_available().await {
+                if provider_upstream_admission_retry_enabled(&provider)
+                    || breaker.is_available().await
+                {
                     result.push(provider);
                 } else {
                     circuit_open_count += 1;
@@ -116,8 +118,9 @@ impl ProviderRouter {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
                     total_providers = 1;
                     let circuit_key = format!("{app_type}:{}", current.id);
-                    if self.api_key_error_count(&circuit_key).await
-                        >= API_KEY_ERROR_DISABLE_THRESHOLD
+                    if !provider_upstream_admission_retry_enabled(&current)
+                        && self.api_key_error_count(&circuit_key).await
+                            >= API_KEY_ERROR_DISABLE_THRESHOLD
                     {
                         circuit_open_count = 1;
                     } else {
@@ -432,6 +435,14 @@ fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
     lower.contains("invalid api key") || lower.contains("api key is disabled")
 }
 
+fn provider_upstream_admission_retry_enabled(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.upstream_admission_retry.as_ref())
+        .is_some_and(|config| config.enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +451,7 @@ mod tests {
     use crate::config::{get_claude_settings_path, read_json_file};
     use crate::database::Database;
     use crate::gemini_config::read_gemini_env;
+    use crate::provider::{ProviderMeta, UpstreamAdmissionRetryConfig};
     use crate::proxy::types::ProxyConfig;
     use crate::services::provider::ProviderService;
     use crate::store::AppState;
@@ -696,6 +708,62 @@ mod tests {
         assert_eq!(providers.len(), 2);
 
         assert!(router.allow_provider_request("b", "claude").await.allowed);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn admission_retry_provider_is_selected_even_when_circuit_open() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+            }),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 0;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        router
+            .record_result(
+                "a",
+                "claude",
+                false,
+                false,
+                Some("server is overloaded".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let stats = router
+            .get_circuit_breaker_stats("a", "claude")
+            .await
+            .expect("breaker should exist");
+        assert_eq!(
+            stats.state,
+            crate::proxy::circuit_breaker::CircuitState::Open
+        );
+
+        let providers = router.select_providers("claude").await.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "a");
     }
 
     #[tokio::test]

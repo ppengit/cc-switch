@@ -3221,7 +3221,14 @@ del \"%~f0\" >nul 2>&1
     // Try the preferred terminal first
     let result = match terminal {
         "powershell" => run_windows_start_command(
-            &["powershell", "-NoExit", "-Command", &ps_cmd],
+            &[
+                "powershell",
+                "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &ps_cmd,
+            ],
             "PowerShell",
         ),
         "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path], "Windows Terminal"),
@@ -3293,14 +3300,19 @@ fn escape_windows_batch_value(value: &str) -> String {
         .replace('(', "^(")
         .replace(')', "^)")
 }
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_start_command_args(args: &[&str]) -> Vec<String> {
+    let mut full_args = vec!["/C".to_string(), "start".to_string(), "".to_string()];
+    full_args.extend(args.iter().map(|arg| arg.to_string()));
+    full_args
+}
+
 /// Windows: Run a start command with common error handling
 #[cfg(target_os = "windows")]
 fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
     use std::process::Command;
 
-    let mut full_args = vec!["/C", "start"];
-    full_args.extend(args);
-
+    let full_args = build_windows_start_command_args(args);
     let output = Command::new("cmd")
         .args(&full_args)
         .creation_flags(CREATE_NO_WINDOW)
@@ -3471,7 +3483,14 @@ read -r _
 
         let result = match terminal {
             "powershell" => run_windows_start_command(
-                &["powershell", "-NoExit", "-Command", &ps_cmd],
+                &[
+                    "powershell",
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &ps_cmd,
+                ],
                 "PowerShell",
             ),
             "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path], "Windows Terminal"),
@@ -5290,5 +5309,17 @@ mod tests {
             command,
             "pushd \"\\\\server\\share\\100%%^&^(test^)\" || exit /b 1\r\n"
         );
+    }
+
+    #[test]
+    fn windows_start_command_inserts_empty_title_argument() {
+        let args = build_windows_start_command_args(&["cmd", "/K", r"C:\Temp\cc_switch.bat"]);
+
+        assert_eq!(args[0], "/C");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "");
+        assert_eq!(args[3], "cmd");
+        assert_eq!(args[4], "/K");
+        assert_eq!(args[5], r"C:\Temp\cc_switch.bat");
     }
 }

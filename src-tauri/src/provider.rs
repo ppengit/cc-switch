@@ -412,6 +412,28 @@ impl LocalProxyRequestOverrides {
     }
 }
 
+/// Per-provider upstream admission retry config.
+///
+/// This is intentionally scoped to overloaded / rate-limited entry failures on
+/// the same provider. It is not a response rescue mechanism: while enabled it
+/// keeps retrying the same provider without feeding those admission failures to
+/// failover / circuit breaker health, and disabling it returns to normal routing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UpstreamAdmissionRetryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum same-provider admission retries. `None` or `Some(0)` means
+    /// unlimited while the switch remains enabled.
+    #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    #[serde(rename = "initialDelayMs", skip_serializing_if = "Option::is_none")]
+    pub initial_delay_ms: Option<u64>,
+    #[serde(rename = "maxDelayMs", skip_serializing_if = "Option::is_none")]
+    pub max_delay_ms: Option<u64>,
+    #[serde(rename = "jitterMs", skip_serializing_if = "Option::is_none")]
+    pub jitter_ms: Option<u64>,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -509,6 +531,12 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub local_proxy_request_overrides: Option<LocalProxyRequestOverrides>,
+    /// 同一供应商的上游拥挤入场重试配置。
+    #[serde(
+        rename = "upstreamAdmissionRetry",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub upstream_admission_retry: Option<UpstreamAdmissionRetryConfig>,
     /// 累加模式应用中，该 provider 是否已写入 live config。
     /// `None` 表示旧数据/未知状态，`Some(false)` 表示明确仅存在于数据库中。
     #[serde(rename = "liveConfigManaged", skip_serializing_if = "Option::is_none")]
@@ -1043,7 +1071,7 @@ mod tests {
     use super::{
         ClaudeModelConfig, CodexModelConfig, CodexModelRoute, GeminiModelConfig,
         LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
-        ProviderMeta, UniversalProvider,
+        ProviderMeta, UniversalProvider, UpstreamAdmissionRetryConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1129,6 +1157,36 @@ mod tests {
                 .map(|route| route.model.as_str()),
             Some("gpt-5.5")
         );
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_upstream_admission_retry() {
+        let meta = ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(4),
+                initial_delay_ms: Some(500),
+                max_delay_ms: Some(3000),
+                jitter_ms: Some(250),
+            }),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(value["upstreamAdmissionRetry"]["enabled"], true);
+        assert_eq!(value["upstreamAdmissionRetry"]["maxRetries"], 4);
+        assert_eq!(value["upstreamAdmissionRetry"]["initialDelayMs"], 500);
+        assert_eq!(value["upstreamAdmissionRetry"]["maxDelayMs"], 3000);
+        assert_eq!(value["upstreamAdmissionRetry"]["jitterMs"], 250);
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(value).expect("deserialize ProviderMeta");
+        let retry = decoded.upstream_admission_retry.unwrap();
+        assert!(retry.enabled);
+        assert_eq!(retry.max_retries, Some(4));
+        assert_eq!(retry.initial_delay_ms, Some(500));
+        assert_eq!(retry.max_delay_ms, Some(3000));
+        assert_eq!(retry.jitter_ms, Some(250));
     }
 
     #[test]

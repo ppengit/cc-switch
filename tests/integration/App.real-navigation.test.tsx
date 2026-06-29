@@ -87,6 +87,7 @@ vi.mock("@/components/skills/UnifiedSkillsPanel", () => ({
 }));
 
 vi.mock("@/components/skills/SkillsPage", () => ({
+  getSkillsPageHeaderActions: () => [],
   SkillsPage: forwardRef(({ initialApp }: any, _ref) => (
     <section data-testid="skills-discovery">{initialApp}</section>
   )),
@@ -179,7 +180,6 @@ vi.mock("@/components/settings/AuthCenterPanel", () => ({
 vi.mock("@/components/usage/UsageDashboard", () => ({
   UsageDashboard: () => <section>usage-dashboard</section>,
 }));
-
 
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => <section>about-section</section>,

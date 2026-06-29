@@ -66,6 +66,18 @@ export interface ProxyActivityEvent {
   active_request_targets: ActiveRequestTarget[];
 }
 
+export interface ProviderAdmissionRetryEvent {
+  requestId: string;
+  event: "retrying" | "cleared";
+  appType: string;
+  providerId: string;
+  providerName: string;
+  retryCount: number;
+  delayMs: number;
+  status?: number | null;
+  error?: string | null;
+}
+
 export interface ProxyRawLogEvent {
   id: number;
   timestamp: string;

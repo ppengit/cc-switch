@@ -28,6 +28,7 @@ import {
   ChevronsUp,
   CircleArrowRight,
   Copy,
+  DoorOpen,
   FileText,
   GripVertical,
   History,
@@ -40,8 +41,10 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { Provider, SessionMeta } from "@/types";
+import type { ProviderAdmissionRetryEvent } from "@/types/proxy";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { sessionsApi } from "@/lib/api/sessions";
@@ -173,6 +176,8 @@ interface ProviderRowView {
   activeRequestModel?: string;
   activeRequestRequestModel?: string;
   activeRequestUpstreamModel?: string;
+  admissionRetryEnabled: boolean;
+  admissionRetryCount: number;
   failoverPriority?: number;
   orderNumber: number;
   statusRank: number;
@@ -187,6 +192,8 @@ interface SearchMatchInfo {
   providerId: string;
   rowIndex: number;
 }
+
+type AdmissionRetryRequestCounts = Record<string, Record<string, number>>;
 
 interface AppConfigFileEntry {
   key: string;
@@ -1043,6 +1050,11 @@ export function ProviderList({
 }: ProviderListProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [admissionRetryRequests, setAdmissionRetryRequests] =
+    useState<AdmissionRetryRequestCounts>({});
+  const [admissionRetryUpdatingIds, setAdmissionRetryUpdatingIds] = useState<
+    Set<string>
+  >(new Set());
 
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
@@ -1092,6 +1104,54 @@ export function ProviderList({
     },
     [appId, openclawDefaultModel],
   );
+
+  useEffect(() => {
+    setAdmissionRetryRequests({});
+
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+
+    (async () => {
+      const off = await listen<ProviderAdmissionRetryEvent>(
+        "provider-admission-retry",
+        (event) => {
+          const payload = event.payload;
+          if (payload.appType !== appId) return;
+
+          setAdmissionRetryRequests((current) => {
+            const providerRequests = {
+              ...(current[payload.providerId] ?? {}),
+            };
+
+            if (payload.event === "retrying") {
+              providerRequests[payload.requestId] = payload.retryCount;
+            } else {
+              delete providerRequests[payload.requestId];
+            }
+
+            const next = { ...current };
+            if (Object.keys(providerRequests).length > 0) {
+              next[payload.providerId] = providerRequests;
+            } else {
+              delete next[payload.providerId];
+            }
+            return next;
+          });
+        },
+      );
+
+      if (disposed) {
+        off();
+      } else {
+        unlisten = off;
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [appId]);
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
@@ -1531,6 +1591,13 @@ export function ProviderList({
       const activeRequest = activeRequestProviders?.[provider.id];
       const activeRequestCount = activeRequest?.count ?? 0;
       const isProcessingProvider = activeRequestCount > 0;
+      const retryCounts = Object.values(
+        admissionRetryRequests[provider.id] ?? {},
+      );
+      const admissionRetryCount =
+        retryCounts.length > 0 ? Math.max(...retryCounts) : 0;
+      const admissionRetryEnabled =
+        provider.meta?.upstreamAdmissionRetry?.enabled === true;
 
       const isActiveProxyProvider =
         isCurrentAppTakeoverActive &&
@@ -1583,13 +1650,15 @@ export function ProviderList({
             : !isCurrent || Object.keys(providers).length > 1);
 
       const statusRank =
-        activeRequestCount > 0
-          ? 4
-          : isActiveProxyProvider
-            ? 3
-            : isEnabled
-              ? 2
-              : 1;
+        admissionRetryCount > 0
+          ? 5
+          : activeRequestCount > 0
+            ? 4
+            : isActiveProxyProvider
+              ? 3
+              : isEnabled
+                ? 2
+                : 1;
 
       return {
         provider,
@@ -1608,6 +1677,8 @@ export function ProviderList({
         activeRequestModel: activeRequest?.model,
         activeRequestRequestModel: activeRequest?.requestModel,
         activeRequestUpstreamModel: activeRequest?.upstreamModel,
+        admissionRetryEnabled,
+        admissionRetryCount,
         failoverPriority,
         orderNumber,
         statusRank,
@@ -1621,6 +1692,7 @@ export function ProviderList({
   }, [
     activeProviderId,
     activeRequestProviders,
+    admissionRetryRequests,
     appId,
     getFailoverPriority,
     getProviderCurrentState,
@@ -2670,6 +2742,58 @@ export function ProviderList({
     }
   };
 
+  const handleAdmissionRetryToggle = async (row: ProviderRowView) => {
+    const providerId = row.provider.id;
+    const nextEnabled = !row.admissionRetryEnabled;
+
+    setAdmissionRetryUpdatingIds((current) => {
+      const next = new Set(current);
+      next.add(providerId);
+      return next;
+    });
+
+    try {
+      const currentRetry = row.provider.meta?.upstreamAdmissionRetry ?? {};
+      await providersApi.update(
+        {
+          ...row.provider,
+          meta: {
+            ...(row.provider.meta ?? {}),
+            upstreamAdmissionRetry: {
+              ...currentRetry,
+              enabled: nextEnabled,
+            },
+          },
+        },
+        appId,
+      );
+
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      toast.success(
+        nextEnabled
+          ? t("provider.admissionRetryEnabled", {
+              defaultValue: "已开启上游入场重试",
+            })
+          : t("provider.admissionRetryDisabled", {
+              defaultValue: "已关闭上游入场重试",
+            }),
+      );
+    } catch (error) {
+      console.error("Failed to toggle upstream admission retry", error);
+      toast.error(
+        t("provider.admissionRetryToggleFailed", {
+          defaultValue: "切换上游入场重试失败",
+        }),
+      );
+    } finally {
+      setAdmissionRetryUpdatingIds((current) => {
+        const next = new Set(current);
+        next.delete(providerId);
+        return next;
+      });
+    }
+  };
+
   const handleRowEnableToggle = async (row: ProviderRowView) => {
     if (isFailoverModeActive) {
       try {
@@ -3459,6 +3583,12 @@ export function ProviderList({
                         onOpenWebsite={onOpenWebsite}
                         onActivateProvider={() => onSwitch(row.provider)}
                         onToggleEnabled={() => void handleRowEnableToggle(row)}
+                        onToggleAdmissionRetry={() =>
+                          void handleAdmissionRetryToggle(row)
+                        }
+                        isAdmissionRetryUpdating={admissionRetryUpdatingIds.has(
+                          row.provider.id,
+                        )}
                         onPinToTop={() => void handlePinToTop(row.provider.id)}
                         onOpenTerminal={
                           onOpenTerminal
@@ -3911,6 +4041,8 @@ interface SortableProviderTableRowProps {
   onOpenWebsite: (url: string) => void;
   onActivateProvider: () => void;
   onToggleEnabled: () => void;
+  onToggleAdmissionRetry: () => void;
+  isAdmissionRetryUpdating: boolean;
   onPinToTop: () => void;
   onOpenTerminal?: () => void;
   onEdit: () => void;
@@ -3939,6 +4071,8 @@ function SortableProviderTableRow({
   onOpenWebsite,
   onActivateProvider,
   onToggleEnabled,
+  onToggleAdmissionRetry,
+  isAdmissionRetryUpdating,
   onPinToTop,
   onOpenTerminal,
   onEdit,
@@ -3975,17 +4109,25 @@ function SortableProviderTableRow({
     row.nameLink && /^https?:\/\//i.test(row.nameLink),
   );
 
-  const isCircuitOpen = showFailoverHealth && circuitStats?.state === "open";
+  const suppressFailoverHealth = row.admissionRetryEnabled;
+  const isCircuitOpen =
+    !suppressFailoverHealth &&
+    showFailoverHealth &&
+    circuitStats?.state === "open";
   const isCircuitHalfOpen =
-    showFailoverHealth && circuitStats?.state === "half_open";
+    !suppressFailoverHealth &&
+    showFailoverHealth &&
+    circuitStats?.state === "half_open";
   const failureCount = health?.consecutive_failures ?? 0;
   const isDegraded =
+    !suppressFailoverHealth &&
     showFailoverHealth &&
     !isCircuitOpen &&
     !isCircuitHalfOpen &&
     health?.is_healthy !== false &&
     failureCount > 0;
   const isProcessing = row.activeRequestCount > 0;
+  const isAdmissionRetrying = row.admissionRetryCount > 0;
   const activityModel = row.activeRequestModel;
   const requestModel = row.activeRequestRequestModel;
   const upstreamModel = row.activeRequestUpstreamModel;
@@ -3993,7 +4135,7 @@ function SortableProviderTableRow({
     ? new Date(health.last_failure_at).toLocaleString()
     : null;
   const circuitFailureRate =
-    circuitStats && circuitStats.totalRequests > 0
+    !suppressFailoverHealth && circuitStats && circuitStats.totalRequests > 0
       ? `${circuitStats.failedRequests}/${circuitStats.totalRequests}`
       : null;
   const healthDetailLines = [
@@ -4010,6 +4152,17 @@ function SortableProviderTableRow({
     isDegraded
       ? t("provider.statusReasonDegraded", {
           defaultValue: "近期请求存在失败，当前处于降级观察状态。",
+        })
+      : null,
+    isAdmissionRetrying
+      ? t("provider.statusReasonAdmissionRetrying", {
+          defaultValue: "上游入场重试中：第 {{count}} 次",
+          count: row.admissionRetryCount,
+        })
+      : null,
+    row.admissionRetryEnabled && !isAdmissionRetrying
+      ? t("provider.statusReasonAdmissionRetryEnabled", {
+          defaultValue: "上游入场重试已开启，拥挤类失败不会触发降级或熔断。",
         })
       : null,
     failureCount > 0
@@ -4071,6 +4224,7 @@ function SortableProviderTableRow({
     !isCircuitOpen &&
     !isCircuitHalfOpen &&
     !isDegraded &&
+    !row.admissionRetryEnabled &&
     Boolean(health?.last_error);
 
   const statusLabel = row.isActiveProxyProvider
@@ -4266,6 +4420,15 @@ function SortableProviderTableRow({
                       : ""}
                   </Badge>
                 ) : null}
+                {isAdmissionRetrying ? (
+                  <Badge className="h-5 border border-amber-500/40 bg-amber-500/10 px-1.5 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300">
+                    <DoorOpen className="mr-0.5 h-3 w-3" />
+                    {t("provider.admissionRetrying", {
+                      defaultValue: "入场",
+                    })}
+                    {` ${row.admissionRetryCount}`}
+                  </Badge>
+                ) : null}
                 {isCircuitOpen ? (
                   <Badge variant="destructive" className="h-5 px-1.5 text-xs">
                     {t("provider.circuitOpen", { defaultValue: "熔断" })}
@@ -4319,6 +4482,46 @@ function SortableProviderTableRow({
               <Check className="h-3.5 w-3.5" />
             </Button>
           )}
+
+          <Button
+            size="icon"
+            variant={row.admissionRetryEnabled ? "secondary" : "ghost"}
+            className="h-7 w-7"
+            onClick={onToggleAdmissionRetry}
+            aria-label={
+              row.admissionRetryEnabled
+                ? t("provider.disableAdmissionRetry", {
+                    defaultValue: "关闭上游入场重试",
+                  })
+                : t("provider.enableAdmissionRetry", {
+                    defaultValue: "开启上游入场重试",
+                  })
+            }
+            title={
+              row.admissionRetryEnabled
+                ? t("provider.disableAdmissionRetryHint", {
+                    defaultValue:
+                      "关闭后恢复原来的失败处理、故障转移和熔断逻辑",
+                  })
+                : t("provider.enableAdmissionRetryHint", {
+                    defaultValue:
+                      "开启后拥挤类上游错误会持续重试同一供应商，不触发降级和熔断",
+                  })
+            }
+            disabled={row.isReadOnly || isAdmissionRetryUpdating}
+          >
+            {isAdmissionRetryUpdating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <DoorOpen
+                className={cn(
+                  "h-3.5 w-3.5",
+                  row.admissionRetryEnabled &&
+                    "text-amber-600 dark:text-amber-300",
+                )}
+              />
+            )}
+          </Button>
 
           <Button
             size="icon"

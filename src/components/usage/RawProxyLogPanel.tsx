@@ -30,12 +30,17 @@ const LOG_LIMIT = 500;
 const PAGE_SIZE = 50;
 
 const EVENT_COLOR_MAP: Record<string, string> = {
-  received:
+  processing:
     "bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/35",
-  routed: "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/35",
-  finished:
+  success:
     "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35",
   failed: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/35",
+};
+
+const EVENT_LABEL_DEFAULTS: Record<string, string> = {
+  processing: "正在处理",
+  success: "成功",
+  failed: "失败",
 };
 
 const normalizeModel = (value?: string | null) => {
@@ -43,18 +48,15 @@ const normalizeModel = (value?: string | null) => {
   return trimmed || undefined;
 };
 
-const collapseLifecycleEvents = (events: ProxyRawLogEntry["events"]) => {
-  const seen = new Set<string>();
-  return events.filter((event) => {
-    if (seen.has(event.event)) return false;
-    seen.add(event.event);
-    return true;
-  });
-};
-
 const normalizeRouteMode = (value?: string | null) => {
   const trimmed = (value || "").trim();
   return trimmed || undefined;
+};
+
+const getDisplayEvent = (log: ProxyRawLogEntry) => {
+  if (log.event === "failed") return "failed";
+  if (log.event === "finished") return "success";
+  return "processing";
 };
 
 /**
@@ -124,7 +126,7 @@ export function RawProxyLogPanel({
 
   const getEventLabel = (event: string) =>
     t(`usage.proxyEvent.${event}`, {
-      defaultValue: event,
+      defaultValue: EVENT_LABEL_DEFAULTS[event] ?? event,
     });
   const getRouteModeLabel = (routeMode?: string) =>
     routeMode
@@ -140,7 +142,7 @@ export function RawProxyLogPanel({
           <span>
             {t("usage.rawProxyLogsHint", {
               defaultValue:
-                "每行显示一个代理请求，事件列汇总收到请求、路由、完成/失败等生命周期。仅内存保留，重启代理后清空。",
+                "每行显示一个代理请求，事件列仅显示当前状态（正在处理/成功/失败）。完整生命周期保留在详情中，重启代理后清空。",
             })}
           </span>
           <Button
@@ -228,7 +230,7 @@ export function RawProxyLogPanel({
                     !!requestModel &&
                     !!displayModel &&
                     requestModel !== displayModel;
-                  const lifecycleEvents = collapseLifecycleEvents(log.events);
+                  const displayEvent = getDisplayEvent(log);
                   const statusText =
                     log.statusCode != null
                       ? String(log.statusCode)
@@ -254,15 +256,12 @@ export function RawProxyLogPanel({
                       </TableCell>
                       <TableCell className="min-w-[220px]">
                         <div className="flex flex-wrap justify-center gap-1">
-                          {lifecycleEvents.map((event) => (
-                            <Badge
-                              key={event.id}
-                              variant="outline"
-                              className={EVENT_COLOR_MAP[event.event] ?? ""}
-                            >
-                              {getEventLabel(event.event)}
-                            </Badge>
-                          ))}
+                          <Badge
+                            variant="outline"
+                            className={EVENT_COLOR_MAP[displayEvent] ?? ""}
+                          >
+                            {getEventLabel(displayEvent)}
+                          </Badge>
                         </div>
                       </TableCell>
                       <TableCell className="text-center font-mono text-xs uppercase">
@@ -384,11 +383,17 @@ export function RawProxyLogPanel({
         </div>
       )}
 
-      {selectedLog && (
-        <Dialog open onOpenChange={() => setSelectedLog(null)}>
+      <Dialog
+        open={selectedLog !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedLog(null);
+        }}
+      >
+        {selectedLog && (
           <DialogContent
             zIndex="top"
-            className="max-w-3xl max-h-[86vh] overflow-y-auto"
+            closeOnInteractOutside
+            className="w-[calc(100vw-2rem)] max-w-[min(1200px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-hidden p-0"
           >
             <DialogHeader>
               <DialogTitle>
@@ -402,17 +407,23 @@ export function RawProxyLogPanel({
                 })}
               </DialogDescription>
             </DialogHeader>
-            <pre className="rounded-md border bg-muted/40 p-3 text-xs leading-relaxed overflow-auto">
+            <pre className="m-0 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-none border-0 bg-muted/40 p-4 font-mono text-xs leading-relaxed">
               {JSON.stringify(selectedLog, null, 2)}
             </pre>
           </DialogContent>
-        </Dialog>
-      )}
-      {htmlErrorPreview !== null && (
-        <Dialog open onOpenChange={() => setHtmlErrorPreview(null)}>
+        )}
+      </Dialog>
+      <Dialog
+        open={htmlErrorPreview !== null}
+        onOpenChange={(open) => {
+          if (!open) setHtmlErrorPreview(null);
+        }}
+      >
+        {htmlErrorPreview !== null && (
           <DialogContent
             zIndex="top"
-            className="max-w-4xl max-h-[90vh] overflow-hidden"
+            closeOnInteractOutside
+            className="w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-hidden p-0"
           >
             <DialogHeader>
               <DialogTitle>
@@ -430,14 +441,14 @@ export function RawProxyLogPanel({
             <iframe
               srcDoc={htmlErrorPreview}
               sandbox=""
-              className="h-[60vh] w-full rounded-md border bg-white"
+              className="min-h-0 flex-1 w-full border-0 bg-white"
               title={t("usage.errorPagePreview", {
                 defaultValue: "错误页预览",
               })}
             />
           </DialogContent>
-        </Dialog>
-      )}
+        )}
+      </Dialog>
     </div>
   );
 }

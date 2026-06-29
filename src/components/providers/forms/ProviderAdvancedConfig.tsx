@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FlaskConical,
   Coins,
+  DoorOpen,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -17,7 +18,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import type { ProviderTestConfig } from "@/types";
+import type {
+  ProviderTestConfig,
+  ProviderUpstreamAdmissionRetry,
+} from "@/types";
 
 export type PricingModelSourceOption = "inherit" | "request" | "response";
 
@@ -30,20 +34,34 @@ interface ProviderPricingConfig {
 interface ProviderAdvancedConfigProps {
   testConfig: ProviderTestConfig;
   pricingConfig: ProviderPricingConfig;
+  admissionRetryConfig: ProviderUpstreamAdmissionRetry;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
+  onAdmissionRetryConfigChange: (
+    config: ProviderUpstreamAdmissionRetry,
+  ) => void;
 }
 
 export function ProviderAdvancedConfig({
   testConfig,
   pricingConfig,
+  admissionRetryConfig,
   onTestConfigChange,
   onPricingConfigChange,
+  onAdmissionRetryConfigChange,
 }: ProviderAdvancedConfigProps) {
   const { t } = useTranslation();
+  const hasAdmissionRetryTiming =
+    admissionRetryConfig.maxRetries !== undefined ||
+    admissionRetryConfig.initialDelayMs !== undefined ||
+    admissionRetryConfig.maxDelayMs !== undefined ||
+    admissionRetryConfig.jitterMs !== undefined;
   const [isTestConfigOpen, setIsTestConfigOpen] = useState(testConfig.enabled);
   const [isPricingConfigOpen, setIsPricingConfigOpen] = useState(
     pricingConfig.enabled,
+  );
+  const [isAdmissionRetryOpen, setIsAdmissionRetryOpen] = useState(
+    admissionRetryConfig.enabled === true || hasAdmissionRetryTiming,
   );
 
   useEffect(() => {
@@ -53,6 +71,12 @@ export function ProviderAdvancedConfig({
   useEffect(() => {
     setIsPricingConfigOpen(pricingConfig.enabled);
   }, [pricingConfig.enabled]);
+
+  useEffect(() => {
+    setIsAdmissionRetryOpen(
+      admissionRetryConfig.enabled === true || hasAdmissionRetryTiming,
+    );
+  }, [admissionRetryConfig.enabled, hasAdmissionRetryTiming]);
 
   return (
     <div className="space-y-4">
@@ -192,6 +216,160 @@ export function ProviderAdvancedConfig({
                   }
                   placeholder="1"
                   disabled={!testConfig.enabled}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 上游入场重试配置 */}
+      <div className="rounded-lg border border-border/50 bg-muted/20">
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex w-full cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+          onClick={() => setIsAdmissionRetryOpen((current) => !current)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setIsAdmissionRetryOpen((current) => !current);
+            }
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <DoorOpen className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">
+              {t("providerAdvanced.admissionRetryConfig", {
+                defaultValue: "上游入场重试",
+              })}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            {isAdmissionRetryOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+        </div>
+        <div
+          className={cn(
+            "overflow-hidden transition-all duration-200",
+            isAdmissionRetryOpen
+              ? "max-h-[640px] opacity-100"
+              : "max-h-0 opacity-0",
+          )}
+        >
+          <div className="border-t border-border/50 p-4 space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {t("providerAdvanced.admissionRetryConfigDesc", {
+                defaultValue:
+                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，持续重试同一供应商；启用/关闭请在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
+              })}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="admission-max-retries">
+                  {t("providerAdvanced.admissionMaxRetries", {
+                    defaultValue: "最大入场重试次数",
+                  })}
+                </Label>
+                <Input
+                  id="admission-max-retries"
+                  type="number"
+                  min={0}
+                  max={1000000}
+                  value={admissionRetryConfig.maxRetries ?? ""}
+                  onChange={(e) =>
+                    onAdmissionRetryConfigChange({
+                      ...admissionRetryConfig,
+                      maxRetries: e.target.value
+                        ? parseInt(e.target.value, 10)
+                        : undefined,
+                    })
+                  }
+                  placeholder={t(
+                    "providerAdvanced.admissionMaxRetriesPlaceholder",
+                    {
+                      defaultValue: "留空或 0 表示无限",
+                    },
+                  )}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionMaxRetriesHint", {
+                    defaultValue:
+                      "达到阈值后会把最后一次上游错误返回给当前请求，但仍不会触发故障转移、降级或熔断。",
+                  })}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="admission-initial-delay">
+                  {t("providerAdvanced.admissionInitialDelay", {
+                    defaultValue: "初始等待（毫秒）",
+                  })}
+                </Label>
+                <Input
+                  id="admission-initial-delay"
+                  type="number"
+                  min={0}
+                  max={10000}
+                  value={admissionRetryConfig.initialDelayMs ?? ""}
+                  onChange={(e) =>
+                    onAdmissionRetryConfigChange({
+                      ...admissionRetryConfig,
+                      initialDelayMs: e.target.value
+                        ? parseInt(e.target.value, 10)
+                        : undefined,
+                    })
+                  }
+                  placeholder="500"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="admission-max-delay">
+                  {t("providerAdvanced.admissionMaxDelay", {
+                    defaultValue: "最大等待（毫秒）",
+                  })}
+                </Label>
+                <Input
+                  id="admission-max-delay"
+                  type="number"
+                  min={0}
+                  max={30000}
+                  value={admissionRetryConfig.maxDelayMs ?? ""}
+                  onChange={(e) =>
+                    onAdmissionRetryConfigChange({
+                      ...admissionRetryConfig,
+                      maxDelayMs: e.target.value
+                        ? parseInt(e.target.value, 10)
+                        : undefined,
+                    })
+                  }
+                  placeholder="3000"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="admission-jitter">
+                  {t("providerAdvanced.admissionJitter", {
+                    defaultValue: "随机抖动（毫秒）",
+                  })}
+                </Label>
+                <Input
+                  id="admission-jitter"
+                  type="number"
+                  min={0}
+                  max={5000}
+                  value={admissionRetryConfig.jitterMs ?? ""}
+                  onChange={(e) =>
+                    onAdmissionRetryConfigChange({
+                      ...admissionRetryConfig,
+                      jitterMs: e.target.value
+                        ? parseInt(e.target.value, 10)
+                        : undefined,
+                    })
+                  }
+                  placeholder="250"
                 />
               </div>
             </div>

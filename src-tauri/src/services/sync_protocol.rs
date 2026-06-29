@@ -460,6 +460,10 @@ mod tests {
 ALTER TABLE providers ADD COLUMN api_hub_origin TEXT;
 ALTER TABLE proxy_config ADD COLUMN load_balancing_enabled INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE proxy_config ADD COLUMN load_balancing_sticky_minutes INTEGER NOT NULL DEFAULT 10;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_empty_2xx_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_429_enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_config ADD COLUMN response_rescue_max_retries INTEGER NOT NULL DEFAULT 2;
 CREATE TABLE api_hub_sites (id TEXT PRIMARY KEY);
 CREATE TABLE api_hub_groups (site_id TEXT, group_name TEXT);
 CREATE TABLE api_hub_models (site_id TEXT, model_name TEXT);
@@ -503,6 +507,10 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
             "api_hub_origin",
             "load_balancing_enabled",
             "load_balancing_sticky_minutes",
+            "response_rescue_enabled",
+            "response_rescue_empty_2xx_enabled",
+            "response_rescue_429_enabled",
+            "response_rescue_max_retries",
         ] {
             assert!(
                 !sql.contains(removed),
@@ -598,6 +606,10 @@ CREATE TABLE api_hub_tokens (site_id TEXT, token_id INTEGER);
             ("providers", "api_hub_origin"),
             ("proxy_config", "load_balancing_enabled"),
             ("proxy_config", "load_balancing_sticky_minutes"),
+            ("proxy_config", "response_rescue_enabled"),
+            ("proxy_config", "response_rescue_empty_2xx_enabled"),
+            ("proxy_config", "response_rescue_429_enabled"),
+            ("proxy_config", "response_rescue_max_retries"),
         ] {
             assert!(
                 !Database::has_column(&conn, table, column)?,

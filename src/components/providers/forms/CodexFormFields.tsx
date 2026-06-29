@@ -260,6 +260,24 @@ export function CodexFormFields({
     () => modelRouteRowsFromMap(modelRoutes),
   );
 
+  const routeCandidateModels: FetchedModel[] = [];
+  const routeCandidateIds = new Set<string>();
+  const addRouteCandidate = (id: string, ownedBy = "Configured") => {
+    const trimmed = id.trim();
+    if (!trimmed || routeCandidateIds.has(trimmed)) return;
+    routeCandidateIds.add(trimmed);
+    routeCandidateModels.push({ id: trimmed, ownedBy });
+  };
+  for (const model of fetchedModels) {
+    addRouteCandidate(model.id, model.ownedBy || "Fetched");
+  }
+  for (const model of catalogRows) {
+    addRouteCandidate(model.model, "Catalog");
+    if (model.displayName?.trim()) {
+      addRouteCandidate(model.displayName, "Catalog display");
+    }
+  }
+
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
   const lastSentRoutesRef =
@@ -718,23 +736,36 @@ export function CodexFormFields({
                         key={row.rowId}
                         className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_36px]"
                       >
-                        <Input
-                          value={row.requestModel}
-                          onChange={(event) =>
-                            handleUpdateModelRouteRow(index, {
-                              requestModel: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.requestModelPlaceholder",
-                            {
-                              defaultValue: "例如: gpt-5.4-mini",
-                            },
+                        <div className="flex gap-1">
+                          <Input
+                            value={row.requestModel}
+                            onChange={(event) =>
+                              handleUpdateModelRouteRow(index, {
+                                requestModel: event.target.value,
+                              })
+                            }
+                            placeholder={t(
+                              "codexConfig.requestModelPlaceholder",
+                              {
+                                defaultValue: "例如: gpt-5.4-mini",
+                              },
+                            )}
+                            aria-label={t("codexConfig.requestModelColumn", {
+                              defaultValue: "请求模型",
+                            })}
+                            className="flex-1"
+                          />
+                          {routeCandidateModels.length > 0 && (
+                            <ModelDropdown
+                              models={routeCandidateModels}
+                              onSelect={(id) =>
+                                handleUpdateModelRouteRow(index, {
+                                  requestModel: id,
+                                })
+                              }
+                            />
                           )}
-                          aria-label={t("codexConfig.requestModelColumn", {
-                            defaultValue: "请求模型",
-                          })}
-                        />
+                        </div>
                         <div className="flex gap-1">
                           <Input
                             value={row.upstreamModel}
@@ -754,9 +785,9 @@ export function CodexFormFields({
                             })}
                             className="flex-1"
                           />
-                          {fetchedModels.length > 0 && (
+                          {routeCandidateModels.length > 0 && (
                             <ModelDropdown
-                              models={fetchedModels}
+                              models={routeCandidateModels}
                               onSelect={(id) =>
                                 handleUpdateModelRouteRow(index, {
                                   upstreamModel: id,
