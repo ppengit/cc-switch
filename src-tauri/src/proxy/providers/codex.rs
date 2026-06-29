@@ -108,6 +108,26 @@ fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
         .collect()
 }
 
+fn codex_provider_route_target_model_ids(provider: &Provider) -> HashSet<String> {
+    provider
+        .meta
+        .as_ref()
+        .map(|meta| {
+            meta.codex_model_routes
+                .values()
+                .filter_map(|route| {
+                    let model = route.model.trim();
+                    if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn codex_provider_catalog_model_ids_vec(provider: &Provider) -> Vec<String> {
     provider
         .settings_config
@@ -215,13 +235,16 @@ pub fn apply_codex_chat_upstream_model(
     }
 
     let catalog_model_ids = codex_provider_catalog_model_ids(provider);
+    let route_target_model_ids = codex_provider_route_target_model_ids(provider);
     if let Some(request_model) = body
         .get("model")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty())
     {
-        if catalog_model_ids.contains(request_model) {
+        if catalog_model_ids.contains(request_model)
+            || route_target_model_ids.contains(request_model)
+        {
             return Some(request_model.to_string());
         }
     }
@@ -1000,6 +1023,40 @@ wire_api = "responses"
 
         assert_eq!(upstream_model.as_deref(), Some("kimi-k2"));
         assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("kimi-k2"));
+    }
+
+    #[test]
+    fn test_apply_codex_chat_upstream_model_preserves_route_target_model_selection() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "deepseek"
+model = "deepseek-v4-flash"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com/v1"
+wire_api = "responses"
+"#
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4-mini".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+        let mut body = json!({
+            "model": "gpt-5.5",
+            "input": "ping"
+        });
+
+        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+
+        assert_eq!(upstream_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("gpt-5.5"));
     }
 
     #[test]

@@ -504,7 +504,10 @@ export function AddProviderDialog({
   const footer =
     !showUniversalTab || activeTab === "app-specific" ? (
       <>
-        <div className="mr-auto flex flex-wrap items-center gap-4">
+        <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="min-w-40 text-xs text-muted-foreground">
+            {t("provider.addFooterHint")}
+          </span>
           <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
             <Checkbox
               checked={pinToTopOnSave}
@@ -574,6 +577,7 @@ export function AddProviderDialog({
       title={t("provider.addNewProvider")}
       onClose={() => onOpenChange(false)}
       footer={footer}
+      contentClassName="pt-3"
     >
       {showUniversalTab ? (
         <Tabs

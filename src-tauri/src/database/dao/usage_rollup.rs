@@ -493,10 +493,10 @@ mod tests {
 
         {
             let conn = crate::database::lock_conn!(db.conn);
-            let date_str = chrono::Local
+            let date_str = Local
                 .timestamp_opt(old_ts, 0)
                 .single()
-                .unwrap()
+                .expect("old timestamp should be a valid local datetime")
                 .format("%Y-%m-%d")
                 .to_string();
             conn.execute(

@@ -6,6 +6,11 @@ use crate::claude_desktop_config::ONE_M_CONTEXT_MARKER;
 use crate::provider::Provider;
 use serde_json::Value;
 
+enum CodexCatalogModelResolution {
+    Listed,
+    Alias(String),
+}
+
 /// 模型映射配置
 pub struct ModelMapping {
     pub haiku_model: Option<String>,
@@ -128,6 +133,126 @@ pub fn apply_model_mapping(
     }
 
     (body, original_model, None)
+}
+
+/// 对 Codex 请求体应用请求级模型映射。
+///
+/// `meta.codexModelRoutes` 使用精确模型名匹配，优先级高于旧的
+/// `settings_config.env.ANTHROPIC_*` 兼容映射。这样可以表达
+/// `gpt-5.4-mini -> gpt-5.5` 这类 Codex 内部模型别名，同时不把
+/// 其他未声明模型误改到同一个默认模型。
+pub fn apply_codex_model_mapping(
+    mut body: Value,
+    provider: &Provider,
+) -> (Value, Option<String>, Option<String>) {
+    let original_model = body.get("model").and_then(|m| m.as_str()).map(String::from);
+    let Some(original) = original_model.as_deref() else {
+        return (body, None, None);
+    };
+
+    let catalog_resolution = resolve_codex_catalog_model(provider, original);
+    let mut route_input = original.to_string();
+
+    if let Some(CodexCatalogModelResolution::Alias(catalog_model)) = catalog_resolution.as_ref() {
+        log::debug!("[ModelMapper] Codex 目录模型解析: {original} → {catalog_model}");
+        body["model"] = serde_json::json!(catalog_model);
+        route_input = catalog_model.clone();
+    }
+
+    if let Some(route) = find_codex_model_route(provider, &route_input) {
+        let mapped = route.model.trim();
+        if mapped.is_empty() {
+            return (body, Some(original.to_string()), None);
+        }
+        if mapped != route_input {
+            log::debug!("[ModelMapper] Codex 模型映射: {route_input} → {mapped}");
+            body["model"] = serde_json::json!(mapped);
+        }
+
+        let final_model = body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or(original)
+            .to_string();
+        if final_model != original {
+            return (body, Some(original.to_string()), Some(final_model));
+        }
+        return (body, Some(original.to_string()), None);
+    }
+
+    match catalog_resolution {
+        Some(CodexCatalogModelResolution::Alias(_)) => {
+            let final_model = body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or(original)
+                .to_string();
+            return (body, Some(original.to_string()), Some(final_model));
+        }
+        Some(CodexCatalogModelResolution::Listed) => {
+            return (body, Some(original.to_string()), None);
+        }
+        None => {}
+    }
+
+    apply_model_mapping(body, provider)
+}
+
+fn find_codex_model_route<'a>(
+    provider: &'a Provider,
+    model: &str,
+) -> Option<&'a crate::provider::CodexModelRoute> {
+    provider.meta.as_ref().and_then(|meta| {
+        meta.codex_model_routes
+            .get(model)
+            .or_else(|| meta.codex_model_routes.get(model.trim()))
+    })
+}
+
+fn resolve_codex_catalog_model(
+    provider: &Provider,
+    request_model: &str,
+) -> Option<CodexCatalogModelResolution> {
+    let request_model = request_model.trim();
+    if request_model.is_empty() {
+        return None;
+    }
+
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+        .and_then(|models| {
+            for model_config in models {
+                let Some(model) = model_config
+                    .get("model")
+                    .or_else(|| model_config.get("id"))
+                    .or_else(|| model_config.get("slug"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                else {
+                    continue;
+                };
+
+                if model == request_model {
+                    return Some(CodexCatalogModelResolution::Listed);
+                }
+
+                let display_name = model_config
+                    .get("displayName")
+                    .or_else(|| model_config.get("display_name"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty());
+                if display_name == Some(request_model) {
+                    return Some(CodexCatalogModelResolution::Alias(model.to_string()));
+                }
+            }
+
+            None
+        })
 }
 
 /// Claude Code 通过 `[1M]` 后缀声明 100 万上下文能力；上游 API
@@ -344,6 +469,136 @@ mod tests {
         let (result, _, mapped) = apply_model_mapping(body, &provider);
         assert_eq!(result["model"], "sonnet-mapped");
         assert_eq!(mapped, Some("sonnet-mapped".to_string()));
+    }
+
+    #[test]
+    fn codex_model_routes_map_exact_request_model() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4-mini".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
+        let (result, original, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(original.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(mapped.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn codex_catalog_alias_maps_before_codex_model_routes() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "displayName": "aaa",
+                        "model": "B"
+                    }
+                ]
+            }
+        });
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "B".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "C".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "aaa", "input": "hello"});
+        let (result, original, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "C");
+        assert_eq!(original.as_deref(), Some("aaa"));
+        assert_eq!(mapped.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn codex_catalog_alias_maps_to_catalog_model_without_route() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "legacy-default-model"
+            },
+            "modelCatalog": {
+                "models": [
+                    {
+                        "displayName": "aaa",
+                        "model": "B"
+                    }
+                ]
+            }
+        });
+
+        let body = json!({"model": "aaa", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "B");
+        assert_eq!(mapped.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn codex_catalog_listed_model_preserves_request_without_legacy_default() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "legacy-default-model"
+            },
+            "modelCatalog": {
+                "models": [
+                    {
+                        "displayName": "aaa",
+                        "model": "B"
+                    }
+                ]
+            }
+        });
+
+        let body = json!({"model": "B", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "B");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn codex_model_routes_take_priority_over_default_env_mapping() {
+        let mut provider = create_provider_with_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4-mini".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(mapped.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn codex_model_routes_fall_back_to_legacy_env_mapping() {
+        let provider = create_provider_with_mapping();
+        let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "default-model");
+        assert_eq!(mapped.as_deref(), Some("default-model"));
     }
 
     #[test]
