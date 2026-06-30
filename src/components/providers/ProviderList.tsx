@@ -3476,7 +3476,7 @@ export function ProviderList({
               >
                 <Table
                   ref={providerTableRef}
-                  className="min-w-[1340px] table-fixed text-[13px]"
+                  className="min-w-[1350px] table-fixed text-[13px]"
                 >
                   <colgroup>
                     <col className="w-[48px]" />
@@ -3485,7 +3485,7 @@ export function ProviderList({
                     <col className="w-[210px]" />
                     <col className="w-[300px]" />
                     <col className="w-[196px]" />
-                    <col className="w-[214px]" />
+                    <col className="w-[224px]" />
                   </colgroup>
                   <TableHeader className="sticky top-0 z-20 bg-muted">
                     <TableRow className="bg-muted/40 hover:bg-muted/40">

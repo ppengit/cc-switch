@@ -582,8 +582,8 @@ impl RequestForwarder {
                 status.current_provider_id = Some(provider.id.clone());
             }
 
-            // 转发请求。供应商级入场重试只在 overloaded/capacity/rate-limit
-            // 类错误上持续重试同一 provider；关闭开关后立即回到原有 failover 流程。
+            // 转发请求。供应商级入场重试会在临时可恢复错误上持续重试同一
+            // provider；关闭开关后立即回到原有 failover 流程。
             match self
                 .forward_with_admission_retry(
                     app_type,
@@ -1420,7 +1420,17 @@ impl RequestForwarder {
                         return Err(AdmissionRetryForwardError::Normal(error));
                     };
 
-                    if !is_upstream_admission_retryable(&error) {
+                    // 入场重试语义：开关开着时，对“同一家换个时机重发可能成功”的
+                    // 可重试错误（拥挤/限流/超时/连接失败/5xx 等）一律死磕同一 provider，
+                    // 不再把错误抛回客户端触发 CLI 侧倒计时退避。两道闸门：
+                    //   1) ErrorCategory::Retryable —— 排除客户端层永久错误
+                    //      （400/413/422/501 等 NonRetryable）与能力不匹配
+                    //      （ProviderCapability），这类换时机也修不好；
+                    //   2) body 永久失败信号 —— 排除配额/鉴权/模型不存在等
+                    //      “死磕同一家 100% 不会成功”的上游响应，避免无限空等。
+                    // 命中任一闸门即中性返回，交回原有流程（含整流器 4xx 修复）。
+                    let category = self.categorize_proxy_error(app_type, endpoint, &error);
+                    if !should_retry_provider_admission(category, &error) {
                         if retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
@@ -1456,7 +1466,7 @@ impl RequestForwarder {
                     retries_used = retries_used.saturating_add(1);
                     let delay_ms = policy.delay_ms(retries_used);
                     log::warn!(
-                        "[{}] 上游入场拥挤，持续重试同一 Provider: provider={}, retry={}, delay_ms={}, error={}",
+                        "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, delay_ms={}, error={}",
                         app_type.as_str(),
                         provider.name,
                         retries_used,
@@ -2765,14 +2775,12 @@ impl AdmissionRetryPolicy {
     }
 }
 
-fn is_upstream_admission_retryable(error: &ProxyError) -> bool {
-    let ProxyError::UpstreamError { status, body } = error else {
-        return false;
-    };
-
-    let text = body.as_deref().unwrap_or("").to_ascii_lowercase();
-    if contains_any(
-        &text,
+/// 上游响应体是否表明这是一类“死磕同一家也永远不会成功”的永久失败：
+/// 配额/计费、鉴权/权限、模型不存在、上下文超限、请求非法等。
+/// 入场重试遇到这些信号会立即中性返回，避免对永久错误无限重试空等。
+fn body_signals_permanent_failure(text: &str) -> bool {
+    contains_any(
+        text,
         &[
             "insufficient_quota",
             "insufficient quota",
@@ -2795,7 +2803,33 @@ fn is_upstream_admission_retryable(error: &ProxyError) -> bool {
             "invalid_request",
             "bad request",
         ],
-    ) {
+    )
+}
+
+fn should_retry_provider_admission(category: ErrorCategory, error: &ProxyError) -> bool {
+    if !matches!(category, ErrorCategory::Retryable) {
+        return false;
+    }
+
+    match error {
+        ProxyError::UpstreamError { body, .. } => {
+            !body_signals_permanent_failure(&body.as_deref().unwrap_or("").to_ascii_lowercase())
+        }
+        _ => true,
+    }
+}
+
+// 旧的“仅拥挤类错误”判定：入场重试主流程已改用 categorize_proxy_error +
+// body_signals_permanent_failure 两道闸门（覆盖范围更广），此处仅保留供单测
+// 校验拥挤关键词/状态码的分桶语义。
+#[cfg(test)]
+fn is_upstream_admission_retryable(error: &ProxyError) -> bool {
+    let ProxyError::UpstreamError { status, body } = error else {
+        return false;
+    };
+
+    let text = body.as_deref().unwrap_or("").to_ascii_lowercase();
+    if body_signals_permanent_failure(&text) {
         return false;
     }
 
@@ -3805,6 +3839,86 @@ mod tests {
     }
 
     #[test]
+    fn body_permanent_failure_signals_block_admission_retry() {
+        // 永久失败信号：死磕同一家也不会成功，入场重试必须放行回原流程。
+        for body in [
+            r#"{"error":{"code":"insufficient_quota"}}"#,
+            r#"{"error":{"message":"invalid api key"}}"#,
+            r#"{"error":{"message":"model not found"}}"#,
+            r#"{"error":{"message":"context length exceeded"}}"#,
+            r#"{"error":{"message":"payment required"}}"#,
+        ] {
+            assert!(
+                body_signals_permanent_failure(&body.to_ascii_lowercase()),
+                "expected permanent-failure signal for body: {body}"
+            );
+        }
+
+        // 临时拥挤/容量类响应不应被永久失败信号误伤。
+        for body in [
+            r#"{"error":{"message":"server is overloaded"}}"#,
+            r#"{"error":{"message":"rate limit reached"}}"#,
+            r#"{"error":{"message":"please try again later"}}"#,
+            "",
+        ] {
+            assert!(
+                !body_signals_permanent_failure(&body.to_ascii_lowercase()),
+                "transient body should not be flagged permanent: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_retry_decision_retries_transient_errors_only() {
+        let transient_errors = [
+            ProxyError::Timeout("upstream timed out".to_string()),
+            ProxyError::ForwardFailed("connection reset by peer".to_string()),
+            ProxyError::UpstreamError {
+                status: 502,
+                body: Some(r#"{"error":{"message":"temporary gateway failure"}}"#.to_string()),
+            },
+            ProxyError::UpstreamError {
+                status: 429,
+                body: Some(r#"{"error":{"message":"rate limit reached"}}"#.to_string()),
+            },
+        ];
+
+        for error in transient_errors {
+            assert!(
+                should_retry_provider_admission(ErrorCategory::Retryable, &error),
+                "transient error should stay inside admission retry: {error}"
+            );
+        }
+
+        let permanent_upstream = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"code":"insufficient_quota"}}"#.to_string()),
+        };
+        assert!(!should_retry_provider_admission(
+            ErrorCategory::Retryable,
+            &permanent_upstream,
+        ));
+
+        let non_retryable = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"invalid request"}}"#.to_string()),
+        };
+        assert!(!should_retry_provider_admission(
+            ErrorCategory::NonRetryable,
+            &non_retryable,
+        ));
+
+        let provider_capability = ProxyError::UpstreamError {
+            status: 404,
+            body: Some(r#"{"error":{"message":"Cannot POST /v1/responses/compact"}}"#.to_string()),
+        };
+        assert!(!should_retry_provider_admission(
+            ErrorCategory::ProviderCapability,
+            &provider_capability,
+        ));
+    }
+
+    #[test]
     fn admission_retry_policy_normalizes_timing_and_zero_means_unlimited() {
         let mut provider = test_provider_with_type(None);
         provider.meta = Some(ProviderMeta {
@@ -4293,6 +4407,7 @@ mod tests {
         provider.meta = Some(ProviderMeta {
             upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
                 enabled: true,
+                max_retries: Some(1),
                 initial_delay_ms: Some(0),
                 max_delay_ms: Some(0),
                 jitter_ms: Some(0),

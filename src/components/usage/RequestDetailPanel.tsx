@@ -1,6 +1,8 @@
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -17,6 +19,19 @@ interface RequestDetailPanelProps {
   requestId: string;
   initialRequest?: RequestLog | null;
   onClose: () => void;
+}
+
+// 右上角关闭按钮：补足 Radix Dialog 默认不带关闭按钮的体验，
+// 让用户除了点击外部/Esc 之外还有一个明确的关闭入口。
+function DialogCloseButton({ label }: { label: string }) {
+  return (
+    <DialogClose
+      className="absolute right-4 top-4 z-10 rounded-md p-1.5 text-muted-foreground opacity-70 transition hover:bg-muted hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring"
+      aria-label={label}
+    >
+      <X className="h-4 w-4" />
+    </DialogClose>
+  );
 }
 
 export function RequestDetailPanel({
@@ -39,7 +54,10 @@ export function RequestDetailPanel({
   if (isLoading && !resolvedRequest) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent zIndex="top" className="max-w-4xl">
+        <DialogContent zIndex="top" closeOnInteractOutside className="max-w-4xl">
+          <DialogCloseButton
+            label={t("common.close", { defaultValue: "关闭" })}
+          />
           <DialogDescription className="sr-only">
             {t("usage.requestDetailLoading", {
               defaultValue: "正在加载请求详情。",
@@ -54,7 +72,10 @@ export function RequestDetailPanel({
   if (!resolvedRequest) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent zIndex="top" className="max-w-4xl">
+        <DialogContent zIndex="top" closeOnInteractOutside className="max-w-4xl">
+          <DialogCloseButton
+            label={t("common.close", { defaultValue: "关闭" })}
+          />
           <DialogHeader>
             <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
             <DialogDescription>
@@ -107,8 +128,10 @@ export function RequestDetailPanel({
     <Dialog open onOpenChange={onClose}>
       <DialogContent
         zIndex="top"
+        closeOnInteractOutside
         className="max-w-4xl max-h-[88vh] overflow-y-auto"
       >
+        <DialogCloseButton label={t("common.close", { defaultValue: "关闭" })} />
         <DialogHeader>
           <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
           <DialogDescription>

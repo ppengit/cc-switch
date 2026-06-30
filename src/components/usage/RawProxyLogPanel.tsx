@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, X } from "lucide-react";
 import { useProxyRawLogs } from "@/lib/query/usage";
 import type { ProxyRawLogEntry } from "@/types/proxy";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -47,6 +48,19 @@ const normalizeModel = (value?: string | null) => {
   const trimmed = (value || "").trim();
   return trimmed || undefined;
 };
+
+// 右上角关闭按钮：Radix Dialog 默认不带关闭按钮，补一个明确的关闭入口，
+// 配合 closeOnInteractOutside 让弹窗既能点外部也能点按钮关闭。
+function DialogCloseButton({ label }: { label: string }) {
+  return (
+    <DialogClose
+      className="absolute right-4 top-4 z-10 rounded-md p-1.5 text-muted-foreground opacity-70 transition hover:bg-muted hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring"
+      aria-label={label}
+    >
+      <X className="h-4 w-4" />
+    </DialogClose>
+  );
+}
 
 const normalizeRouteMode = (value?: string | null) => {
   const trimmed = (value || "").trim();
@@ -395,6 +409,9 @@ export function RawProxyLogPanel({
             closeOnInteractOutside
             className="w-[calc(100vw-2rem)] max-w-[min(1200px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-hidden p-0"
           >
+            <DialogCloseButton
+              label={t("common.close", { defaultValue: "关闭" })}
+            />
             <DialogHeader>
               <DialogTitle>
                 {t("usage.rawProxyLogDetail", {
@@ -425,6 +442,9 @@ export function RawProxyLogPanel({
             closeOnInteractOutside
             className="w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-hidden p-0"
           >
+            <DialogCloseButton
+              label={t("common.close", { defaultValue: "关闭" })}
+            />
             <DialogHeader>
               <DialogTitle>
                 {t("usage.errorPagePreview", {

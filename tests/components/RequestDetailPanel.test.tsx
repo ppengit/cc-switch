@@ -40,6 +40,11 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogDescription: ({ children }: { children: React.ReactNode }) => (
     <p>{children}</p>
   ),
+  DialogClose: ({ children, ...props }: any) => (
+    <button type="button" {...props}>
+      {children}
+    </button>
+  ),
 }));
 
 const createRequest = (overrides: Partial<RequestLog> = {}): RequestLog => ({
