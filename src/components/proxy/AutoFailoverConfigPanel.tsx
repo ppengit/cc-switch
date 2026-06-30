@@ -159,8 +159,7 @@ export function AutoFailoverConfigPanel({
 
     try {
       await updateConfig.mutateAsync({
-        appType,
-        enabled: config.enabled,
+        ...config,
         autoFailoverEnabled: formData.autoFailoverEnabled,
         maxRetries: raw.maxRetries,
         streamingFirstByteTimeout: raw.streamingFirstByteTimeout,

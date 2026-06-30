@@ -116,6 +116,10 @@ export function useSettingsForm(): UseSettingsFormResult {
         data.enableClaudePluginIntegration ?? false,
       silentStartup: data.silentStartup ?? false,
       skipClaudeOnboarding: data.skipClaudeOnboarding ?? false,
+      showProxyActivityFloatingWindow:
+        data.showProxyActivityFloatingWindow ?? false,
+      proxyActivityFloatingOpacity:
+        data.proxyActivityFloatingOpacity ?? 0.86,
       preserveCodexOfficialAuthOnSwitch:
         data.preserveCodexOfficialAuthOnSwitch ?? false,
       unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
@@ -143,6 +147,8 @@ export function useSettingsForm(): UseSettingsFormResult {
             useAppWindowControls: false,
             enableClaudePluginIntegration: false,
             skipClaudeOnboarding: false,
+            showProxyActivityFloatingWindow: false,
+            proxyActivityFloatingOpacity: 0.86,
             preserveCodexOfficialAuthOnSwitch: false,
             unifyCodexSessionHistory: false,
             language: readPersistedLanguage(),
@@ -182,6 +188,10 @@ export function useSettingsForm(): UseSettingsFormResult {
           serverData.enableClaudePluginIntegration ?? false,
         silentStartup: serverData.silentStartup ?? false,
         skipClaudeOnboarding: serverData.skipClaudeOnboarding ?? false,
+        showProxyActivityFloatingWindow:
+          serverData.showProxyActivityFloatingWindow ?? false,
+        proxyActivityFloatingOpacity:
+          serverData.proxyActivityFloatingOpacity ?? 0.86,
         preserveCodexOfficialAuthOnSwitch:
           serverData.preserveCodexOfficialAuthOnSwitch ?? false,
         unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,

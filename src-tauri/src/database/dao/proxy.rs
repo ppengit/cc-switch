@@ -222,6 +222,8 @@ impl Database {
             let conn = lock_conn!(self.conn);
             conn.query_row(
                 "SELECT app_type, enabled, auto_failover_enabled,
+                        session_routing_enabled, session_routing_idle_ttl_seconds,
+                        session_routing_client_session_only, session_routing_overflow_fallback_enabled,
                         max_retries, streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                         circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                         circuit_error_rate_threshold, circuit_min_requests
@@ -232,15 +234,19 @@ impl Database {
                         app_type: row.get(0)?,
                         enabled: row.get::<_, i32>(1)? != 0,
                         auto_failover_enabled: row.get::<_, i32>(2)? != 0,
-                        max_retries: row.get::<_, i32>(3)? as u32,
-                        streaming_first_byte_timeout: row.get::<_, i32>(4)? as u32,
-                        streaming_idle_timeout: row.get::<_, i32>(5)? as u32,
-                        non_streaming_timeout: row.get::<_, i32>(6)? as u32,
-                        circuit_failure_threshold: row.get::<_, i32>(7)? as u32,
-                        circuit_success_threshold: row.get::<_, i32>(8)? as u32,
-                        circuit_timeout_seconds: row.get::<_, i32>(9)? as u32,
-                        circuit_error_rate_threshold: row.get(10)?,
-                        circuit_min_requests: row.get::<_, i32>(11)? as u32,
+                        session_routing_enabled: row.get::<_, i32>(3)? != 0,
+                        session_routing_idle_ttl_seconds: row.get::<_, i32>(4)? as u32,
+                        session_routing_client_session_only: row.get::<_, i32>(5)? != 0,
+                        session_routing_overflow_fallback_enabled: row.get::<_, i32>(6)? != 0,
+                        max_retries: row.get::<_, i32>(7)? as u32,
+                        streaming_first_byte_timeout: row.get::<_, i32>(8)? as u32,
+                        streaming_idle_timeout: row.get::<_, i32>(9)? as u32,
+                        non_streaming_timeout: row.get::<_, i32>(10)? as u32,
+                        circuit_failure_threshold: row.get::<_, i32>(11)? as u32,
+                        circuit_success_threshold: row.get::<_, i32>(12)? as u32,
+                        circuit_timeout_seconds: row.get::<_, i32>(13)? as u32,
+                        circuit_error_rate_threshold: row.get(14)?,
+                        circuit_min_requests: row.get::<_, i32>(15)? as u32,
                     })
                 },
             )
@@ -256,6 +262,10 @@ impl Database {
                     app_type: app_type_owned,
                     enabled: false,
                     auto_failover_enabled: false,
+                    session_routing_enabled: false,
+                    session_routing_idle_ttl_seconds: 600,
+                    session_routing_client_session_only: true,
+                    session_routing_overflow_fallback_enabled: true,
                     max_retries: 3,
                     streaming_first_byte_timeout: 60,
                     streaming_idle_timeout: 120,
@@ -279,6 +289,9 @@ impl Database {
         if !config.enabled {
             config.auto_failover_enabled = false;
         }
+        if !config.enabled || !config.auto_failover_enabled {
+            config.session_routing_enabled = false;
+        }
 
         self.ensure_proxy_config_row_exists(&config.app_type)?;
         let conn = lock_conn!(self.conn);
@@ -287,21 +300,37 @@ impl Database {
             "UPDATE proxy_config SET
                 enabled = ?2,
                 auto_failover_enabled = ?3,
-                max_retries = ?4,
-                streaming_first_byte_timeout = ?5,
-                streaming_idle_timeout = ?6,
-                non_streaming_timeout = ?7,
-                circuit_failure_threshold = ?8,
-                circuit_success_threshold = ?9,
-                circuit_timeout_seconds = ?10,
-                circuit_error_rate_threshold = ?11,
-                circuit_min_requests = ?12,
+                session_routing_enabled = ?4,
+                session_routing_idle_ttl_seconds = ?5,
+                session_routing_client_session_only = ?6,
+                session_routing_overflow_fallback_enabled = ?7,
+                max_retries = ?8,
+                streaming_first_byte_timeout = ?9,
+                streaming_idle_timeout = ?10,
+                non_streaming_timeout = ?11,
+                circuit_failure_threshold = ?12,
+                circuit_success_threshold = ?13,
+                circuit_timeout_seconds = ?14,
+                circuit_error_rate_threshold = ?15,
+                circuit_min_requests = ?16,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
                 config.app_type,
                 if config.enabled { 1 } else { 0 },
                 if config.auto_failover_enabled { 1 } else { 0 },
+                if config.session_routing_enabled { 1 } else { 0 },
+                config.session_routing_idle_ttl_seconds as i32,
+                if config.session_routing_client_session_only {
+                    1
+                } else {
+                    0
+                },
+                if config.session_routing_overflow_fallback_enabled {
+                    1
+                } else {
+                    0
+                },
                 config.max_retries as i32,
                 config.streaming_first_byte_timeout as i32,
                 config.streaming_idle_timeout as i32,
@@ -974,6 +1003,10 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: true,
             auto_failover_enabled: true,
+            session_routing_enabled: true,
+            session_routing_idle_ttl_seconds: 600,
+            session_routing_client_session_only: true,
+            session_routing_overflow_fallback_enabled: true,
             max_retries: 6,
             streaming_first_byte_timeout: 90,
             streaming_idle_timeout: 180,
@@ -1003,6 +1036,10 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: false,
             auto_failover_enabled: true,
+            session_routing_enabled: true,
+            session_routing_idle_ttl_seconds: 600,
+            session_routing_client_session_only: true,
+            session_routing_overflow_fallback_enabled: true,
             max_retries: 6,
             streaming_first_byte_timeout: 90,
             streaming_idle_timeout: 180,
@@ -1019,6 +1056,7 @@ mod tests {
         let updated = db.get_proxy_config_for_app("claude").await?;
         assert!(!updated.enabled);
         assert!(!updated.auto_failover_enabled);
+        assert!(!updated.session_routing_enabled);
 
         Ok(())
     }

@@ -46,6 +46,7 @@ pub struct TrayTexts {
     pub show_main: &'static str,
     pub open_website: &'static str,
     pub no_providers_label: &'static str,
+    pub proxy_activity_floating: &'static str,
     pub lightweight_mode: &'static str,
     pub quit: &'static str,
     pub _auto_label: &'static str,
@@ -58,6 +59,7 @@ impl TrayTexts {
                 show_main: "Open main window",
                 open_website: "Open Official Website",
                 no_providers_label: "(no providers)",
+                proxy_activity_floating: "Request Monitor",
                 lightweight_mode: "Lightweight Mode",
                 quit: "Quit",
                 _auto_label: "Auto (Failover)",
@@ -66,6 +68,7 @@ impl TrayTexts {
                 show_main: "メインウィンドウを開く",
                 open_website: "公式サイトを開く",
                 no_providers_label: "(プロバイダーなし)",
+                proxy_activity_floating: "リクエストモニター",
                 lightweight_mode: "軽量モード",
                 quit: "終了",
                 _auto_label: "自動 (フェイルオーバー)",
@@ -74,6 +77,7 @@ impl TrayTexts {
                 show_main: "開啟主介面",
                 open_website: "開啟官方網站",
                 no_providers_label: "(無供應商)",
+                proxy_activity_floating: "即時請求浮窗",
                 lightweight_mode: "輕量模式",
                 quit: "退出",
                 _auto_label: "自動 (故障轉移)",
@@ -82,6 +86,7 @@ impl TrayTexts {
                 show_main: "打开主界面",
                 open_website: "打开官方网站",
                 no_providers_label: "(无供应商)",
+                proxy_activity_floating: "实时请求浮窗",
                 lightweight_mode: "轻量模式",
                 quit: "退出",
                 _auto_label: "自动 (故障转移)",
@@ -607,6 +612,16 @@ pub fn create_tray_menu(
         menu_builder = menu_builder.separator();
     }
 
+    let proxy_activity_floating_item = CheckMenuItem::with_id(
+        app,
+        "proxy_activity_floating",
+        tray_texts.proxy_activity_floating,
+        true,
+        app_settings.show_proxy_activity_floating_window,
+        None::<&str>,
+    )
+    .map_err(|e| AppError::Message(format!("创建实时请求浮窗菜单失败: {e}")))?;
+
     let lightweight_item = CheckMenuItem::with_id(
         app,
         "lightweight_mode",
@@ -617,7 +632,10 @@ pub fn create_tray_menu(
     )
     .map_err(|e| AppError::Message(format!("创建轻量模式菜单失败: {e}")))?;
 
-    menu_builder = menu_builder.item(&lightweight_item).separator();
+    menu_builder = menu_builder
+        .item(&proxy_activity_floating_item)
+        .item(&lightweight_item)
+        .separator();
 
     // 退出菜单（分隔符已在上面的 section 循环中添加）
     let quit_item = MenuItem::with_id(app, "quit", tray_texts.quit, true, None::<&str>)
@@ -736,6 +754,12 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
         "open_website" => {
             if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
                 log::error!("打开官方网站失败: {e}");
+            }
+        }
+        "proxy_activity_floating" => {
+            let next_visible = !crate::settings::get_settings().show_proxy_activity_floating_window;
+            if let Err(e) = crate::floating_activity::set_visible(app, next_visible) {
+                log::error!("切换实时请求浮窗失败: {e}");
             }
         }
         "lightweight_mode" => {

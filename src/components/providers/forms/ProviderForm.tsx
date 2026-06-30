@@ -187,6 +187,14 @@ const normalizeAdmissionRetryConfigForSave = (
     : undefined;
 };
 
+const normalizeMaxConcurrentRequestsForSave = (
+  value: number | undefined,
+): number | undefined => {
+  if (value === undefined || Number.isNaN(value)) return undefined;
+  const normalized = Math.min(1_000_000, Math.max(0, Math.trunc(value)));
+  return normalized > 0 ? normalized : undefined;
+};
+
 // 从已保存的 settingsConfig 推断 Codex 模型目录条目数（用于决定本地路由初始开关）。
 const codexCatalogCountFromSettings = (settingsConfig: unknown): number => {
   if (settingsConfig && typeof settingsConfig === "object") {
@@ -593,6 +601,9 @@ function ProviderFormFull({
       ...(initialData?.meta?.upstreamAdmissionRetry ?? {}),
       enabled: initialData?.meta?.upstreamAdmissionRetry?.enabled ?? false,
     }));
+  const [maxConcurrentRequests, setMaxConcurrentRequests] = useState<
+    number | undefined
+  >(() => initialData?.meta?.maxConcurrentRequests);
   const [codexChatReasoning, setCodexChatReasoning] =
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
@@ -663,6 +674,7 @@ function ProviderFormFull({
       ...(seed?.meta?.upstreamAdmissionRetry ?? {}),
       enabled: seed?.meta?.upstreamAdmissionRetry?.enabled ?? false,
     });
+    setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
     setCodexModelRoutes(seed?.meta?.codexModelRoutes ?? {});
     setCustomUserAgent(seed?.meta?.customUserAgent ?? "");
@@ -2086,6 +2098,8 @@ function ProviderFormFull({
         : undefined,
       upstreamAdmissionRetry:
         normalizeAdmissionRetryConfigForSave(admissionRetryConfig),
+      maxConcurrentRequests:
+        normalizeMaxConcurrentRequestsForSave(maxConcurrentRequests),
       testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
@@ -3165,9 +3179,11 @@ function ProviderFormFull({
                 testConfig={testConfig}
                 pricingConfig={pricingConfig}
                 admissionRetryConfig={admissionRetryConfig}
+                maxConcurrentRequests={maxConcurrentRequests}
                 onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
                 onAdmissionRetryConfigChange={setAdmissionRetryConfig}
+                onMaxConcurrentRequestsChange={setMaxConcurrentRequests}
               />
             )}
 

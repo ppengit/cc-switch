@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Server, Activity, Zap, Globe, ShieldAlert } from "lucide-react";
+import { Server, Activity, Zap, Globe, ShieldAlert, Route } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { ProxyPanel } from "@/components/proxy";
 import { AutoFailoverConfigPanel } from "@/components/proxy/AutoFailoverConfigPanel";
 import { FailoverQueueManager } from "@/components/proxy/FailoverQueueManager";
+import { SessionRoutingConfigPanel } from "@/components/proxy/SessionRoutingConfigPanel";
 import { RectifierConfigPanel } from "@/components/settings/RectifierConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -127,6 +128,15 @@ export function ProxyTabContent({
               }
               onToggleProxy={handleToggleProxy}
               isProxyPending={isProxyPending}
+              showActivityFloatingWindow={
+                settings?.showProxyActivityFloatingWindow ?? false
+              }
+              activityFloatingOpacity={
+                settings?.proxyActivityFloatingOpacity ?? 0.86
+              }
+              onActivityFloatingSettingsChange={(updates) => {
+                void onAutoSave(updates);
+              }}
             />
           </AccordionContent>
         </AccordionItem>
@@ -211,6 +221,44 @@ export function ProxyTabContent({
                 })}
               </Tabs>
             </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* Session Routing */}
+        <AccordionItem
+          value="sessionRouting"
+          className="rounded-xl glass-card overflow-hidden"
+        >
+          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+            <div className="flex items-center gap-3">
+              <Route className="h-5 w-5 text-emerald-500" />
+              <div className="text-left">
+                <h3 className="text-base font-semibold">
+                  {t("sessionRouting.settings.title", {
+                    defaultValue: "会话路由",
+                  })}
+                </h3>
+                <p className="text-sm text-muted-foreground font-normal">
+                  {t("sessionRouting.settings.description", {
+                    defaultValue:
+                      "按项目/会话粘性分配 Claude 与 Codex 请求，并按供应商并发上限分流。",
+                  })}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+            <Tabs defaultValue="claude" className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="claude">Claude</TabsTrigger>
+                <TabsTrigger value="codex">Codex</TabsTrigger>
+              </TabsList>
+              {(["claude", "codex"] as const).map((appType) => (
+                <TabsContent key={appType} value={appType} className="mt-4">
+                  <SessionRoutingConfigPanel appType={appType} />
+                </TabsContent>
+              ))}
+            </Tabs>
           </AccordionContent>
         </AccordionItem>
 

@@ -73,6 +73,7 @@ import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
+import { SessionRoutingToggle } from "@/components/proxy/SessionRoutingToggle";
 import {
   getActivityDisplayModel,
   getActivityRequestModel,
@@ -1558,10 +1559,13 @@ function App() {
                       <ProxyToggle activeApp={activeApp} />
                     )
                   )}
-                  {activeApp !== "claude-desktop" &&
-                    settingsData?.enableFailoverToggle && (
-                      <FailoverToggle activeApp={activeApp} />
-                    )}
+                {activeApp !== "claude-desktop" &&
+                  settingsData?.enableFailoverToggle && (
+                    <FailoverToggle activeApp={activeApp} />
+                  )}
+                  {(activeApp === "claude" || activeApp === "codex") && (
+                    <SessionRoutingToggle activeApp={activeApp} />
+                  )}
                 </div>
               )}
             <div

@@ -40,7 +40,11 @@ pub enum ProxyError {
     ProviderUnhealthy(String),
 
     #[error("上游错误 (状态码 {status}): {body:?}")]
-    UpstreamError { status: u16, body: Option<String> },
+    UpstreamError {
+        status: u16,
+        body: Option<String>,
+        retry_after_ms: Option<u64>,
+    },
 
     #[error("超过最大重试次数")]
     MaxRetriesExceeded,
@@ -82,6 +86,7 @@ impl IntoResponse for ProxyError {
             ProxyError::UpstreamError {
                 status: upstream_status,
                 body: upstream_body,
+                ..
             } => {
                 let http_status =
                     StatusCode::from_u16(*upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);

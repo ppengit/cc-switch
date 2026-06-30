@@ -1364,7 +1364,7 @@ fn codex_proxy_error_json(
     error: &ProxyError,
 ) -> Value {
     let (mut body, upstream_status) = match error {
-        ProxyError::UpstreamError { status, body } => {
+        ProxyError::UpstreamError { status, body, .. } => {
             let parsed_body = body
                 .as_deref()
                 .map(|body| serde_json::from_str::<Value>(body).unwrap_or_else(|_| json!(body)));
@@ -2888,6 +2888,8 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
                 r#"{"base_resp":{"status_code":2013,"status_msg":"upstream gateway failed"}}"#
                     .to_string(),
             ),
+
+            retry_after_ms: None,
         };
         let body = codex_proxy_error_json("MiniMax", "abab6.5s", "/responses", &error);
 
@@ -2910,6 +2912,8 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
                  <hr><center>nginx/1.29.6</center>\r\n</body>\r\n</html>"
                     .to_string(),
             ),
+
+            retry_after_ms: None,
         };
         let body = codex_proxy_error_json("HCAI", "gpt-5.5", "/responses", &error);
 

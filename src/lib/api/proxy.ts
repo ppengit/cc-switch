@@ -7,6 +7,9 @@ import type {
   ProxyTakeoverStatus,
   GlobalProxyConfig,
   AppProxyConfig,
+  ProviderAdmissionRetryEvent,
+  ProxyActivityFloatingSettings,
+  SessionRoutingSnapshot,
 } from "@/types/proxy";
 
 export const proxyApi = {
@@ -34,6 +37,46 @@ export const proxyApi = {
     return invoke("get_proxy_raw_logs", {
       limit: params?.limit,
       appType: params?.appType,
+    });
+  },
+
+  async getProviderAdmissionRetrySnapshot(
+    appType?: string,
+  ): Promise<ProviderAdmissionRetryEvent[]> {
+    return invoke("get_provider_admission_retry_snapshot", {
+      appType,
+    });
+  },
+
+  async getProxyActivityFloatingSettings(): Promise<ProxyActivityFloatingSettings> {
+    return invoke("get_proxy_activity_floating_settings");
+  },
+
+  async setProxyActivityFloatingWindowVisible(
+    visible: boolean,
+  ): Promise<void> {
+    return invoke("set_proxy_activity_floating_window_visible", { visible });
+  },
+
+  async setProxyActivityFloatingOpacity(opacity: number): Promise<void> {
+    return invoke("set_proxy_activity_floating_opacity", { opacity });
+  },
+
+  async getSessionRoutingSnapshot(
+    appType: string,
+  ): Promise<SessionRoutingSnapshot> {
+    return invoke("get_session_routing_snapshot", { appType });
+  },
+
+  async rebindSessionRoute(
+    appType: string,
+    sessionId: string,
+    providerId: string,
+  ): Promise<SessionRoutingSnapshot> {
+    return invoke("rebind_session_route", {
+      appType,
+      sessionId,
+      providerId,
     });
   },
 

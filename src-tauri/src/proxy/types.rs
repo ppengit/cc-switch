@@ -131,6 +131,9 @@ pub struct ActiveRequestTarget {
     pub upstream_model: Option<String>,
     pub route_mode: Option<String>,
     pub upstream_url: Option<String>,
+    pub session_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
     pub last_request_model: Option<String>,
     pub last_request_at: String,
 }
@@ -147,10 +150,62 @@ pub struct ProxyActivityEvent {
     pub upstream_model: Option<String>,
     pub route_mode: Option<String>,
     pub upstream_url: Option<String>,
+    pub session_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub active_request_count: usize,
     pub active_request_targets: Vec<ActiveRequestTarget>,
+}
+
+/// 当前活跃的上游入场重试事件/快照。
+///
+/// 与前端事件 `provider-admission-retry` 共用同一个结构；`event=retrying` 表示
+/// 仍在同一供应商上等待下一次入场，`event=cleared` 表示该请求已退出入场重试态。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAdmissionRetryEvent {
+    pub request_id: String,
+    pub event: String,
+    pub app_type: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub retry_count: u32,
+    pub delay_ms: u64,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoutingProviderSnapshot {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub session_occupancy: u32,
+    pub anonymous_occupancy: u32,
+    pub occupancy: u32,
+    pub max_concurrent_requests: Option<u32>,
+    pub in_failover_queue: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoutingBindingSnapshot {
+    pub app_type: String,
+    pub session_id: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub idle_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRoutingSnapshot {
+    pub app_type: String,
+    pub enabled: bool,
+    pub bindings: Vec<SessionRoutingBindingSnapshot>,
+    pub providers: Vec<SessionRoutingProviderSnapshot>,
 }
 
 /// 内存中的代理原始日志事件。
@@ -169,6 +224,9 @@ pub struct ProxyRawLogEvent {
     pub upstream_model: Option<String>,
     pub route_mode: Option<String>,
     pub upstream_url: Option<String>,
+    pub session_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub active_request_count: usize,
@@ -194,6 +252,9 @@ pub struct ProxyRawLogEntry {
     pub upstream_model: Option<String>,
     pub route_mode: Option<String>,
     pub upstream_url: Option<String>,
+    pub session_id: Option<String>,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub active_request_count: usize,
@@ -277,6 +338,14 @@ pub struct AppProxyConfig {
     pub enabled: bool,
     /// 该 app 自动故障转移开关
     pub auto_failover_enabled: bool,
+    /// 该 app 会话路由开关
+    pub session_routing_enabled: bool,
+    /// 会话空闲多久后释放供应商占用（秒）
+    pub session_routing_idle_ttl_seconds: u32,
+    /// 仅客户端显式提供的会话 ID 参与粘性绑定
+    pub session_routing_client_session_only: bool,
+    /// 所有供应商均达到并发上限时，是否由故障转移队列第一个可用供应商兜底
+    pub session_routing_overflow_fallback_enabled: bool,
     /// 最大重试次数
     pub max_retries: u32,
     /// 流式首字超时（秒）

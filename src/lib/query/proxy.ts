@@ -241,3 +241,49 @@ export function useUpdateAppProxyConfig() {
     },
   });
 }
+
+export function useSessionRoutingSnapshot(appType: string, enabled = true) {
+  return useQuery({
+    queryKey: ["sessionRoutingSnapshot", appType],
+    queryFn: () => proxyApi.getSessionRoutingSnapshot(appType),
+    enabled: enabled && !!appType && (appType === "claude" || appType === "codex"),
+    refetchInterval: 2500,
+  });
+}
+
+export function useRebindSessionRoute() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      appType,
+      sessionId,
+      providerId,
+    }: {
+      appType: string;
+      sessionId: string;
+      providerId: string;
+    }) => proxyApi.rebindSessionRoute(appType, sessionId, providerId),
+    onSuccess: (_, variables) => {
+      toast.success(
+        t("sessionRouting.manager.rebindSuccess", {
+          defaultValue: "会话路由已切换",
+        }),
+        { closeButton: true },
+      );
+      queryClient.invalidateQueries({
+        queryKey: ["sessionRoutingSnapshot", variables.appType],
+      });
+      queryClient.invalidateQueries({ queryKey: ["proxyStatus"] });
+    },
+    onError: (error: Error) => {
+      toast.error(
+        t("sessionRouting.manager.rebindFailed", {
+          error: error.message,
+          defaultValue: "切换会话路由失败：{{error}}",
+        }),
+      );
+    },
+  });
+}

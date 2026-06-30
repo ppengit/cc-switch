@@ -4,14 +4,16 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{clear_provider, route_request_with_metadata, ProxyActivityState},
+    activity::{
+        clear_provider, record_admission_retry, route_request_with_metadata, ProxyActivityState,
+    },
     body_filter::filter_private_params_with_whitelist,
     content_encoding::{decompress_body, get_content_encoding},
     error::*,
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
-    provider_router::ProviderRouter,
+    provider_router::{ProviderRouter, SessionRoutingRequestGuard},
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -20,7 +22,10 @@ use super::{
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
     },
-    types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
+    types::{
+        CopilotOptimizerConfig, OptimizerConfig, ProviderAdmissionRetryEvent, ProxyStatus,
+        RectifierConfig,
+    },
     ProxyError,
 };
 use crate::commands::{CodexOAuthState, CopilotAuthState};
@@ -33,10 +38,9 @@ use crate::{
 };
 use futures::StreamExt;
 use http::Extensions;
-use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
@@ -66,20 +70,6 @@ impl AdmissionRetryForwardError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderAdmissionRetryEvent {
-    request_id: String,
-    event: &'static str,
-    app_type: String,
-    provider_id: String,
-    provider_name: String,
-    retry_count: u32,
-    delay_ms: u64,
-    status: Option<u16>,
-    error: Option<String>,
-}
-
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -92,6 +82,7 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    pub(crate) session_route_guard: Option<SessionRoutingRequestGuard>,
 }
 
 pub struct ForwardError {
@@ -111,6 +102,7 @@ pub struct ForwardError {
 /// 不需要每条出口路径都手动调用。
 pub(crate) struct ActiveConnectionGuard {
     status: Arc<RwLock<ProxyStatus>>,
+    session_route_guard: Option<SessionRoutingRequestGuard>,
 }
 
 impl ActiveConnectionGuard {
@@ -119,7 +111,14 @@ impl ActiveConnectionGuard {
             let mut s = status.write().await;
             s.active_connections = s.active_connections.saturating_add(1);
         }
-        Self { status }
+        Self {
+            status,
+            session_route_guard: None,
+        }
+    }
+
+    pub(crate) fn attach_session_route_guard(&mut self, guard: SessionRoutingRequestGuard) {
+        self.session_route_guard = Some(guard);
     }
 }
 
@@ -430,7 +429,7 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
-        let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
+        let mut guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
         {
             let mut s = self.status.write().await;
             s.total_requests = s.total_requests.saturating_add(1);
@@ -445,6 +444,9 @@ impl RequestForwarder {
         // 在流式 body 的 future 内才真正 drop。
         // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
         result.map(|mut fr| {
+            if let Some(session_route_guard) = fr.session_route_guard.take() {
+                guard.attach_session_route_guard(session_route_guard);
+            }
             fr.connection_guard = Some(guard);
             fr
         })
@@ -539,6 +541,16 @@ impl RequestForwarder {
             if !allowed {
                 continue;
             }
+
+            let session_route_guard = self
+                .router
+                .acquire_session_route_request(
+                    app_type_str,
+                    &self.session_id,
+                    self.session_client_provided,
+                    &provider,
+                )
+                .await;
 
             // PRE-SEND 优化器：每个 provider 独立决定是否优化
             // clone body 以避免 Bedrock 优化字段泄漏到非 Bedrock provider（failover 场景）
@@ -652,6 +664,7 @@ impl RequestForwarder {
                         claude_api_format,
                         outbound_model,
                         connection_guard: None,
+                        session_route_guard,
                     });
                 }
                 Err(admission_error) => {
@@ -768,6 +781,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        session_route_guard,
                                     });
                                 }
                                 Err(retry_error) => {
@@ -932,6 +946,7 @@ impl RequestForwarder {
                                             claude_api_format,
                                             outbound_model,
                                             connection_guard: None,
+                                            session_route_guard,
                                         });
                                     }
                                     Err(retry_error) => {
@@ -1107,6 +1122,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        session_route_guard,
                                     });
                                 }
                                 Err(retry_error) => {
@@ -1400,7 +1416,8 @@ impl RequestForwarder {
                             0,
                             None,
                             false,
-                        );
+                        )
+                        .await;
                     }
                     return Ok(result);
                 }
@@ -1415,7 +1432,8 @@ impl RequestForwarder {
                                 0,
                                 Some(&error),
                                 false,
-                            );
+                            )
+                            .await;
                         }
                         return Err(AdmissionRetryForwardError::Normal(error));
                     };
@@ -1439,7 +1457,8 @@ impl RequestForwarder {
                                 0,
                                 Some(&error),
                                 false,
-                            );
+                            )
+                            .await;
                         }
                         return Err(AdmissionRetryForwardError::Neutral(error));
                     }
@@ -1452,7 +1471,8 @@ impl RequestForwarder {
                             0,
                             Some(&error),
                             false,
-                        );
+                        )
+                        .await;
                         log::warn!(
                             "[{}] 上游入场重试达到阈值，中性返回: provider={}, retries={}, error={}",
                             app_type.as_str(),
@@ -1464,7 +1484,8 @@ impl RequestForwarder {
                     }
 
                     retries_used = retries_used.saturating_add(1);
-                    let delay_ms = policy.delay_ms(retries_used);
+                    let delay_ms =
+                        policy.delay_ms(retries_used, proxy_error_retry_after_ms(&error));
                     log::warn!(
                         "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, delay_ms={}, error={}",
                         app_type.as_str(),
@@ -1480,7 +1501,8 @@ impl RequestForwarder {
                         delay_ms,
                         Some(&error),
                         true,
-                    );
+                    )
+                    .await;
                     if delay_ms > 0 {
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
@@ -1495,7 +1517,8 @@ impl RequestForwarder {
                             0,
                             Some(&error),
                             false,
-                        );
+                        )
+                        .await;
                         return Err(AdmissionRetryForwardError::Normal(error));
                     }
                 }
@@ -1528,7 +1551,7 @@ impl RequestForwarder {
         AdmissionRetryPolicy::from_provider(provider)
     }
 
-    fn emit_admission_retry_event(
+    async fn emit_admission_retry_event(
         &self,
         app_type: &AppType,
         provider: &Provider,
@@ -1537,13 +1560,9 @@ impl RequestForwarder {
         error: Option<&ProxyError>,
         active: bool,
     ) {
-        let Some(app_handle) = self.app_handle.as_ref() else {
-            return;
-        };
-
         let payload = ProviderAdmissionRetryEvent {
             request_id: self.request_id.clone(),
-            event: if active { "retrying" } else { "cleared" },
+            event: if active { "retrying" } else { "cleared" }.to_string(),
             app_type: app_type.as_str().to_string(),
             provider_id: provider.id.clone(),
             provider_name: provider.name.clone(),
@@ -1553,9 +1572,7 @@ impl RequestForwarder {
             error: error.map(summarize_proxy_error),
         };
 
-        if let Err(err) = app_handle.emit("provider-admission-retry", payload) {
-            log::debug!("emit provider-admission-retry failed: {err}");
-        }
+        record_admission_retry(&self.proxy_activity, self.app_handle.as_ref(), payload).await;
     }
 
     /// 转发单个请求（使用适配器）
@@ -1901,6 +1918,9 @@ impl RequestForwarder {
         } else {
             None
         };
+        let activity_project_path = activity_project_path(headers, &filtered_body);
+        let activity_project_name = activity_project_name(activity_project_path.as_deref())
+            .or_else(|| activity_project_name_from_request(headers, &filtered_body));
         route_request_with_metadata(
             &self.proxy_activity,
             self.app_handle.as_ref(),
@@ -1912,6 +1932,11 @@ impl RequestForwarder {
             effective_request_model.clone(),
             Some(route_mode.to_string()),
             Some(activity_upstream_url),
+            self.session_client_provided
+                .then(|| self.session_id.clone())
+                .filter(|value| !value.trim().is_empty()),
+            activity_project_name,
+            activity_project_path,
         )
         .await;
         log_prompt_cache_trace(
@@ -2475,6 +2500,7 @@ impl RequestForwarder {
             // 错误响应同样可能被上游压缩（content-encoding）。reqwest 未启用任何
             // 自动解压 feature，这里拿到的是原始字节；不解压的话，压缩过的错误体会
             // 在 from_utf8 处变成非 UTF-8 而被丢弃，隐藏掉上游的限流/鉴权等详情。
+            let retry_after_ms = retry_after_ms_from_headers(response.headers());
             let encoding = get_content_encoding(response.headers());
             let raw = response.bytes().await?;
             let decoded = match encoding {
@@ -2490,6 +2516,7 @@ impl RequestForwarder {
             Err(ProxyError::UpstreamError {
                 status: status_code,
                 body: body_text,
+                retry_after_ms,
             })
         }
     }
@@ -2689,7 +2716,7 @@ impl RequestForwarder {
             //
             // 其他 4xx（401/403/404/408/409/429/451 等）和全部 5xx 都保留
             // Retryable —— 换一家 provider 可能持有不同的 key、配额、地域或模型映射。
-            ProxyError::UpstreamError { status, body } => {
+            ProxyError::UpstreamError { status, body, .. } => {
                 if is_codex_compact_provider_capability_error(app_type, endpoint, *status, body) {
                     ErrorCategory::ProviderCapability
                 } else {
@@ -2755,7 +2782,11 @@ impl AdmissionRetryPolicy {
             .is_some_and(|max_retries| retries_used >= max_retries)
     }
 
-    fn delay_ms(&self, retry_number: u32) -> u64 {
+    fn delay_ms(&self, retry_number: u32, retry_after_ms: Option<u64>) -> u64 {
+        if let Some(retry_after_ms) = retry_after_ms {
+            return retry_after_ms.min(self.max_delay_ms);
+        }
+
         let exponent = retry_number.saturating_sub(1).min(16);
         let multiplier = 1u64 << exponent;
         let base = self
@@ -2773,6 +2804,36 @@ impl AdmissionRetryPolicy {
 
         base.saturating_add(jitter).min(self.max_delay_ms)
     }
+}
+
+fn proxy_error_retry_after_ms(error: &ProxyError) -> Option<u64> {
+    match error {
+        ProxyError::UpstreamError { retry_after_ms, .. } => *retry_after_ms,
+        _ => None,
+    }
+}
+
+fn retry_after_ms_from_headers(headers: &http::HeaderMap) -> Option<u64> {
+    let value = headers
+        .get(http::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())?
+        .trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000));
+    }
+
+    let target = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let now = chrono::Utc::now();
+    if target <= now {
+        return Some(0);
+    }
+    Some(target.signed_duration_since(now).num_milliseconds().max(0) as u64)
 }
 
 /// 上游响应体是否表明这是一类“死磕同一家也永远不会成功”的永久失败：
@@ -2824,7 +2885,7 @@ fn should_retry_provider_admission(category: ErrorCategory, error: &ProxyError) 
 // 校验拥挤关键词/状态码的分桶语义。
 #[cfg(test)]
 fn is_upstream_admission_retryable(error: &ProxyError) -> bool {
-    let ProxyError::UpstreamError { status, body } = error else {
+    let ProxyError::UpstreamError { status, body, .. } = error else {
         return false;
     };
 
@@ -2935,7 +2996,7 @@ fn proxy_error_status(error: &ProxyError) -> Option<u16> {
 
 fn summarize_proxy_error(error: &ProxyError) -> String {
     match error {
-        ProxyError::UpstreamError { status, body } => {
+        ProxyError::UpstreamError { status, body, .. } => {
             let body_summary = body
                 .as_deref()
                 .map(summarize_upstream_body)
@@ -3192,6 +3253,205 @@ fn normalize_activity_model(value: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn activity_project_path(headers: &http::HeaderMap, body: &Value) -> Option<String> {
+    const HEADER_CANDIDATES: &[&str] = &[
+        "x-cc-switch-project-path",
+        "x-cc-switch-cwd",
+        "x-project-path",
+        "x-workspace-path",
+        "x-working-directory",
+        "x-cwd",
+    ];
+
+    HEADER_CANDIDATES
+        .iter()
+        .find_map(|name| header_text(headers, name))
+        .or_else(|| {
+            json_text_candidates(
+                body,
+                &[
+                    "cwd",
+                    "project_path",
+                    "projectPath",
+                    "workspace",
+                    "workspacePath",
+                    "working_directory",
+                    "workingDirectory",
+                ],
+            )
+        })
+        .or_else(|| extract_project_path_from_request_text(body))
+        .map(normalize_project_path_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn activity_project_name(project_path: Option<&str>) -> Option<String> {
+    let path = project_path?.trim().trim_matches('"').trim_matches('\'');
+    if path.is_empty() {
+        return None;
+    }
+
+    path.rsplit(['\\', '/'])
+        .find(|segment| !segment.trim().is_empty())
+        .map(|segment| segment.trim().to_string())
+}
+
+fn activity_project_name_from_request(headers: &http::HeaderMap, body: &Value) -> Option<String> {
+    const HEADER_CANDIDATES: &[&str] = &[
+        "x-cc-switch-project",
+        "x-cc-switch-project-name",
+        "x-project",
+        "x-project-name",
+        "x-workspace-name",
+    ];
+
+    HEADER_CANDIDATES
+        .iter()
+        .find_map(|name| header_text(headers, name))
+        .or_else(|| {
+            json_text_candidates(
+                body,
+                &[
+                    "project",
+                    "project_name",
+                    "projectName",
+                    "workspace_name",
+                    "workspaceName",
+                ],
+            )
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn header_text(headers: &http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn json_text_candidates(body: &Value, keys: &[&str]) -> Option<String> {
+    fn visit(value: &Value, keys: &[&str], depth: usize) -> Option<String> {
+        if depth > 8 {
+            return None;
+        }
+
+        match value {
+            Value::Object(map) => {
+                for key in keys {
+                    if let Some(text) = map
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        return Some(text.to_string());
+                    }
+                }
+
+                map.values()
+                    .find_map(|value| visit(value, keys, depth.saturating_add(1)))
+            }
+            Value::Array(values) => values
+                .iter()
+                .find_map(|value| visit(value, keys, depth.saturating_add(1))),
+            _ => None,
+        }
+    }
+
+    visit(body, keys, 0)
+}
+
+fn extract_project_path_from_request_text(body: &Value) -> Option<String> {
+    collect_short_texts(body, 24)
+        .into_iter()
+        .find_map(|text| extract_project_path_from_text(&text))
+}
+
+fn collect_short_texts(value: &Value, limit: usize) -> Vec<String> {
+    fn visit(value: &Value, limit: usize, out: &mut Vec<String>) {
+        if out.len() >= limit {
+            return;
+        }
+
+        match value {
+            Value::String(text) => {
+                if text.len() <= 16_384 {
+                    out.push(text.clone());
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    visit(value, limit, out);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            Value::Object(map) => {
+                for value in map.values() {
+                    visit(value, limit, out);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(value, limit, &mut out);
+    out
+}
+
+fn extract_project_path_from_text(text: &str) -> Option<String> {
+    extract_between(text, "<cwd>", "</cwd>")
+        .or_else(|| extract_between(text, "\"cwd\":\"", "\""))
+        .or_else(|| extract_after_label(text, "cwd:"))
+        .or_else(|| extract_after_label(text, "cwd ="))
+        .or_else(|| extract_after_label(text, "current working directory:"))
+        .or_else(|| extract_after_label(text, "working directory:"))
+        .or_else(|| extract_after_label(text, "workspace:"))
+        .map(normalize_project_path_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
+    let start_index = text.find(start)? + start.len();
+    let rest = &text[start_index..];
+    let end_index = rest.find(end)?;
+    Some(rest[..end_index].to_string())
+}
+
+fn extract_after_label(text: &str, label: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let index = lower.find(&label.to_ascii_lowercase())? + label.len();
+    let rest = text[index..].trim_start();
+    let line = rest
+        .lines()
+        .next()
+        .unwrap_or(rest)
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+fn normalize_project_path_text(value: String) -> String {
+    value
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .replace("\\\\", "\\")
 }
 
 fn provider_default_model(app_type_str: &str, provider: &Provider) -> Option<String> {
@@ -3764,6 +4024,8 @@ mod tests {
         let error = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"message":"rate limit exceeded"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
 
         let (code, message) = build_retryable_failure_log("PackyCode-response", 1, 1, &error);
@@ -3808,12 +4070,16 @@ mod tests {
         let overloaded = ProxyError::UpstreamError {
             status: 503,
             body: Some(r#"{"error":{"message":"server is overloaded"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(is_upstream_admission_retryable(&overloaded));
 
         let rate_limited = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"message":"rate limit reached"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(is_upstream_admission_retryable(&rate_limited));
 
@@ -3822,18 +4088,24 @@ mod tests {
             body: Some(
                 r#"{"error":{"message":"upstream capacity temporarily unavailable"}}"#.to_string(),
             ),
+
+            retry_after_ms: None,
         };
         assert!(is_upstream_admission_retryable(&gateway_capacity));
 
         let quota = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"code":"insufficient_quota"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(!is_upstream_admission_retryable(&quota));
 
         let invalid_model = ProxyError::UpstreamError {
             status: 404,
             body: Some(r#"{"error":{"message":"model not found"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(!is_upstream_admission_retryable(&invalid_model));
     }
@@ -3876,10 +4148,14 @@ mod tests {
             ProxyError::UpstreamError {
                 status: 502,
                 body: Some(r#"{"error":{"message":"temporary gateway failure"}}"#.to_string()),
+
+                retry_after_ms: None,
             },
             ProxyError::UpstreamError {
                 status: 429,
                 body: Some(r#"{"error":{"message":"rate limit reached"}}"#.to_string()),
+
+                retry_after_ms: None,
             },
         ];
 
@@ -3893,6 +4169,8 @@ mod tests {
         let permanent_upstream = ProxyError::UpstreamError {
             status: 429,
             body: Some(r#"{"error":{"code":"insufficient_quota"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(!should_retry_provider_admission(
             ErrorCategory::Retryable,
@@ -3902,6 +4180,8 @@ mod tests {
         let non_retryable = ProxyError::UpstreamError {
             status: 400,
             body: Some(r#"{"error":{"message":"invalid request"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(!should_retry_provider_admission(
             ErrorCategory::NonRetryable,
@@ -3911,6 +4191,8 @@ mod tests {
         let provider_capability = ProxyError::UpstreamError {
             status: 404,
             body: Some(r#"{"error":{"message":"Cannot POST /v1/responses/compact"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(!should_retry_provider_admission(
             ErrorCategory::ProviderCapability,
@@ -3939,8 +4221,8 @@ mod tests {
         assert_eq!(policy.initial_delay_ms, 10_000);
         assert_eq!(policy.max_delay_ms, 10_000);
         assert_eq!(policy.jitter_ms, 0);
-        assert_eq!(policy.delay_ms(1), 10_000);
-        assert_eq!(policy.delay_ms(2), 10_000);
+        assert_eq!(policy.delay_ms(1, None), 10_000);
+        assert_eq!(policy.delay_ms(2, None), 10_000);
     }
 
     #[test]
@@ -4075,6 +4357,8 @@ mod tests {
                 r#"{"error":{"message":"no candidate for api_format=openai/responses_compact model not found"}}"#
                     .to_string(),
             ),
+
+        retry_after_ms: None,
         };
 
         assert_eq!(
@@ -4093,6 +4377,8 @@ mod tests {
         let model_missing = ProxyError::UpstreamError {
             status: 422,
             body: Some(r#"{"error":{"message":"model gpt-5.5 not found"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -4106,6 +4392,8 @@ mod tests {
         let bad_request = ProxyError::UpstreamError {
             status: 400,
             body: Some(r#"{"error":{"message":"invalid input item"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -4119,6 +4407,8 @@ mod tests {
         let not_implemented = ProxyError::UpstreamError {
             status: 501,
             body: None,
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -4132,6 +4422,8 @@ mod tests {
         let not_found = ProxyError::UpstreamError {
             status: 404,
             body: Some(r#"{"error":{"message":"Cannot POST /v1/responses/compact"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(&AppType::Codex, "/v1/responses/compact", &not_found),
@@ -4141,6 +4433,8 @@ mod tests {
         let method_not_allowed = ProxyError::UpstreamError {
             status: 405,
             body: Some(r#"{"error":{"message":"Method Not Allowed"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -4157,6 +4451,8 @@ mod tests {
                 r#"{"error":{"message":"upstream responses/compact endpoint unavailable"}}"#
                     .to_string(),
             ),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -4170,6 +4466,8 @@ mod tests {
         let unrelated_gateway_error = ProxyError::UpstreamError {
             status: 502,
             body: Some(r#"{"error":{"message":"temporary gateway failure"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert_eq!(
             forwarder.categorize_proxy_error(
@@ -5266,6 +5564,8 @@ base_url = "https://api.example.com/v1"
             body: Some(
                 r#"{"error":{"message":"This model does not support image input"}}"#.to_string(),
             ),
+
+            retry_after_ms: None,
         }
     }
     #[test]
@@ -5357,6 +5657,8 @@ base_url = "https://api.example.com/v1"
                 r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
                     .to_string(),
             ),
+
+        retry_after_ms: None,
         };
 
         assert!(fwd.media_retry_should_trigger("Codex", false, &body, &error));

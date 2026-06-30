@@ -49,7 +49,7 @@ pub fn replace_image_blocks_with_marker(body: &mut Value) -> usize {
 }
 
 pub fn is_unsupported_image_error(error: &ProxyError) -> bool {
-    let ProxyError::UpstreamError { status, body } = error else {
+    let ProxyError::UpstreamError { status, body, .. } = error else {
         return false;
     };
 
@@ -712,6 +712,8 @@ mod tests {
             body: Some(
                 r#"{"error":{"message":"This model does not support image input"}}"#.to_string(),
             ),
+
+            retry_after_ms: None,
         };
 
         assert!(is_unsupported_image_error(&error));
@@ -722,6 +724,8 @@ mod tests {
         let error = ProxyError::UpstreamError {
             status: 400,
             body: Some(r#"{"error":{"message":"Invalid API key"}}"#.to_string()),
+
+            retry_after_ms: None,
         };
 
         assert!(!is_unsupported_image_error(&error));
@@ -759,12 +763,16 @@ mod tests {
             body: Some(
                 r#"{"error":{"message":"This model cannot process media inputs"}}"#.to_string(),
             ),
+
+            retry_after_ms: None,
         };
         assert!(is_unsupported_image_error(&media_error));
 
         let attachment_error = ProxyError::UpstreamError {
             status: 422,
             body: Some(r#"{"message":"attachments are not supported by this model"}"#.to_string()),
+
+            retry_after_ms: None,
         };
         assert!(is_unsupported_image_error(&attachment_error));
     }
@@ -777,6 +785,8 @@ mod tests {
                 r#"{"error":{"message":"Failed to deserialize the JSON body into the target type: messages[11]: unknown variant image_url, expected text"}}"#
                     .to_string(),
             ),
+
+        retry_after_ms: None,
         };
 
         assert!(is_unsupported_image_error(&error));

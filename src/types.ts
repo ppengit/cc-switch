@@ -243,6 +243,8 @@ export interface ProviderMeta {
   // Upstream admission retry. Retries the same provider briefly when the upstream
   // is overloaded / rate-limited before failing over.
   upstreamAdmissionRetry?: ProviderUpstreamAdmissionRetry;
+  // 会话路由最大并发占用数；为空或 0 表示不限制。
+  maxConcurrentRequests?: number;
   // 供应商类型（用于识别 Copilot 等特殊供应商）
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
@@ -390,6 +392,10 @@ export interface Settings {
   streamCheckConfirmed?: boolean;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
+  // 是否显示实时请求独立浮窗
+  showProxyActivityFloatingWindow?: boolean;
+  // 实时请求浮窗透明度（0.35-1）
+  proxyActivityFloatingOpacity?: number;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // Run official Codex under the shared "custom" provider id so future

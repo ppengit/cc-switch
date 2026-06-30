@@ -4112,6 +4112,87 @@ impl ProxyService {
         Ok(Vec::new())
     }
 
+    pub async fn get_admission_retry_snapshot(
+        &self,
+        app_type: Option<&str>,
+    ) -> Result<Vec<crate::proxy::types::ProviderAdmissionRetryEvent>, String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return Ok(server.get_admission_retry_snapshot(app_type).await);
+        }
+        Ok(Vec::new())
+    }
+
+    pub async fn get_session_routing_snapshot(
+        &self,
+        app_type: &str,
+    ) -> Result<crate::proxy::types::SessionRoutingSnapshot, String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return server
+                .get_session_routing_snapshot(app_type)
+                .await
+                .map_err(|e| e.to_string());
+        }
+
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_type)
+            .await
+            .map_err(|e| e.to_string())?;
+        let enabled = matches!(app_type, "claude" | "codex")
+            && config.enabled
+            && config.auto_failover_enabled
+            && config.session_routing_enabled;
+        let all_providers = self
+            .db
+            .get_all_providers(app_type)
+            .map_err(|e| e.to_string())?;
+        let providers = self
+            .db
+            .get_failover_queue(app_type)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter_map(|item| {
+                let provider = all_providers.get(&item.provider_id)?;
+                Some(crate::proxy::types::SessionRoutingProviderSnapshot {
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.name.clone(),
+                    session_occupancy: 0,
+                    anonymous_occupancy: 0,
+                    occupancy: 0,
+                    max_concurrent_requests: provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.max_concurrent_requests)
+                        .filter(|limit| *limit > 0),
+                    in_failover_queue: true,
+                })
+            })
+            .collect();
+
+        Ok(crate::proxy::types::SessionRoutingSnapshot {
+            app_type: app_type.to_string(),
+            enabled,
+            bindings: Vec::new(),
+            providers,
+        })
+    }
+
+    pub async fn rebind_session_route(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        provider_id: &str,
+    ) -> Result<crate::proxy::types::SessionRoutingSnapshot, String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return server
+                .rebind_session_route(app_type, session_id, provider_id)
+                .await
+                .map_err(|e| e.to_string());
+        }
+
+        Err("代理服务未运行，无法修改会话路由绑定".to_string())
+    }
+
     pub async fn set_raw_log_retention_minutes(&self, minutes: u64) -> Result<(), String> {
         if let Some(server) = self.server.read().await.as_ref() {
             server.set_raw_log_retention_minutes(minutes).await;

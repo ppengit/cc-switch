@@ -537,6 +537,12 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub upstream_admission_retry: Option<UpstreamAdmissionRetryConfig>,
+    /// 会话路由下该供应商最多承载的并发会话/请求占用数；None 或 0 表示无限制。
+    #[serde(
+        rename = "maxConcurrentRequests",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_concurrent_requests: Option<u32>,
     /// 累加模式应用中，该 provider 是否已写入 live config。
     /// `None` 表示旧数据/未知状态，`Some(false)` 表示明确仅存在于数据库中。
     #[serde(rename = "liveConfigManaged", skip_serializing_if = "Option::is_none")]

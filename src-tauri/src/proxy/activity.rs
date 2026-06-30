@@ -6,8 +6,9 @@ use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use super::types::{
-    clamp_raw_proxy_log_retention_minutes, ActiveRequestTarget, ProxyActivityEvent,
-    ProxyRawLogEntry, ProxyRawLogEvent, DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES,
+    clamp_raw_proxy_log_retention_minutes, ActiveRequestTarget, ProviderAdmissionRetryEvent,
+    ProxyActivityEvent, ProxyRawLogEntry, ProxyRawLogEvent,
+    DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES,
 };
 
 const RAW_LOG_CAPACITY: usize = 500;
@@ -29,12 +30,16 @@ struct ActiveRequestMeta {
     upstream_model: Option<String>,
     route_mode: Option<String>,
     upstream_url: Option<String>,
+    session_id: Option<String>,
+    project_name: Option<String>,
+    project_path: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct ProxyActivityState {
     requests: HashMap<String, ActiveRequestMeta>,
     targets: HashMap<(String, String), ActiveRequestTarget>,
+    admission_retries: HashMap<String, ProviderAdmissionRetryEvent>,
     raw_logs: Vec<ProxyRawLogEntry>,
     next_log_id: u64,
     raw_log_retention_minutes: u64,
@@ -64,6 +69,9 @@ impl ProxyActivityState {
             upstream_model: event.upstream_model.clone(),
             route_mode: event.route_mode.clone(),
             upstream_url: event.upstream_url.clone(),
+            session_id: event.session_id.clone(),
+            project_name: event.project_name.clone(),
+            project_path: event.project_path.clone(),
             status_code: event.status_code,
             error: event.error.clone(),
             active_request_count: event.active_request_count,
@@ -208,6 +216,9 @@ impl ProxyActivityState {
                 upstream_model: event.upstream_model.clone(),
                 route_mode: event.route_mode.clone(),
                 upstream_url: event.upstream_url.clone(),
+                session_id: event.session_id.clone(),
+                project_name: event.project_name.clone(),
+                project_path: event.project_path.clone(),
                 status_code: event.status_code,
                 error: event.error.clone(),
                 active_request_count: event.active_request_count,
@@ -237,6 +248,9 @@ impl ProxyActivityState {
             upstream_model,
             None,
             None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -251,6 +265,9 @@ impl ProxyActivityState {
         upstream_model: Option<String>,
         route_mode: Option<String>,
         upstream_url: Option<String>,
+        session_id: Option<String>,
+        project_name: Option<String>,
+        project_path: Option<String>,
     ) -> ProxyActivityEvent {
         if let Some(existing) = self.requests.get(request_id).cloned() {
             if existing.app_type == app_type && existing.provider_id == provider_id {
@@ -267,6 +284,15 @@ impl ProxyActivityState {
                     }
                     if upstream_url.is_some() {
                         meta.upstream_url = upstream_url.clone();
+                    }
+                    if session_id.is_some() {
+                        meta.session_id = session_id.clone();
+                    }
+                    if project_name.is_some() {
+                        meta.project_name = project_name.clone();
+                    }
+                    if project_path.is_some() {
+                        meta.project_path = project_path.clone();
                     }
                 }
 
@@ -286,6 +312,15 @@ impl ProxyActivityState {
                     if upstream_url.is_some() {
                         target.upstream_url = upstream_url.clone();
                     }
+                    if session_id.is_some() {
+                        target.session_id = session_id.clone();
+                    }
+                    if project_name.is_some() {
+                        target.project_name = project_name.clone();
+                    }
+                    if project_path.is_some() {
+                        target.project_path = project_path.clone();
+                    }
                     target.last_request_model = Self::derive_display_model(
                         target.request_model.as_ref(),
                         target.upstream_model.as_ref(),
@@ -303,6 +338,9 @@ impl ProxyActivityState {
                     upstream_model,
                     route_mode,
                     upstream_url,
+                    session_id,
+                    project_name,
+                    project_path,
                     status_code: None,
                     error: None,
                     active_request_count,
@@ -330,6 +368,9 @@ impl ProxyActivityState {
                 upstream_model: None,
                 route_mode: None,
                 upstream_url: None,
+                session_id: None,
+                project_name: None,
+                project_path: None,
                 last_request_model: None,
                 last_request_at: now.clone(),
             });
@@ -339,6 +380,9 @@ impl ProxyActivityState {
         entry.upstream_model = upstream_model.clone();
         entry.route_mode = route_mode.clone();
         entry.upstream_url = upstream_url.clone();
+        entry.session_id = session_id.clone();
+        entry.project_name = project_name.clone();
+        entry.project_path = project_path.clone();
         entry.last_request_model =
             Self::derive_display_model(entry.request_model.as_ref(), entry.upstream_model.as_ref());
         entry.last_request_at = now;
@@ -354,6 +398,9 @@ impl ProxyActivityState {
                 upstream_model: upstream_model.clone(),
                 route_mode: route_mode.clone(),
                 upstream_url: upstream_url.clone(),
+                session_id: session_id.clone(),
+                project_name: project_name.clone(),
+                project_path: project_path.clone(),
             },
         );
 
@@ -368,6 +415,9 @@ impl ProxyActivityState {
             upstream_model,
             route_mode,
             upstream_url,
+            session_id,
+            project_name,
+            project_path,
             status_code: None,
             error: None,
             active_request_count,
@@ -396,6 +446,9 @@ impl ProxyActivityState {
             upstream_model: None,
             route_mode: None,
             upstream_url: None,
+            session_id: None,
+            project_name: None,
+            project_path: None,
             status_code: None,
             error: None,
             active_request_count,
@@ -412,6 +465,7 @@ impl ProxyActivityState {
         status_code: Option<u16>,
         error: Option<String>,
     ) -> Option<ProxyActivityEvent> {
+        self.admission_retries.remove(request_id);
         let Some(meta) = self.requests.remove(request_id) else {
             return self.finish_observed_request(request_id, event, status_code, error);
         };
@@ -420,6 +474,9 @@ impl ProxyActivityState {
         let upstream_model = meta.upstream_model.clone();
         let route_mode = meta.route_mode.clone();
         let upstream_url = meta.upstream_url.clone();
+        let session_id = meta.session_id.clone();
+        let project_name = meta.project_name.clone();
+        let project_path = meta.project_path.clone();
 
         self.decrement_target(&meta.app_type, &meta.provider_id);
 
@@ -434,6 +491,9 @@ impl ProxyActivityState {
             upstream_model,
             route_mode,
             upstream_url,
+            session_id,
+            project_name,
+            project_path,
             status_code,
             error,
             active_request_count,
@@ -470,6 +530,9 @@ impl ProxyActivityState {
             upstream_model: existing.upstream_model.clone(),
             route_mode: existing.route_mode.clone(),
             upstream_url: existing.upstream_url.clone(),
+            session_id: existing.session_id.clone(),
+            project_name: existing.project_name.clone(),
+            project_path: existing.project_path.clone(),
             status_code,
             error,
             active_request_count,
@@ -501,6 +564,9 @@ impl ProxyActivityState {
                 target.upstream_model = meta.upstream_model.clone();
                 target.route_mode = meta.route_mode.clone();
                 target.upstream_url = meta.upstream_url.clone();
+                target.session_id = meta.session_id.clone();
+                target.project_name = meta.project_name.clone();
+                target.project_path = meta.project_path.clone();
                 target.last_request_model = Self::derive_display_model(
                     target.request_model.as_ref(),
                     target.upstream_model.as_ref(),
@@ -533,7 +599,10 @@ impl ProxyActivityState {
 
         for request_id in request_ids {
             self.requests.remove(&request_id);
+            self.admission_retries.remove(&request_id);
         }
+        self.admission_retries
+            .retain(|_, retry| retry.app_type != app_type || retry.provider_id != provider_id);
 
         let (active_request_count, active_request_targets) = self.snapshot();
         let event = ProxyActivityEvent {
@@ -546,6 +615,9 @@ impl ProxyActivityState {
             upstream_model: None,
             route_mode: None,
             upstream_url: None,
+            session_id: None,
+            project_name: None,
+            project_path: None,
             status_code: None,
             error: None,
             active_request_count,
@@ -571,6 +643,39 @@ impl ProxyActivityState {
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.id));
         entries.truncate(safe_limit);
         entries.reverse();
+        entries
+    }
+
+    fn record_admission_retry(
+        &mut self,
+        event: ProviderAdmissionRetryEvent,
+    ) -> ProviderAdmissionRetryEvent {
+        if event.event == "retrying" {
+            self.admission_retries
+                .insert(event.request_id.clone(), event.clone());
+        } else {
+            self.admission_retries.remove(&event.request_id);
+        }
+        event
+    }
+
+    fn admission_retry_snapshot(&self, app_type: Option<&str>) -> Vec<ProviderAdmissionRetryEvent> {
+        let mut entries: Vec<ProviderAdmissionRetryEvent> = self
+            .admission_retries
+            .values()
+            .filter(|entry| {
+                app_type
+                    .map(|expected| entry.app_type.eq_ignore_ascii_case(expected))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        entries.sort_by(|a, b| {
+            a.app_type
+                .cmp(&b.app_type)
+                .then_with(|| a.provider_name.cmp(&b.provider_name))
+                .then_with(|| a.request_id.cmp(&b.request_id))
+        });
         entries
     }
 }
@@ -620,6 +725,9 @@ pub async fn route_request_with_metadata(
     upstream_model: Option<String>,
     route_mode: Option<String>,
     upstream_url: Option<String>,
+    session_id: Option<String>,
+    project_name: Option<String>,
+    project_path: Option<String>,
 ) {
     let event = {
         let mut state = activity.write().await;
@@ -632,6 +740,9 @@ pub async fn route_request_with_metadata(
             upstream_model,
             route_mode,
             upstream_url,
+            session_id,
+            project_name,
+            project_path,
         )
     };
     emit_activity_event(app_handle, &event);
@@ -681,6 +792,23 @@ pub async fn finish_request(
     }
 }
 
+pub async fn record_admission_retry(
+    activity: &Arc<RwLock<ProxyActivityState>>,
+    app_handle: Option<&tauri::AppHandle>,
+    event: ProviderAdmissionRetryEvent,
+) {
+    let event = {
+        let mut state = activity.write().await;
+        state.record_admission_retry(event)
+    };
+
+    if let Some(handle) = app_handle {
+        if let Err(err) = handle.emit("provider-admission-retry", event) {
+            log::debug!("emit provider-admission-retry failed: {err}");
+        }
+    }
+}
+
 pub async fn snapshot(
     activity: &Arc<RwLock<ProxyActivityState>>,
 ) -> (usize, Vec<ActiveRequestTarget>) {
@@ -699,6 +827,14 @@ pub async fn raw_logs(
 ) -> Vec<ProxyRawLogEntry> {
     let mut state = activity.write().await;
     state.raw_logs(limit, app_type)
+}
+
+pub async fn admission_retry_snapshot(
+    activity: &Arc<RwLock<ProxyActivityState>>,
+    app_type: Option<&str>,
+) -> Vec<ProviderAdmissionRetryEvent> {
+    let state = activity.read().await;
+    state.admission_retry_snapshot(app_type)
 }
 
 pub async fn set_raw_log_retention_minutes(

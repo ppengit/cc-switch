@@ -6,6 +6,7 @@ import {
   FlaskConical,
   Coins,
   DoorOpen,
+  Route,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -35,20 +36,24 @@ interface ProviderAdvancedConfigProps {
   testConfig: ProviderTestConfig;
   pricingConfig: ProviderPricingConfig;
   admissionRetryConfig: ProviderUpstreamAdmissionRetry;
+  maxConcurrentRequests?: number;
   onTestConfigChange: (config: ProviderTestConfig) => void;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
   onAdmissionRetryConfigChange: (
     config: ProviderUpstreamAdmissionRetry,
   ) => void;
+  onMaxConcurrentRequestsChange: (value?: number) => void;
 }
 
 export function ProviderAdvancedConfig({
   testConfig,
   pricingConfig,
   admissionRetryConfig,
+  maxConcurrentRequests,
   onTestConfigChange,
   onPricingConfigChange,
   onAdmissionRetryConfigChange,
+  onMaxConcurrentRequestsChange,
 }: ProviderAdvancedConfigProps) {
   const { t } = useTranslation();
   const hasAdmissionRetryTiming =
@@ -219,6 +224,51 @@ export function ProviderAdvancedConfig({
                 />
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border/50 bg-muted/20">
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex w-full cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+        >
+          <div className="flex items-center gap-3">
+            <Route className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">
+              {t("providerAdvanced.sessionRoutingConfig", {
+                defaultValue: "会话路由并发上限",
+              })}
+            </span>
+          </div>
+        </div>
+        <div className="border-t border-border/50 p-4 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            {t("providerAdvanced.sessionRoutingConfigDesc", {
+              defaultValue:
+                "留空或填 0 表示无限并发；这是单个供应商可承载的会话路由占用上限。",
+            })}
+          </p>
+          <div className="space-y-2 max-w-sm">
+            <Label htmlFor="max-concurrent-requests">
+              {t("providerAdvanced.maxConcurrentRequests", {
+                defaultValue: "最大并发请求数",
+              })}
+            </Label>
+            <Input
+              id="max-concurrent-requests"
+              type="number"
+              min={0}
+              max={1000000}
+              value={maxConcurrentRequests ?? ""}
+              onChange={(e) =>
+                onMaxConcurrentRequestsChange(
+                  e.target.value ? parseInt(e.target.value, 10) : undefined,
+                )
+              }
+              placeholder="0"
+            />
           </div>
         </div>
       </div>

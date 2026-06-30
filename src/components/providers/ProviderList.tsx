@@ -34,7 +34,9 @@ import {
   History,
   Loader2,
   Pencil,
+  Route,
   Search,
+  SlidersHorizontal,
   Terminal,
   TestTube2,
   Trash2,
@@ -50,7 +52,14 @@ import { providersApi } from "@/lib/api/providers";
 import { sessionsApi } from "@/lib/api/sessions";
 import { configApi } from "@/lib/api";
 import type { AppConfigTemplateFile } from "@/lib/api/config";
+import { proxyApi } from "@/lib/api/proxy";
 import { useDragSort } from "@/hooks/useDragSort";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   useOpenClawLiveProviderIds,
   useOpenClawDefaultModel,
@@ -107,6 +116,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
+import { SessionRoutingManagerDialog } from "@/components/proxy/SessionRoutingManagerDialog";
 import {
   Tooltip,
   TooltipContent,
@@ -1111,32 +1121,35 @@ export function ProviderList({
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
 
+    const applyRetryEvent = (payload: ProviderAdmissionRetryEvent) => {
+      if (payload.appType !== appId) return;
+
+      setAdmissionRetryRequests((current) => {
+        const providerRequests = {
+          ...(current[payload.providerId] ?? {}),
+        };
+
+        if (payload.event === "retrying") {
+          providerRequests[payload.requestId] = payload.retryCount;
+        } else {
+          delete providerRequests[payload.requestId];
+        }
+
+        const next = { ...current };
+        if (Object.keys(providerRequests).length > 0) {
+          next[payload.providerId] = providerRequests;
+        } else {
+          delete next[payload.providerId];
+        }
+        return next;
+      });
+    };
+
     (async () => {
       const off = await listen<ProviderAdmissionRetryEvent>(
         "provider-admission-retry",
         (event) => {
-          const payload = event.payload;
-          if (payload.appType !== appId) return;
-
-          setAdmissionRetryRequests((current) => {
-            const providerRequests = {
-              ...(current[payload.providerId] ?? {}),
-            };
-
-            if (payload.event === "retrying") {
-              providerRequests[payload.requestId] = payload.retryCount;
-            } else {
-              delete providerRequests[payload.requestId];
-            }
-
-            const next = { ...current };
-            if (Object.keys(providerRequests).length > 0) {
-              next[payload.providerId] = providerRequests;
-            } else {
-              delete next[payload.providerId];
-            }
-            return next;
-          });
+          applyRetryEvent(event.payload);
         },
       );
 
@@ -1144,6 +1157,26 @@ export function ProviderList({
         off();
       } else {
         unlisten = off;
+      }
+
+      try {
+        const snapshot =
+          await proxyApi.getProviderAdmissionRetrySnapshot(appId);
+        if (disposed) return;
+
+        const next: AdmissionRetryRequestCounts = {};
+        for (const payload of snapshot) {
+          if (payload.appType !== appId || payload.event !== "retrying") {
+            continue;
+          }
+          next[payload.providerId] = {
+            ...(next[payload.providerId] ?? {}),
+            [payload.requestId]: payload.retryCount,
+          };
+        }
+        setAdmissionRetryRequests(next);
+      } catch (error) {
+        console.debug("Failed to load admission retry snapshot", error);
       }
     })();
 
@@ -1176,22 +1209,6 @@ export function ProviderList({
         : "direct";
   const showBulkMembershipActions =
     interactionMode === "failover" || interactionMode === "additive";
-  const interactionModeLabel =
-    interactionMode === "failover"
-      ? t("provider.modeFailover", {
-          defaultValue: "接管代理 + 故障转移",
-        })
-      : interactionMode === "takeover"
-        ? t("provider.modeTakeover", {
-            defaultValue: "接管代理（单供应商）",
-          })
-        : interactionMode === "additive"
-          ? t("provider.modeAdditive", {
-              defaultValue: "多供应商写入配置",
-            })
-          : t("provider.modeDirect", {
-              defaultValue: "直连配置（未接管代理）",
-            });
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -1240,6 +1257,8 @@ export function ProviderList({
     [],
   );
   const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] =
+    useState(false);
+  const [sessionRoutingManagerOpen, setSessionRoutingManagerOpen] =
     useState(false);
   const [providerTemplateDraft, setProviderTemplateDraft] = useState("");
   // 多 section 编辑器（Codex auth+config / Gemini env+settings）的"原文 drafts"。
@@ -3004,12 +3023,12 @@ export function ProviderList({
           </>
         ) : null}
 
-        <Badge variant="secondary" className="h-7 px-2 text-sm font-mono">
+        <Badge
+          variant="secondary"
+          className="order-first h-7 px-2 text-sm font-mono"
+        >
           {enabledCount}/{totalCount}
           {filteredCount !== totalCount ? ` · ${filteredCount}` : ""}
-        </Badge>
-        <Badge variant="outline" className="h-7 px-2 text-xs">
-          {interactionModeLabel}
         </Badge>
 
         <Button
@@ -3092,39 +3111,48 @@ export function ProviderList({
           </PopoverContent>
         </Popover>
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          onClick={() => setTemplateDialogOpen(true)}
-        >
-          <FileText className="h-3.5 w-3.5 mr-1" />
-          {t("provider.commonConfigTemplate", {
-            defaultValue: "接管代理配置模板",
-          })}
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline" className="h-7 text-xs">
+              <SlidersHorizontal className="mr-1 h-3.5 w-3.5" />
+              {t("provider.configMenu", { defaultValue: "配置" })}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuItem onClick={() => setCurrentConfigDialogOpen(true)}>
+              <FileText className="h-3.5 w-3.5" />
+              {t("provider.currentConfig", { defaultValue: "当前配置" })}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setTemplateDialogOpen(true)}>
+              <FileText className="h-3.5 w-3.5" />
+              {t("provider.commonConfigTemplate", {
+                defaultValue: "接管代理配置模板",
+              })}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setProviderTemplateDialogOpen(true)}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              {t("provider.providerDefaultTemplate", {
+                defaultValue: "供应商配置模板",
+              })}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          onClick={() => setCurrentConfigDialogOpen(true)}
-        >
-          <FileText className="h-3.5 w-3.5 mr-1" />
-          {t("provider.currentConfig", { defaultValue: "当前配置" })}
-        </Button>
-
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-xs"
-          onClick={() => setProviderTemplateDialogOpen(true)}
-        >
-          <FileText className="h-3.5 w-3.5 mr-1" />
-          {t("provider.providerDefaultTemplate", {
-            defaultValue: "供应商配置模板",
-          })}
-        </Button>
+        {(appId === "claude" || appId === "codex") && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={() => setSessionRoutingManagerOpen(true)}
+          >
+            <Route className="mr-1 h-3.5 w-3.5" />
+            {t("sessionRouting.manager.title", {
+              defaultValue: "会话路由",
+            })}
+          </Button>
+        )}
 
         <div className="ml-auto flex min-w-[22rem] flex-1 items-center justify-end gap-2">
           <Popover>
@@ -3662,6 +3690,14 @@ export function ProviderList({
           }
         }}
       />
+
+      {(appId === "claude" || appId === "codex") && (
+        <SessionRoutingManagerDialog
+          appId={appId}
+          open={sessionRoutingManagerOpen}
+          onOpenChange={setSessionRoutingManagerOpen}
+        />
+      )}
 
       <FullScreenPanel
         isOpen={templateDialogOpen}

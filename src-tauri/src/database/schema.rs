@@ -126,6 +126,10 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_idle_ttl_seconds INTEGER NOT NULL DEFAULT 600,
+            session_routing_client_session_only INTEGER NOT NULL DEFAULT 1,
+            session_routing_overflow_fallback_enabled INTEGER NOT NULL DEFAULT 1,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -522,6 +526,11 @@ impl Database {
                         Self::migrate_v19_to_v20(conn)?;
                         Self::set_user_version(conn, 20)?;
                     }
+                    20 => {
+                        log::info!("迁移数据库从 v20 到 v21（会话路由配置）");
+                        Self::migrate_v20_to_v21(conn)?;
+                        Self::set_user_version(conn, 21)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -842,6 +851,10 @@ impl Database {
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_enabled INTEGER NOT NULL DEFAULT 0,
+            session_routing_idle_ttl_seconds INTEGER NOT NULL DEFAULT 600,
+            session_routing_client_session_only INTEGER NOT NULL DEFAULT 1,
+            session_routing_overflow_fallback_enabled INTEGER NOT NULL DEFAULT 1,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
             circuit_failure_threshold INTEGER NOT NULL DEFAULT 4, circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
@@ -1477,6 +1490,42 @@ impl Database {
     fn migrate_v19_to_v20(conn: &Connection) -> Result<(), AppError> {
         Self::cleanup_removed_schema_objects(conn)?;
         log::info!("v19 -> v20 迁移完成：已清理已移除的聚合导入缓存对象");
+        Ok(())
+    }
+
+    /// v20 -> v21：新增会话路由配置。
+    fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            log::info!("v20 -> v21 迁移跳过：proxy_config 表不存在");
+            return Ok(());
+        }
+
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_enabled",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_idle_ttl_seconds",
+            "INTEGER NOT NULL DEFAULT 600",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_client_session_only",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "proxy_config",
+            "session_routing_overflow_fallback_enabled",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+
+        log::info!("v20 -> v21 迁移完成：已添加会话路由配置列");
         Ok(())
     }
 

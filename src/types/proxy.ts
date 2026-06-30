@@ -46,6 +46,9 @@ export interface ActiveRequestTarget {
   upstream_model?: string | null;
   route_mode?: string | null;
   upstream_url?: string | null;
+  session_id?: string | null;
+  project_name?: string | null;
+  project_path?: string | null;
   last_request_model?: string | null;
   last_request_at: string;
 }
@@ -60,6 +63,9 @@ export interface ProxyActivityEvent {
   upstream_model?: string | null;
   route_mode?: string | null;
   upstream_url?: string | null;
+  session_id?: string | null;
+  project_name?: string | null;
+  project_path?: string | null;
   status_code?: number | null;
   error?: string | null;
   active_request_count: number;
@@ -78,6 +84,36 @@ export interface ProviderAdmissionRetryEvent {
   error?: string | null;
 }
 
+export interface ProxyActivityFloatingSettings {
+  visible: boolean;
+  opacity: number;
+}
+
+export interface SessionRoutingProviderSnapshot {
+  providerId: string;
+  providerName: string;
+  sessionOccupancy: number;
+  anonymousOccupancy: number;
+  occupancy: number;
+  maxConcurrentRequests?: number | null;
+  inFailoverQueue: boolean;
+}
+
+export interface SessionRoutingBindingSnapshot {
+  appType: string;
+  sessionId: string;
+  providerId: string;
+  providerName: string;
+  idleSeconds: number;
+}
+
+export interface SessionRoutingSnapshot {
+  appType: string;
+  enabled: boolean;
+  bindings: SessionRoutingBindingSnapshot[];
+  providers: SessionRoutingProviderSnapshot[];
+}
+
 export interface ProxyRawLogEvent {
   id: number;
   timestamp: string;
@@ -89,6 +125,9 @@ export interface ProxyRawLogEvent {
   upstreamModel?: string | null;
   routeMode?: string | null;
   upstreamUrl?: string | null;
+  sessionId?: string | null;
+  projectName?: string | null;
+  projectPath?: string | null;
   statusCode?: number | null;
   error?: string | null;
   activeRequestCount: number;
@@ -209,6 +248,10 @@ export interface AppProxyConfig {
   appType: string;
   enabled: boolean;
   autoFailoverEnabled: boolean;
+  sessionRoutingEnabled: boolean;
+  sessionRoutingIdleTtlSeconds: number;
+  sessionRoutingClientSessionOnly: boolean;
+  sessionRoutingOverflowFallbackEnabled: boolean;
   maxRetries: number;
   streamingFirstByteTimeout: number;
   streamingIdleTimeout: number;

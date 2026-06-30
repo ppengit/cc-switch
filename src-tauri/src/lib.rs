@@ -12,6 +12,7 @@ mod config;
 mod database;
 mod deeplink;
 mod error;
+mod floating_activity;
 mod gemini_config;
 mod gemini_mcp;
 pub mod hermes_config;
@@ -981,6 +982,8 @@ pub fn run() {
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
+            crate::floating_activity::sync_on_startup(app.handle());
+
             // 从数据库加载日志配置并应用
             {
                 let db = &app.state::<AppState>().db;
@@ -1407,6 +1410,12 @@ pub fn run() {
             commands::set_proxy_takeover_for_app,
             commands::get_proxy_status,
             commands::get_proxy_raw_logs,
+            commands::get_provider_admission_retry_snapshot,
+            commands::get_proxy_activity_floating_settings,
+            commands::set_proxy_activity_floating_window_visible,
+            commands::set_proxy_activity_floating_opacity,
+            commands::get_session_routing_snapshot,
+            commands::rebind_session_route,
             commands::get_proxy_config,
             commands::update_proxy_config,
             // Global & Per-App Config

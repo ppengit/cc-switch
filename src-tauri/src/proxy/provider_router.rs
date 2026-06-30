@@ -7,13 +7,136 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::types::{
+    AppProxyConfig, SessionRoutingBindingSnapshot, SessionRoutingProviderSnapshot,
+    SessionRoutingSnapshot,
+};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
+const DEFAULT_SESSION_ROUTING_IDLE_TTL_SECONDS: u64 = 600;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionRouteKey {
+    app_type: String,
+    session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderRouteKey {
+    app_type: String,
+    provider_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct SessionRouteBinding {
+    provider_id: String,
+    last_seen: Instant,
+}
+
+#[derive(Debug, Default)]
+struct SessionRoutingState {
+    bindings: HashMap<SessionRouteKey, SessionRouteBinding>,
+    anonymous_active_requests: HashMap<ProviderRouteKey, u32>,
+}
+
+impl SessionRoutingState {
+    fn cleanup_expired(&mut self, now: Instant, ttl: Duration) {
+        self.bindings
+            .retain(|_, binding| now.duration_since(binding.last_seen) <= ttl);
+        self.anonymous_active_requests
+            .retain(|_, active| *active > 0);
+    }
+
+    fn provider_occupancy(&self, app_type: &str, provider_id: &str) -> u32 {
+        let (session_count, anonymous_count) = self.provider_occupancy_parts(app_type, provider_id);
+        session_count.saturating_add(anonymous_count)
+    }
+
+    fn provider_occupancy_parts(&self, app_type: &str, provider_id: &str) -> (u32, u32) {
+        let session_count = self
+            .bindings
+            .iter()
+            .filter(|(key, binding)| {
+                key.app_type == app_type && binding.provider_id.as_str() == provider_id
+            })
+            .count() as u32;
+        let anonymous_count = self
+            .anonymous_active_requests
+            .get(&ProviderRouteKey {
+                app_type: app_type.to_string(),
+                provider_id: provider_id.to_string(),
+            })
+            .copied()
+            .unwrap_or(0);
+
+        (session_count, anonymous_count)
+    }
+
+    fn bind_session(&mut self, app_type: &str, session_id: &str, provider_id: &str, now: Instant) {
+        self.bindings.insert(
+            SessionRouteKey {
+                app_type: app_type.to_string(),
+                session_id: session_id.to_string(),
+            },
+            SessionRouteBinding {
+                provider_id: provider_id.to_string(),
+                last_seen: now,
+            },
+        );
+    }
+
+    fn increment_anonymous(&mut self, app_type: &str, provider_id: &str) -> ProviderRouteKey {
+        let key = ProviderRouteKey {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+        };
+        let active = self
+            .anonymous_active_requests
+            .entry(key.clone())
+            .or_insert(0);
+        *active = active.saturating_add(1);
+        key
+    }
+
+    fn decrement_anonymous(&mut self, key: &ProviderRouteKey) {
+        if let Some(active) = self.anonymous_active_requests.get_mut(key) {
+            *active = active.saturating_sub(1);
+            if *active == 0 {
+                self.anonymous_active_requests.remove(key);
+            }
+        }
+    }
+}
+
+/// 会话路由请求占用 guard。
+///
+/// 对客户端显式会话，请求会刷新会话绑定并由 TTL 释放供应商占用；对没有稳定
+/// sessionId 的请求，只在请求生命周期内临时占用一个匿名槽位。
+pub(crate) struct SessionRoutingRequestGuard {
+    state: Arc<RwLock<SessionRoutingState>>,
+    anonymous_key: Option<ProviderRouteKey>,
+}
+
+impl Drop for SessionRoutingRequestGuard {
+    fn drop(&mut self) {
+        let Some(key) = self.anonymous_key.take() else {
+            return;
+        };
+        let state = self.state.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut state = state.write().await;
+                state.decrement_anonymous(&key);
+            });
+        }
+    }
+}
 
 /// 供应商路由器
 pub struct ProviderRouter {
@@ -23,6 +146,8 @@ pub struct ProviderRouter {
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
     /// API Key 认证错误计数 - key 格式: "app_type:provider_id"
     api_key_error_counts: Arc<RwLock<HashMap<String, u32>>>,
+    /// 会话路由运行态：只保存在内存中，随进程重启释放。
+    session_routing: Arc<RwLock<SessionRoutingState>>,
     /// AppHandle，用于通知前端刷新故障转移队列
     app_handle: Option<tauri::AppHandle>,
 }
@@ -39,6 +164,7 @@ impl ProviderRouter {
             db,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             api_key_error_counts: Arc::new(RwLock::new(HashMap::new())),
+            session_routing: Arc::new(RwLock::new(SessionRoutingState::default())),
             app_handle,
         }
     }
@@ -56,22 +182,23 @@ impl ProviderRouter {
     pub async fn select_providers_for_session(
         &self,
         app_type: &str,
-        _session_id: &str,
-        _session_client_provided: bool,
+        session_id: &str,
+        session_client_provided: bool,
     ) -> Result<Vec<Provider>, AppError> {
         let mut result = Vec::new();
         let mut total_providers = 0usize;
         let mut circuit_open_count = 0usize;
 
         // 检查该应用的自动故障转移开关是否开启（从 proxy_config 表读取）
-        let (app_proxy_enabled, auto_failover_enabled) =
-            match self.db.get_proxy_config_for_app(app_type).await {
-                Ok(config) => (config.enabled, config.auto_failover_enabled),
-                Err(e) => {
-                    log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
-                    (false, false)
-                }
-            };
+        let app_config = match self.db.get_proxy_config_for_app(app_type).await {
+            Ok(config) => config,
+            Err(e) => {
+                log::error!("[{app_type}] 读取 proxy_config 失败: {e}，默认禁用故障转移");
+                default_app_proxy_config(app_type)
+            }
+        };
+        let app_proxy_enabled = app_config.enabled;
+        let auto_failover_enabled = app_config.auto_failover_enabled;
 
         if app_proxy_enabled && auto_failover_enabled {
             // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
@@ -102,6 +229,18 @@ impl ProviderRouter {
                 } else {
                     circuit_open_count += 1;
                 }
+            }
+
+            if session_routing_applies(app_type, &app_config) && !result.is_empty() {
+                result = self
+                    .order_session_routed_providers(
+                        app_type,
+                        session_id,
+                        session_client_provided,
+                        &app_config,
+                        result,
+                    )
+                    .await;
             }
         } else {
             // 故障转移关闭：仅使用当前供应商。
@@ -141,6 +280,195 @@ impl ProviderRouter {
         }
 
         Ok(result)
+    }
+
+    /// 在真正向某个供应商发起请求前刷新会话绑定/临时占用。
+    pub(crate) async fn acquire_session_route_request(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        session_client_provided: bool,
+        provider: &Provider,
+    ) -> Option<SessionRoutingRequestGuard> {
+        let app_config = self.db.get_proxy_config_for_app(app_type).await.ok()?;
+        if !session_routing_applies(app_type, &app_config) {
+            return None;
+        }
+
+        let now = Instant::now();
+        let ttl = session_routing_ttl(&app_config);
+        let should_bind_session =
+            should_bind_session(session_id, session_client_provided, &app_config);
+        let mut state = self.session_routing.write().await;
+        state.cleanup_expired(now, ttl);
+
+        let anonymous_key = if should_bind_session {
+            state.bind_session(app_type, session_id, &provider.id, now);
+            None
+        } else {
+            Some(state.increment_anonymous(app_type, &provider.id))
+        };
+
+        Some(SessionRoutingRequestGuard {
+            state: self.session_routing.clone(),
+            anonymous_key,
+        })
+    }
+
+    /// 获取当前会话路由运行态快照。仅反映内存态，进程重启后为空。
+    pub async fn session_routing_snapshot(
+        &self,
+        app_type: &str,
+    ) -> Result<SessionRoutingSnapshot, AppError> {
+        let config = self
+            .db
+            .get_proxy_config_for_app(app_type)
+            .await
+            .unwrap_or_else(|_| default_app_proxy_config(app_type));
+        let enabled = session_routing_applies(app_type, &config);
+
+        if !matches!(app_type, "claude" | "codex") {
+            return Ok(SessionRoutingSnapshot {
+                app_type: app_type.to_string(),
+                enabled: false,
+                bindings: Vec::new(),
+                providers: Vec::new(),
+            });
+        }
+
+        let all_providers = self.db.get_all_providers(app_type)?;
+        let queue_items = self.db.get_failover_queue(app_type)?;
+        let queue_ids: Vec<String> = queue_items
+            .iter()
+            .map(|item| item.provider_id.clone())
+            .collect();
+
+        let now = Instant::now();
+        let ttl = session_routing_ttl(&config);
+        let mut state = self.session_routing.write().await;
+        state.cleanup_expired(now, ttl);
+
+        let provider_name_by_id: HashMap<String, String> = all_providers
+            .iter()
+            .map(|(id, provider)| (id.clone(), provider.name.clone()))
+            .collect();
+
+        let mut providers: Vec<SessionRoutingProviderSnapshot> = queue_ids
+            .iter()
+            .filter_map(|provider_id| {
+                let provider = all_providers.get(provider_id)?;
+                let (session_occupancy, anonymous_occupancy) =
+                    state.provider_occupancy_parts(app_type, provider_id);
+                Some(SessionRoutingProviderSnapshot {
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.name.clone(),
+                    session_occupancy,
+                    anonymous_occupancy,
+                    occupancy: session_occupancy.saturating_add(anonymous_occupancy),
+                    max_concurrent_requests: provider_max_concurrent_requests(provider),
+                    in_failover_queue: true,
+                })
+            })
+            .collect();
+
+        let queued: std::collections::HashSet<&str> =
+            queue_ids.iter().map(|id| id.as_str()).collect();
+        providers.extend(
+            all_providers
+                .iter()
+                .filter(|(provider_id, _)| !queued.contains(provider_id.as_str()))
+                .filter_map(|(provider_id, provider)| {
+                    let (session_occupancy, anonymous_occupancy) =
+                        state.provider_occupancy_parts(app_type, provider_id);
+                    let occupancy = session_occupancy.saturating_add(anonymous_occupancy);
+                    (occupancy > 0).then(|| SessionRoutingProviderSnapshot {
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.name.clone(),
+                        session_occupancy,
+                        anonymous_occupancy,
+                        occupancy,
+                        max_concurrent_requests: provider_max_concurrent_requests(provider),
+                        in_failover_queue: false,
+                    })
+                }),
+        );
+
+        let mut bindings: Vec<SessionRoutingBindingSnapshot> = state
+            .bindings
+            .iter()
+            .filter(|(key, _)| key.app_type == app_type)
+            .map(|(key, binding)| SessionRoutingBindingSnapshot {
+                app_type: key.app_type.clone(),
+                session_id: key.session_id.clone(),
+                provider_id: binding.provider_id.clone(),
+                provider_name: provider_name_by_id
+                    .get(&binding.provider_id)
+                    .cloned()
+                    .unwrap_or_else(|| binding.provider_id.clone()),
+                idle_seconds: now.duration_since(binding.last_seen).as_secs(),
+            })
+            .collect();
+        bindings.sort_by(|a, b| {
+            a.idle_seconds
+                .cmp(&b.idle_seconds)
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        });
+
+        Ok(SessionRoutingSnapshot {
+            app_type: app_type.to_string(),
+            enabled,
+            bindings,
+            providers,
+        })
+    }
+
+    /// 手动把一个会话重新绑定到故障转移队列内的目标供应商。
+    pub async fn rebind_session_route(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        provider_id: &str,
+    ) -> Result<SessionRoutingSnapshot, AppError> {
+        if !matches!(app_type, "claude" | "codex") {
+            return Err(AppError::InvalidInput(
+                "会话路由仅支持 Claude 和 Codex".to_string(),
+            ));
+        }
+        let session_id = session_id.trim();
+        let provider_id = provider_id.trim();
+        if session_id.is_empty() {
+            return Err(AppError::InvalidInput("会话 ID 不能为空".to_string()));
+        }
+        if provider_id.is_empty() {
+            return Err(AppError::InvalidInput("供应商 ID 不能为空".to_string()));
+        }
+
+        let config = self.db.get_proxy_config_for_app(app_type).await?;
+        if !session_routing_applies(app_type, &config) {
+            return Err(AppError::InvalidInput(
+                "会话路由未启用或本地路由/故障转移未开启".to_string(),
+            ));
+        }
+
+        let provider = self
+            .db
+            .get_provider_by_id(provider_id, app_type)?
+            .ok_or_else(|| AppError::InvalidInput(format!("供应商不存在: {provider_id}")))?;
+        if !provider.in_failover_queue {
+            return Err(AppError::InvalidInput(
+                "只能切换到已启用故障转移队列的供应商".to_string(),
+            ));
+        }
+
+        {
+            let now = Instant::now();
+            let ttl = session_routing_ttl(&config);
+            let mut state = self.session_routing.write().await;
+            state.cleanup_expired(now, ttl);
+            state.bind_session(app_type, session_id, provider_id, now);
+        }
+
+        self.session_routing_snapshot(app_type).await
     }
 
     /// 请求执行前获取熔断器“放行许可”
@@ -424,6 +752,128 @@ impl ProviderRouter {
             log::debug!("发射 API Key 熔断禁用事件失败: {e}");
         }
     }
+
+    async fn order_session_routed_providers(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        session_client_provided: bool,
+        config: &AppProxyConfig,
+        providers: Vec<Provider>,
+    ) -> Vec<Provider> {
+        if providers.len() <= 1 {
+            return providers;
+        }
+
+        let now = Instant::now();
+        let ttl = session_routing_ttl(config);
+        let should_bind_session = should_bind_session(session_id, session_client_provided, config);
+        let mut state = self.session_routing.write().await;
+        state.cleanup_expired(now, ttl);
+
+        if should_bind_session {
+            let session_key = SessionRouteKey {
+                app_type: app_type.to_string(),
+                session_id: session_id.to_string(),
+            };
+            if let Some(binding) = state.bindings.get_mut(&session_key) {
+                if providers
+                    .iter()
+                    .any(|provider| provider.id == binding.provider_id)
+                {
+                    binding.last_seen = now;
+                    return move_provider_to_front(providers, &binding.provider_id);
+                }
+            }
+        }
+
+        let selected_id = providers
+            .iter()
+            .find(|provider| provider_has_capacity(&state, app_type, provider))
+            .map(|provider| provider.id.clone())
+            .or_else(|| {
+                config
+                    .session_routing_overflow_fallback_enabled
+                    .then(|| providers.first().map(|provider| provider.id.clone()))
+                    .flatten()
+            });
+
+        if let Some(selected_id) = selected_id {
+            if should_bind_session {
+                state.bind_session(app_type, session_id, &selected_id, now);
+            }
+            move_provider_to_front(providers, &selected_id)
+        } else {
+            providers
+        }
+    }
+}
+
+fn default_app_proxy_config(app_type: &str) -> AppProxyConfig {
+    AppProxyConfig {
+        app_type: app_type.to_string(),
+        enabled: false,
+        auto_failover_enabled: false,
+        session_routing_enabled: false,
+        session_routing_idle_ttl_seconds: DEFAULT_SESSION_ROUTING_IDLE_TTL_SECONDS as u32,
+        session_routing_client_session_only: true,
+        session_routing_overflow_fallback_enabled: true,
+        max_retries: 3,
+        streaming_first_byte_timeout: 60,
+        streaming_idle_timeout: 120,
+        non_streaming_timeout: 600,
+        circuit_failure_threshold: 4,
+        circuit_success_threshold: 2,
+        circuit_timeout_seconds: 60,
+        circuit_error_rate_threshold: 0.6,
+        circuit_min_requests: 10,
+    }
+}
+
+fn session_routing_applies(app_type: &str, config: &AppProxyConfig) -> bool {
+    matches!(app_type, "claude" | "codex")
+        && config.enabled
+        && config.auto_failover_enabled
+        && config.session_routing_enabled
+}
+
+fn session_routing_ttl(config: &AppProxyConfig) -> Duration {
+    Duration::from_secs(u64::from(config.session_routing_idle_ttl_seconds).max(1))
+}
+
+fn should_bind_session(
+    session_id: &str,
+    session_client_provided: bool,
+    config: &AppProxyConfig,
+) -> bool {
+    !session_id.is_empty()
+        && (!config.session_routing_client_session_only || session_client_provided)
+}
+
+fn provider_max_concurrent_requests(provider: &Provider) -> Option<u32> {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.max_concurrent_requests)
+        .filter(|limit| *limit > 0)
+}
+
+fn provider_has_capacity(state: &SessionRoutingState, app_type: &str, provider: &Provider) -> bool {
+    match provider_max_concurrent_requests(provider) {
+        Some(limit) => state.provider_occupancy(app_type, &provider.id) < limit,
+        None => true,
+    }
+}
+
+fn move_provider_to_front(mut providers: Vec<Provider>, provider_id: &str) -> Vec<Provider> {
+    if let Some(index) = providers
+        .iter()
+        .position(|provider| provider.id.as_str() == provider_id)
+    {
+        let selected = providers.remove(index);
+        providers.insert(0, selected);
+    }
+    providers
 }
 
 fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
@@ -507,6 +957,31 @@ mod tests {
                 None => env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    fn limited_provider(id: &str, name: &str, sort_index: usize, limit: Option<u32>) -> Provider {
+        let mut provider =
+            Provider::with_id(id.to_string(), name.to_string(), json!({ "env": {} }), None);
+        provider.sort_index = Some(sort_index);
+        provider.meta = Some(ProviderMeta {
+            max_concurrent_requests: limit,
+            ..ProviderMeta::default()
+        });
+        provider
+    }
+
+    async fn enable_failover_with_session_routing(db: &Database, app_type: &str) -> AppProxyConfig {
+        let mut config = db.get_proxy_config_for_app(app_type).await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.session_routing_enabled = true;
+        config.session_routing_idle_ttl_seconds = 600;
+        config.session_routing_client_session_only = true;
+        config.session_routing_overflow_fallback_enabled = true;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        config
     }
 
     #[tokio::test]
@@ -602,6 +1077,220 @@ mod tests {
         // 故障转移开启时：仅按队列顺序选择（忽略当前供应商）
         assert_eq!(providers[0].id, "b");
         assert_eq!(providers[1].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_keeps_client_session_on_same_provider() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(2));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(2));
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        enable_failover_with_session_routing(&db, "claude").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_uses_next_provider_when_capacity_is_full() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(2));
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.add_to_failover_queue("codex", "a").unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        enable_failover_with_session_routing(&db, "codex").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("codex", "codex-session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("codex", "codex-session-2", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_overflows_to_first_available_provider_when_all_limits_are_full() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        enable_failover_with_session_routing(&db, "claude").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("claude", "session-2", true)
+            .await
+            .unwrap();
+        let overflow = router
+            .select_providers_for_session("claude", "session-3", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "b");
+        assert_eq!(overflow[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_disabled_preserves_failover_queue_order() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.session_routing_enabled = false;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("claude", "session-2", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_client_only_does_not_bind_generated_sessions() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.add_to_failover_queue("codex", "a").unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        enable_failover_with_session_routing(&db, "codex").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("codex", "generated-1", false)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("codex", "generated-2", false)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_releases_capacity_after_idle_ttl() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        let mut config = enable_failover_with_session_routing(&db, "claude").await;
+        config.session_routing_idle_ttl_seconds = 1;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("claude", "session-2", true)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let after_ttl = router
+            .select_providers_for_session("claude", "session-3", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "b");
+        assert_eq!(after_ttl[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_does_not_apply_to_gemini_yet() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("gemini", &provider_a).unwrap();
+        db.save_provider("gemini", &provider_b).unwrap();
+        db.add_to_failover_queue("gemini", "a").unwrap();
+        db.add_to_failover_queue("gemini", "b").unwrap();
+        enable_failover_with_session_routing(&db, "gemini").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("gemini", "session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("gemini", "session-2", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "a");
     }
 
     #[tokio::test]

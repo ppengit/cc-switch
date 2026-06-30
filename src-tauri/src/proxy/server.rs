@@ -309,6 +309,35 @@ impl ProxyServer {
         super::activity::raw_logs(&self.state.proxy_activity, limit, app_type).await
     }
 
+    pub async fn get_admission_retry_snapshot(
+        &self,
+        app_type: Option<&str>,
+    ) -> Vec<ProviderAdmissionRetryEvent> {
+        super::activity::admission_retry_snapshot(&self.state.proxy_activity, app_type).await
+    }
+
+    pub async fn get_session_routing_snapshot(
+        &self,
+        app_type: &str,
+    ) -> Result<SessionRoutingSnapshot, crate::error::AppError> {
+        self.state
+            .provider_router
+            .session_routing_snapshot(app_type)
+            .await
+    }
+
+    pub async fn rebind_session_route(
+        &self,
+        app_type: &str,
+        session_id: &str,
+        provider_id: &str,
+    ) -> Result<SessionRoutingSnapshot, crate::error::AppError> {
+        self.state
+            .provider_router
+            .rebind_session_route(app_type, session_id, provider_id)
+            .await
+    }
+
     pub async fn set_raw_log_retention_minutes(&self, minutes: u64) {
         super::activity::set_raw_log_retention_minutes(&self.state.proxy_activity, minutes).await;
     }

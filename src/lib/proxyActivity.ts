@@ -94,6 +94,9 @@ export function normalizeActiveRequestTargets(
             upstream_model: target.upstream_model ?? existing.upstream_model,
             route_mode: target.route_mode ?? existing.route_mode,
             upstream_url: target.upstream_url ?? existing.upstream_url,
+            session_id: target.session_id ?? existing.session_id,
+            project_name: target.project_name ?? existing.project_name,
+            project_path: target.project_path ?? existing.project_path,
             last_request_model:
               target.last_request_model ?? existing.last_request_model,
             last_request_at: target.last_request_at,

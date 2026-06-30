@@ -3,6 +3,7 @@
 //! 提供前端调用的 API 接口
 
 use crate::error::AppError;
+use crate::floating_activity::ProxyActivityFloatingSettings;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
 use crate::store::AppState;
@@ -10,6 +11,9 @@ use crate::store::AppState;
 fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
     if !config.enabled {
         config.auto_failover_enabled = false;
+    }
+    if !config.enabled || !config.auto_failover_enabled {
+        config.session_routing_enabled = false;
     }
     config
 }
@@ -86,6 +90,72 @@ pub async fn get_proxy_raw_logs(
     state
         .proxy_service
         .get_raw_logs(limit.unwrap_or(200), app_filter)
+        .await
+}
+
+/// 获取当前仍在进行的供应商上游入场重试快照。
+#[tauri::command]
+pub async fn get_provider_admission_retry_snapshot(
+    state: tauri::State<'_, AppState>,
+    app_type: Option<String>,
+) -> Result<Vec<ProviderAdmissionRetryEvent>, String> {
+    let app_filter = app_type
+        .as_deref()
+        .filter(|value| !value.eq_ignore_ascii_case("all"));
+    state
+        .proxy_service
+        .get_admission_retry_snapshot(app_filter)
+        .await
+}
+
+/// 获取实时请求浮窗设置。
+#[tauri::command]
+pub async fn get_proxy_activity_floating_settings() -> Result<ProxyActivityFloatingSettings, String>
+{
+    Ok(crate::floating_activity::current_settings())
+}
+
+/// 显示或隐藏实时请求独立浮窗，并持久化到本机设置。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_window_visible(
+    app: tauri::AppHandle,
+    visible: bool,
+) -> Result<(), String> {
+    crate::floating_activity::set_visible(&app, visible).map_err(|e| e.to_string())
+}
+
+/// 设置实时请求浮窗透明度。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_opacity(
+    app: tauri::AppHandle,
+    opacity: f64,
+) -> Result<(), String> {
+    crate::floating_activity::set_opacity(&app, opacity).map_err(|e| e.to_string())
+}
+
+/// 获取会话路由运行态快照。
+#[tauri::command]
+pub async fn get_session_routing_snapshot(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+) -> Result<SessionRoutingSnapshot, String> {
+    state
+        .proxy_service
+        .get_session_routing_snapshot(&app_type)
+        .await
+}
+
+/// 手动把某个会话改绑到指定供应商。
+#[tauri::command]
+pub async fn rebind_session_route(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+    session_id: String,
+    provider_id: String,
+) -> Result<SessionRoutingSnapshot, String> {
+    state
+        .proxy_service
+        .rebind_session_route(&app_type, &session_id, &provider_id)
         .await
 }
 
@@ -473,6 +543,10 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: false,
             auto_failover_enabled: true,
+            session_routing_enabled: true,
+            session_routing_idle_ttl_seconds: 600,
+            session_routing_client_session_only: true,
+            session_routing_overflow_fallback_enabled: true,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -490,6 +564,7 @@ mod tests {
             !sanitized.auto_failover_enabled,
             "saving app proxy config must not persist failover=true while takeover=false"
         );
+        assert!(!sanitized.session_routing_enabled);
     }
 
     #[test]
@@ -498,6 +573,10 @@ mod tests {
             app_type: "claude".to_string(),
             enabled: true,
             auto_failover_enabled: false,
+            session_routing_enabled: true,
+            session_routing_idle_ttl_seconds: 600,
+            session_routing_client_session_only: true,
+            session_routing_overflow_fallback_enabled: true,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -512,6 +591,7 @@ mod tests {
         let sanitized = sanitize_app_proxy_config(config);
         assert!(sanitized.enabled);
         assert!(!sanitized.auto_failover_enabled);
+        assert!(!sanitized.session_routing_enabled);
     }
 
     #[test]
@@ -520,6 +600,10 @@ mod tests {
             app_type: "codex".to_string(),
             enabled: true,
             auto_failover_enabled: true,
+            session_routing_enabled: true,
+            session_routing_idle_ttl_seconds: 600,
+            session_routing_client_session_only: true,
+            session_routing_overflow_fallback_enabled: true,
             max_retries: 3,
             streaming_first_byte_timeout: 60,
             streaming_idle_timeout: 120,
@@ -534,6 +618,7 @@ mod tests {
         let sanitized = sanitize_app_proxy_config(config);
         assert!(sanitized.enabled);
         assert!(sanitized.auto_failover_enabled);
+        assert!(sanitized.session_routing_enabled);
     }
 }
 

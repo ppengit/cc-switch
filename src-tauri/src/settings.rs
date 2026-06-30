@@ -374,6 +374,12 @@ pub struct AppSettings {
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
+    /// 是否显示实时请求独立悬浮窗
+    #[serde(default)]
+    pub show_proxy_activity_floating_window: bool,
+    /// 实时请求悬浮窗背景透明度（0.35-1.0）
+    #[serde(default = "default_proxy_activity_floating_opacity")]
+    pub proxy_activity_floating_opacity: f64,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
@@ -490,6 +496,18 @@ fn default_minimize_to_tray_on_close() -> bool {
     true
 }
 
+pub fn default_proxy_activity_floating_opacity() -> f64 {
+    0.86
+}
+
+pub fn clamp_proxy_activity_floating_opacity(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.35, 1.0)
+    } else {
+        default_proxy_activity_floating_opacity()
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -505,6 +523,8 @@ impl Default for AppSettings {
             usage_confirmed: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
+            show_proxy_activity_floating_window: false,
+            proxy_activity_floating_opacity: default_proxy_activity_floating_opacity(),
             preserve_codex_official_auth_on_switch: false,
             unify_codex_session_history: false,
             unify_codex_migrate_existing: None,
@@ -550,6 +570,9 @@ impl AppSettings {
     }
 
     fn normalize_paths(&mut self) {
+        self.proxy_activity_floating_opacity =
+            clamp_proxy_activity_floating_opacity(self.proxy_activity_floating_opacity);
+
         self.claude_config_dir = self
             .claude_config_dir
             .as_ref()
