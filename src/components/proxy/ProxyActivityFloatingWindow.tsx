@@ -493,7 +493,7 @@ export function ProxyActivityFloatingWindow() {
               return (
                 <div
                   key={`${target.app_type}:${target.provider_id}`}
-                  className="mb-px grid h-[28px] min-w-0 grid-cols-[1.25rem_minmax(0,1.1fr)_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md bg-white/[0.07] px-1.5 text-[10px] last:mb-0 hover:bg-white/[0.11]"
+                  className="mb-px grid h-[28px] min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md bg-white/[0.07] px-1.5 text-[10px] last:mb-0 hover:bg-white/[0.11]"
                   style={{ height: ROW_HEIGHT - 2 }}
                   title={targetTitle(target)}
                 >
@@ -514,7 +514,7 @@ export function ProxyActivityFloatingWindow() {
             })
           ) : (
             <div
-              className="grid min-w-0 grid-cols-[1.25rem_minmax(0,1.1fr)_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md border border-dashed border-white/12 px-1.5 text-[10px] text-white/45"
+              className="grid min-w-0 grid-cols-[1.25rem_minmax(0,auto)_minmax(0,1fr)_auto] items-center gap-1.5 rounded-md border border-dashed border-white/12 px-1.5 text-[10px] text-white/45"
               style={{ height: ROW_HEIGHT - 2 }}
             >
               <span className="flex items-center justify-center text-white/60">
