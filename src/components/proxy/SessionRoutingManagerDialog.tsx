@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Loader2, RefreshCw, Route, Shuffle } from "lucide-react";
+import { useMemo } from "react";
+import { Loader2, RefreshCw, Route } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import {
@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { getBaseName } from "@/components/sessions/utils";
 
 interface SessionRoutingManagerDialogProps {
   appId: AppId;
@@ -45,15 +46,36 @@ const shortSessionId = (sessionId: string) => {
   return `${sessionId.slice(0, 12)}...${sessionId.slice(-8)}`;
 };
 
+function bindingPrimaryLabel(binding: {
+  sessionTitle?: string | null;
+  projectName?: string | null;
+  projectPath?: string | null;
+  sessionId: string;
+}) {
+  const title = binding.sessionTitle?.trim();
+  if (title) return title;
+  const projectName = binding.projectName?.trim();
+  if (projectName) return projectName;
+  const fromPath = getBaseName(binding.projectPath);
+  if (fromPath) return fromPath;
+  return shortSessionId(binding.sessionId);
+}
+
+function bindingProjectName(binding: {
+  projectName?: string | null;
+  projectPath?: string | null;
+}) {
+  const name = binding.projectName?.trim();
+  if (name) return name;
+  return getBaseName(binding.projectPath) || null;
+}
+
 export function SessionRoutingManagerDialog({
   appId,
   open,
   onOpenChange,
 }: SessionRoutingManagerDialogProps) {
   const { t } = useTranslation();
-  const [targetBySession, setTargetBySession] = useState<
-    Record<string, string>
-  >({});
   const isSupported = appId === "claude" || appId === "codex";
   const { data, isFetching, refetch } = useSessionRoutingSnapshot(
     appId,
@@ -68,8 +90,11 @@ export function SessionRoutingManagerDialog({
     [providers],
   );
 
-  const handleRebind = (sessionId: string, currentProviderId: string) => {
-    const providerId = targetBySession[sessionId] || currentProviderId;
+  const handleProviderChange = (
+    sessionId: string,
+    currentProviderId: string,
+    providerId: string,
+  ) => {
     if (!providerId || providerId === currentProviderId) return;
     rebindMutation.mutate({ appType: appId, sessionId, providerId });
   };
@@ -120,84 +145,98 @@ export function SessionRoutingManagerDialog({
             </Button>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="rounded-lg border border-border">
+            <div className="border-b border-border px-3 py-2">
+              <div className="text-sm font-medium">
+                {t("sessionRouting.manager.providers", {
+                  defaultValue: "供应商占用",
+                })}
+              </div>
+            </div>
             {providers.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+              <div className="p-4 text-sm text-muted-foreground">
                 {t("sessionRouting.manager.noProviders", {
                   defaultValue: "故障转移队列中暂无供应商。",
                 })}
               </div>
             ) : (
-              providers.map((provider) => {
-                const limit =
-                  provider.maxConcurrentRequests &&
-                  provider.maxConcurrentRequests > 0
-                    ? provider.maxConcurrentRequests
-                    : null;
-                const pct = limit
-                  ? Math.min(
-                      100,
-                      Math.round((provider.occupancy / limit) * 100),
-                    )
-                  : 0;
-                return (
-                  <div
-                    key={provider.providerId}
-                    className={cn(
-                      "rounded-lg border border-border bg-background/70 p-3",
-                      !provider.inFailoverQueue && "opacity-70",
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+              <div className="divide-y divide-border">
+                {providers.map((provider) => {
+                  const limit =
+                    provider.maxConcurrentRequests &&
+                    provider.maxConcurrentRequests > 0
+                      ? provider.maxConcurrentRequests
+                      : null;
+                  const pct = limit
+                    ? Math.min(
+                        100,
+                        Math.round((provider.occupancy / limit) * 100),
+                      )
+                    : 0;
+                  const occupancyLabel = limit
+                    ? `${provider.occupancy}/${limit}`
+                    : t("sessionRouting.manager.unlimited", {
+                        defaultValue: "无限",
+                      });
+                  return (
+                    <div
+                      key={provider.providerId}
+                      className={cn(
+                        "flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 sm:flex-nowrap",
+                        !provider.inFailoverQueue && "opacity-70",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1 basis-[12rem]">
                         <div
                           className="truncate text-sm font-medium"
                           title={provider.providerName}
                         >
                           {provider.providerName}
                         </div>
-                        <div className="mt-1 text-[11px] font-mono text-muted-foreground">
+                        <div
+                          className="truncate text-[11px] font-mono text-muted-foreground"
+                          title={provider.providerId}
+                        >
                           {provider.providerId}
                         </div>
                       </div>
-                      <Badge variant={limit ? "outline" : "secondary"}>
-                        {limit
-                          ? `${provider.occupancy}/${limit}`
-                          : t("sessionRouting.manager.unlimited", {
-                              defaultValue: "无限",
-                            })}
+                      <Badge
+                        variant={limit ? "outline" : "secondary"}
+                        className="shrink-0 whitespace-nowrap"
+                      >
+                        {occupancyLabel}
                       </Badge>
+                      <div className="h-1.5 w-full min-w-[8rem] flex-1 overflow-hidden rounded-full bg-muted sm:max-w-[10rem]">
+                        <div
+                          className={cn(
+                            "h-full rounded-full",
+                            pct >= 100
+                              ? "bg-red-500"
+                              : pct >= 80
+                                ? "bg-amber-500"
+                                : "bg-emerald-500",
+                          )}
+                          style={{ width: limit ? `${pct}%` : "100%" }}
+                        />
+                      </div>
+                      <div className="flex shrink-0 gap-3 text-[11px] text-muted-foreground">
+                        <span className="whitespace-nowrap">
+                          {t("sessionRouting.manager.sessionSlots", {
+                            count: provider.sessionOccupancy,
+                            defaultValue: "会话 {{count}}",
+                          })}
+                        </span>
+                        <span className="whitespace-nowrap">
+                          {t("sessionRouting.manager.anonymousSlots", {
+                            count: provider.anonymousOccupancy,
+                            defaultValue: "临时 {{count}}",
+                          })}
+                        </span>
+                      </div>
                     </div>
-                    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className={cn(
-                          "h-full rounded-full",
-                          pct >= 100
-                            ? "bg-red-500"
-                            : pct >= 80
-                              ? "bg-amber-500"
-                              : "bg-emerald-500",
-                        )}
-                        style={{ width: limit ? `${pct}%` : "100%" }}
-                      />
-                    </div>
-                    <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                      <span>
-                        {t("sessionRouting.manager.sessionSlots", {
-                          count: provider.sessionOccupancy,
-                          defaultValue: "会话占用 {{count}}",
-                        })}
-                      </span>
-                      <span>
-                        {t("sessionRouting.manager.anonymousSlots", {
-                          count: provider.anonymousOccupancy,
-                          defaultValue: "临时占用 {{count}}",
-                        })}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </div>
             )}
           </div>
 
@@ -233,41 +272,78 @@ export function SessionRoutingManagerDialog({
               ) : (
                 <div className="divide-y divide-border">
                   {bindings.map((binding) => {
-                    const selected =
-                      targetBySession[binding.sessionId] || binding.providerId;
-                    const changed = selected !== binding.providerId;
+                    const primary = bindingPrimaryLabel(binding);
+                    const projectName = bindingProjectName(binding);
+                    const projectPath = binding.projectPath?.trim() || null;
+                    const showProjectName =
+                      projectName &&
+                      projectName !== primary &&
+                      binding.sessionTitle?.trim();
                     return (
                       <div
                         key={`${binding.appType}:${binding.sessionId}`}
-                        className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_8rem]"
+                        className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 space-y-0.5">
                           <div
-                            className="truncate font-mono text-xs"
-                            title={binding.sessionId}
+                            className="truncate text-sm font-medium"
+                            title={primary}
                           >
-                            {shortSessionId(binding.sessionId)}
+                            {primary}
                           </div>
-                          <div className="mt-1 text-[11px] text-muted-foreground">
-                            {t("sessionRouting.manager.idle", {
-                              idle: formatIdle(binding.idleSeconds),
-                              defaultValue: "空闲 {{idle}}",
-                            })}
+                          {showProjectName ? (
+                            <div
+                              className="truncate text-xs text-muted-foreground"
+                              title={projectName}
+                            >
+                              {t("sessionRouting.manager.projectName", {
+                                name: projectName,
+                                defaultValue: "项目：{{name}}",
+                              })}
+                            </div>
+                          ) : null}
+                          {projectPath ? (
+                            <div
+                              className="truncate font-mono text-[11px] text-muted-foreground"
+                              title={projectPath}
+                            >
+                              {projectPath}
+                            </div>
+                          ) : null}
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                            <span
+                              className="font-mono"
+                              title={binding.sessionId}
+                            >
+                              {shortSessionId(binding.sessionId)}
+                            </span>
+                            <span aria-hidden>·</span>
+                            <span>
+                              {t("sessionRouting.manager.idle", {
+                                idle: formatIdle(binding.idleSeconds),
+                                defaultValue: "空闲 {{idle}}",
+                              })}
+                            </span>
                           </div>
                         </div>
                         <Select
-                          value={selected}
+                          value={binding.providerId}
                           onValueChange={(providerId) =>
-                            setTargetBySession((current) => ({
-                              ...current,
-                              [binding.sessionId]: providerId,
-                            }))
+                            handleProviderChange(
+                              binding.sessionId,
+                              binding.providerId,
+                              providerId,
+                            )
+                          }
+                          disabled={
+                            rebindMutation.isPending ||
+                            enabledProviders.length === 0
                           }
                         >
                           <SelectTrigger className="h-8 text-xs">
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent className="max-h-72">
+                          <SelectContent className="z-[230] max-h-72">
                             {enabledProviders.map((provider) => (
                               <SelectItem
                                 key={provider.providerId}
@@ -278,29 +354,6 @@ export function SessionRoutingManagerDialog({
                             ))}
                           </SelectContent>
                         </Select>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={changed ? "default" : "outline"}
-                          className="h-8"
-                          disabled={
-                            !changed ||
-                            rebindMutation.isPending ||
-                            enabledProviders.length === 0
-                          }
-                          onClick={() =>
-                            handleRebind(binding.sessionId, binding.providerId)
-                          }
-                        >
-                          {rebindMutation.isPending ? (
-                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Shuffle className="mr-2 h-3.5 w-3.5" />
-                          )}
-                          {t("sessionRouting.manager.rebind", {
-                            defaultValue: "切换",
-                          })}
-                        </Button>
                       </div>
                     );
                   })}

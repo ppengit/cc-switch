@@ -542,6 +542,10 @@ impl RequestForwarder {
                 continue;
             }
 
+            let session_activity_path = activity_project_path(&headers, &body);
+            let session_activity_name = activity_project_name(session_activity_path.as_deref())
+                .or_else(|| activity_project_name_from_request(&headers, &body));
+
             let session_route_guard = self
                 .router
                 .acquire_session_route_request(
@@ -549,6 +553,8 @@ impl RequestForwarder {
                     &self.session_id,
                     self.session_client_provided,
                     &provider,
+                    session_activity_name,
+                    session_activity_path,
                 )
                 .await;
 

@@ -198,6 +198,12 @@ pub struct SessionRoutingBindingSnapshot {
     pub provider_id: String,
     pub provider_name: String,
     pub idle_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

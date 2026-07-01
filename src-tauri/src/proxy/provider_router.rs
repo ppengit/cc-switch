@@ -37,6 +37,8 @@ struct ProviderRouteKey {
 struct SessionRouteBinding {
     provider_id: String,
     last_seen: Instant,
+    project_name: Option<String>,
+    project_path: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -78,15 +80,34 @@ impl SessionRoutingState {
         (session_count, anonymous_count)
     }
 
-    fn bind_session(&mut self, app_type: &str, session_id: &str, provider_id: &str, now: Instant) {
+    fn bind_session(
+        &mut self,
+        app_type: &str,
+        session_id: &str,
+        provider_id: &str,
+        now: Instant,
+        project_name: Option<String>,
+        project_path: Option<String>,
+    ) {
+        let key = SessionRouteKey {
+            app_type: app_type.to_string(),
+            session_id: session_id.to_string(),
+        };
+        let (project_name, project_path) = if let Some(existing) = self.bindings.get(&key) {
+            (
+                project_name.or_else(|| existing.project_name.clone()),
+                project_path.or_else(|| existing.project_path.clone()),
+            )
+        } else {
+            (project_name, project_path)
+        };
         self.bindings.insert(
-            SessionRouteKey {
-                app_type: app_type.to_string(),
-                session_id: session_id.to_string(),
-            },
+            key,
             SessionRouteBinding {
                 provider_id: provider_id.to_string(),
                 last_seen: now,
+                project_name,
+                project_path,
             },
         );
     }
@@ -289,6 +310,8 @@ impl ProviderRouter {
         session_id: &str,
         session_client_provided: bool,
         provider: &Provider,
+        project_name: Option<String>,
+        project_path: Option<String>,
     ) -> Option<SessionRoutingRequestGuard> {
         let app_config = self.db.get_proxy_config_for_app(app_type).await.ok()?;
         if !session_routing_applies(app_type, &app_config) {
@@ -303,7 +326,14 @@ impl ProviderRouter {
         state.cleanup_expired(now, ttl);
 
         let anonymous_key = if should_bind_session {
-            state.bind_session(app_type, session_id, &provider.id, now);
+            state.bind_session(
+                app_type,
+                session_id,
+                &provider.id,
+                now,
+                project_name,
+                project_path,
+            );
             None
         } else {
             Some(state.increment_anonymous(app_type, &provider.id))
@@ -319,6 +349,7 @@ impl ProviderRouter {
     pub async fn session_routing_snapshot(
         &self,
         app_type: &str,
+        activity_session_context: HashMap<String, (Option<String>, Option<String>)>,
     ) -> Result<SessionRoutingSnapshot, AppError> {
         let config = self
             .db
@@ -397,15 +428,38 @@ impl ProviderRouter {
             .bindings
             .iter()
             .filter(|(key, _)| key.app_type == app_type)
-            .map(|(key, binding)| SessionRoutingBindingSnapshot {
-                app_type: key.app_type.clone(),
-                session_id: key.session_id.clone(),
-                provider_id: binding.provider_id.clone(),
-                provider_name: provider_name_by_id
-                    .get(&binding.provider_id)
+            .map(|(key, binding)| {
+                let (activity_name, activity_path) = activity_session_context
+                    .get(&key.session_id)
                     .cloned()
-                    .unwrap_or_else(|| binding.provider_id.clone()),
-                idle_seconds: now.duration_since(binding.last_seen).as_secs(),
+                    .unwrap_or((None, None));
+                let (db_title, db_project_dir) = self
+                    .db
+                    .get_session_context_for_log(app_type, &key.session_id)
+                    .unwrap_or((None, None));
+                let project_path = binding
+                    .project_path
+                    .clone()
+                    .or(activity_path)
+                    .or(db_project_dir);
+                let project_name = binding
+                    .project_name
+                    .clone()
+                    .or(activity_name)
+                    .or_else(|| project_name_from_path(project_path.as_deref()));
+                SessionRoutingBindingSnapshot {
+                    app_type: key.app_type.clone(),
+                    session_id: key.session_id.clone(),
+                    provider_id: binding.provider_id.clone(),
+                    provider_name: provider_name_by_id
+                        .get(&binding.provider_id)
+                        .cloned()
+                        .unwrap_or_else(|| binding.provider_id.clone()),
+                    idle_seconds: now.duration_since(binding.last_seen).as_secs(),
+                    session_title: db_title,
+                    project_name,
+                    project_path,
+                }
             })
             .collect();
         bindings.sort_by(|a, b| {
@@ -465,10 +519,11 @@ impl ProviderRouter {
             let ttl = session_routing_ttl(&config);
             let mut state = self.session_routing.write().await;
             state.cleanup_expired(now, ttl);
-            state.bind_session(app_type, session_id, provider_id, now);
+            state.bind_session(app_type, session_id, provider_id, now, None, None);
         }
 
-        self.session_routing_snapshot(app_type).await
+        self.session_routing_snapshot(app_type, HashMap::new())
+            .await
     }
 
     /// 请求执行前获取熔断器“放行许可”
@@ -800,7 +855,7 @@ impl ProviderRouter {
 
         if let Some(selected_id) = selected_id {
             if should_bind_session {
-                state.bind_session(app_type, session_id, &selected_id, now);
+                state.bind_session(app_type, session_id, &selected_id, now, None, None);
             }
             move_provider_to_front(providers, &selected_id)
         } else {
@@ -848,6 +903,16 @@ fn should_bind_session(
 ) -> bool {
     !session_id.is_empty()
         && (!config.session_routing_client_session_only || session_client_provided)
+}
+
+fn project_name_from_path(project_path: Option<&str>) -> Option<String> {
+    let path = project_path?.trim().trim_matches('"').trim_matches('\'');
+    if path.is_empty() {
+        return None;
+    }
+    path.rsplit(['\\', '/'])
+        .find(|segment| !segment.trim().is_empty())
+        .map(|segment| segment.trim().to_string())
 }
 
 fn provider_max_concurrent_requests(provider: &Provider) -> Option<u32> {

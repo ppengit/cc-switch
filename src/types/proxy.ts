@@ -123,6 +123,9 @@ export interface SessionRoutingBindingSnapshot {
   providerId: string;
   providerName: string;
   idleSeconds: number;
+  sessionTitle?: string | null;
+  projectName?: string | null;
+  projectPath?: string | null;
 }
 
 export interface SessionRoutingSnapshot {

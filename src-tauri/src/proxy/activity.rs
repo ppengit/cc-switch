@@ -766,6 +766,49 @@ impl ProxyActivityState {
         event
     }
 
+    /// 按 session_id 汇总最近一次请求携带的项目上下文（仅内存，用于会话路由展示）。
+    fn recent_session_context_by_id(
+        &self,
+        app_type: &str,
+    ) -> HashMap<String, (Option<String>, Option<String>)> {
+        let mut by_session: HashMap<String, (Instant, Option<String>, Option<String>)> =
+            HashMap::new();
+
+        for meta in self.requests.values() {
+            if !meta.app_type.eq_ignore_ascii_case(app_type) {
+                continue;
+            }
+            let Some(session_id) = meta
+                .session_id
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+
+            let entry = by_session
+                .entry(session_id.to_string())
+                .or_insert((meta.started_at, None, None));
+            if meta.started_at >= entry.0 {
+                entry.0 = meta.started_at;
+                if meta.project_name.is_some() {
+                    entry.1 = meta.project_name.clone();
+                }
+                if meta.project_path.is_some() {
+                    entry.2 = meta.project_path.clone();
+                }
+            }
+        }
+
+        by_session
+            .into_iter()
+            .map(|(session_id, (_, project_name, project_path))| {
+                (session_id, (project_name, project_path))
+            })
+            .collect()
+    }
+
     fn admission_retry_snapshot(&self, app_type: Option<&str>) -> Vec<ProviderAdmissionRetryEvent> {
         let mut entries: Vec<ProviderAdmissionRetryEvent> = self
             .admission_retries
@@ -947,6 +990,14 @@ pub async fn admission_retry_snapshot(
 ) -> Vec<ProviderAdmissionRetryEvent> {
     let state = activity.read().await;
     state.admission_retry_snapshot(app_type)
+}
+
+pub async fn recent_session_context_by_id(
+    activity: &Arc<RwLock<ProxyActivityState>>,
+    app_type: &str,
+) -> HashMap<String, (Option<String>, Option<String>)> {
+    let state = activity.read().await;
+    state.recent_session_context_by_id(app_type)
 }
 
 pub async fn set_raw_log_retention_minutes(

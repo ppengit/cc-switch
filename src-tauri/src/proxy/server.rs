@@ -320,9 +320,12 @@ impl ProxyServer {
         &self,
         app_type: &str,
     ) -> Result<SessionRoutingSnapshot, crate::error::AppError> {
+        let activity_session_context =
+            super::activity::recent_session_context_by_id(&self.state.proxy_activity, app_type)
+                .await;
         self.state
             .provider_router
-            .session_routing_snapshot(app_type)
+            .session_routing_snapshot(app_type, activity_session_context)
             .await
     }
 
