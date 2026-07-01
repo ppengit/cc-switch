@@ -661,7 +661,7 @@ impl AppSettings {
             .filter(|position| position.x.is_finite() && position.y.is_finite());
         self.proxy_activity_floating_size = self
             .proxy_activity_floating_size
-            .map(clamp_proxy_activity_floating_size);
+            .and_then(clamp_proxy_activity_floating_size);
 
         self.claude_config_dir = self
             .claude_config_dir
