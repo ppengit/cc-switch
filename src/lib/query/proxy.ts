@@ -215,7 +215,14 @@ export function useAppProxyConfig(appType: string) {
 /**
  * 更新指定应用的代理配置
  */
-export function useUpdateAppProxyConfig() {
+type UpdateAppProxyConfigOptions = {
+  successMessage?:
+    | string
+    | false
+    | ((config: AppProxyConfig) => string | false | undefined);
+};
+
+export function useUpdateAppProxyConfig(options?: UpdateAppProxyConfigOptions) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -223,7 +230,15 @@ export function useUpdateAppProxyConfig() {
     mutationFn: (config: AppProxyConfig) =>
       proxyApi.updateProxyConfigForApp(config),
     onSuccess: (_, variables) => {
-      toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
+      const message =
+        typeof options?.successMessage === "function"
+          ? options.successMessage(variables)
+          : options?.successMessage;
+      if (message !== false) {
+        toast.success(message || t("proxy.settings.toast.saved"), {
+          closeButton: true,
+        });
+      }
       queryClient.invalidateQueries({
         queryKey: ["appProxyConfig", variables.appType],
       });
@@ -246,7 +261,8 @@ export function useSessionRoutingSnapshot(appType: string, enabled = true) {
   return useQuery({
     queryKey: ["sessionRoutingSnapshot", appType],
     queryFn: () => proxyApi.getSessionRoutingSnapshot(appType),
-    enabled: enabled && !!appType && (appType === "claude" || appType === "codex"),
+    enabled:
+      enabled && !!appType && (appType === "claude" || appType === "codex"),
     refetchInterval: 2500,
   });
 }

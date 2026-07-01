@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   Plus,
   Settings,
   ArrowLeft,
@@ -323,22 +322,6 @@ function App() {
       ]),
     );
   }, [activeApp, normalizedActiveRequestTargets]);
-  const liveActivityTargets = useMemo(() => {
-    return [...normalizedActiveRequestTargets]
-      .filter((target) => target.inflight_requests > 0)
-      .sort((a, b) => {
-        if (a.app_type !== b.app_type) {
-          return a.app_type.localeCompare(b.app_type);
-        }
-        return a.provider_name.localeCompare(b.provider_name);
-      });
-  }, [normalizedActiveRequestTargets]);
-  const activeRequestCount = liveActivityTargets.reduce(
-    (total, target) => total + target.inflight_requests,
-    0,
-  );
-  const showLiveActivityStrip =
-    isProxyRunning && activeRequestCount > 0 && liveActivityTargets.length > 0;
 
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
     isProxyRunning,
@@ -972,7 +955,10 @@ function App() {
     try {
       latestProviders = await providersApi.getAll(activeApp);
     } catch (error) {
-      console.warn("[App] Failed to refresh providers before duplication", error);
+      console.warn(
+        "[App] Failed to refresh providers before duplication",
+        error,
+      );
     }
 
     const sortedForDuplicate = Object.values(latestProviders).sort((a, b) => {
@@ -1559,10 +1545,10 @@ function App() {
                       <ProxyToggle activeApp={activeApp} />
                     )
                   )}
-                {activeApp !== "claude-desktop" &&
-                  settingsData?.enableFailoverToggle && (
-                    <FailoverToggle activeApp={activeApp} />
-                  )}
+                  {activeApp !== "claude-desktop" &&
+                    settingsData?.enableFailoverToggle && (
+                      <FailoverToggle activeApp={activeApp} />
+                    )}
                   {(activeApp === "claude" || activeApp === "codex") && (
                     <SessionRoutingToggle activeApp={activeApp} />
                   )}
@@ -1868,74 +1854,6 @@ function App() {
       </header>
 
       <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
-        <div
-          className={cn(
-            "sticky top-0 z-30 h-10 shrink-0 overflow-hidden border-b bg-background/95 px-6 shadow-sm backdrop-blur transition-colors",
-            showLiveActivityStrip
-              ? "border-emerald-500/20"
-              : "border-transparent shadow-none",
-          )}
-        >
-          <div
-            className={cn(
-              "flex h-full min-w-0 items-center gap-2 overflow-x-auto text-xs transition-opacity",
-              showLiveActivityStrip
-                ? "opacity-100"
-                : "pointer-events-none opacity-0",
-            )}
-          >
-            <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 font-medium text-emerald-700 dark:text-emerald-300">
-              <Activity className="h-3.5 w-3.5" />
-              {t("proxy.activityStrip.title", {
-                count: activeRequestCount,
-                defaultValue: "{{count}} 个请求处理中",
-              })}
-            </div>
-            {liveActivityTargets.map((target) => {
-              const isActiveAppTarget = target.app_type === activeApp;
-              const requestModel = getActivityRequestModel(target);
-              const upstreamModel = getActivityUpstreamModel(target);
-              const displayModel = getActivityDisplayModel(target);
-              return (
-                <div
-                  key={`${target.app_type}:${target.provider_id}`}
-                  className={cn(
-                    "flex max-w-[26rem] shrink-0 items-center gap-2 rounded-full border px-2.5 py-1",
-                    isActiveAppTarget
-                      ? "border-emerald-500/35 bg-emerald-500/10"
-                      : "border-border bg-muted/60",
-                  )}
-                  title={[
-                    target.app_type,
-                    target.provider_name,
-                    upstreamModel &&
-                    requestModel &&
-                    upstreamModel !== requestModel
-                      ? `${upstreamModel} (req: ${requestModel})`
-                      : displayModel,
-                  ]
-                    .filter(Boolean)
-                    .join(" / ")}
-                >
-                  <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
-                    {target.app_type}
-                  </span>
-                  <span className="truncate font-medium">
-                    {target.provider_name}
-                  </span>
-                  {displayModel ? (
-                    <span className="max-w-[11rem] truncate font-mono text-[11px] text-muted-foreground">
-                      {displayModel}
-                    </span>
-                  ) : null}
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    x{target.inflight_requests}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
         {isOpenClawView && openclawHealthWarnings.length > 0 && (
           <OpenClawHealthBanner warnings={openclawHealthWarnings} />
         )}

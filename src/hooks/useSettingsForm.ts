@@ -118,8 +118,14 @@ export function useSettingsForm(): UseSettingsFormResult {
       skipClaudeOnboarding: data.skipClaudeOnboarding ?? false,
       showProxyActivityFloatingWindow:
         data.showProxyActivityFloatingWindow ?? false,
-      proxyActivityFloatingOpacity:
-        data.proxyActivityFloatingOpacity ?? 0.86,
+      proxyActivityFloatingOpacity: data.proxyActivityFloatingOpacity ?? 0.86,
+      proxyActivityFloatingIdleHideSeconds:
+        data.proxyActivityFloatingIdleHideSeconds ?? 180,
+      proxyActivityFloatingAlwaysOnTop:
+        data.proxyActivityFloatingAlwaysOnTop ?? true,
+      proxyActivityFloatingMode: data.proxyActivityFloatingMode ?? "panel",
+      proxyActivityFloatingPosition:
+        data.proxyActivityFloatingPosition ?? undefined,
       preserveCodexOfficialAuthOnSwitch:
         data.preserveCodexOfficialAuthOnSwitch ?? false,
       unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
@@ -149,6 +155,10 @@ export function useSettingsForm(): UseSettingsFormResult {
             skipClaudeOnboarding: false,
             showProxyActivityFloatingWindow: false,
             proxyActivityFloatingOpacity: 0.86,
+            proxyActivityFloatingIdleHideSeconds: 180,
+            proxyActivityFloatingAlwaysOnTop: true,
+            proxyActivityFloatingMode: "panel",
+            proxyActivityFloatingPosition: undefined,
             preserveCodexOfficialAuthOnSwitch: false,
             unifyCodexSessionHistory: false,
             language: readPersistedLanguage(),
@@ -192,6 +202,14 @@ export function useSettingsForm(): UseSettingsFormResult {
           serverData.showProxyActivityFloatingWindow ?? false,
         proxyActivityFloatingOpacity:
           serverData.proxyActivityFloatingOpacity ?? 0.86,
+        proxyActivityFloatingIdleHideSeconds:
+          serverData.proxyActivityFloatingIdleHideSeconds ?? 180,
+        proxyActivityFloatingAlwaysOnTop:
+          serverData.proxyActivityFloatingAlwaysOnTop ?? true,
+        proxyActivityFloatingMode:
+          serverData.proxyActivityFloatingMode ?? "panel",
+        proxyActivityFloatingPosition:
+          serverData.proxyActivityFloatingPosition ?? undefined,
         preserveCodexOfficialAuthOnSwitch:
           serverData.preserveCodexOfficialAuthOnSwitch ?? false,
         unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,

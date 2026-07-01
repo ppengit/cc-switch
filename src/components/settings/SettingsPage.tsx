@@ -37,6 +37,7 @@ import { settingsApi } from "@/lib/api";
 import { LanguageSettings } from "@/components/settings/LanguageSettings";
 import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { WindowSettings } from "@/components/settings/WindowSettings";
+import { MiniPanelSettings } from "@/components/settings/MiniPanelSettings";
 import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
 import { SkillStorageLocationSettings } from "@/components/settings/SkillStorageLocationSettings";
 import { SkillSyncMethodSettings } from "@/components/settings/SkillSyncMethodSettings";
@@ -298,6 +299,10 @@ export function SettingsPage({
                     onChange={handleAutoSave}
                   />
                   <WindowSettings
+                    settings={settings}
+                    onChange={handleAutoSave}
+                  />
+                  <MiniPanelSettings
                     settings={settings}
                     onChange={handleAutoSave}
                   />

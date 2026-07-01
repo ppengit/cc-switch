@@ -130,11 +130,15 @@ export function SessionRoutingManagerDialog({
             ) : (
               providers.map((provider) => {
                 const limit =
-                  provider.maxConcurrentRequests && provider.maxConcurrentRequests > 0
+                  provider.maxConcurrentRequests &&
+                  provider.maxConcurrentRequests > 0
                     ? provider.maxConcurrentRequests
                     : null;
                 const pct = limit
-                  ? Math.min(100, Math.round((provider.occupancy / limit) * 100))
+                  ? Math.min(
+                      100,
+                      Math.round((provider.occupancy / limit) * 100),
+                    )
                   : 0;
                 return (
                   <div
@@ -181,13 +185,13 @@ export function SessionRoutingManagerDialog({
                       <span>
                         {t("sessionRouting.manager.sessionSlots", {
                           count: provider.sessionOccupancy,
-                          defaultValue: "会话 {{count}}",
+                          defaultValue: "会话占用 {{count}}",
                         })}
                       </span>
                       <span>
                         {t("sessionRouting.manager.anonymousSlots", {
                           count: provider.anonymousOccupancy,
-                          defaultValue: "临时 {{count}}",
+                          defaultValue: "临时占用 {{count}}",
                         })}
                       </span>
                     </div>
@@ -208,7 +212,7 @@ export function SessionRoutingManagerDialog({
                 <div className="text-xs text-muted-foreground">
                   {t("sessionRouting.manager.bindingHint", {
                     defaultValue:
-                      "只显示当前仍在 TTL 内的显式会话；无会话请求只计入供应商临时占用。",
+                      "只显示带会话 ID 且仍在 TTL 内的绑定；没有会话 ID 的请求只计入临时占用，不会进入绑定列表。",
                   })}
                 </div>
               </div>
@@ -285,10 +289,7 @@ export function SessionRoutingManagerDialog({
                             enabledProviders.length === 0
                           }
                           onClick={() =>
-                            handleRebind(
-                              binding.sessionId,
-                              binding.providerId,
-                            )
+                            handleRebind(binding.sessionId, binding.providerId)
                           }
                         >
                           {rebindMutation.isPending ? (

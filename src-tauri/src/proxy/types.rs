@@ -175,6 +175,7 @@ pub struct ProviderAdmissionRetryEvent {
     pub delay_ms: u64,
     pub status: Option<u16>,
     pub error: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +230,8 @@ pub struct ProxyRawLogEvent {
     pub project_path: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
+    pub retry_count: Option<u32>,
+    pub delay_ms: Option<u64>,
     pub active_request_count: usize,
     pub active_target_count: usize,
 }
@@ -257,6 +260,8 @@ pub struct ProxyRawLogEntry {
     pub project_path: Option<String>,
     pub status_code: Option<u16>,
     pub error: Option<String>,
+    pub retry_count: Option<u32>,
+    pub delay_ms: Option<u64>,
     pub active_request_count: usize,
     pub active_target_count: usize,
     pub events: Vec<ProxyRawLogEvent>,

@@ -4,10 +4,7 @@ import type { AppId } from "@/lib/api";
 import { Switch } from "@/components/ui/switch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useAutoFailoverEnabled } from "@/lib/query/failover";
-import {
-  useAppProxyConfig,
-  useUpdateAppProxyConfig,
-} from "@/lib/query/proxy";
+import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 import { cn } from "@/lib/utils";
 
 interface SessionRoutingToggleProps {
@@ -24,7 +21,19 @@ export function SessionRoutingToggle({
   const { data: appProxyConfig, isLoading } = useAppProxyConfig(activeApp);
   const { data: isAutoFailoverEnabled = false } =
     useAutoFailoverEnabled(activeApp);
-  const updateConfig = useUpdateAppProxyConfig();
+  const appLabel = activeApp === "claude" ? "Claude" : "Codex";
+  const updateConfig = useUpdateAppProxyConfig({
+    successMessage: (config) =>
+      config.sessionRoutingEnabled
+        ? t("sessionRouting.toggle.enabledSaved", {
+            app: appLabel,
+            defaultValue: `${appLabel} 会话路由已开启`,
+          })
+        : t("sessionRouting.toggle.disabledSaved", {
+            app: appLabel,
+            defaultValue: `${appLabel} 会话路由已关闭`,
+          }),
+  });
   const { takeoverStatus, isRunning } = useProxyStatus();
 
   if (!isSupported) return null;
@@ -49,7 +58,6 @@ export function SessionRoutingToggle({
     });
   };
 
-  const appLabel = activeApp === "claude" ? "Claude" : "Codex";
   const tooltipText = enabled
     ? t("sessionRouting.toggle.enabled", {
         app: appLabel,
@@ -88,7 +96,9 @@ export function SessionRoutingToggle({
         <Route
           className={cn(
             "h-4 w-4 transition-colors",
-            enabled ? "text-emerald-500 animate-pulse" : "text-muted-foreground",
+            enabled
+              ? "text-emerald-500 animate-pulse"
+              : "text-muted-foreground",
           )}
         />
       )}

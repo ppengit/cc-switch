@@ -9,6 +9,8 @@ import type {
   AppProxyConfig,
   ProviderAdmissionRetryEvent,
   ProxyActivityFloatingSettings,
+  ProxyActivityFloatingMode,
+  ProxyActivityFloatingPosition,
   SessionRoutingSnapshot,
 } from "@/types/proxy";
 
@@ -52,14 +54,32 @@ export const proxyApi = {
     return invoke("get_proxy_activity_floating_settings");
   },
 
-  async setProxyActivityFloatingWindowVisible(
-    visible: boolean,
-  ): Promise<void> {
+  async setProxyActivityFloatingWindowVisible(visible: boolean): Promise<void> {
     return invoke("set_proxy_activity_floating_window_visible", { visible });
   },
 
   async setProxyActivityFloatingOpacity(opacity: number): Promise<void> {
     return invoke("set_proxy_activity_floating_opacity", { opacity });
+  },
+
+  async setProxyActivityFloatingAlwaysOnTop(
+    alwaysOnTop: boolean,
+  ): Promise<void> {
+    return invoke("set_proxy_activity_floating_always_on_top", {
+      alwaysOnTop,
+    });
+  },
+
+  async setProxyActivityFloatingMode(
+    mode: ProxyActivityFloatingMode,
+  ): Promise<void> {
+    return invoke("set_proxy_activity_floating_mode", { mode });
+  },
+
+  async setProxyActivityFloatingPosition(
+    position: ProxyActivityFloatingPosition,
+  ): Promise<void> {
+    return invoke("set_proxy_activity_floating_position", { position });
   },
 
   async getSessionRoutingSnapshot(

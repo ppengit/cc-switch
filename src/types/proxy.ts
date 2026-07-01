@@ -1,3 +1,10 @@
+export type ProxyActivityFloatingMode = "ball" | "panel";
+
+export interface ProxyActivityFloatingPosition {
+  x: number;
+  y: number;
+}
+
 export interface ProxyConfig {
   listen_address: string;
   listen_port: number;
@@ -82,11 +89,16 @@ export interface ProviderAdmissionRetryEvent {
   delayMs: number;
   status?: number | null;
   error?: string | null;
+  updatedAt: string;
 }
 
 export interface ProxyActivityFloatingSettings {
   visible: boolean;
   opacity: number;
+  idleHideSeconds: number;
+  alwaysOnTop: boolean;
+  mode: ProxyActivityFloatingMode;
+  position?: ProxyActivityFloatingPosition | null;
 }
 
 export interface SessionRoutingProviderSnapshot {
@@ -130,6 +142,8 @@ export interface ProxyRawLogEvent {
   projectPath?: string | null;
   statusCode?: number | null;
   error?: string | null;
+  retryCount?: number | null;
+  delayMs?: number | null;
   activeRequestCount: number;
   activeTargetCount: number;
 }
@@ -150,6 +164,8 @@ export interface ProxyRawLogEntry {
   upstreamUrl?: string | null;
   statusCode?: number | null;
   error?: string | null;
+  retryCount?: number | null;
+  delayMs?: number | null;
   activeRequestCount: number;
   activeTargetCount: number;
   events: ProxyRawLogEvent[];
