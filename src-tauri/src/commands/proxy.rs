@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::floating_activity::ProxyActivityFloatingSettings;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
+use crate::settings::{ProxyActivityFloatingMode, ProxyActivityFloatingPosition};
 use crate::store::AppState;
 
 fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
@@ -131,6 +132,33 @@ pub async fn set_proxy_activity_floating_opacity(
     opacity: f64,
 ) -> Result<(), String> {
     crate::floating_activity::set_opacity(&app, opacity).map_err(|e| e.to_string())
+}
+
+/// 设置实时请求浮窗是否保持在最前。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_always_on_top(
+    app: tauri::AppHandle,
+    always_on_top: bool,
+) -> Result<(), String> {
+    crate::floating_activity::set_always_on_top(&app, always_on_top).map_err(|e| e.to_string())
+}
+
+/// 设置实时请求浮窗形态。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_mode(
+    app: tauri::AppHandle,
+    mode: ProxyActivityFloatingMode,
+) -> Result<(), String> {
+    crate::floating_activity::set_mode(&app, mode).map_err(|e| e.to_string())
+}
+
+/// 保存实时请求浮窗当前位置。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_position(
+    app: tauri::AppHandle,
+    position: ProxyActivityFloatingPosition,
+) -> Result<(), String> {
+    crate::floating_activity::set_position(&app, position).map_err(|e| e.to_string())
 }
 
 /// 获取会话路由运行态快照。

@@ -169,9 +169,9 @@ const normalizeAdmissionRetryConfigForSave = (
     enabled: config.enabled === true,
   };
   const maxRetries = clamp(config.maxRetries, 0, 1_000_000);
-  const initialDelayMs = clamp(config.initialDelayMs, 0, 10_000);
-  const maxDelayMs = clamp(config.maxDelayMs, 0, 30_000);
-  const jitterMs = clamp(config.jitterMs, 0, 5_000);
+  const initialDelayMs = clamp(config.initialDelayMs, 0, 2_000);
+  const maxDelayMs = clamp(config.maxDelayMs, 0, 3_000);
+  const jitterMs = clamp(config.jitterMs, 0, 500);
 
   if (maxRetries !== undefined) normalized.maxRetries = maxRetries;
   if (initialDelayMs !== undefined) normalized.initialDelayMs = initialDelayMs;
@@ -2098,8 +2098,9 @@ function ProviderFormFull({
         : undefined,
       upstreamAdmissionRetry:
         normalizeAdmissionRetryConfigForSave(admissionRetryConfig),
-      maxConcurrentRequests:
-        normalizeMaxConcurrentRequestsForSave(maxConcurrentRequests),
+      maxConcurrentRequests: normalizeMaxConcurrentRequestsForSave(
+        maxConcurrentRequests,
+      ),
       testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier

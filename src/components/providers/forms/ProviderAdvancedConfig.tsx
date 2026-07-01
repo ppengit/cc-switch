@@ -363,7 +363,7 @@ export function ProviderAdvancedConfig({
                   id="admission-initial-delay"
                   type="number"
                   min={0}
-                  max={10000}
+                  max={2000}
                   value={admissionRetryConfig.initialDelayMs ?? ""}
                   onChange={(e) =>
                     onAdmissionRetryConfigChange({
@@ -373,7 +373,7 @@ export function ProviderAdvancedConfig({
                         : undefined,
                     })
                   }
-                  placeholder="500"
+                  placeholder="300"
                 />
               </div>
               <div className="space-y-2">
@@ -386,7 +386,7 @@ export function ProviderAdvancedConfig({
                   id="admission-max-delay"
                   type="number"
                   min={0}
-                  max={30000}
+                  max={3000}
                   value={admissionRetryConfig.maxDelayMs ?? ""}
                   onChange={(e) =>
                     onAdmissionRetryConfigChange({
@@ -396,7 +396,7 @@ export function ProviderAdvancedConfig({
                         : undefined,
                     })
                   }
-                  placeholder="3000"
+                  placeholder="1000"
                 />
               </div>
               <div className="space-y-2">
@@ -409,7 +409,7 @@ export function ProviderAdvancedConfig({
                   id="admission-jitter"
                   type="number"
                   min={0}
-                  max={5000}
+                  max={500}
                   value={admissionRetryConfig.jitterMs ?? ""}
                   onChange={(e) =>
                     onAdmissionRetryConfigChange({
@@ -419,7 +419,7 @@ export function ProviderAdvancedConfig({
                         : undefined,
                     })
                   }
-                  placeholder="250"
+                  placeholder="100"
                 />
               </div>
             </div>

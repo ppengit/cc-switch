@@ -48,6 +48,14 @@ fn merge_settings_for_save(
     // 开关）后、前端 query 缓存刷新前的一次全量保存会把旧 marker 重放回来，
     // 重新开启时被"复活"的标记挡住而漏迁。
     incoming.local_migrations = existing.local_migrations.clone();
+    // 悬浮窗位置由独立小窗在拖动结束时写入；设置页的全量保存可能持有旧缓存，
+    // 因此普通 settings save 不接管该字段，避免把刚拖动的位置覆盖回旧值。
+    incoming.proxy_activity_floating_position = existing.proxy_activity_floating_position;
+    incoming.proxy_activity_floating_always_on_top = existing.proxy_activity_floating_always_on_top;
+    incoming.proxy_activity_floating_idle_hide_seconds =
+        crate::settings::clamp_proxy_activity_floating_idle_hide_seconds(
+            incoming.proxy_activity_floating_idle_hide_seconds,
+        );
     incoming
 }
 
@@ -60,15 +68,26 @@ pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
 /// 保存设置
 #[tauri::command]
 pub async fn save_settings(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::store::AppState>,
     settings: crate::settings::AppSettings,
 ) -> Result<bool, String> {
     let existing = crate::settings::get_settings();
     let merged = merge_settings_for_save(settings, &existing);
+    let floating_settings_changed = merged.show_proxy_activity_floating_window
+        != existing.show_proxy_activity_floating_window
+        || (merged.proxy_activity_floating_opacity - existing.proxy_activity_floating_opacity)
+            .abs()
+            > f64::EPSILON
+        || merged.proxy_activity_floating_idle_hide_seconds
+            != existing.proxy_activity_floating_idle_hide_seconds;
     let unify_codex_changed =
         merged.unify_codex_session_history != existing.unify_codex_session_history;
     let unify_codex_enabled = merged.unify_codex_session_history;
     crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
+    if floating_settings_changed {
+        crate::floating_activity::emit_settings(&app);
+    }
 
     // 统一会话开关变更时立即重写当前官方 Codex 供应商的 live 配置，
     // 不必等下一次切换才生效。

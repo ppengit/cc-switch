@@ -78,6 +78,26 @@ impl VisibleApps {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProxyActivityFloatingMode {
+    Ball,
+    Panel,
+}
+
+impl Default for ProxyActivityFloatingMode {
+    fn default() -> Self {
+        Self::Panel
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyActivityFloatingPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
 /// WebDAV 同步状态（持久化同步进度信息）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -380,6 +400,18 @@ pub struct AppSettings {
     /// 实时请求悬浮窗背景透明度（0.35-1.0）
     #[serde(default = "default_proxy_activity_floating_opacity")]
     pub proxy_activity_floating_opacity: f64,
+    /// 实时请求 Mini 面板空闲后自动隐藏秒数
+    #[serde(default = "default_proxy_activity_floating_idle_hide_seconds")]
+    pub proxy_activity_floating_idle_hide_seconds: u64,
+    /// 实时请求悬浮窗是否保持在最前
+    #[serde(default = "default_proxy_activity_floating_always_on_top")]
+    pub proxy_activity_floating_always_on_top: bool,
+    /// 实时请求悬浮窗形态：球形或 Mini 面板
+    #[serde(default)]
+    pub proxy_activity_floating_mode: ProxyActivityFloatingMode,
+    /// 实时请求悬浮窗上次停靠位置（物理像素坐标）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_activity_floating_position: Option<ProxyActivityFloatingPosition>,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
@@ -500,6 +532,18 @@ pub fn default_proxy_activity_floating_opacity() -> f64 {
     0.86
 }
 
+pub fn default_proxy_activity_floating_always_on_top() -> bool {
+    true
+}
+
+pub fn default_proxy_activity_floating_idle_hide_seconds() -> u64 {
+    180
+}
+
+pub fn clamp_proxy_activity_floating_idle_hide_seconds(value: u64) -> u64 {
+    value.clamp(10, 3_600)
+}
+
 pub fn clamp_proxy_activity_floating_opacity(value: f64) -> f64 {
     if value.is_finite() {
         value.clamp(0.35, 1.0)
@@ -525,6 +569,11 @@ impl Default for AppSettings {
             enable_failover_toggle: false,
             show_proxy_activity_floating_window: false,
             proxy_activity_floating_opacity: default_proxy_activity_floating_opacity(),
+            proxy_activity_floating_idle_hide_seconds:
+                default_proxy_activity_floating_idle_hide_seconds(),
+            proxy_activity_floating_always_on_top: default_proxy_activity_floating_always_on_top(),
+            proxy_activity_floating_mode: ProxyActivityFloatingMode::default(),
+            proxy_activity_floating_position: None,
             preserve_codex_official_auth_on_switch: false,
             unify_codex_session_history: false,
             unify_codex_migrate_existing: None,
@@ -572,6 +621,9 @@ impl AppSettings {
     fn normalize_paths(&mut self) {
         self.proxy_activity_floating_opacity =
             clamp_proxy_activity_floating_opacity(self.proxy_activity_floating_opacity);
+        self.proxy_activity_floating_position = self
+            .proxy_activity_floating_position
+            .filter(|position| position.x.is_finite() && position.y.is_finite());
 
         self.claude_config_dir = self
             .claude_config_dir

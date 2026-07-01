@@ -35,12 +35,15 @@ const EVENT_COLOR_MAP: Record<string, string> = {
     "bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/35",
   success:
     "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/35",
+  admission_retry:
+    "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/35",
   failed: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/35",
 };
 
 const EVENT_LABEL_DEFAULTS: Record<string, string> = {
   processing: "正在处理",
   success: "成功",
+  admission_retry: "入场重试",
   failed: "失败",
 };
 
@@ -70,6 +73,7 @@ const normalizeRouteMode = (value?: string | null) => {
 const getDisplayEvent = (log: ProxyRawLogEntry) => {
   if (log.event === "failed") return "failed";
   if (log.event === "finished") return "success";
+  if (log.event === "admission_retry") return "admission_retry";
   return "processing";
 };
 
@@ -275,6 +279,10 @@ export function RawProxyLogPanel({
                             className={EVENT_COLOR_MAP[displayEvent] ?? ""}
                           >
                             {getEventLabel(displayEvent)}
+                            {displayEvent === "admission_retry" &&
+                            log.retryCount
+                              ? ` ${log.retryCount}`
+                              : ""}
                           </Badge>
                         </div>
                       </TableCell>

@@ -1570,6 +1570,7 @@ impl RequestForwarder {
             delay_ms,
             status: error.and_then(proxy_error_status),
             error: error.map(summarize_proxy_error),
+            updated_at: chrono::Utc::now().to_rfc3339(),
         };
 
         record_admission_retry(&self.proxy_activity, self.app_handle.as_ref(), payload).await;
@@ -2761,13 +2762,13 @@ impl AdmissionRetryPolicy {
         }
 
         let max_retries = config.max_retries.filter(|value| *value > 0);
-        let initial_delay_ms = config.initial_delay_ms.unwrap_or(500).min(10_000);
+        let initial_delay_ms = config.initial_delay_ms.unwrap_or(300).min(2_000);
         let max_delay_ms = config
             .max_delay_ms
-            .unwrap_or(3_000)
-            .min(30_000)
+            .unwrap_or(1_000)
+            .min(3_000)
             .max(initial_delay_ms);
-        let jitter_ms = config.jitter_ms.unwrap_or(250).min(5_000);
+        let jitter_ms = config.jitter_ms.unwrap_or(100).min(500);
 
         Some(Self {
             max_retries,
@@ -4218,11 +4219,11 @@ mod tests {
 
         assert_eq!(policy.max_retries, None);
         assert!(!policy.retry_limit_reached(u32::MAX));
-        assert_eq!(policy.initial_delay_ms, 10_000);
-        assert_eq!(policy.max_delay_ms, 10_000);
+        assert_eq!(policy.initial_delay_ms, 2_000);
+        assert_eq!(policy.max_delay_ms, 2_000);
         assert_eq!(policy.jitter_ms, 0);
-        assert_eq!(policy.delay_ms(1, None), 10_000);
-        assert_eq!(policy.delay_ms(2, None), 10_000);
+        assert_eq!(policy.delay_ms(1, None), 2_000);
+        assert_eq!(policy.delay_ms(2, None), 2_000);
     }
 
     #[test]

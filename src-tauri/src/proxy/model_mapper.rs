@@ -150,6 +150,27 @@ pub fn apply_codex_model_mapping(
         return (body, None, None);
     };
 
+    if let Some(route) = find_codex_model_route(provider, original) {
+        let mapped = route.model.trim();
+        if mapped.is_empty() {
+            return (body, Some(original.to_string()), None);
+        }
+        if mapped != original.trim() {
+            log::debug!("[ModelMapper] Codex 模型映射: {original} → {mapped}");
+            body["model"] = serde_json::json!(mapped);
+        }
+
+        let final_model = body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or(original)
+            .to_string();
+        if final_model != original {
+            return (body, Some(original.to_string()), Some(final_model));
+        }
+        return (body, Some(original.to_string()), None);
+    }
+
     let catalog_resolution = resolve_codex_catalog_model(provider, original);
     let mut route_input = original.to_string();
 
@@ -202,10 +223,16 @@ fn find_codex_model_route<'a>(
     provider: &'a Provider,
     model: &str,
 ) -> Option<&'a crate::provider::CodexModelRoute> {
+    let lookup = model.trim();
     provider.meta.as_ref().and_then(|meta| {
-        meta.codex_model_routes
-            .get(model)
-            .or_else(|| meta.codex_model_routes.get(model.trim()))
+        meta.codex_model_routes.get(model).or_else(|| {
+            meta.codex_model_routes.get(lookup).or_else(|| {
+                meta.codex_model_routes
+                    .iter()
+                    .find(|(key, _)| key.trim().eq_ignore_ascii_case(lookup))
+                    .map(|(_, route)| route)
+            })
+        })
     })
 }
 
@@ -236,7 +263,7 @@ fn resolve_codex_catalog_model(
                     continue;
                 };
 
-                if model == request_model {
+                if model.eq_ignore_ascii_case(request_model) {
                     return Some(CodexCatalogModelResolution::Listed);
                 }
 
@@ -246,7 +273,7 @@ fn resolve_codex_catalog_model(
                     .and_then(|value| value.as_str())
                     .map(str::trim)
                     .filter(|name| !name.is_empty());
-                if display_name == Some(request_model) {
+                if display_name.is_some_and(|name| name.eq_ignore_ascii_case(request_model)) {
                     return Some(CodexCatalogModelResolution::Alias(model.to_string()));
                 }
             }
@@ -490,6 +517,66 @@ mod tests {
         assert_eq!(result["model"], "gpt-5.5");
         assert_eq!(original.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(mapped.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn codex_model_routes_match_trimmed_case_insensitive_request_model() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.5".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "deepseek-v4-pro".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": " GPT-5.5 ", "input": "hello"});
+        let (result, original, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "deepseek-v4-pro");
+        assert_eq!(original.as_deref(), Some(" GPT-5.5 "));
+        assert_eq!(mapped.as_deref(), Some("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn codex_model_routes_prefer_original_model_before_catalog_alias() {
+        let mut provider = create_provider_without_mapping();
+        provider.settings_config = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "displayName": "gpt-5.5",
+                        "model": "catalog-upstream-model"
+                    }
+                ]
+            }
+        });
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([
+                (
+                    "gpt-5.5".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "deepseek-v4-pro".to_string(),
+                    },
+                ),
+                (
+                    "catalog-upstream-model".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "should-not-win".to_string(),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.5", "input": "hello"});
+        let (result, original, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "deepseek-v4-pro");
+        assert_eq!(original.as_deref(), Some("gpt-5.5"));
+        assert_eq!(mapped.as_deref(), Some("deepseek-v4-pro"));
     }
 
     #[test]

@@ -188,6 +188,10 @@ interface ProviderRowView {
   activeRequestUpstreamModel?: string;
   admissionRetryEnabled: boolean;
   admissionRetryCount: number;
+  admissionRetryStatus?: number | null;
+  admissionRetryLastError?: string | null;
+  admissionRetryLastFailureAt?: string | null;
+  admissionRetryDelayMs?: number | null;
   failoverPriority?: number;
   orderNumber: number;
   statusRank: number;
@@ -203,7 +207,10 @@ interface SearchMatchInfo {
   rowIndex: number;
 }
 
-type AdmissionRetryRequestCounts = Record<string, Record<string, number>>;
+type AdmissionRetryRequestEvents = Record<
+  string,
+  Record<string, ProviderAdmissionRetryEvent>
+>;
 
 interface AppConfigFileEntry {
   key: string;
@@ -1061,7 +1068,7 @@ export function ProviderList({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [admissionRetryRequests, setAdmissionRetryRequests] =
-    useState<AdmissionRetryRequestCounts>({});
+    useState<AdmissionRetryRequestEvents>({});
   const [admissionRetryUpdatingIds, setAdmissionRetryUpdatingIds] = useState<
     Set<string>
   >(new Set());
@@ -1130,7 +1137,7 @@ export function ProviderList({
         };
 
         if (payload.event === "retrying") {
-          providerRequests[payload.requestId] = payload.retryCount;
+          providerRequests[payload.requestId] = payload;
         } else {
           delete providerRequests[payload.requestId];
         }
@@ -1164,14 +1171,14 @@ export function ProviderList({
           await proxyApi.getProviderAdmissionRetrySnapshot(appId);
         if (disposed) return;
 
-        const next: AdmissionRetryRequestCounts = {};
+        const next: AdmissionRetryRequestEvents = {};
         for (const payload of snapshot) {
           if (payload.appType !== appId || payload.event !== "retrying") {
             continue;
           }
           next[payload.providerId] = {
             ...(next[payload.providerId] ?? {}),
-            [payload.requestId]: payload.retryCount,
+            [payload.requestId]: payload,
           };
         }
         setAdmissionRetryRequests(next);
@@ -1610,11 +1617,24 @@ export function ProviderList({
       const activeRequest = activeRequestProviders?.[provider.id];
       const activeRequestCount = activeRequest?.count ?? 0;
       const isProcessingProvider = activeRequestCount > 0;
-      const retryCounts = Object.values(
+      const retryEvents = Object.values(
         admissionRetryRequests[provider.id] ?? {},
       );
       const admissionRetryCount =
-        retryCounts.length > 0 ? Math.max(...retryCounts) : 0;
+        retryEvents.length > 0
+          ? Math.max(...retryEvents.map((event) => event.retryCount))
+          : 0;
+      const latestAdmissionRetry = retryEvents.reduce<
+        ProviderAdmissionRetryEvent | undefined
+      >((latest, event) => {
+        if (!latest) return event;
+        const latestTime = Date.parse(latest.updatedAt || "");
+        const eventTime = Date.parse(event.updatedAt || "");
+        if (Number.isFinite(eventTime) && eventTime > latestTime) {
+          return event;
+        }
+        return event.retryCount >= latest.retryCount ? event : latest;
+      }, undefined);
       const admissionRetryEnabled =
         provider.meta?.upstreamAdmissionRetry?.enabled === true;
 
@@ -1668,16 +1688,15 @@ export function ProviderList({
             ? true
             : !isCurrent || Object.keys(providers).length > 1);
 
-      const statusRank =
-        admissionRetryCount > 0
+      const statusRank = !isEnabled
+        ? 1
+        : admissionRetryCount > 0
           ? 5
           : activeRequestCount > 0
             ? 4
             : isActiveProxyProvider
               ? 3
-              : isEnabled
-                ? 2
-                : 1;
+              : 2;
 
       return {
         provider,
@@ -1698,6 +1717,10 @@ export function ProviderList({
         activeRequestUpstreamModel: activeRequest?.upstreamModel,
         admissionRetryEnabled,
         admissionRetryCount,
+        admissionRetryStatus: latestAdmissionRetry?.status,
+        admissionRetryLastError: latestAdmissionRetry?.error,
+        admissionRetryLastFailureAt: latestAdmissionRetry?.updatedAt,
+        admissionRetryDelayMs: latestAdmissionRetry?.delayMs,
         failoverPriority,
         orderNumber,
         statusRank,
@@ -4145,7 +4168,7 @@ function SortableProviderTableRow({
     row.nameLink && /^https?:\/\//i.test(row.nameLink),
   );
 
-  const suppressFailoverHealth = row.admissionRetryEnabled;
+  const suppressFailoverHealth = !row.isEnabled || row.admissionRetryEnabled;
   const isCircuitOpen =
     !suppressFailoverHealth &&
     showFailoverHealth &&
@@ -4154,7 +4177,7 @@ function SortableProviderTableRow({
     !suppressFailoverHealth &&
     showFailoverHealth &&
     circuitStats?.state === "half_open";
-  const failureCount = health?.consecutive_failures ?? 0;
+  const failureCount = row.isEnabled ? (health?.consecutive_failures ?? 0) : 0;
   const isDegraded =
     !suppressFailoverHealth &&
     showFailoverHealth &&
@@ -4163,13 +4186,17 @@ function SortableProviderTableRow({
     health?.is_healthy !== false &&
     failureCount > 0;
   const isProcessing = row.activeRequestCount > 0;
-  const isAdmissionRetrying = row.admissionRetryCount > 0;
+  const isAdmissionRetrying = row.isEnabled && row.admissionRetryCount > 0;
   const activityModel = row.activeRequestModel;
   const requestModel = row.activeRequestRequestModel;
   const upstreamModel = row.activeRequestUpstreamModel;
-  const lastFailureAt = health?.last_failure_at
-    ? new Date(health.last_failure_at).toLocaleString()
+  const admissionRetryLastFailureAt = row.admissionRetryLastFailureAt
+    ? new Date(row.admissionRetryLastFailureAt).toLocaleString()
     : null;
+  const lastFailureAt =
+    row.isEnabled && health?.last_failure_at
+      ? new Date(health.last_failure_at).toLocaleString()
+      : null;
   const circuitFailureRate =
     !suppressFailoverHealth && circuitStats && circuitStats.totalRequests > 0
       ? `${circuitStats.failedRequests}/${circuitStats.totalRequests}`
@@ -4196,7 +4223,31 @@ function SortableProviderTableRow({
           count: row.admissionRetryCount,
         })
       : null,
-    row.admissionRetryEnabled && !isAdmissionRetrying
+    isAdmissionRetrying && row.admissionRetryStatus
+      ? t("provider.statusReasonAdmissionRetryStatus", {
+          defaultValue: "入场重试状态：HTTP {{status}}",
+          status: row.admissionRetryStatus,
+        })
+      : null,
+    isAdmissionRetrying && row.admissionRetryLastError
+      ? t("provider.statusReasonAdmissionRetryLastError", {
+          defaultValue: "入场重试最后错误：{{error}}",
+          error: row.admissionRetryLastError,
+        })
+      : null,
+    isAdmissionRetrying && admissionRetryLastFailureAt
+      ? t("provider.statusReasonAdmissionRetryLastFailureAt", {
+          defaultValue: "入场重试最后失败时间：{{time}}",
+          time: admissionRetryLastFailureAt,
+        })
+      : null,
+    isAdmissionRetrying && row.admissionRetryDelayMs != null
+      ? t("provider.statusReasonAdmissionRetryDelay", {
+          defaultValue: "下一轮重试延迟：{{delay}}ms",
+          delay: row.admissionRetryDelayMs,
+        })
+      : null,
+    row.isEnabled && row.admissionRetryEnabled && !isAdmissionRetrying
       ? t("provider.statusReasonAdmissionRetryEnabled", {
           defaultValue: "上游入场重试已开启，拥挤类失败不会触发降级或熔断。",
         })
@@ -4213,7 +4264,7 @@ function SortableProviderTableRow({
           rate: circuitFailureRate,
         })
       : null,
-    health?.last_error
+    row.isEnabled && health?.last_error
       ? t("provider.statusReasonLastError", {
           defaultValue: "最后错误：{{error}}",
           error: health.last_error,
@@ -4261,6 +4312,7 @@ function SortableProviderTableRow({
     !isCircuitHalfOpen &&
     !isDegraded &&
     !row.admissionRetryEnabled &&
+    row.isEnabled &&
     Boolean(health?.last_error);
 
   const statusLabel = row.isActiveProxyProvider

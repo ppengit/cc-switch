@@ -74,6 +74,8 @@ impl ProxyActivityState {
             project_path: event.project_path.clone(),
             status_code: event.status_code,
             error: event.error.clone(),
+            retry_count: None,
+            delay_ms: None,
             active_request_count: event.active_request_count,
             active_target_count: event.active_request_targets.len(),
         }
@@ -221,8 +223,112 @@ impl ProxyActivityState {
                 project_path: event.project_path.clone(),
                 status_code: event.status_code,
                 error: event.error.clone(),
+                retry_count: None,
+                delay_ms: None,
                 active_request_count: event.active_request_count,
                 active_target_count: event.active_request_targets.len(),
+                events: vec![raw_event],
+            });
+        }
+
+        self.prune_raw_logs();
+    }
+
+    fn append_admission_retry_raw_log(&mut self, event: &ProviderAdmissionRetryEvent) {
+        self.next_log_id = self.next_log_id.saturating_add(1);
+        let event_id = self.next_log_id;
+        let now = event.updated_at.clone();
+        let meta = self.requests.get(&event.request_id).cloned();
+        let (active_request_count, active_request_targets) = self.snapshot();
+
+        let raw_event = ProxyRawLogEvent {
+            id: event_id,
+            timestamp: now.clone(),
+            event: "admission_retry".to_string(),
+            app_type: event.app_type.clone(),
+            provider_id: event.provider_id.clone(),
+            provider_name: event.provider_name.clone(),
+            request_model: meta.as_ref().and_then(|meta| meta.request_model.clone()),
+            upstream_model: meta.as_ref().and_then(|meta| meta.upstream_model.clone()),
+            route_mode: meta.as_ref().and_then(|meta| meta.route_mode.clone()),
+            upstream_url: meta.as_ref().and_then(|meta| meta.upstream_url.clone()),
+            session_id: meta.as_ref().and_then(|meta| meta.session_id.clone()),
+            project_name: meta.as_ref().and_then(|meta| meta.project_name.clone()),
+            project_path: meta.as_ref().and_then(|meta| meta.project_path.clone()),
+            status_code: event.status,
+            error: event.error.clone(),
+            retry_count: Some(event.retry_count),
+            delay_ms: Some(event.delay_ms),
+            active_request_count,
+            active_target_count: active_request_targets.len(),
+        };
+
+        if let Some(entry) = self
+            .raw_logs
+            .iter_mut()
+            .find(|entry| entry.request_id == event.request_id)
+        {
+            entry.id = event_id;
+            entry.timestamp = now.clone();
+            entry.updated_at = now;
+            entry.event = raw_event.event.clone();
+            entry.app_type = raw_event.app_type.clone();
+            entry.provider_id = raw_event.provider_id.clone();
+            entry.provider_name = raw_event.provider_name.clone();
+            if raw_event.request_model.is_some() {
+                entry.request_model = raw_event.request_model.clone();
+            }
+            if raw_event.upstream_model.is_some() {
+                entry.upstream_model = raw_event.upstream_model.clone();
+            }
+            if raw_event.route_mode.is_some() {
+                entry.route_mode = raw_event.route_mode.clone();
+            }
+            if raw_event.upstream_url.is_some() {
+                entry.upstream_url = raw_event.upstream_url.clone();
+            }
+            if raw_event.session_id.is_some() {
+                entry.session_id = raw_event.session_id.clone();
+            }
+            if raw_event.project_name.is_some() {
+                entry.project_name = raw_event.project_name.clone();
+            }
+            if raw_event.project_path.is_some() {
+                entry.project_path = raw_event.project_path.clone();
+            }
+            entry.status_code = raw_event.status_code.or(entry.status_code);
+            if raw_event.error.is_some() {
+                entry.error = raw_event.error.clone();
+            }
+            entry.retry_count = raw_event.retry_count;
+            entry.delay_ms = raw_event.delay_ms;
+            entry.active_request_count = raw_event.active_request_count;
+            entry.active_target_count = raw_event.active_target_count;
+            entry.events.push(raw_event);
+        } else {
+            self.raw_logs.push(ProxyRawLogEntry {
+                id: event_id,
+                timestamp: now.clone(),
+                started_at: now.clone(),
+                updated_at: now,
+                request_id: event.request_id.clone(),
+                event: raw_event.event.clone(),
+                app_type: raw_event.app_type.clone(),
+                provider_id: raw_event.provider_id.clone(),
+                provider_name: raw_event.provider_name.clone(),
+                request_model: raw_event.request_model.clone(),
+                upstream_model: raw_event.upstream_model.clone(),
+                route_mode: raw_event.route_mode.clone(),
+                upstream_url: raw_event.upstream_url.clone(),
+                session_id: raw_event.session_id.clone(),
+                project_name: raw_event.project_name.clone(),
+                project_path: raw_event.project_path.clone(),
+                status_code: raw_event.status_code,
+                error: raw_event.error.clone(),
+                retry_count: raw_event.retry_count,
+                delay_ms: raw_event.delay_ms,
+                active_request_count: raw_event.active_request_count,
+                active_target_count: raw_event.active_target_count,
                 events: vec![raw_event],
             });
         }
@@ -653,6 +759,7 @@ impl ProxyActivityState {
         if event.event == "retrying" {
             self.admission_retries
                 .insert(event.request_id.clone(), event.clone());
+            self.append_admission_retry_raw_log(&event);
         } else {
             self.admission_retries.remove(&event.request_id);
         }
@@ -682,6 +789,11 @@ impl ProxyActivityState {
 
 fn emit_activity_event(app_handle: Option<&tauri::AppHandle>, event: &ProxyActivityEvent) {
     if let Some(handle) = app_handle {
+        if event.active_request_count > 0 && crate::floating_activity::current_settings().visible {
+            if let Err(err) = crate::floating_activity::ensure_visible(handle) {
+                log::debug!("show proxy activity floating window failed: {err}");
+            }
+        }
         if let Err(err) = handle.emit("proxy-activity-updated", event) {
             log::debug!("emit proxy-activity-updated failed: {err}");
         }
@@ -863,7 +975,7 @@ pub async fn clear_provider(
 
 #[cfg(test)]
 mod tests {
-    use super::ProxyActivityState;
+    use super::{ProviderAdmissionRetryEvent, ProxyActivityState};
 
     #[test]
     fn rerouting_same_request_updates_last_request_model_without_double_counting() {
@@ -1000,6 +1112,59 @@ mod tests {
             .map(|entry| entry.event.clone())
             .collect();
         assert_eq!(events, vec!["received", "routed"]);
+    }
+
+    #[test]
+    fn raw_logs_keep_each_admission_retry_attempt() {
+        let mut state = ProxyActivityState::default();
+
+        state.route_request(
+            "req-admission",
+            "codex",
+            "provider-a",
+            "Provider A",
+            Some("gpt-5.5".to_string()),
+            Some("deepseek-v4-pro".to_string()),
+        );
+        state.record_admission_retry(ProviderAdmissionRetryEvent {
+            request_id: "req-admission".to_string(),
+            event: "retrying".to_string(),
+            app_type: "codex".to_string(),
+            provider_id: "provider-a".to_string(),
+            provider_name: "Provider A".to_string(),
+            retry_count: 1,
+            delay_ms: 300,
+            status: Some(429),
+            error: Some("上游 HTTP 429: capacity".to_string()),
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+        });
+        state.record_admission_retry(ProviderAdmissionRetryEvent {
+            request_id: "req-admission".to_string(),
+            event: "retrying".to_string(),
+            app_type: "codex".to_string(),
+            provider_id: "provider-a".to_string(),
+            provider_name: "Provider A".to_string(),
+            retry_count: 2,
+            delay_ms: 300,
+            status: Some(429),
+            error: Some("上游 HTTP 429: capacity".to_string()),
+            updated_at: "2026-07-01T00:00:01Z".to_string(),
+        });
+
+        let logs = state.raw_logs(10, Some("codex"));
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].event, "admission_retry");
+        assert_eq!(logs[0].retry_count, Some(2));
+        assert_eq!(logs[0].status_code, Some(429));
+        assert_eq!(logs[0].request_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(logs[0].upstream_model.as_deref(), Some("deepseek-v4-pro"));
+        let attempts: Vec<u32> = logs[0]
+            .events
+            .iter()
+            .filter(|event| event.event == "admission_retry")
+            .filter_map(|event| event.retry_count)
+            .collect();
+        assert_eq!(attempts, vec![1, 2]);
     }
 
     #[test]
