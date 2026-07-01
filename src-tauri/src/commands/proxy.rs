@@ -6,7 +6,9 @@ use crate::error::AppError;
 use crate::floating_activity::ProxyActivityFloatingSettings;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
-use crate::settings::{ProxyActivityFloatingMode, ProxyActivityFloatingPosition};
+use crate::settings::{
+    ProxyActivityFloatingMode, ProxyActivityFloatingPosition, ProxyActivityFloatingSize,
+};
 use crate::store::AppState;
 
 fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
@@ -159,6 +161,15 @@ pub async fn set_proxy_activity_floating_position(
     position: ProxyActivityFloatingPosition,
 ) -> Result<(), String> {
     crate::floating_activity::set_position(&app, position).map_err(|e| e.to_string())
+}
+
+/// 保存实时请求浮窗当前尺寸。
+#[tauri::command]
+pub async fn set_proxy_activity_floating_size(
+    app: tauri::AppHandle,
+    size: ProxyActivityFloatingSize,
+) -> Result<(), String> {
+    crate::floating_activity::set_size(&app, size).map_err(|e| e.to_string())
 }
 
 /// 获取会话路由运行态快照。

@@ -98,6 +98,13 @@ pub struct ProxyActivityFloatingPosition {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyActivityFloatingSize {
+    pub width: f64,
+    pub height: f64,
+}
+
 /// WebDAV 同步状态（持久化同步进度信息）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -412,6 +419,9 @@ pub struct AppSettings {
     /// 实时请求悬浮窗上次停靠位置（物理像素坐标）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_activity_floating_position: Option<ProxyActivityFloatingPosition>,
+    /// 实时请求 Mini 面板上次尺寸（物理像素）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_activity_floating_size: Option<ProxyActivityFloatingSize>,
     /// Keep Codex ChatGPT login material in auth.json when switching to third-party providers.
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
@@ -552,6 +562,30 @@ pub fn clamp_proxy_activity_floating_opacity(value: f64) -> f64 {
     }
 }
 
+/// Mini 面板尺寸约束（物理像素）
+pub const PROXY_ACTIVITY_FLOATING_MIN_WIDTH: f64 = 220.0;
+pub const PROXY_ACTIVITY_FLOATING_MAX_WIDTH: f64 = 640.0;
+pub const PROXY_ACTIVITY_FLOATING_MIN_HEIGHT: f64 = 96.0;
+pub const PROXY_ACTIVITY_FLOATING_MAX_HEIGHT: f64 = 720.0;
+
+pub fn clamp_proxy_activity_floating_size(
+    size: ProxyActivityFloatingSize,
+) -> Option<ProxyActivityFloatingSize> {
+    if !size.width.is_finite() || !size.height.is_finite() {
+        return None;
+    }
+    Some(ProxyActivityFloatingSize {
+        width: size.width.clamp(
+            PROXY_ACTIVITY_FLOATING_MIN_WIDTH,
+            PROXY_ACTIVITY_FLOATING_MAX_WIDTH,
+        ),
+        height: size.height.clamp(
+            PROXY_ACTIVITY_FLOATING_MIN_HEIGHT,
+            PROXY_ACTIVITY_FLOATING_MAX_HEIGHT,
+        ),
+    })
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -574,6 +608,7 @@ impl Default for AppSettings {
             proxy_activity_floating_always_on_top: default_proxy_activity_floating_always_on_top(),
             proxy_activity_floating_mode: ProxyActivityFloatingMode::default(),
             proxy_activity_floating_position: None,
+            proxy_activity_floating_size: None,
             preserve_codex_official_auth_on_switch: false,
             unify_codex_session_history: false,
             unify_codex_migrate_existing: None,
@@ -624,6 +659,9 @@ impl AppSettings {
         self.proxy_activity_floating_position = self
             .proxy_activity_floating_position
             .filter(|position| position.x.is_finite() && position.y.is_finite());
+        self.proxy_activity_floating_size = self
+            .proxy_activity_floating_size
+            .map(clamp_proxy_activity_floating_size);
 
         self.claude_config_dir = self
             .claude_config_dir

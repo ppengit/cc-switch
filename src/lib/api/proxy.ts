@@ -11,6 +11,7 @@ import type {
   ProxyActivityFloatingSettings,
   ProxyActivityFloatingMode,
   ProxyActivityFloatingPosition,
+  ProxyActivityFloatingSize,
   SessionRoutingSnapshot,
 } from "@/types/proxy";
 
@@ -80,6 +81,12 @@ export const proxyApi = {
     position: ProxyActivityFloatingPosition,
   ): Promise<void> {
     return invoke("set_proxy_activity_floating_position", { position });
+  },
+
+  async setProxyActivityFloatingSize(
+    size: ProxyActivityFloatingSize,
+  ): Promise<void> {
+    return invoke("set_proxy_activity_floating_size", { size });
   },
 
   async getSessionRoutingSnapshot(

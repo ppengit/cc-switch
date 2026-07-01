@@ -126,6 +126,7 @@ export function useSettingsForm(): UseSettingsFormResult {
       proxyActivityFloatingMode: data.proxyActivityFloatingMode ?? "panel",
       proxyActivityFloatingPosition:
         data.proxyActivityFloatingPosition ?? undefined,
+      proxyActivityFloatingSize: data.proxyActivityFloatingSize ?? undefined,
       preserveCodexOfficialAuthOnSwitch:
         data.preserveCodexOfficialAuthOnSwitch ?? false,
       unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
@@ -159,6 +160,7 @@ export function useSettingsForm(): UseSettingsFormResult {
             proxyActivityFloatingAlwaysOnTop: true,
             proxyActivityFloatingMode: "panel",
             proxyActivityFloatingPosition: undefined,
+            proxyActivityFloatingSize: undefined,
             preserveCodexOfficialAuthOnSwitch: false,
             unifyCodexSessionHistory: false,
             language: readPersistedLanguage(),
@@ -210,6 +212,8 @@ export function useSettingsForm(): UseSettingsFormResult {
           serverData.proxyActivityFloatingMode ?? "panel",
         proxyActivityFloatingPosition:
           serverData.proxyActivityFloatingPosition ?? undefined,
+        proxyActivityFloatingSize:
+          serverData.proxyActivityFloatingSize ?? undefined,
         preserveCodexOfficialAuthOnSwitch:
           serverData.preserveCodexOfficialAuthOnSwitch ?? false,
         unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,

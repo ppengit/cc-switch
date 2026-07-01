@@ -15,6 +15,11 @@ export interface ProxyActivityFloatingPosition {
   y: number;
 }
 
+export interface ProxyActivityFloatingSize {
+  width: number;
+  height: number;
+}
+
 export interface Provider {
   id: string;
   name: string;
@@ -411,6 +416,8 @@ export interface Settings {
   proxyActivityFloatingMode?: ProxyActivityFloatingMode;
   // 实时请求浮窗上次位置
   proxyActivityFloatingPosition?: ProxyActivityFloatingPosition | null;
+  // 实时请求 Mini 面板上次尺寸
+  proxyActivityFloatingSize?: ProxyActivityFloatingSize | null;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // Run official Codex under the shared "custom" provider id so future

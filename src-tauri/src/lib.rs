@@ -1417,6 +1417,7 @@ pub fn run() {
             commands::set_proxy_activity_floating_always_on_top,
             commands::set_proxy_activity_floating_mode,
             commands::set_proxy_activity_floating_position,
+            commands::set_proxy_activity_floating_size,
             commands::get_session_routing_snapshot,
             commands::rebind_session_route,
             commands::get_proxy_config,

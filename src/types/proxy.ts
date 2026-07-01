@@ -5,6 +5,11 @@ export interface ProxyActivityFloatingPosition {
   y: number;
 }
 
+export interface ProxyActivityFloatingSize {
+  width: number;
+  height: number;
+}
+
 export interface ProxyConfig {
   listen_address: string;
   listen_port: number;
@@ -99,6 +104,7 @@ export interface ProxyActivityFloatingSettings {
   alwaysOnTop: boolean;
   mode: ProxyActivityFloatingMode;
   position?: ProxyActivityFloatingPosition | null;
+  size?: ProxyActivityFloatingSize | null;
 }
 
 export interface SessionRoutingProviderSnapshot {

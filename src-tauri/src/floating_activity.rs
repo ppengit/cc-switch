@@ -2,7 +2,9 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::error::AppError;
-use crate::settings::{ProxyActivityFloatingMode, ProxyActivityFloatingPosition};
+use crate::settings::{
+    ProxyActivityFloatingMode, ProxyActivityFloatingPosition, ProxyActivityFloatingSize,
+};
 
 pub const PROXY_ACTIVITY_FLOATING_WINDOW_LABEL: &str = "proxy-activity-floating";
 const PANEL_WIDTH: f64 = 320.0;
@@ -18,6 +20,15 @@ pub struct ProxyActivityFloatingSettings {
     pub always_on_top: bool,
     pub mode: ProxyActivityFloatingMode,
     pub position: Option<ProxyActivityFloatingPosition>,
+    pub size: Option<ProxyActivityFloatingSize>,
+}
+
+/// 返回悬浮窗的有效尺寸：优先使用持久化尺寸，否则回退到默认面板尺寸。
+fn effective_size(settings: &ProxyActivityFloatingSettings) -> (f64, f64) {
+    settings
+        .size
+        .map(|size| (size.width, size.height))
+        .unwrap_or((PANEL_WIDTH, PANEL_HEIGHT))
 }
 
 pub fn current_settings() -> ProxyActivityFloatingSettings {
@@ -33,6 +44,9 @@ pub fn current_settings() -> ProxyActivityFloatingSettings {
         always_on_top: settings.proxy_activity_floating_always_on_top,
         mode: ProxyActivityFloatingMode::Panel,
         position: settings.proxy_activity_floating_position,
+        size: settings
+            .proxy_activity_floating_size
+            .and_then(crate::settings::clamp_proxy_activity_floating_size),
     }
 }
 
@@ -128,21 +142,43 @@ pub fn set_position(
     Ok(())
 }
 
+pub fn set_size(app: &tauri::AppHandle, size: ProxyActivityFloatingSize) -> Result<(), AppError> {
+    let Some(clamped) = crate::settings::clamp_proxy_activity_floating_size(size) else {
+        return Err(AppError::Message("悬浮窗尺寸无效".to_string()));
+    };
+
+    crate::settings::update_settings({
+        let mut settings = crate::settings::get_settings();
+        settings.proxy_activity_floating_size = Some(clamped);
+        settings
+    })?;
+
+    if let Some(window) = app.get_webview_window(PROXY_ACTIVITY_FLOATING_WINDOW_LABEL) {
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            clamped.width.round() as u32,
+            clamped.height.round() as u32,
+        ));
+    }
+
+    emit_settings(app);
+    Ok(())
+}
+
 pub fn ensure_visible(app: &tauri::AppHandle) -> Result<(), AppError> {
     let settings = current_settings();
+    let (width, height) = effective_size(&settings);
     if let Some(window) = app.get_webview_window(PROXY_ACTIVITY_FLOATING_WINDOW_LABEL) {
         window
             .show()
             .map_err(|e| AppError::Message(format!("显示实时请求浮窗失败: {e}")))?;
         let _ = window.set_size(tauri::PhysicalSize::new(
-            PANEL_WIDTH as u32,
-            PANEL_HEIGHT as u32,
+            width.round() as u32,
+            height.round() as u32,
         ));
         let _ = window.set_always_on_top(settings.always_on_top);
         return Ok(());
     }
 
-    let (width, height) = (PANEL_WIDTH, PANEL_HEIGHT);
     let (x, y) = settings
         .position
         .map(|position| (position.x, position.y))
