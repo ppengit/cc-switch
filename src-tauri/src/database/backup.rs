@@ -829,6 +829,7 @@ mod tests {
                 initial_delay_ms: Some(250),
                 max_delay_ms: Some(1500),
                 jitter_ms: Some(100),
+                ..Default::default()
             }),
             ..Default::default()
         });

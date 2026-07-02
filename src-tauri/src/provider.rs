@@ -89,6 +89,22 @@ impl Provider {
             || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
     }
 
+    pub fn upstream_admission_retry_enabled(&self) -> bool {
+        self.meta
+            .as_ref()
+            .map(ProviderMeta::upstream_admission_retry_enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn set_upstream_admission_retry_enabled(&mut self, enabled: bool) {
+        if !enabled && self.meta.is_none() {
+            return;
+        }
+        self.meta
+            .get_or_insert_with(Default::default)
+            .set_upstream_admission_retry_enabled(enabled);
+    }
+
     fn provider_type(&self) -> Option<&str> {
         self.meta.as_ref().and_then(|m| m.provider_type.as_deref())
     }
@@ -422,6 +438,16 @@ impl LocalProxyRequestOverrides {
 pub struct UpstreamAdmissionRetryConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// When enabled, matching upstream error bodies can automatically turn on
+    /// this provider's admission retry for the current request.
+    #[serde(rename = "autoEnabled", default)]
+    pub auto_enabled: bool,
+    #[serde(
+        rename = "autoKeywords",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub auto_keywords: Vec<String>,
     /// Maximum same-provider admission retries. `None` or `Some(0)` means
     /// unlimited while the switch remains enabled.
     #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
@@ -660,6 +686,21 @@ pub fn parse_custom_user_agent(
 }
 
 impl ProviderMeta {
+    /// 上游入场重试开关状态。缺省视为关闭，避免旧数据被误判为开启。
+    pub fn upstream_admission_retry_enabled(&self) -> bool {
+        self.upstream_admission_retry
+            .as_ref()
+            .map(|config| config.enabled)
+            .unwrap_or(false)
+    }
+
+    /// 只切换 enabled，保留用户配置过的次数、延迟、抖动等参数。
+    pub fn set_upstream_admission_retry_enabled(&mut self, enabled: bool) {
+        self.upstream_admission_retry
+            .get_or_insert_with(Default::default)
+            .enabled = enabled;
+    }
+
     /// Codex OAuth FAST mode 是否启用。默认关闭，因为 `service_tier="priority"`
     /// 会按更高速率消耗 ChatGPT 订阅配额，用户需显式开启以换取更低延迟。
     pub fn codex_fast_mode_enabled(&self) -> bool {
@@ -1182,6 +1223,8 @@ mod tests {
         let meta = ProviderMeta {
             upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
                 enabled: true,
+                auto_enabled: true,
+                auto_keywords: vec!["负载已经达到上限".to_string()],
                 max_retries: Some(4),
                 initial_delay_ms: Some(500),
                 max_delay_ms: Some(3000),
@@ -1192,6 +1235,11 @@ mod tests {
 
         let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
         assert_eq!(value["upstreamAdmissionRetry"]["enabled"], true);
+        assert_eq!(value["upstreamAdmissionRetry"]["autoEnabled"], true);
+        assert_eq!(
+            value["upstreamAdmissionRetry"]["autoKeywords"][0],
+            "负载已经达到上限"
+        );
         assert_eq!(value["upstreamAdmissionRetry"]["maxRetries"], 4);
         assert_eq!(value["upstreamAdmissionRetry"]["initialDelayMs"], 500);
         assert_eq!(value["upstreamAdmissionRetry"]["maxDelayMs"], 3000);
@@ -1201,6 +1249,8 @@ mod tests {
             serde_json::from_value(value).expect("deserialize ProviderMeta");
         let retry = decoded.upstream_admission_retry.unwrap();
         assert!(retry.enabled);
+        assert!(retry.auto_enabled);
+        assert_eq!(retry.auto_keywords, vec!["负载已经达到上限".to_string()]);
         assert_eq!(retry.max_retries, Some(4));
         assert_eq!(retry.initial_delay_ms, Some(500));
         assert_eq!(retry.max_delay_ms, Some(3000));

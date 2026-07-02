@@ -2649,10 +2649,27 @@ export const updateProvider = (
   if (previousId !== provider.id) {
     delete providers[appType][previousId];
   }
-  providers[appType][provider.id] = {
+  const nextProvider = {
     ...providers[appType][provider.id],
     ...provider,
   };
+  if (nextProvider.meta?.upstreamAdmissionRetry?.enabled === true) {
+    Object.entries(providers[appType]).forEach(([id, candidate]) => {
+      if (id === provider.id) return;
+      if (candidate.meta?.upstreamAdmissionRetry?.enabled !== true) return;
+      providers[appType][id] = {
+        ...candidate,
+        meta: {
+          ...candidate.meta,
+          upstreamAdmissionRetry: {
+            ...candidate.meta.upstreamAdmissionRetry,
+            enabled: false,
+          },
+        },
+      };
+    });
+  }
+  providers[appType][provider.id] = nextProvider;
 };
 
 export const deleteProvider = (appType: AppId, providerId: string) => {
@@ -2760,7 +2777,9 @@ export const recordToolVersionsRequest = (request: ToolVersionsRequest) => {
 
 export const getLastToolVersionsRequest = () =>
   lastToolVersionsRequest
-    ? (JSON.parse(JSON.stringify(lastToolVersionsRequest)) as ToolVersionsRequest)
+    ? (JSON.parse(
+        JSON.stringify(lastToolVersionsRequest),
+      ) as ToolVersionsRequest)
     : null;
 
 export const getToolVersionsRequests = () =>

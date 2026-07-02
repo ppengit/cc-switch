@@ -86,6 +86,7 @@ import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
 import {
   ProviderAdvancedConfig,
+  ProviderRoutingRetryConfig,
   type PricingModelSourceOption,
 } from "./ProviderAdvancedConfig";
 import {
@@ -167,18 +168,29 @@ const normalizeAdmissionRetryConfigForSave = (
 
   const normalized: ProviderUpstreamAdmissionRetry = {
     enabled: config.enabled === true,
+    autoEnabled: config.autoEnabled === true,
   };
+  const autoKeywords = Array.from(
+    new Set(
+      (config.autoKeywords ?? [])
+        .map((keyword) => keyword.trim())
+        .filter(Boolean),
+    ),
+  );
   const maxRetries = clamp(config.maxRetries, 0, 1_000_000);
   const initialDelayMs = clamp(config.initialDelayMs, 0, 2_000);
   const maxDelayMs = clamp(config.maxDelayMs, 0, 3_000);
   const jitterMs = clamp(config.jitterMs, 0, 500);
 
+  if (autoKeywords.length > 0) normalized.autoKeywords = autoKeywords;
   if (maxRetries !== undefined) normalized.maxRetries = maxRetries;
   if (initialDelayMs !== undefined) normalized.initialDelayMs = initialDelayMs;
   if (maxDelayMs !== undefined) normalized.maxDelayMs = maxDelayMs;
   if (jitterMs !== undefined) normalized.jitterMs = jitterMs;
 
   return normalized.enabled ||
+    normalized.autoEnabled ||
+    autoKeywords.length > 0 ||
     maxRetries !== undefined ||
     initialDelayMs !== undefined ||
     maxDelayMs !== undefined ||
@@ -700,9 +712,7 @@ function ProviderFormFull({
     setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
     setCodexModelRoutes(seed?.meta?.codexModelRoutes ?? {});
-    setCodexModelRoutesEnabled(
-      getInitialCodexModelRoutesEnabled(seed?.meta),
-    );
+    setCodexModelRoutesEnabled(getInitialCodexModelRoutesEnabled(seed?.meta));
     setCustomUserAgent(seed?.meta?.customUserAgent ?? "");
     setLocalProxyHeadersOverride(
       formatRequestOverrideObject(
@@ -2122,9 +2132,7 @@ function ProviderFormFull({
           ? codexTakeoverEnabled
           : undefined,
       codexModelRoutes:
-        appId === "codex" &&
-        category !== "official" &&
-        codexModelRoutesEnabled
+        appId === "codex" && category !== "official" && codexModelRoutesEnabled
           ? normalizeCodexModelRoutesForSave(codexModelRoutes)
           : undefined,
       codexModelRoutesEnabled:
@@ -3073,6 +3081,18 @@ function ProviderFormFull({
             />
           )}
 
+          {!isAnyOmoCategory &&
+            appId !== "opencode" &&
+            appId !== "openclaw" &&
+            appId !== "hermes" && (
+              <ProviderRoutingRetryConfig
+                admissionRetryConfig={admissionRetryConfig}
+                maxConcurrentRequests={maxConcurrentRequests}
+                onAdmissionRetryConfigChange={setAdmissionRetryConfig}
+                onMaxConcurrentRequestsChange={setMaxConcurrentRequests}
+              />
+            )}
+
           {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
           {appId === "codex" ? (
             <>
@@ -3233,12 +3253,8 @@ function ProviderFormFull({
               <ProviderAdvancedConfig
                 testConfig={testConfig}
                 pricingConfig={pricingConfig}
-                admissionRetryConfig={admissionRetryConfig}
-                maxConcurrentRequests={maxConcurrentRequests}
                 onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
-                onAdmissionRetryConfigChange={setAdmissionRetryConfig}
-                onMaxConcurrentRequestsChange={setMaxConcurrentRequests}
               />
             )}
 

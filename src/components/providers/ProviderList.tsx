@@ -1133,6 +1133,13 @@ export function ProviderList({
     const applyRetryEvent = (payload: ProviderAdmissionRetryEvent) => {
       if (payload.appType !== appId) return;
 
+      if (
+        payload.event === "admitted" ||
+        (payload.event === "retrying" && payload.retryCount === 1)
+      ) {
+        void queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      }
+
       setAdmissionRetryRequests((current) => {
         const providerRequests = {
           ...(current[payload.providerId] ?? {}),
@@ -1196,7 +1203,7 @@ export function ProviderList({
       disposed = true;
       unlisten?.();
     };
-  }, [appId]);
+  }, [appId, queryClient]);
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
@@ -2803,10 +2810,21 @@ export function ProviderList({
   const handleAdmissionRetryToggle = async (row: ProviderRowView) => {
     const providerId = row.provider.id;
     const nextEnabled = !row.admissionRetryEnabled;
+    const affectedProviderIds = new Set<string>([providerId]);
+    if (nextEnabled) {
+      Object.values(providers).forEach((candidate) => {
+        if (
+          candidate.id !== providerId &&
+          candidate.meta?.upstreamAdmissionRetry?.enabled === true
+        ) {
+          affectedProviderIds.add(candidate.id);
+        }
+      });
+    }
 
     setAdmissionRetryUpdatingIds((current) => {
       const next = new Set(current);
-      next.add(providerId);
+      affectedProviderIds.forEach((id) => next.add(id));
       return next;
     });
 
@@ -2846,7 +2864,7 @@ export function ProviderList({
     } finally {
       setAdmissionRetryUpdatingIds((current) => {
         const next = new Set(current);
-        next.delete(providerId);
+        affectedProviderIds.forEach((id) => next.delete(id));
         return next;
       });
     }
@@ -4245,8 +4263,7 @@ function SortableProviderTableRow({
       : null,
     isAdmissionAdmitted
       ? t("provider.statusReasonAdmissionRetryAdmitted", {
-          defaultValue:
-            "上游入场已成功，后续请求正在按正常流程继续处理。",
+          defaultValue: "上游入场已成功，后续请求正在按正常流程继续处理。",
         })
       : null,
     isAdmissionAdmitted

@@ -194,6 +194,8 @@ export interface LocalProxyRequestOverrides {
 
 export interface ProviderUpstreamAdmissionRetry {
   enabled?: boolean;
+  autoEnabled?: boolean;
+  autoKeywords?: string[];
   maxRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;

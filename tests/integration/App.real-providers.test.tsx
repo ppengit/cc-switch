@@ -335,7 +335,9 @@ const queryProviderRow = (providerName: string): HTMLElement | null =>
     .find((item) => within(item).queryByText(providerName)) ?? null;
 
 const expectProviderVisible = async (providerName: string) => {
-  await waitFor(() => expect(screen.getByText(providerName)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(providerName)).toBeInTheDocument(),
+  );
 };
 
 const expectProviderRowVisible = async (providerName: string) => {
@@ -392,7 +394,9 @@ describe("App with real ProviderList", () => {
     await expectProviderRowVisible("Claude Alpha");
     expect(screen.getByText("Claude Beta")).toBeInTheDocument();
     expect(screen.queryByText("Codex Alpha")).not.toBeInTheDocument();
-    expect(within(findProviderRow("Claude Beta")).getByTitle("使用中")).toBeDisabled();
+    expect(
+      within(findProviderRow("Claude Beta")).getByTitle("使用中"),
+    ).toBeDisabled();
     expect(
       within(findProviderRow("Claude Alpha")).getByTitle("使用此供应商"),
     ).toBeEnabled();
@@ -401,23 +405,31 @@ describe("App with real ProviderList", () => {
     await expectProviderVisible("Codex Alpha");
     expect(screen.getByText("Codex Beta")).toBeInTheDocument();
     expect(screen.queryByText("Claude Alpha")).not.toBeInTheDocument();
-    expect(within(findProviderRow("Codex Alpha")).getByTitle("使用中")).toBeDisabled();
+    expect(
+      within(findProviderRow("Codex Alpha")).getByTitle("使用中"),
+    ).toBeDisabled();
     expect(
       within(findProviderRow("Codex Beta")).getByTitle("使用此供应商"),
     ).toBeEnabled();
 
-    await user.click(within(findProviderRow("Codex Beta")).getByTitle("使用此供应商"));
+    await user.click(
+      within(findProviderRow("Codex Beta")).getByTitle("使用此供应商"),
+    );
 
     await waitFor(() => {
       expect(getCurrentProviderId("codex")).toBe("codex-beta");
-      expect(within(findProviderRow("Codex Beta")).getByTitle("使用中")).toBeDisabled();
+      expect(
+        within(findProviderRow("Codex Beta")).getByTitle("使用中"),
+      ).toBeDisabled();
     });
 
     await clickAppSwitcherButton(user, "Claude Code");
     await expectProviderVisible("Claude Beta");
     expect(getCurrentProviderId("claude")).toBe("claude-beta");
     expect(getCurrentProviderId("codex")).toBe("codex-beta");
-    expect(within(findProviderRow("Claude Beta")).getByTitle("使用中")).toBeDisabled();
+    expect(
+      within(findProviderRow("Claude Beta")).getByTitle("使用中"),
+    ).toBeDisabled();
     expect(screen.queryByText("Codex Beta")).not.toBeInTheDocument();
   }, 15_000);
 
@@ -441,9 +453,9 @@ describe("App with real ProviderList", () => {
 
     expect(getCurrentProviderId("codex")).toBe("codex-alpha");
     expect(getFailoverQueueState("codex")).toEqual([]);
-    expect((getSwitchLiveSettings("codex") as { config?: string }).config).toContain(
-      'base_url = "http://127.0.0.1:15721/codex"',
-    );
+    expect(
+      (getSwitchLiveSettings("codex") as { config?: string }).config,
+    ).toContain('base_url = "http://127.0.0.1:15721/codex"');
 
     const { default: App } = await import("@/App");
     renderApp(App);
@@ -671,7 +683,11 @@ describe("App with real ProviderList", () => {
     await clickAppSwitcherButton(user, "Codex");
     await expectProviderVisible("Codex Alpha");
 
-    await user.click(within(findProviderRow("Codex Alpha")).getByRole("button", { name: "用量配置" }));
+    await user.click(
+      within(findProviderRow("Codex Alpha")).getByRole("button", {
+        name: "用量配置",
+      }),
+    );
     await waitFor(() =>
       expect(screen.getByTestId("usage-script-modal")).toHaveTextContent(
         "usage:codex:codex-alpha",
@@ -679,7 +695,11 @@ describe("App with real ProviderList", () => {
     );
     await user.click(screen.getByText("close-usage"));
 
-    await user.click(within(findProviderRow("Codex Alpha")).getByRole("button", { name: "编辑" }));
+    await user.click(
+      within(findProviderRow("Codex Alpha")).getByRole("button", {
+        name: "编辑",
+      }),
+    );
     await waitFor(() =>
       expect(screen.getByTestId("edit-provider-dialog")).toHaveTextContent(
         "edit:codex:codex-alpha",
@@ -687,16 +707,20 @@ describe("App with real ProviderList", () => {
     );
     await user.click(screen.getByText("close-edit"));
 
-    await user.click(within(findProviderRow("Codex Alpha")).getByRole("button", { name: "复制" }));
+    await user.click(
+      within(findProviderRow("Codex Alpha")).getByRole("button", {
+        name: "复制",
+      }),
+    );
 
     await waitFor(() => {
       expect(screen.getByText("Codex Alpha copy")).toBeInTheDocument();
-      expect(Object.values(getProviders("codex")).map((item) => item.name)).toContain(
-        "Codex Alpha copy",
-      );
-      expect(Object.values(getProviders("claude")).map((item) => item.name)).not.toContain(
-        "Codex Alpha copy",
-      );
+      expect(
+        Object.values(getProviders("codex")).map((item) => item.name),
+      ).toContain("Codex Alpha copy");
+      expect(
+        Object.values(getProviders("claude")).map((item) => item.name),
+      ).not.toContain("Codex Alpha copy");
     });
 
     await clickAppSwitcherButton(user, "Claude Code");
@@ -797,7 +821,9 @@ describe("App with real ProviderList", () => {
     await expectProviderVisible("OpenCode Live");
     expectAdditiveState("OpenCode Live", "enabled");
 
-    await user.click(within(findProviderRow("OpenCode Live")).getByTitle("禁用"));
+    await user.click(
+      within(findProviderRow("OpenCode Live")).getByTitle("禁用"),
+    );
 
     const dialog = await screen.findByRole("dialog", {
       name: "confirm.removeProvider",
@@ -814,7 +840,9 @@ describe("App with real ProviderList", () => {
     expect(getLiveProviderIds("opencode")).toEqual(["opencode-live"]);
     expect(getProviders("opencode")["opencode-live"]).toBeDefined();
 
-    await user.click(within(findProviderRow("OpenCode Live")).getByTitle("禁用"));
+    await user.click(
+      within(findProviderRow("OpenCode Live")).getByTitle("禁用"),
+    );
     await user.click(
       within(
         await screen.findByRole("dialog", { name: "confirm.removeProvider" }),
@@ -909,8 +937,9 @@ describe("App with real ProviderList", () => {
     await clickAppSwitcherButton(user, "Codex");
     await expectProviderVisible("Codex Alpha");
 
+    await user.click(screen.getByRole("button", { name: "配置" }));
     await user.click(
-      screen.getByRole("button", { name: "供应商配置模板" }),
+      await screen.findByRole("menuitem", { name: "供应商配置模板" }),
     );
     await screen.findByDisplayValue(/https:\/\/template\.example\/v1/);
     await user.click(
@@ -933,8 +962,12 @@ describe("App with real ProviderList", () => {
       ?.config as string;
     const betaConfig = getProviders("codex")["codex-beta"].settingsConfig
       ?.config as string;
-    expect(alphaConfig).toContain('base_url = "https://codex-alpha.example.com/v1"');
-    expect(betaConfig).toContain('base_url = "https://codex-beta.example.com/v1"');
+    expect(alphaConfig).toContain(
+      'base_url = "https://codex-alpha.example.com/v1"',
+    );
+    expect(betaConfig).toContain(
+      'base_url = "https://codex-beta.example.com/v1"',
+    );
     expect(alphaConfig).toContain('model = "gpt-5.5"');
     expect(betaConfig).toContain('model = "gpt-5.5"');
     expect(alphaConfig).not.toContain("https://template.example/v1");
@@ -974,20 +1007,20 @@ describe("App with real ProviderList", () => {
 
     await expectProviderVisible("Claude Zeta");
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-zeta",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-zeta"]),
     );
 
-    await user.click(within(findProviderRow("Claude Alpha")).getByTitle("启用"));
+    await user.click(
+      within(findProviderRow("Claude Alpha")).getByTitle("启用"),
+    );
     await user.click(within(findProviderRow("Claude Beta")).getByTitle("启用"));
 
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-zeta",
-        "claude-alpha",
-        "claude-beta",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-zeta", "claude-alpha", "claude-beta"]),
     );
 
     await user.click(
@@ -1003,11 +1036,9 @@ describe("App with real ProviderList", () => {
     );
 
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-beta",
-        "claude-zeta",
-        "claude-alpha",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-beta", "claude-zeta", "claude-alpha"]),
     );
 
     await user.click(screen.getByRole("button", { name: "模型名称排序" }));
@@ -1021,11 +1052,9 @@ describe("App with real ProviderList", () => {
     );
 
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-alpha",
-        "claude-beta",
-        "claude-zeta",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-alpha", "claude-beta", "claude-zeta"]),
     );
   }, 20_000);
 
@@ -1084,36 +1113,41 @@ describe("App with real ProviderList", () => {
     expect(screen.getByText("Claude Beta")).toBeInTheDocument();
     expect(screen.getByText("Claude Gamma")).toBeInTheDocument();
     await waitFor(() => {
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-beta",
-      ]);
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-beta"]);
       expectFailoverState("Claude Beta", "enabled");
       expectFailoverState("Claude Alpha", "disabled");
       expectFailoverState("Claude Gamma", "disabled");
     });
 
-    await user.click(within(findProviderRow("Claude Alpha")).getByTitle("启用"));
+    await user.click(
+      within(findProviderRow("Claude Alpha")).getByTitle("启用"),
+    );
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-alpha",
-        "claude-beta",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-alpha", "claude-beta"]),
     );
 
-    await user.click(within(findProviderRow("Claude Gamma")).getByTitle("启用"));
+    await user.click(
+      within(findProviderRow("Claude Gamma")).getByTitle("启用"),
+    );
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-alpha",
-        "claude-beta",
-        "claude-gamma",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-alpha", "claude-beta", "claude-gamma"]),
     );
 
-    for (const providerName of ["Claude Alpha", "Claude Beta", "Claude Gamma"]) {
-      await user.click(within(findProviderRow(providerName)).getByTitle("禁用"));
-      await waitFor(() =>
-        expectFailoverState(providerName, "disabled"),
+    for (const providerName of [
+      "Claude Alpha",
+      "Claude Beta",
+      "Claude Gamma",
+    ]) {
+      await user.click(
+        within(findProviderRow(providerName)).getByTitle("禁用"),
       );
+      await waitFor(() => expectFailoverState(providerName, "disabled"));
     }
 
     await waitFor(() => {
@@ -1170,14 +1204,14 @@ describe("App with real ProviderList", () => {
 
     await expectProviderVisible("Claude Alpha");
     await user.click(within(findProviderRow("Claude Beta")).getByTitle("启用"));
-    await user.click(within(findProviderRow("Claude Gamma")).getByTitle("启用"));
+    await user.click(
+      within(findProviderRow("Claude Gamma")).getByTitle("启用"),
+    );
 
     await waitFor(() =>
-      expect(getFailoverQueueState("claude").map((item) => item.providerId)).toEqual([
-        "claude-alpha",
-        "claude-beta",
-        "claude-gamma",
-      ]),
+      expect(
+        getFailoverQueueState("claude").map((item) => item.providerId),
+      ).toEqual(["claude-alpha", "claude-beta", "claude-gamma"]),
     );
 
     const providerIds = ["claude-alpha", "claude-beta", "claude-gamma"];
@@ -1207,7 +1241,9 @@ describe("App with real ProviderList", () => {
         "Claude Beta",
         "Claude Gamma",
       ]) {
-        expect(within(findProviderRow(providerName)).getByText("熔断")).toBeInTheDocument();
+        expect(
+          within(findProviderRow(providerName)).getByText("熔断"),
+        ).toBeInTheDocument();
       }
     });
 

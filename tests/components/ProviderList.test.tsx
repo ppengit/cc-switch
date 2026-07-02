@@ -304,6 +304,76 @@ describe("ProviderList Component", () => {
     );
   });
 
+  it("enabling admission retry on one provider disables the other same-app provider", async () => {
+    const providerA = createProvider({
+      id: "retry-a",
+      name: "Retry A",
+      meta: {
+        upstreamAdmissionRetry: {
+          enabled: true,
+          maxRetries: 7,
+          initialDelayMs: 250,
+        },
+      },
+    });
+    const providerB = createProvider({
+      id: "retry-b",
+      name: "Retry B",
+      meta: {
+        upstreamAdmissionRetry: {
+          enabled: false,
+          maxRetries: 3,
+        },
+      },
+    });
+
+    setProviders("claude", {
+      "retry-a": providerA,
+      "retry-b": providerB,
+    });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "retry-a": providerA, "retry-b": providerB }}
+        currentProviderId="retry-a"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const retryBRow = screen
+      .getAllByRole("row")
+      .find((row) => row.textContent?.includes("Retry B"));
+    expect(retryBRow).toBeTruthy();
+
+    fireEvent.click(
+      within(retryBRow!).getByRole("button", {
+        name: "开启上游入场重试",
+      }),
+    );
+
+    await waitFor(() => {
+      const saved = getProviders("claude");
+      expect(saved["retry-a"].meta?.upstreamAdmissionRetry?.enabled).toBe(
+        false,
+      );
+      expect(saved["retry-b"].meta?.upstreamAdmissionRetry?.enabled).toBe(true);
+    });
+    expect(
+      getProviders("claude")["retry-a"].meta?.upstreamAdmissionRetry
+        ?.maxRetries,
+    ).toBe(7);
+  });
+
   it("persists model-name sorting with enabled providers first", async () => {
     const providerAlpha = createProvider({
       id: "alpha",

@@ -26,6 +26,7 @@ vi.mock("@/components/providers/ProviderList", () => ({
   ProviderList: ({
     providers,
     currentProviderId,
+    activeRequestProviders,
     onSwitch,
     onEdit,
     onDuplicate,
@@ -36,6 +37,9 @@ vi.mock("@/components/providers/ProviderList", () => ({
     <div>
       <div data-testid="provider-list">{JSON.stringify(providers)}</div>
       <div data-testid="current-provider">{currentProviderId}</div>
+      <div data-testid="active-request-providers">
+        {JSON.stringify(activeRequestProviders ?? {})}
+      </div>
       <button onClick={() => onSwitch(providers[currentProviderId])}>
         switch
       </button>
@@ -269,7 +273,7 @@ describe("App integration with MSW", () => {
     });
   });
 
-  it("shows the top live activity strip from proxy status", async () => {
+  it("passes visible active request activity to ProviderList from proxy status", async () => {
     setProxyStatusState({
       running: true,
       active_request_count: 1,
@@ -291,13 +295,20 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     await waitFor(() =>
-      expect(screen.getByText("1 个请求处理中")).toBeInTheDocument(),
+      expect(screen.getByTestId("active-request-providers").textContent).toBe(
+        JSON.stringify({
+          "claude-2": {
+            count: 1,
+            model: "gpt-5.4",
+            requestModel: "claude-sonnet-4-5",
+            upstreamModel: "gpt-5.4",
+          },
+        }),
+      ),
     );
-    expect(screen.getByText("Claude Custom")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
   });
 
-  it("keeps the top live activity count aligned with visible active targets", async () => {
+  it("keeps ProviderList activity counts aligned with visible active targets", async () => {
     setProxyStatusState({
       running: true,
       active_request_count: 3,
@@ -319,10 +330,17 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     await waitFor(() =>
-      expect(screen.getByText("1 个请求处理中")).toBeInTheDocument(),
+      expect(screen.getByTestId("active-request-providers").textContent).toBe(
+        JSON.stringify({
+          "claude-2": {
+            count: 1,
+            model: "gpt-5.4",
+            requestModel: "claude-sonnet-4-5",
+            upstreamModel: "gpt-5.4",
+          },
+        }),
+      ),
     );
-    expect(screen.queryByText("3 个请求处理中")).not.toBeInTheDocument();
-    expect(screen.getByText("x1")).toBeInTheDocument();
   });
 
   it("duplicates openclaw providers with a generated key that avoids live-only ids", async () => {

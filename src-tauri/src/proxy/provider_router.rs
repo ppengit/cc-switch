@@ -1485,6 +1485,7 @@ mod tests {
                 initial_delay_ms: Some(0),
                 max_delay_ms: Some(0),
                 jitter_ms: Some(0),
+                ..Default::default()
             }),
             ..Default::default()
         });

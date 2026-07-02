@@ -116,7 +116,7 @@ mod tests {
     use crate::database::Database;
     #[cfg(any(target_os = "macos", windows))]
     use crate::provider::{ClaudeDesktopMode, ClaudeDesktopModelRoute};
-    use crate::provider::{ProviderMeta, UsageScript};
+    use crate::provider::{ProviderMeta, UpstreamAdmissionRetryConfig, UsageScript};
     use crate::proxy::types::ProxyConfig;
     use crate::store::AppState;
     use serde_json::json;
@@ -359,6 +359,36 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    fn claude_provider_with_admission_retry(
+        id: &str,
+        enabled: bool,
+        max_retries: Option<u32>,
+    ) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            format!("Provider {id}"),
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": format!("token-{id}"),
+                    "ANTHROPIC_BASE_URL": format!("https://{id}.example")
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled,
+                max_retries,
+                initial_delay_ms: Some(250),
+                max_delay_ms: Some(2_000),
+                jitter_ms: Some(25),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        provider
     }
 
     fn opencode_omo_provider(id: &str, category: &str) -> Provider {
@@ -3039,6 +3069,129 @@ base_url = "http://localhost:8080"
 
     #[test]
     #[serial]
+    fn update_enabling_admission_retry_disables_other_provider_in_same_app() {
+        with_test_home(|state, _| {
+            let provider_a = claude_provider_with_admission_retry("claude-a", true, Some(7));
+            let provider_b = claude_provider_with_admission_retry("claude-b", false, Some(3));
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+
+            let mut updated_b = provider_b.clone();
+            updated_b.set_upstream_admission_retry_enabled(true);
+
+            ProviderService::update(state, AppType::Claude, None, updated_b)
+                .expect("enable provider b admission retry");
+
+            let saved_a = state
+                .db
+                .get_provider_by_id("claude-a", AppType::Claude.as_str())
+                .expect("query provider a")
+                .expect("provider a exists");
+            let saved_b = state
+                .db
+                .get_provider_by_id("claude-b", AppType::Claude.as_str())
+                .expect("query provider b")
+                .expect("provider b exists");
+
+            assert!(
+                !saved_a.upstream_admission_retry_enabled(),
+                "enabling one provider must close admission retry on the previous same-app provider"
+            );
+            assert!(
+                saved_b.upstream_admission_retry_enabled(),
+                "target provider should remain enabled"
+            );
+            assert_eq!(
+                saved_a
+                    .meta
+                    .and_then(|meta| meta.upstream_admission_retry)
+                    .and_then(|config| config.max_retries),
+                Some(7),
+                "disabling should preserve existing retry parameters"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn list_converges_legacy_multiple_admission_retry_enabled_providers() {
+        with_test_home(|state, _| {
+            let provider_a = claude_provider_with_admission_retry("claude-a", true, Some(7));
+            let provider_b = claude_provider_with_admission_retry("claude-b", true, Some(3));
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_a)
+                .expect("seed provider a");
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider_b)
+                .expect("seed provider b");
+
+            let providers = ProviderService::list(state, AppType::Claude).expect("list providers");
+            let enabled_provider_ids: Vec<_> = providers
+                .values()
+                .filter(|provider| provider.upstream_admission_retry_enabled())
+                .map(|provider| provider.id.as_str())
+                .collect();
+            assert_eq!(enabled_provider_ids, vec!["claude-a"]);
+
+            let saved_b = state
+                .db
+                .get_provider_by_id("claude-b", AppType::Claude.as_str())
+                .expect("query provider b")
+                .expect("provider b exists");
+            let retry_config = saved_b
+                .meta
+                .and_then(|meta| meta.upstream_admission_retry)
+                .expect("retry config should remain present");
+            assert!(!retry_config.enabled);
+            assert_eq!(retry_config.max_retries, Some(3));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn admission_retry_service_toggle_preserves_config_when_disabling() {
+        with_test_home(|state, _| {
+            let provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider)
+                .expect("seed provider");
+
+            let changed = ProviderService::set_upstream_admission_retry_enabled(
+                state,
+                &AppType::Claude,
+                "claude-a",
+                false,
+            )
+            .expect("disable admission retry");
+            assert!(changed);
+
+            let saved = state
+                .db
+                .get_provider_by_id("claude-a", AppType::Claude.as_str())
+                .expect("query provider")
+                .expect("provider exists");
+            let retry_config = saved
+                .meta
+                .and_then(|meta| meta.upstream_admission_retry)
+                .expect("retry config should remain present");
+
+            assert!(!retry_config.enabled);
+            assert_eq!(retry_config.max_retries, Some(9));
+            assert_eq!(retry_config.initial_delay_ms, Some(250));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn update_persists_non_current_omo_variants_in_database() {
         with_test_home(|state, _| {
             for category in ["omo", "omo-slim"] {
@@ -3270,6 +3423,65 @@ impl ProviderService {
             .live_config_managed = Some(managed);
     }
 
+    fn disable_other_upstream_admission_retry_providers(
+        state: &AppState,
+        app_type: &AppType,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        for mut candidate in state.db.get_all_providers(app_type.as_str())?.into_values() {
+            if candidate.id == provider_id || !candidate.upstream_admission_retry_enabled() {
+                continue;
+            }
+            candidate.set_upstream_admission_retry_enabled(false);
+            state.db.save_provider(app_type.as_str(), &candidate)?;
+        }
+
+        Ok(())
+    }
+
+    fn converge_upstream_admission_retry_providers(
+        state: &AppState,
+        app_type: &AppType,
+        providers: &mut IndexMap<String, Provider>,
+    ) -> Result<(), AppError> {
+        let mut has_enabled_provider = false;
+        for provider in providers.values_mut() {
+            if !provider.upstream_admission_retry_enabled() {
+                continue;
+            }
+            if !has_enabled_provider {
+                has_enabled_provider = true;
+                continue;
+            }
+
+            provider.set_upstream_admission_retry_enabled(false);
+            state.db.save_provider(app_type.as_str(), provider)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn set_upstream_admission_retry_enabled(
+        state: &AppState,
+        app_type: &AppType,
+        provider_id: &str,
+        enabled: bool,
+    ) -> Result<bool, AppError> {
+        let Some(mut provider) = state
+            .db
+            .get_provider_by_id(provider_id, app_type.as_str())?
+        else {
+            return Ok(false);
+        };
+
+        provider.set_upstream_admission_retry_enabled(enabled);
+        if enabled {
+            Self::disable_other_upstream_admission_retry_providers(state, app_type, provider_id)?;
+        }
+        state.db.save_provider(app_type.as_str(), &provider)?;
+        Ok(true)
+    }
+
     fn normalize_endpoint_for_compare(value: &str) -> String {
         let mut value = value.trim().trim_end_matches('/').to_ascii_lowercase();
         if value.ends_with("/v1") {
@@ -3478,7 +3690,9 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
-        state.db.get_all_providers(app_type.as_str())
+        let mut providers = state.db.get_all_providers(app_type.as_str())?;
+        Self::converge_upstream_admission_retry_providers(state, &app_type, &mut providers)?;
+        Ok(providers)
     }
 
     /// Get current provider ID
@@ -3512,6 +3726,9 @@ impl ProviderService {
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
         if app_type.is_additive_mode() {
             Self::set_provider_live_config_managed(&mut provider, add_to_live);
+        }
+        if provider.upstream_admission_retry_enabled() {
+            Self::disable_other_upstream_admission_retry_providers(state, &app_type, &provider.id)?;
         }
 
         // Save to database
@@ -3691,6 +3908,13 @@ impl ProviderService {
                 )));
             }
 
+            if provider.upstream_admission_retry_enabled() {
+                Self::disable_other_upstream_admission_retry_providers(
+                    state,
+                    &app_type,
+                    &provider.id,
+                )?;
+            }
             Self::set_provider_live_config_managed(&mut provider, false);
             state.db.save_provider(app_type.as_str(), &provider)?;
             state.db.delete_provider(app_type.as_str(), &original_id)?;
@@ -3720,6 +3944,13 @@ impl ProviderService {
                     &provider.id,
                     variant.category,
                 )?;
+                if provider.upstream_admission_retry_enabled() {
+                    Self::disable_other_upstream_admission_retry_providers(
+                        state,
+                        &app_type,
+                        &provider.id,
+                    )?;
+                }
                 if is_current {
                     crate::services::OmoService::write_provider_config_to_file(&provider, variant)?;
                 }
@@ -3749,6 +3980,13 @@ impl ProviderService {
                 }),
             )?;
             Self::set_provider_live_config_managed(&mut provider, live_config_managed);
+            if provider.upstream_admission_retry_enabled() {
+                Self::disable_other_upstream_admission_retry_providers(
+                    state,
+                    &app_type,
+                    &provider.id,
+                )?;
+            }
 
             // Save to database after live-config presence is resolved so parse errors
             // do not report failure after already mutating DB state.
@@ -3762,6 +4000,9 @@ impl ProviderService {
         }
 
         // Save to database
+        if provider.upstream_admission_retry_enabled() {
+            Self::disable_other_upstream_admission_retry_providers(state, &app_type, &provider.id)?;
+        }
         state.db.save_provider(app_type.as_str(), &provider)?;
 
         // For other apps: Check if this is current provider (use effective current, not just DB)

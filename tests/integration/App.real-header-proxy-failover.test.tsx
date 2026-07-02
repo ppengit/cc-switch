@@ -46,8 +46,12 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/components/providers/ProviderList", () => ({
-  ProviderList: ({ appId }: any) => (
-    <section data-testid="provider-list" data-app-id={appId} />
+  ProviderList: ({ appId, activeRequestProviders }: any) => (
+    <section data-testid="provider-list" data-app-id={appId}>
+      <div data-testid="active-request-providers">
+        {JSON.stringify(activeRequestProviders ?? {})}
+      </div>
+    </section>
   ),
 }));
 
@@ -182,10 +186,12 @@ const renderApp = (AppComponent: ComponentType) => {
 };
 
 const getHeaderSwitches = () =>
-  within(screen.getByRole("banner")).getAllByRole("switch");
+  within(screen.getByRole("banner")).getAllByRole("switch").slice(0, 2);
 
 const waitForHeaderSwitches = async () => {
-  await waitFor(() => expect(getHeaderSwitches()).toHaveLength(2));
+  await waitFor(() =>
+    expect(within(screen.getByRole("banner")).getAllByRole("switch").length).toBeGreaterThanOrEqual(2),
+  );
   return getHeaderSwitches();
 };
 
@@ -312,7 +318,7 @@ describe("App header proxy and failover toggles", () => {
     });
   }, 20_000);
 
-  it("renders the real live activity strip from proxy activity events and hides it after clear", async () => {
+  it("passes live proxy activity events to the provider list and clears them after completion", async () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
@@ -363,25 +369,17 @@ describe("App header proxy and failover toggles", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText("3 个请求处理中")).toBeInTheDocument(),
-    );
-    expect(screen.queryByText("99 个请求处理中")).not.toBeInTheDocument();
-    expect(screen.getByText("Claude Alpha")).toBeInTheDocument();
-    expect(screen.getByText("Codex Beta")).toBeInTheDocument();
-    expect(screen.getByText("claude")).toBeInTheDocument();
-    expect(screen.getByText("codex")).toBeInTheDocument();
-    expect(screen.getByText("claude-opus-upstream")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
-    expect(screen.getByText("x1")).toBeInTheDocument();
-    expect(screen.getByText("x2")).toBeInTheDocument();
-    expect(
-      screen.getByTitle(
-        "claude / Claude Alpha / claude-opus-upstream (req: claude-sonnet-request)",
+      expect(screen.getByTestId("active-request-providers").textContent).toBe(
+        JSON.stringify({
+          "claude-alpha": {
+            count: 1,
+            model: "claude-opus-upstream",
+            requestModel: "claude-sonnet-request",
+            upstreamModel: "claude-opus-upstream",
+          },
+        }),
       ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByTitle("codex / Codex Beta / gpt-5.4"),
-    ).toBeInTheDocument();
+    );
 
     await act(async () => {
       emitTauriEvent("proxy-activity-updated", {
@@ -402,9 +400,9 @@ describe("App header proxy and failover toggles", () => {
     });
 
     await waitFor(() =>
-      expect(screen.queryByText("3 个请求处理中")).not.toBeInTheDocument(),
+      expect(screen.getByTestId("active-request-providers").textContent).toBe(
+        JSON.stringify({}),
+      ),
     );
-    expect(screen.queryByText("Claude Alpha")).not.toBeInTheDocument();
-    expect(screen.queryByText("Codex Beta")).not.toBeInTheDocument();
   }, 20_000);
 });

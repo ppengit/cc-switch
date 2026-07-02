@@ -34,6 +34,7 @@ use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{
     app_config::AppType,
     provider::{LocalProxyRequestOverrides, Provider},
+    services::ProviderService,
     store::AppState,
 };
 use futures::StreamExt;
@@ -1393,18 +1394,6 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
-        if self
-            .current_admission_retry_policy(app_type, provider)
-            .is_none()
-        {
-            return self
-                .forward(
-                    app_type, method, provider, endpoint, body, headers, extensions, adapter,
-                )
-                .await
-                .map_err(AdmissionRetryForwardError::Normal);
-        }
-
         let mut retries_used = 0u32;
         loop {
             match self
@@ -1415,6 +1404,7 @@ impl RequestForwarder {
             {
                 Ok(result) => {
                     if retries_used > 0 {
+                        self.disable_admission_retry_after_admitted(app_type, provider);
                         self.emit_admission_retry_event(
                             app_type,
                             provider,
@@ -1428,8 +1418,16 @@ impl RequestForwarder {
                     return Ok(result);
                 }
                 Err(error) => {
-                    let Some(policy) = self.current_admission_retry_policy(app_type, provider)
-                    else {
+                    let category = self.categorize_proxy_error(app_type, endpoint, &error);
+                    let admission_retryable = should_retry_provider_admission(category, &error);
+                    let policy = self.current_admission_retry_policy(app_type, provider);
+                    let Some(policy) = policy.or_else(|| {
+                        if admission_retryable {
+                            self.try_auto_enable_admission_retry(app_type, provider, &error)
+                        } else {
+                            None
+                        }
+                    }) else {
                         if retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
@@ -1453,8 +1451,7 @@ impl RequestForwarder {
                     //   2) body 永久失败信号 —— 排除配额/鉴权/模型不存在等
                     //      “死磕同一家 100% 不会成功”的上游响应，避免无限空等。
                     // 命中任一闸门即中性返回，交回原有流程（含整流器 4xx 修复）。
-                    let category = self.categorize_proxy_error(app_type, endpoint, &error);
-                    if !should_retry_provider_admission(category, &error) {
+                    if !admission_retryable {
                         if retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
@@ -1532,6 +1529,39 @@ impl RequestForwarder {
         }
     }
 
+    fn disable_admission_retry_after_admitted(&self, app_type: &AppType, provider: &Provider) {
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return;
+        };
+        let Some(state) = app_handle.try_state::<AppState>() else {
+            return;
+        };
+
+        match ProviderService::set_upstream_admission_retry_enabled(
+            state.inner(),
+            app_type,
+            &provider.id,
+            false,
+        ) {
+            Ok(true) => log::info!(
+                "[{}] 上游入场成功，已自动关闭供应商入场重试: provider={}",
+                app_type.as_str(),
+                provider.name
+            ),
+            Ok(false) => log::warn!(
+                "[{}] 上游入场成功但未找到供应商，无法自动关闭入场重试: provider={}",
+                app_type.as_str(),
+                provider.id
+            ),
+            Err(error) => log::warn!(
+                "[{}] 上游入场成功但自动关闭供应商入场重试失败: provider={}, error={}",
+                app_type.as_str(),
+                provider.id,
+                error
+            ),
+        }
+    }
+
     fn current_admission_retry_policy(
         &self,
         app_type: &AppType,
@@ -1555,6 +1585,75 @@ impl RequestForwarder {
         }
 
         AdmissionRetryPolicy::from_provider(provider)
+    }
+
+    fn try_auto_enable_admission_retry(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        error: &ProxyError,
+    ) -> Option<AdmissionRetryPolicy> {
+        let latest = self.latest_provider_for_policy(app_type, provider);
+        let policy_source = latest.as_ref().unwrap_or(provider);
+        let policy = AdmissionRetryPolicy::auto_from_provider_for_error(policy_source, error)?;
+
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return Some(policy);
+        };
+        let Some(state) = app_handle.try_state::<AppState>() else {
+            return Some(policy);
+        };
+
+        match ProviderService::set_upstream_admission_retry_enabled(
+            state.inner(),
+            app_type,
+            &provider.id,
+            true,
+        ) {
+            Ok(true) => log::info!(
+                "[{}] 命中自动入场重试关键词，已开启供应商入场重试: provider={}, error={}",
+                app_type.as_str(),
+                provider.name,
+                summarize_proxy_error(error)
+            ),
+            Ok(false) => log::warn!(
+                "[{}] 命中自动入场重试关键词但未找到供应商: provider={}",
+                app_type.as_str(),
+                provider.id
+            ),
+            Err(enable_error) => {
+                log::warn!(
+                    "[{}] 命中自动入场重试关键词但开启供应商入场重试失败: provider={}, error={}",
+                    app_type.as_str(),
+                    provider.id,
+                    enable_error
+                );
+                return None;
+            }
+        }
+
+        Some(policy)
+    }
+
+    fn latest_provider_for_policy(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Option<Provider> {
+        let app_handle = self.app_handle.as_ref()?;
+        let state = app_handle.try_state::<AppState>()?;
+        match state.db.get_provider_by_id(&provider.id, app_type.as_str()) {
+            Ok(latest) => latest,
+            Err(error) => {
+                log::warn!(
+                    "[{}] 读取 Provider 入场重试自动开关失败，使用请求开始时快照: provider={}, error={}",
+                    app_type.as_str(),
+                    provider.id,
+                    error
+                );
+                None
+            }
+        }
     }
 
     async fn emit_admission_retry_event(
@@ -2748,7 +2847,7 @@ impl RequestForwarder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct AdmissionRetryPolicy {
     max_retries: Option<u32>,
     initial_delay_ms: u64,
@@ -2784,6 +2883,30 @@ impl AdmissionRetryPolicy {
         })
     }
 
+    fn auto_from_provider_for_error(provider: &Provider, error: &ProxyError) -> Option<Self> {
+        let config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.upstream_admission_retry.as_ref())?;
+        if config.enabled || !config.auto_enabled {
+            return None;
+        }
+
+        let keywords = normalized_admission_retry_keywords(&config.auto_keywords);
+        if keywords.is_empty() || !admission_retry_keywords_match_error(&keywords, error) {
+            return None;
+        }
+
+        let mut enabled_config = config.clone();
+        enabled_config.enabled = true;
+        let mut enabled_provider = provider.clone();
+        enabled_provider
+            .meta
+            .get_or_insert_with(Default::default)
+            .upstream_admission_retry = Some(enabled_config);
+        Self::from_provider(&enabled_provider)
+    }
+
     fn retry_limit_reached(&self, retries_used: u32) -> bool {
         self.max_retries
             .is_some_and(|max_retries| retries_used >= max_retries)
@@ -2811,6 +2934,27 @@ impl AdmissionRetryPolicy {
 
         base.saturating_add(jitter).min(self.max_delay_ms)
     }
+}
+
+fn normalized_admission_retry_keywords(values: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    for value in values {
+        let keyword = value.trim().to_lowercase();
+        if keyword.is_empty() || result.contains(&keyword) {
+            continue;
+        }
+        result.push(keyword);
+    }
+    result
+}
+
+fn admission_retry_keywords_match_error(keywords: &[String], error: &ProxyError) -> bool {
+    let body = match error {
+        ProxyError::UpstreamError { body, .. } => body.as_deref().unwrap_or(""),
+        _ => "",
+    };
+    let haystack = format!("{}\n{}", body, summarize_proxy_error(error)).to_lowercase();
+    keywords.iter().any(|keyword| haystack.contains(keyword))
 }
 
 fn proxy_error_retry_after_ms(error: &ProxyError) -> Option<u64> {
@@ -4217,6 +4361,7 @@ mod tests {
                 initial_delay_ms: Some(20_000),
                 max_delay_ms: Some(100),
                 jitter_ms: Some(0),
+                ..Default::default()
             }),
             ..ProviderMeta::default()
         });
@@ -4242,6 +4387,7 @@ mod tests {
                 initial_delay_ms: Some(0),
                 max_delay_ms: Some(0),
                 jitter_ms: Some(0),
+                ..Default::default()
             }),
             ..ProviderMeta::default()
         });
@@ -4252,6 +4398,44 @@ mod tests {
         assert!(!policy.retry_limit_reached(0));
         assert!(!policy.retry_limit_reached(2));
         assert!(policy.retry_limit_reached(3));
+    }
+
+    #[test]
+    fn admission_retry_policy_auto_opens_from_configured_keywords() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: false,
+                auto_enabled: true,
+                auto_keywords: vec!["负载已经达到上限".to_string()],
+                max_retries: Some(0),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let matched_error = ProxyError::UpstreamError {
+            status: 503,
+            body: Some(r#"{"error":{"message":"负载已经达到上限，请稍后重试"}}"#.to_string()),
+            retry_after_ms: None,
+        };
+        assert!(AdmissionRetryPolicy::from_provider(&provider).is_none());
+        assert!(
+            AdmissionRetryPolicy::auto_from_provider_for_error(&provider, &matched_error).is_some()
+        );
+
+        let unmatched_error = ProxyError::UpstreamError {
+            status: 503,
+            body: Some(r#"{"error":{"message":"maintenance window"}}"#.to_string()),
+            retry_after_ms: None,
+        };
+        assert!(
+            AdmissionRetryPolicy::auto_from_provider_for_error(&provider, &unmatched_error)
+                .is_none()
+        );
     }
 
     #[test]
