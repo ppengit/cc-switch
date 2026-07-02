@@ -162,7 +162,8 @@ pub struct ProxyActivityEvent {
 /// 当前活跃的上游入场重试事件/快照。
 ///
 /// 与前端事件 `provider-admission-retry` 共用同一个结构；`event=retrying` 表示
-/// 仍在同一供应商上等待下一次入场，`event=cleared` 表示该请求已退出入场重试态。
+/// 仍在同一供应商上等待下一次入场，`event=admitted` 表示已成功进入上游并继续
+/// 正常处理，`event=cleared` 表示该请求已退出入场重试态。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAdmissionRetryEvent {
@@ -211,6 +212,9 @@ pub struct SessionRoutingBindingSnapshot {
 pub struct SessionRoutingSnapshot {
     pub app_type: String,
     pub enabled: bool,
+    pub proxy_running: bool,
+    pub client_session_only: bool,
+    pub idle_ttl_seconds: u32,
     pub bindings: Vec<SessionRoutingBindingSnapshot>,
     pub providers: Vec<SessionRoutingProviderSnapshot>,
 }

@@ -362,6 +362,9 @@ impl ProviderRouter {
             return Ok(SessionRoutingSnapshot {
                 app_type: app_type.to_string(),
                 enabled: false,
+                proxy_running: true,
+                client_session_only: config.session_routing_client_session_only,
+                idle_ttl_seconds: config.session_routing_idle_ttl_seconds,
                 bindings: Vec::new(),
                 providers: Vec::new(),
             });
@@ -471,6 +474,9 @@ impl ProviderRouter {
         Ok(SessionRoutingSnapshot {
             app_type: app_type.to_string(),
             enabled,
+            proxy_running: true,
+            client_session_only: config.session_routing_client_session_only,
+            idle_ttl_seconds: config.session_routing_idle_ttl_seconds,
             bindings,
             providers,
         })

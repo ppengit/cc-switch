@@ -1112,6 +1112,10 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_proxy_raw_logs`, () => success([])),
 
+  http.post(`${TAURI_ENDPOINT}/get_provider_admission_retry_snapshot`, () =>
+    success([]),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () =>
     success(isLiveTakeoverActiveState()),
   ),

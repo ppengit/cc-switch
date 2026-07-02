@@ -1599,6 +1599,16 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                         activeMessageIndex === virtualRow.index
                                       }
                                       searchQuery={search}
+                                      displayContentOverride={
+                                        isCodexSession &&
+                                        messages[virtualRow.index]?.role.toLowerCase() ===
+                                          "user"
+                                          ? extractCodexPromptPreview(
+                                              messages[virtualRow.index]
+                                                ?.content ?? "",
+                                            )
+                                          : undefined
+                                      }
                                       onCopy={handleMessageCopy}
                                     />
                                   </div>

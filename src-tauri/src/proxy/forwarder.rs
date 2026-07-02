@@ -1421,7 +1421,7 @@ impl RequestForwarder {
                             retries_used,
                             0,
                             None,
-                            false,
+                            "admitted",
                         )
                         .await;
                     }
@@ -1437,7 +1437,7 @@ impl RequestForwarder {
                                 retries_used,
                                 0,
                                 Some(&error),
-                                false,
+                                "cleared",
                             )
                             .await;
                         }
@@ -1462,7 +1462,7 @@ impl RequestForwarder {
                                 retries_used,
                                 0,
                                 Some(&error),
-                                false,
+                                "cleared",
                             )
                             .await;
                         }
@@ -1476,7 +1476,7 @@ impl RequestForwarder {
                             retries_used,
                             0,
                             Some(&error),
-                            false,
+                            "cleared",
                         )
                         .await;
                         log::warn!(
@@ -1506,7 +1506,7 @@ impl RequestForwarder {
                         retries_used,
                         delay_ms,
                         Some(&error),
-                        true,
+                        "retrying",
                     )
                     .await;
                     if delay_ms > 0 {
@@ -1522,7 +1522,7 @@ impl RequestForwarder {
                             retries_used,
                             0,
                             Some(&error),
-                            false,
+                            "cleared",
                         )
                         .await;
                         return Err(AdmissionRetryForwardError::Normal(error));
@@ -1564,11 +1564,11 @@ impl RequestForwarder {
         retry_count: u32,
         delay_ms: u64,
         error: Option<&ProxyError>,
-        active: bool,
+        event: &str,
     ) {
         let payload = ProviderAdmissionRetryEvent {
             request_id: self.request_id.clone(),
-            event: if active { "retrying" } else { "cleared" }.to_string(),
+            event: event.to_string(),
             app_type: app_type.as_str().to_string(),
             provider_id: provider.id.clone(),
             provider_name: provider.name.clone(),

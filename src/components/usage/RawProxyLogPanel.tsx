@@ -259,7 +259,7 @@ export function RawProxyLogPanel({
                           : "-";
                   return (
                     <TableRow
-                      key={log.requestId}
+                      key={log.id}
                       className="cursor-pointer"
                       onDoubleClick={() => setSelectedLog(log)}
                     >

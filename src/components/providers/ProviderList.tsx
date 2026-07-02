@@ -188,6 +188,8 @@ interface ProviderRowView {
   activeRequestUpstreamModel?: string;
   admissionRetryEnabled: boolean;
   admissionRetryCount: number;
+  admissionRetryState?: ProviderAdmissionRetryEvent["event"];
+  admissionRetryAdmittedCount: number;
   admissionRetryStatus?: number | null;
   admissionRetryLastError?: string | null;
   admissionRetryLastFailureAt?: string | null;
@@ -1136,7 +1138,7 @@ export function ProviderList({
           ...(current[payload.providerId] ?? {}),
         };
 
-        if (payload.event === "retrying") {
+        if (payload.event === "retrying" || payload.event === "admitted") {
           providerRequests[payload.requestId] = payload;
         } else {
           delete providerRequests[payload.requestId];
@@ -1173,7 +1175,10 @@ export function ProviderList({
 
         const next: AdmissionRetryRequestEvents = {};
         for (const payload of snapshot) {
-          if (payload.appType !== appId || payload.event !== "retrying") {
+          if (
+            payload.appType !== appId ||
+            (payload.event !== "retrying" && payload.event !== "admitted")
+          ) {
             continue;
           }
           next[payload.providerId] = {
@@ -1620,9 +1625,15 @@ export function ProviderList({
       const retryEvents = Object.values(
         admissionRetryRequests[provider.id] ?? {},
       );
+      const activeRetryEvents = retryEvents.filter(
+        (event) => event.event === "retrying",
+      );
+      const admittedEvents = retryEvents.filter(
+        (event) => event.event === "admitted",
+      );
       const admissionRetryCount =
-        retryEvents.length > 0
-          ? Math.max(...retryEvents.map((event) => event.retryCount))
+        activeRetryEvents.length > 0
+          ? Math.max(...activeRetryEvents.map((event) => event.retryCount))
           : 0;
       const latestAdmissionRetry = retryEvents.reduce<
         ProviderAdmissionRetryEvent | undefined
@@ -1717,6 +1728,11 @@ export function ProviderList({
         activeRequestUpstreamModel: activeRequest?.upstreamModel,
         admissionRetryEnabled,
         admissionRetryCount,
+        admissionRetryState: latestAdmissionRetry?.event,
+        admissionRetryAdmittedCount:
+          admittedEvents.length > 0
+            ? Math.max(...admittedEvents.map((event) => event.retryCount))
+            : 0,
         admissionRetryStatus: latestAdmissionRetry?.status,
         admissionRetryLastError: latestAdmissionRetry?.error,
         admissionRetryLastFailureAt: latestAdmissionRetry?.updatedAt,
@@ -4187,6 +4203,10 @@ function SortableProviderTableRow({
     failureCount > 0;
   const isProcessing = row.activeRequestCount > 0;
   const isAdmissionRetrying = row.isEnabled && row.admissionRetryCount > 0;
+  const isAdmissionAdmitted =
+    row.isEnabled &&
+    row.admissionRetryState === "admitted" &&
+    row.admissionRetryAdmittedCount > 0;
   const activityModel = row.activeRequestModel;
   const requestModel = row.activeRequestRequestModel;
   const upstreamModel = row.activeRequestUpstreamModel;
@@ -4221,6 +4241,18 @@ function SortableProviderTableRow({
       ? t("provider.statusReasonAdmissionRetrying", {
           defaultValue: "上游入场重试中：第 {{count}} 次",
           count: row.admissionRetryCount,
+        })
+      : null,
+    isAdmissionAdmitted
+      ? t("provider.statusReasonAdmissionRetryAdmitted", {
+          defaultValue:
+            "上游入场已成功，后续请求正在按正常流程继续处理。",
+        })
+      : null,
+    isAdmissionAdmitted
+      ? t("provider.statusReasonAdmissionRetryAdmittedCount", {
+          defaultValue: "本次入场在第 {{count}} 次重试后成功",
+          count: row.admissionRetryAdmittedCount,
         })
       : null,
     isAdmissionRetrying && row.admissionRetryStatus
@@ -4515,6 +4547,13 @@ function SortableProviderTableRow({
                       defaultValue: "入场",
                     })}
                     {` ${row.admissionRetryCount}`}
+                  </Badge>
+                ) : isAdmissionAdmitted ? (
+                  <Badge className="h-5 border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-xs text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300">
+                    <DoorOpen className="mr-0.5 h-3 w-3" />
+                    {t("provider.admissionRetryAdmitted", {
+                      defaultValue: "入场成功",
+                    })}
                   </Badge>
                 ) : null}
                 {isCircuitOpen ? (

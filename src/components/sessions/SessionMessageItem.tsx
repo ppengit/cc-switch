@@ -24,6 +24,7 @@ interface SessionMessageItemProps {
   message: SessionMessage;
   isActive: boolean;
   searchQuery?: string;
+  displayContentOverride?: string;
   onCopy: (content: string) => void;
 }
 
@@ -31,21 +32,23 @@ export const SessionMessageItem = memo(function SessionMessageItem({
   message,
   isActive,
   searchQuery,
+  displayContentOverride,
   onCopy,
 }: SessionMessageItemProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const content = displayContentOverride ?? message.content;
 
-  const isLong = message.content.length > COLLAPSE_THRESHOLD;
+  const isLong = content.length > COLLAPSE_THRESHOLD;
   const hasSearchMatch =
     isLong &&
     !expanded &&
     !!searchQuery &&
-    message.content.toLowerCase().includes(searchQuery.toLowerCase());
+    content.toLowerCase().includes(searchQuery.toLowerCase());
   const collapsed = isLong && !expanded && !hasSearchMatch;
   const displayContent = collapsed
-    ? message.content.slice(0, COLLAPSED_LENGTH) + "…"
-    : message.content;
+    ? content.slice(0, COLLAPSED_LENGTH) + "…"
+    : content;
 
   return (
     <div
@@ -112,7 +115,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
                 defaultValue: "展开完整内容",
               })}
               <span className="text-muted-foreground/60">
-                ({Math.round(message.content.length / 1000)}k)
+                ({Math.round(content.length / 1000)}k)
               </span>
             </>
           )}

@@ -86,7 +86,7 @@ export interface ProxyActivityEvent {
 
 export interface ProviderAdmissionRetryEvent {
   requestId: string;
-  event: "retrying" | "cleared";
+  event: "retrying" | "admitted" | "cleared";
   appType: string;
   providerId: string;
   providerName: string;
@@ -131,6 +131,9 @@ export interface SessionRoutingBindingSnapshot {
 export interface SessionRoutingSnapshot {
   appType: string;
   enabled: boolean;
+  proxyRunning: boolean;
+  clientSessionOnly: boolean;
+  idleTtlSeconds: number;
   bindings: SessionRoutingBindingSnapshot[];
   providers: SessionRoutingProviderSnapshot[];
 }

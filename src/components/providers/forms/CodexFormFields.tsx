@@ -89,6 +89,8 @@ interface CodexFormFieldsProps {
   onCatalogModelsChange?: (models: CodexCatalogModel[]) => void;
 
   // Request model routes
+  modelRoutesEnabled: boolean;
+  onModelRoutesEnabledChange: (enabled: boolean) => void;
   modelRoutes?: Record<string, CodexModelRoute>;
   onModelRoutesChange?: (routes: Record<string, CodexModelRoute>) => void;
 
@@ -208,6 +210,8 @@ export function CodexFormFields({
   onCodexChatReasoningChange,
   catalogModels = [],
   onCatalogModelsChange,
+  modelRoutesEnabled,
+  onModelRoutesEnabledChange,
   modelRoutes = {},
   onModelRoutesChange,
   speedTestEndpoints,
@@ -242,9 +246,11 @@ export function CodexFormFields({
   const hasAnyAdvancedValue =
     !!customUserAgent ||
     hasRequestOverrides ||
-    takeoverEnabled ||
-    hasModelRoutes;
+    takeoverEnabled;
   const [advancedExpanded, setAdvancedExpanded] = useState(hasAnyAdvancedValue);
+  const [modelRoutesExpanded, setModelRoutesExpanded] = useState(
+    modelRoutesEnabled || hasModelRoutes,
+  );
 
   // 预设/编辑加载填充高级值后自动展开（仅从折叠→展开，不会自动折叠）
   useEffect(() => {
@@ -252,6 +258,12 @@ export function CodexFormFields({
       setAdvancedExpanded(true);
     }
   }, [hasAnyAdvancedValue]);
+
+  useEffect(() => {
+    if (modelRoutesEnabled || hasModelRoutes) {
+      setModelRoutesExpanded(true);
+    }
+  }, [modelRoutesEnabled, hasModelRoutes]);
 
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
@@ -691,128 +703,6 @@ export function CodexFormFields({
               </div>
             </div>
 
-            {canEditModelRoutes && (
-              <div className="space-y-4 border-t border-border-default pt-3">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <FormLabel>
-                      {t("codexConfig.requestModelRoutesTitle", {
-                        defaultValue: "请求模型别名映射",
-                      })}
-                    </FormLabel>
-                    {renderCatalogActionButtons(
-                      handleAddModelRouteRow,
-                      t("codexConfig.addRequestModelRoute", {
-                        defaultValue: "添加映射",
-                      }),
-                    )}
-                  </div>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("codexConfig.requestModelRoutesHint", {
-                      defaultValue:
-                        "按 Codex 实际发出的 model 字段精确匹配并改写。若模型目录先把菜单项解析成实际请求模型，这里会在解析后继续改写。",
-                    })}
-                  </p>
-                </div>
-
-                {modelRouteRows.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="hidden grid-cols-[1fr_1fr_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
-                      <span>
-                        {t("codexConfig.requestModelColumn", {
-                          defaultValue: "请求模型",
-                        })}
-                      </span>
-                      <span>
-                        {t("codexConfig.upstreamModelColumn", {
-                          defaultValue: "上游模型",
-                        })}
-                      </span>
-                      <span />
-                    </div>
-
-                    {modelRouteRows.map((row, index) => (
-                      <div
-                        key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_36px]"
-                      >
-                        <div className="flex gap-1">
-                          <Input
-                            value={row.requestModel}
-                            onChange={(event) =>
-                              handleUpdateModelRouteRow(index, {
-                                requestModel: event.target.value,
-                              })
-                            }
-                            placeholder={t(
-                              "codexConfig.requestModelPlaceholder",
-                              {
-                                defaultValue: "例如: gpt-5.4-mini",
-                              },
-                            )}
-                            aria-label={t("codexConfig.requestModelColumn", {
-                              defaultValue: "请求模型",
-                            })}
-                            className="flex-1"
-                          />
-                          {routeCandidateModels.length > 0 && (
-                            <ModelDropdown
-                              models={routeCandidateModels}
-                              onSelect={(id) =>
-                                handleUpdateModelRouteRow(index, {
-                                  requestModel: id,
-                                })
-                              }
-                            />
-                          )}
-                        </div>
-                        <div className="flex gap-1">
-                          <Input
-                            value={row.upstreamModel}
-                            onChange={(event) =>
-                              handleUpdateModelRouteRow(index, {
-                                upstreamModel: event.target.value,
-                              })
-                            }
-                            placeholder={t(
-                              "codexConfig.upstreamModelPlaceholder",
-                              {
-                                defaultValue: "例如: gpt-5.5",
-                              },
-                            )}
-                            aria-label={t("codexConfig.upstreamModelColumn", {
-                              defaultValue: "上游模型",
-                            })}
-                            className="flex-1"
-                          />
-                          {routeCandidateModels.length > 0 && (
-                            <ModelDropdown
-                              models={routeCandidateModels}
-                              onSelect={(id) =>
-                                handleUpdateModelRouteRow(index, {
-                                  upstreamModel: id,
-                                })
-                              }
-                            />
-                          )}
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                          onClick={() => handleRemoveModelRouteRow(index)}
-                          title={t("common.delete", { defaultValue: "删除" })}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* 模型目录 —— 仅在本地路由开启 + 可编辑时显示（与上游格式解耦，
                 Responses 原生供应商同样可配置）；上方恒有 UA 字段，分隔线无需条件 */}
             {takeoverEnabled && canEditCatalog && (
@@ -957,6 +847,194 @@ export function CodexFormFields({
             )}
           </CollapsibleContent>
         </Collapsible>
+      )}
+
+      {canEditModelRoutes && (
+        <div className="rounded-lg border border-border/50 bg-muted/20">
+          <div
+            role="button"
+            tabIndex={0}
+            className="flex w-full cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+            onClick={() => setModelRoutesExpanded((current) => !current)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setModelRoutesExpanded((current) => !current);
+              }
+            }}
+          >
+            <div className="min-w-0 flex items-center gap-3">
+              <span className="font-medium">
+                {t("codexConfig.requestModelRoutesTitle", {
+                  defaultValue: "请求模型别名映射",
+                })}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div
+                className="flex items-center gap-2"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <FormLabel className="text-sm text-muted-foreground">
+                  {t("codexConfig.requestModelRoutesToggle", {
+                    defaultValue: "启用映射",
+                  })}
+                </FormLabel>
+                <Switch
+                  checked={modelRoutesEnabled}
+                  onCheckedChange={onModelRoutesEnabledChange}
+                  aria-label={t("codexConfig.requestModelRoutesTitle", {
+                    defaultValue: "请求模型别名映射",
+                  })}
+                />
+              </div>
+              {modelRoutesExpanded ? (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              )}
+            </div>
+          </div>
+          <div
+            className={cn(
+              "overflow-hidden transition-all duration-200",
+              modelRoutesExpanded
+                ? "max-h-[720px] opacity-100"
+                : "max-h-0 opacity-0",
+            )}
+          >
+            <div className="space-y-4 border-t border-border/50 p-4">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {t("codexConfig.requestModelRoutesTitle", {
+                      defaultValue: "请求模型别名映射",
+                    })}
+                  </div>
+                  {renderCatalogActionButtons(
+                    handleAddModelRouteRow,
+                    t("codexConfig.addRequestModelRoute", {
+                      defaultValue: "添加映射",
+                    }),
+                  )}
+                </div>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {modelRoutesEnabled
+                    ? t("codexConfig.requestModelRoutesHint", {
+                        defaultValue:
+                          "按 Codex 实际发出的 model 字段精确匹配并改写。若模型目录先把菜单项解析成实际请求模型，这里会在解析后继续改写。",
+                      })
+                    : t("codexConfig.requestModelRoutesDisabledHint", {
+                        defaultValue:
+                          "关闭后不会应用这些别名映射，但已填写的数据会保留，方便后续再次启用。",
+                      })}
+                </p>
+              </div>
+
+              {modelRouteRows.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="hidden grid-cols-[1fr_1fr_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                    <span>
+                      {t("codexConfig.requestModelColumn", {
+                        defaultValue: "请求模型",
+                      })}
+                    </span>
+                    <span>
+                      {t("codexConfig.upstreamModelColumn", {
+                        defaultValue: "上游模型",
+                      })}
+                    </span>
+                    <span />
+                  </div>
+
+                  {modelRouteRows.map((row, index) => (
+                    <div
+                      key={row.rowId}
+                      className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_36px]"
+                    >
+                      <div className="flex gap-1">
+                        <Input
+                          value={row.requestModel}
+                          onChange={(event) =>
+                            handleUpdateModelRouteRow(index, {
+                              requestModel: event.target.value,
+                            })
+                          }
+                          placeholder={t(
+                            "codexConfig.requestModelPlaceholder",
+                            {
+                              defaultValue: "例如: gpt-5.4-mini",
+                            },
+                          )}
+                          aria-label={t("codexConfig.requestModelColumn", {
+                            defaultValue: "请求模型",
+                          })}
+                          className="flex-1"
+                        />
+                        {routeCandidateModels.length > 0 && (
+                          <ModelDropdown
+                            models={routeCandidateModels}
+                            onSelect={(id) =>
+                              handleUpdateModelRouteRow(index, {
+                                requestModel: id,
+                              })
+                            }
+                          />
+                        )}
+                      </div>
+                      <div className="flex gap-1">
+                        <Input
+                          value={row.upstreamModel}
+                          onChange={(event) =>
+                            handleUpdateModelRouteRow(index, {
+                              upstreamModel: event.target.value,
+                            })
+                          }
+                          placeholder={t(
+                            "codexConfig.upstreamModelPlaceholder",
+                            {
+                              defaultValue: "例如: gpt-5.5",
+                            },
+                          )}
+                          aria-label={t("codexConfig.upstreamModelColumn", {
+                            defaultValue: "上游模型",
+                          })}
+                          className="flex-1"
+                        />
+                        {routeCandidateModels.length > 0 && (
+                          <ModelDropdown
+                            models={routeCandidateModels}
+                            onSelect={(id) =>
+                              handleUpdateModelRouteRow(index, {
+                                upstreamModel: id,
+                              })
+                            }
+                          />
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                        onClick={() => handleRemoveModelRouteRow(index)}
+                        title={t("common.delete", { defaultValue: "删除" })}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-border/60 px-3 py-4 text-sm text-muted-foreground">
+                  {t("codexConfig.requestModelRoutesEmpty", {
+                    defaultValue: "暂无请求模型别名映射。",
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 端点测速弹窗 - Codex */}

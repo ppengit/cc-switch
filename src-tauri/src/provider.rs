@@ -463,6 +463,18 @@ pub struct ProviderMeta {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub codex_model_routes: HashMap<String, CodexModelRoute>,
+    /// Codex 本地路由开关：独立于 modelCatalog，避免空目录时丢失用户意图。
+    #[serde(
+        rename = "codexLocalRoutingEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_local_routing_enabled: Option<bool>,
+    /// Codex 请求模型别名映射是否生效；关闭时保留 codexModelRoutes 数据。
+    #[serde(
+        rename = "codexModelRoutesEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_model_routes_enabled: Option<bool>,
     /// 用量查询脚本配置
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_script: Option<UsageScript>,

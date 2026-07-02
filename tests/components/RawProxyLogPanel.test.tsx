@@ -174,6 +174,38 @@ describe("RawProxyLogPanel", () => {
     expect(screen.getByText("gpt-5.4-mini")).toBeInTheDocument();
   });
 
+  it("renders multiple admission retry rows even when request ids are duplicated", () => {
+    useProxyRawLogsMock.mockReturnValue({
+      data: [
+        createLog({
+          id: 10,
+          requestId: "req-shared",
+          event: "admission_retry",
+          providerName: "Retry Attempt 1",
+          retryCount: 1,
+          delayMs: 300,
+        }),
+        createLog({
+          id: 11,
+          requestId: "req-shared",
+          event: "admission_retry",
+          providerName: "Retry Attempt 2",
+          retryCount: 2,
+          delayMs: 300,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+
+    render(<RawProxyLogPanel refreshIntervalMs={0} />);
+
+    expect(screen.getByText("Retry Attempt 1")).toBeInTheDocument();
+    expect(screen.getByText("Retry Attempt 2")).toBeInTheDocument();
+  });
+
   it("shows only the current raw log state instead of the full lifecycle", () => {
     useProxyRawLogsMock.mockReturnValue({
       data: [

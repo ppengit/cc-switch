@@ -8,6 +8,7 @@ import {
 } from "@/lib/query/proxy";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -85,10 +86,38 @@ export function SessionRoutingManagerDialog({
 
   const providers = data?.providers ?? [];
   const bindings = data?.bindings ?? [];
+  const anonymousOccupancy = providers.reduce(
+    (total, provider) => total + provider.anonymousOccupancy,
+    0,
+  );
   const enabledProviders = useMemo(
     () => providers.filter((provider) => provider.inFailoverQueue),
     [providers],
   );
+  const emptyBindingMessage = useMemo(() => {
+    if (data?.proxyRunning === false) {
+      return t("sessionRouting.manager.proxyStoppedNoBindings", {
+        defaultValue:
+          "代理服务未运行。会话绑定只保存在运行中的代理内存里，启动代理并产生请求后这里才会显示绑定。",
+      });
+    }
+    if (data && !data.enabled) {
+      return t("sessionRouting.manager.disabledNoBindings", {
+        defaultValue:
+          "会话路由当前未生效。请确认本地路由接管、自动故障转移和会话路由开关都已启用。",
+      });
+    }
+    if (anonymousOccupancy > 0 && data?.clientSessionOnly) {
+      return t("sessionRouting.manager.onlyAnonymousBindings", {
+        count: anonymousOccupancy,
+        defaultValue:
+          "当前有 {{count}} 个临时占用，但这些请求没有客户端显式会话 ID；在“仅绑定客户端显式会话”开启时，它们不会进入会话绑定列表。",
+      });
+    }
+    return t("sessionRouting.manager.noBindings", {
+      defaultValue: "暂无会话绑定。",
+    });
+  }, [anonymousOccupancy, data, t]);
 
   const handleProviderChange = (
     sessionId: string,
@@ -101,7 +130,10 @@ export function SessionRoutingManagerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl" zIndex="top">
+      <DialogContent
+        className="w-[calc(100vw-1rem)] max-w-5xl overflow-hidden sm:w-[calc(100vw-2rem)]"
+        zIndex="top"
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Route className="h-5 w-5 text-emerald-500" />
@@ -117,7 +149,7 @@ export function SessionRoutingManagerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-col gap-4 px-6 py-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 sm:px-6">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
             <div className="flex items-center gap-2">
               <Badge variant={data?.enabled ? "default" : "secondary"}>
@@ -128,6 +160,20 @@ export function SessionRoutingManagerDialog({
               <span className="text-sm text-muted-foreground">
                 {appId === "claude" ? "Claude" : "Codex"}
               </span>
+              {data?.proxyRunning === false ? (
+                <Badge variant="outline">
+                  {t("sessionRouting.manager.proxyStopped", {
+                    defaultValue: "代理未运行",
+                  })}
+                </Badge>
+              ) : null}
+              {data?.clientSessionOnly ? (
+                <Badge variant="outline">
+                  {t("sessionRouting.manager.clientOnly", {
+                    defaultValue: "仅显式会话",
+                  })}
+                </Badge>
+              ) : null}
             </div>
             <Button
               type="button"
@@ -145,7 +191,7 @@ export function SessionRoutingManagerDialog({
             </Button>
           </div>
 
-          <div className="rounded-lg border border-border">
+          <div className="min-w-0 rounded-lg border border-border">
             <div className="border-b border-border px-3 py-2">
               <div className="text-sm font-medium">
                 {t("sessionRouting.manager.providers", {
@@ -240,9 +286,9 @@ export function SessionRoutingManagerDialog({
             )}
           </div>
 
-          <div className="rounded-lg border border-border">
-            <div className="flex items-center justify-between border-b border-border px-3 py-2">
-              <div>
+          <div className="min-w-0 rounded-lg border border-border">
+            <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-3 py-2">
+              <div className="min-w-0">
                 <div className="text-sm font-medium">
                   {t("sessionRouting.manager.bindings", {
                     defaultValue: "会话绑定",
@@ -255,19 +301,27 @@ export function SessionRoutingManagerDialog({
                   })}
                 </div>
               </div>
-              <Badge variant="secondary">{bindings.length}</Badge>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                {anonymousOccupancy > 0 ? (
+                  <Badge variant="outline">
+                    {t("sessionRouting.manager.anonymousTotal", {
+                      count: anonymousOccupancy,
+                      defaultValue: "临时占用 {{count}}",
+                    })}
+                  </Badge>
+                ) : null}
+                <Badge variant="secondary">{bindings.length}</Badge>
+              </div>
             </div>
-            <ScrollArea className="h-[22rem]">
+            <ScrollArea className="max-h-[45vh] sm:max-h-[22rem]">
               {isFetching && !data ? (
                 <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   {t("common.loading", { defaultValue: "加载中..." })}
                 </div>
               ) : bindings.length === 0 ? (
-                <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  {t("sessionRouting.manager.noBindings", {
-                    defaultValue: "暂无会话绑定。",
-                  })}
+                <div className="flex min-h-32 items-center justify-center px-4 py-8 text-center text-sm leading-relaxed text-muted-foreground">
+                  {emptyBindingMessage}
                 </div>
               ) : (
                 <div className="divide-y divide-border">
@@ -364,13 +418,15 @@ export function SessionRoutingManagerDialog({
         </div>
 
         <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
-            {t("common.close", { defaultValue: "关闭" })}
-          </Button>
+          <DialogClose asChild>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              {t("common.close", { defaultValue: "关闭" })}
+            </Button>
+          </DialogClose>
         </DialogFooter>
       </DialogContent>
     </Dialog>

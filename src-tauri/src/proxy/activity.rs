@@ -88,6 +88,20 @@ impl ProxyActivityState {
         upstream_model.cloned().or_else(|| request_model.cloned())
     }
 
+    fn find_lifecycle_raw_log_mut(&mut self, request_id: &str) -> Option<&mut ProxyRawLogEntry> {
+        self.raw_logs
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.request_id == request_id && entry.event != "admission_retry")
+    }
+
+    fn find_lifecycle_raw_log(&self, request_id: &str) -> Option<&ProxyRawLogEntry> {
+        self.raw_logs
+            .iter()
+            .rev()
+            .find(|entry| entry.request_id == request_id && entry.event != "admission_retry")
+    }
+
     fn snapshot(&self) -> (usize, Vec<ActiveRequestTarget>) {
         let mut targets: Vec<ActiveRequestTarget> = self.targets.values().cloned().collect();
         targets.sort_by(|a, b| {
@@ -166,11 +180,7 @@ impl ProxyActivityState {
         let now = chrono::Utc::now().to_rfc3339();
         let raw_event = Self::new_raw_log_event(event_id, now.clone(), event);
 
-        if let Some(entry) = self
-            .raw_logs
-            .iter_mut()
-            .find(|entry| entry.request_id == event.request_id)
-        {
+        if let Some(entry) = self.find_lifecycle_raw_log_mut(&event.request_id) {
             entry.id = event_id;
             entry.timestamp = now.clone();
             entry.updated_at = now;
@@ -263,75 +273,31 @@ impl ProxyActivityState {
             active_target_count: active_request_targets.len(),
         };
 
-        if let Some(entry) = self
-            .raw_logs
-            .iter_mut()
-            .find(|entry| entry.request_id == event.request_id)
-        {
-            entry.id = event_id;
-            entry.timestamp = now.clone();
-            entry.updated_at = now;
-            entry.event = raw_event.event.clone();
-            entry.app_type = raw_event.app_type.clone();
-            entry.provider_id = raw_event.provider_id.clone();
-            entry.provider_name = raw_event.provider_name.clone();
-            if raw_event.request_model.is_some() {
-                entry.request_model = raw_event.request_model.clone();
-            }
-            if raw_event.upstream_model.is_some() {
-                entry.upstream_model = raw_event.upstream_model.clone();
-            }
-            if raw_event.route_mode.is_some() {
-                entry.route_mode = raw_event.route_mode.clone();
-            }
-            if raw_event.upstream_url.is_some() {
-                entry.upstream_url = raw_event.upstream_url.clone();
-            }
-            if raw_event.session_id.is_some() {
-                entry.session_id = raw_event.session_id.clone();
-            }
-            if raw_event.project_name.is_some() {
-                entry.project_name = raw_event.project_name.clone();
-            }
-            if raw_event.project_path.is_some() {
-                entry.project_path = raw_event.project_path.clone();
-            }
-            entry.status_code = raw_event.status_code.or(entry.status_code);
-            if raw_event.error.is_some() {
-                entry.error = raw_event.error.clone();
-            }
-            entry.retry_count = raw_event.retry_count;
-            entry.delay_ms = raw_event.delay_ms;
-            entry.active_request_count = raw_event.active_request_count;
-            entry.active_target_count = raw_event.active_target_count;
-            entry.events.push(raw_event);
-        } else {
-            self.raw_logs.push(ProxyRawLogEntry {
-                id: event_id,
-                timestamp: now.clone(),
-                started_at: now.clone(),
-                updated_at: now,
-                request_id: event.request_id.clone(),
-                event: raw_event.event.clone(),
-                app_type: raw_event.app_type.clone(),
-                provider_id: raw_event.provider_id.clone(),
-                provider_name: raw_event.provider_name.clone(),
-                request_model: raw_event.request_model.clone(),
-                upstream_model: raw_event.upstream_model.clone(),
-                route_mode: raw_event.route_mode.clone(),
-                upstream_url: raw_event.upstream_url.clone(),
-                session_id: raw_event.session_id.clone(),
-                project_name: raw_event.project_name.clone(),
-                project_path: raw_event.project_path.clone(),
-                status_code: raw_event.status_code,
-                error: raw_event.error.clone(),
-                retry_count: raw_event.retry_count,
-                delay_ms: raw_event.delay_ms,
-                active_request_count: raw_event.active_request_count,
-                active_target_count: raw_event.active_target_count,
-                events: vec![raw_event],
-            });
-        }
+        self.raw_logs.push(ProxyRawLogEntry {
+            id: event_id,
+            timestamp: now.clone(),
+            started_at: now.clone(),
+            updated_at: now,
+            request_id: event.request_id.clone(),
+            event: raw_event.event.clone(),
+            app_type: raw_event.app_type.clone(),
+            provider_id: raw_event.provider_id.clone(),
+            provider_name: raw_event.provider_name.clone(),
+            request_model: raw_event.request_model.clone(),
+            upstream_model: raw_event.upstream_model.clone(),
+            route_mode: raw_event.route_mode.clone(),
+            upstream_url: raw_event.upstream_url.clone(),
+            session_id: raw_event.session_id.clone(),
+            project_name: raw_event.project_name.clone(),
+            project_path: raw_event.project_path.clone(),
+            status_code: raw_event.status_code,
+            error: raw_event.error.clone(),
+            retry_count: raw_event.retry_count,
+            delay_ms: raw_event.delay_ms,
+            active_request_count: raw_event.active_request_count,
+            active_target_count: raw_event.active_target_count,
+            events: vec![raw_event],
+        });
 
         self.prune_raw_logs();
     }
@@ -616,10 +582,7 @@ impl ProxyActivityState {
         status_code: Option<u16>,
         error: Option<String>,
     ) -> Option<ProxyActivityEvent> {
-        let existing = self
-            .raw_logs
-            .iter()
-            .find(|entry| entry.request_id == request_id)?;
+        let existing = self.find_lifecycle_raw_log(request_id)?;
 
         if matches!(existing.event.as_str(), "finished" | "failed" | "cleared") {
             return None;
@@ -756,10 +719,12 @@ impl ProxyActivityState {
         &mut self,
         event: ProviderAdmissionRetryEvent,
     ) -> ProviderAdmissionRetryEvent {
-        if event.event == "retrying" {
+        if matches!(event.event.as_str(), "retrying" | "admitted") {
             self.admission_retries
                 .insert(event.request_id.clone(), event.clone());
-            self.append_admission_retry_raw_log(&event);
+            if event.event == "retrying" {
+                self.append_admission_retry_raw_log(&event);
+            }
         } else {
             self.admission_retries.remove(&event.request_id);
         }
@@ -787,9 +752,10 @@ impl ProxyActivityState {
                 continue;
             };
 
-            let entry = by_session
-                .entry(session_id.to_string())
-                .or_insert((meta.started_at, None, None));
+            let entry =
+                by_session
+                    .entry(session_id.to_string())
+                    .or_insert((meta.started_at, None, None));
             if meta.started_at >= entry.0 {
                 entry.0 = meta.started_at;
                 if meta.project_name.is_some() {
@@ -932,18 +898,41 @@ pub async fn finish_request(
     status_code: Option<u16>,
     error: Option<String>,
 ) {
-    let event = {
+    let (event, admission_cleared) = {
         let mut state = activity.write().await;
         let event_name = if error.is_some() {
             "failed"
         } else {
             "finished"
         };
-        state.finish_request(request_id, event_name, status_code, error)
+        let admission_cleared = state
+            .admission_retries
+            .get(request_id)
+            .cloned()
+            .map(|existing| {
+                let mut cleared = existing;
+                cleared.event = "cleared".to_string();
+                cleared.status = status_code;
+                cleared.error = error.clone();
+                cleared.delay_ms = 0;
+                cleared.updated_at = chrono::Utc::now().to_rfc3339();
+                cleared
+            });
+        (
+            state.finish_request(request_id, event_name, status_code, error),
+            admission_cleared,
+        )
     };
 
     if let Some(event) = event {
         emit_activity_event(app_handle, &event);
+    }
+    if let Some(cleared) = admission_cleared {
+        if let Some(handle) = app_handle {
+            if let Err(err) = handle.emit("provider-admission-retry", cleared) {
+                log::debug!("emit provider-admission-retry cleared failed: {err}");
+            }
+        }
     }
 }
 
@@ -1168,6 +1157,7 @@ mod tests {
     #[test]
     fn raw_logs_keep_each_admission_retry_attempt() {
         let mut state = ProxyActivityState::default();
+        let now = chrono::Utc::now();
 
         state.route_request(
             "req-admission",
@@ -1187,7 +1177,7 @@ mod tests {
             delay_ms: 300,
             status: Some(429),
             error: Some("上游 HTTP 429: capacity".to_string()),
-            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            updated_at: now.to_rfc3339(),
         });
         state.record_admission_retry(ProviderAdmissionRetryEvent {
             request_id: "req-admission".to_string(),
@@ -1199,23 +1189,25 @@ mod tests {
             delay_ms: 300,
             status: Some(429),
             error: Some("上游 HTTP 429: capacity".to_string()),
-            updated_at: "2026-07-01T00:00:01Z".to_string(),
+            updated_at: (now + chrono::Duration::seconds(1)).to_rfc3339(),
         });
 
         let logs = state.raw_logs(10, Some("codex"));
-        assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].event, "admission_retry");
-        assert_eq!(logs[0].retry_count, Some(2));
-        assert_eq!(logs[0].status_code, Some(429));
-        assert_eq!(logs[0].request_model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(logs[0].upstream_model.as_deref(), Some("deepseek-v4-pro"));
-        let attempts: Vec<u32> = logs[0]
-            .events
-            .iter()
-            .filter(|event| event.event == "admission_retry")
-            .filter_map(|event| event.retry_count)
-            .collect();
-        assert_eq!(attempts, vec![1, 2]);
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].event, "routed");
+        assert_eq!(logs[1].event, "admission_retry");
+        assert_eq!(logs[2].event, "admission_retry");
+        assert_eq!(logs[1].retry_count, Some(1));
+        assert_eq!(logs[2].retry_count, Some(2));
+        assert_eq!(logs[1].status_code, Some(429));
+        assert_eq!(logs[2].status_code, Some(429));
+        assert_eq!(logs[1].request_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(logs[2].request_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(logs[1].upstream_model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(logs[2].upstream_model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(logs[0].events.len(), 1);
+        assert_eq!(logs[1].events.len(), 1);
+        assert_eq!(logs[2].events.len(), 1);
     }
 
     #[test]

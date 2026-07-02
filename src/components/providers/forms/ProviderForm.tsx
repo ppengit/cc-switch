@@ -205,6 +205,25 @@ const codexCatalogCountFromSettings = (settingsConfig: unknown): number => {
   return 0;
 };
 
+const getInitialCodexLocalRoutingEnabled = (
+  meta: ProviderMeta | undefined,
+  settingsConfig: unknown,
+): boolean => {
+  if (meta?.codexLocalRoutingEnabled !== undefined) {
+    return meta.codexLocalRoutingEnabled;
+  }
+  return codexCatalogCountFromSettings(settingsConfig) > 0;
+};
+
+const getInitialCodexModelRoutesEnabled = (
+  meta: ProviderMeta | undefined,
+): boolean => {
+  if (meta?.codexModelRoutesEnabled !== undefined) {
+    return meta.codexModelRoutesEnabled;
+  }
+  return Object.keys(meta?.codexModelRoutes ?? {}).length > 0;
+};
+
 export const normalizeCodexCatalogModelsForSave = (
   models: CodexCatalogModel[],
 ): CodexCatalogModel[] => {
@@ -611,6 +630,10 @@ function ProviderFormFull({
   const [codexModelRoutes, setCodexModelRoutes] = useState<
     Record<string, CodexModelRoute>
   >(() => initialData?.meta?.codexModelRoutes ?? {});
+  const [codexModelRoutesEnabled, setCodexModelRoutesEnabled] =
+    useState<boolean>(() =>
+      getInitialCodexModelRoutesEnabled(initialData?.meta),
+    );
   const [customUserAgent, setCustomUserAgent] = useState<string>(
     () => initialData?.meta?.customUserAgent ?? "",
   );
@@ -677,6 +700,9 @@ function ProviderFormFull({
     setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
     setCodexModelRoutes(seed?.meta?.codexModelRoutes ?? {});
+    setCodexModelRoutesEnabled(
+      getInitialCodexModelRoutesEnabled(seed?.meta),
+    );
     setCustomUserAgent(seed?.meta?.customUserAgent ?? "");
     setLocalProxyHeadersOverride(
       formatRequestOverrideObject(
@@ -944,7 +970,11 @@ function ProviderFormFull({
   // 接管已开）。只在 useState 初始化与预设重置点设置，跟 localCodexApiFormat
   // 对称，避免漂移。
   const [codexTakeoverEnabled, setCodexTakeoverEnabled] = useState<boolean>(
-    () => codexCatalogCountFromSettings(initialData?.settingsConfig) > 0,
+    () =>
+      getInitialCodexLocalRoutingEnabled(
+        initialData?.meta,
+        initialData?.settingsConfig,
+      ),
   );
 
   useEffect(() => {
@@ -965,8 +995,9 @@ function ProviderFormFull({
       getInitialCodexApiFormat(seedMeta, seedSettingsConfig),
     );
     setCodexTakeoverEnabled(
-      codexCatalogCountFromSettings(seedSettingsConfig) > 0,
+      getInitialCodexLocalRoutingEnabled(seedMeta, seedSettingsConfig),
     );
+    setCodexModelRoutesEnabled(getInitialCodexModelRoutesEnabled(seedMeta));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, formSeedKey]);
 
@@ -1008,6 +1039,7 @@ function ProviderFormFull({
       resetCodexConfig(template.auth, template.config);
       setCodexChatReasoning({});
       setCodexModelRoutes({});
+      setCodexModelRoutesEnabled(false);
       setCodexTakeoverEnabled(false);
     }
   }, [appId, formSeedKey, selectedPresetId, resetCodexConfig]);
@@ -2085,9 +2117,19 @@ function ProviderFormFull({
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
-      codexModelRoutes:
+      codexLocalRoutingEnabled:
         appId === "codex" && category !== "official"
+          ? codexTakeoverEnabled
+          : undefined,
+      codexModelRoutes:
+        appId === "codex" &&
+        category !== "official" &&
+        codexModelRoutesEnabled
           ? normalizeCodexModelRoutesForSave(codexModelRoutes)
+          : undefined,
+      codexModelRoutesEnabled:
+        appId === "codex" && category !== "official"
+          ? codexModelRoutesEnabled
           : undefined,
       customUserAgent:
         (appId === "claude" || appId === "codex") && category !== "official"
@@ -2347,16 +2389,25 @@ function ProviderFormFull({
             (seededSettingsConfig as any)?.meta?.codexChatReasoning ?? {},
           );
           setCodexModelRoutes(initialData?.meta?.codexModelRoutes ?? {});
+          setCodexModelRoutesEnabled(
+            getInitialCodexModelRoutesEnabled(initialData?.meta),
+          );
           setLocalCodexApiFormat(
             codexApiFormatFromWireApi(extractCodexWireApi(seeded.config)) ??
               "openai_responses",
           );
-          setCodexTakeoverEnabled(seededModelCatalog.length > 0);
+          setCodexTakeoverEnabled(
+            getInitialCodexLocalRoutingEnabled(
+              initialData?.meta,
+              seededSettingsConfig,
+            ),
+          );
         } else {
           const template = getCodexCustomTemplate();
           resetCodexConfig(template.auth, template.config);
           setCodexChatReasoning({});
           setCodexModelRoutes({});
+          setCodexModelRoutesEnabled(false);
           setLocalCodexApiFormat(
             codexApiFormatFromWireApi(extractCodexWireApi(template.config)) ??
               "openai_responses",
@@ -2405,6 +2456,7 @@ function ProviderFormFull({
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
       setCodexModelRoutes({});
+      setCodexModelRoutesEnabled(false);
       setLocalCodexApiFormat(
         preset.apiFormat ??
           codexApiFormatFromWireApi(extractCodexWireApi(config)) ??
@@ -2892,6 +2944,8 @@ function ProviderFormFull({
               onCodexChatReasoningChange={setCodexChatReasoning}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
+              modelRoutesEnabled={codexModelRoutesEnabled}
+              onModelRoutesEnabledChange={setCodexModelRoutesEnabled}
               modelRoutes={codexModelRoutes}
               onModelRoutesChange={setCodexModelRoutes}
               speedTestEndpoints={speedTestEndpoints}

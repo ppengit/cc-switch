@@ -68,6 +68,9 @@ export function ProviderAdvancedConfig({
   const [isAdmissionRetryOpen, setIsAdmissionRetryOpen] = useState(
     admissionRetryConfig.enabled === true || hasAdmissionRetryTiming,
   );
+  const [isSessionRoutingConfigOpen, setIsSessionRoutingConfigOpen] = useState(
+    maxConcurrentRequests !== undefined,
+  );
 
   useEffect(() => {
     setIsTestConfigOpen(testConfig.enabled);
@@ -82,6 +85,12 @@ export function ProviderAdvancedConfig({
       admissionRetryConfig.enabled === true || hasAdmissionRetryTiming,
     );
   }, [admissionRetryConfig.enabled, hasAdmissionRetryTiming]);
+
+  useEffect(() => {
+    if (maxConcurrentRequests !== undefined) {
+      setIsSessionRoutingConfigOpen(true);
+    }
+  }, [maxConcurrentRequests]);
 
   return (
     <div className="space-y-4">
@@ -233,6 +242,13 @@ export function ProviderAdvancedConfig({
           role="button"
           tabIndex={0}
           className="flex w-full cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+          onClick={() => setIsSessionRoutingConfigOpen((current) => !current)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setIsSessionRoutingConfigOpen((current) => !current);
+            }
+          }}
         >
           <div className="flex items-center gap-3">
             <Route className="h-4 w-4 text-muted-foreground" />
@@ -242,33 +258,47 @@ export function ProviderAdvancedConfig({
               })}
             </span>
           </div>
+          {isSessionRoutingConfigOpen ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          )}
         </div>
-        <div className="border-t border-border/50 p-4 space-y-4">
-          <p className="text-sm text-muted-foreground">
-            {t("providerAdvanced.sessionRoutingConfigDesc", {
-              defaultValue:
-                "留空或填 0 表示无限并发；这是单个供应商可承载的会话路由占用上限。",
-            })}
-          </p>
-          <div className="space-y-2 max-w-sm">
-            <Label htmlFor="max-concurrent-requests">
-              {t("providerAdvanced.maxConcurrentRequests", {
-                defaultValue: "最大并发请求数",
+        <div
+          className={cn(
+            "overflow-hidden transition-all duration-200",
+            isSessionRoutingConfigOpen
+              ? "max-h-[260px] opacity-100"
+              : "max-h-0 opacity-0",
+          )}
+        >
+          <div className="border-t border-border/50 p-4 space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {t("providerAdvanced.sessionRoutingConfigDesc", {
+                defaultValue:
+                  "留空或填 0 表示无限并发；这是单个供应商可承载的会话路由占用上限。",
               })}
-            </Label>
-            <Input
-              id="max-concurrent-requests"
-              type="number"
-              min={0}
-              max={1000000}
-              value={maxConcurrentRequests ?? ""}
-              onChange={(e) =>
-                onMaxConcurrentRequestsChange(
-                  e.target.value ? parseInt(e.target.value, 10) : undefined,
-                )
-              }
-              placeholder="0"
-            />
+            </p>
+            <div className="space-y-2 max-w-sm">
+              <Label htmlFor="max-concurrent-requests">
+                {t("providerAdvanced.maxConcurrentRequests", {
+                  defaultValue: "最大并发请求数",
+                })}
+              </Label>
+              <Input
+                id="max-concurrent-requests"
+                type="number"
+                min={0}
+                max={1000000}
+                value={maxConcurrentRequests ?? ""}
+                onChange={(e) =>
+                  onMaxConcurrentRequestsChange(
+                    e.target.value ? parseInt(e.target.value, 10) : undefined,
+                  )
+                }
+                placeholder="0"
+              />
+            </div>
           </div>
         </div>
       </div>

@@ -46,6 +46,17 @@ vi.mock("@/components/ui/tooltip", () => ({
   TooltipContent: ({ children }: any) => <div>{children}</div>,
 }));
 
+vi.mock("@/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuTrigger: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuItem: ({ children, onClick }: any) => (
+    <button type="button" role="menuitem" onClick={onClick}>
+      {children}
+    </button>
+  ),
+}));
+
 vi.mock("@dnd-kit/sortable", async () => {
   const actual = await vi.importActual<any>("@dnd-kit/sortable");
 
@@ -80,6 +91,23 @@ vi.mock("@/lib/query/proxy", () => ({
   useAppProxyConfig: () => ({ data: mockAppProxyConfig }),
   useUpdateAppProxyConfig: () => ({
     mutate: mockUpdateAppProxyConfigMutate,
+    isPending: false,
+  }),
+  useSessionRoutingSnapshot: () => ({
+    data: {
+      appType: "claude",
+      enabled: false,
+      proxyRunning: false,
+      clientSessionOnly: true,
+      idleTtlSeconds: 600,
+      bindings: [],
+      providers: [],
+    },
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+  useRebindSessionRoute: () => ({
+    mutate: vi.fn(),
     isPending: false,
   }),
 }));
@@ -639,7 +667,10 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "供应商配置模板" }),
+    );
 
     const applyAllButton = await screen.findByRole("button", {
       name: "应用到当前应用全部 (1)",
@@ -720,7 +751,10 @@ describe("ProviderList Component", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "供应商配置模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "供应商配置模板" }),
+    );
 
     const applyAllButton = await screen.findByRole("button", {
       name: "应用到当前应用全部 (1)",

@@ -4172,6 +4172,9 @@ impl ProxyService {
         Ok(crate::proxy::types::SessionRoutingSnapshot {
             app_type: app_type.to_string(),
             enabled,
+            proxy_running: false,
+            client_session_only: config.session_routing_client_session_only,
+            idle_ttl_seconds: config.session_routing_idle_ttl_seconds,
             bindings: Vec::new(),
             providers,
         })
