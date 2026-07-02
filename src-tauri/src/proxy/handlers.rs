@@ -1338,7 +1338,14 @@ fn build_codex_proxy_error_response(
 ) -> Result<axum::response::Response, ProxyError> {
     let status = axum::http::StatusCode::from_u16(map_proxy_error_to_status(error))
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let body = codex_proxy_error_json(&ctx.provider.name, &ctx.request_model, endpoint, error);
+    let outbound_model = codex_error_outbound_model(ctx);
+    let body = codex_proxy_error_json(
+        &ctx.provider.name,
+        &ctx.request_model,
+        outbound_model.as_deref(),
+        endpoint,
+        error,
+    );
     let body = serde_json::to_vec(&body).map_err(|e| {
         log::error!("[Codex] 序列化代理错误体失败: {e}");
         ProxyError::Internal(format!("Failed to serialize proxy error: {e}"))
@@ -1357,9 +1364,30 @@ fn build_codex_proxy_error_response(
         })
 }
 
+fn codex_error_outbound_model(ctx: &RequestContext) -> Option<String> {
+    if let Some(model) = ctx
+        .outbound_model
+        .as_ref()
+        .filter(|model| !model.trim().is_empty())
+    {
+        return Some(model.clone());
+    }
+
+    let body = json!({ "model": ctx.request_model.clone() });
+    let (mut mapped, _, _) = super::model_mapper::apply_codex_model_mapping(body, &ctx.provider);
+    super::providers::apply_codex_chat_upstream_model(&ctx.provider, &mut mapped);
+    mapped
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+}
+
 fn codex_proxy_error_json(
     provider_name: &str,
     request_model: &str,
+    outbound_model: Option<&str>,
     endpoint: &str,
     error: &ProxyError,
 ) -> Value {
@@ -1392,6 +1420,15 @@ fn codex_proxy_error_json(
     else {
         return body;
     };
+    let display_model = outbound_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(request_model);
+    let original_model_fragment = outbound_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty() && *model != request_model)
+        .map(|_| format!("; original_request_model: {request_model}"))
+        .unwrap_or_default();
 
     let message = if upstream_status == Some(413) {
         // 413 来自上游渠道商的网关（典型是 nginx 的 client_max_body_size），不是 CC
@@ -1403,13 +1440,14 @@ fn codex_proxy_error_json(
                 "Upstream provider rejected the request with HTTP 413 (Payload Too Large). ",
                 "The request body exceeds the upstream gateway's size limit; this is the ",
                 "provider's server-side limit, not a CC Switch limit. ",
-                "Provider: {provider}; model: {model}; endpoint: {endpoint}. ",
+                "Provider: {provider}; model: {model}{original_model}; endpoint: {endpoint}. ",
                 "To recover, shrink the request: run /compact, remove large pasted logs or ",
                 "inline images, or ask the provider to raise its request body limit ",
                 "(e.g. nginx client_max_body_size)."
             ),
             provider = provider_name,
-            model = request_model,
+            model = display_model,
+            original_model = original_model_fragment,
             endpoint = endpoint,
         )
     } else {
@@ -1423,7 +1461,7 @@ fn codex_proxy_error_json(
             .map(|status| format!("; upstream_status: HTTP {status}"))
             .unwrap_or_default();
         format!(
-            "CC Switch local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {request_model}{status_fragment}; cause: {cause}"
+            "CC Switch local proxy failed while handling Codex endpoint {endpoint}. Provider: {provider_name}; model: {display_model}{original_model_fragment}{status_fragment}; cause: {cause}"
         )
     };
 
@@ -1458,8 +1496,14 @@ fn codex_proxy_error_json(
     );
     error_obj.insert(
         "model".to_string(),
-        Value::String(request_model.to_string()),
+        Value::String(display_model.to_string()),
     );
+    if display_model != request_model {
+        error_obj.insert(
+            "request_model".to_string(),
+            Value::String(request_model.to_string()),
+        );
+    }
     // 仅用于 Codex 本地路由；不要复用到 query 可能携带凭证的端点。
     error_obj.insert("endpoint".to_string(), Value::String(endpoint.to_string()));
     if let Some(status) = upstream_status {
@@ -2157,11 +2201,19 @@ fn log_forward_error(
     let status_code = map_proxy_error_to_status(error);
     let error_message = get_error_message(error);
     let request_id = uuid::Uuid::new_v4().to_string();
+    let logged_model = if ctx.app_type_str == "codex" {
+        codex_error_outbound_model(ctx).unwrap_or_else(|| ctx.request_model.clone())
+    } else {
+        ctx.outbound_model
+            .clone()
+            .unwrap_or_else(|| ctx.request_model.clone())
+    };
 
     if let Err(e) = logger.log_error_with_context(
         request_id,
         ctx.provider.id.clone(),
         ctx.app_type_str.to_string(),
+        logged_model,
         ctx.request_model.clone(),
         status_code,
         error_message,
@@ -2867,7 +2919,7 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
     #[test]
     fn codex_proxy_forward_error_includes_context_and_cause() {
         let error = ProxyError::ForwardFailed("连接失败: dns lookup failed".to_string());
-        let body = codex_proxy_error_json("DeepSeek", "deepseek-chat", "/responses", &error);
+        let body = codex_proxy_error_json("DeepSeek", "deepseek-chat", None, "/responses", &error);
 
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("CC Switch local proxy failed"));
@@ -2891,7 +2943,7 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
 
             retry_after_ms: None,
         };
-        let body = codex_proxy_error_json("MiniMax", "abab6.5s", "/responses", &error);
+        let body = codex_proxy_error_json("MiniMax", "abab6.5s", None, "/responses", &error);
 
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("upstream_status: HTTP 502"));
@@ -2915,7 +2967,7 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
 
             retry_after_ms: None,
         };
-        let body = codex_proxy_error_json("HCAI", "gpt-5.5", "/responses", &error);
+        let body = codex_proxy_error_json("HCAI", "gpt-5.5", None, "/responses", &error);
 
         let message = body["error"]["message"].as_str().unwrap();
         // 不再误导成「本地代理失败」
@@ -2932,5 +2984,18 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
         assert_eq!(body["error"]["provider"], "HCAI");
         assert_eq!(body["error"]["model"], "gpt-5.5");
         assert_eq!(body["error"]["endpoint"], "/responses");
+    }
+
+    #[test]
+    fn codex_proxy_error_prefers_outbound_model_and_keeps_original_request_model() {
+        let error = ProxyError::ForwardFailed("provider says unsupported model".to_string());
+        let body =
+            codex_proxy_error_json("Vendor", "gpt-5.4", Some("gpt-5.5"), "/responses", &error);
+
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("model: gpt-5.5"));
+        assert!(message.contains("original_request_model: gpt-5.4"));
+        assert_eq!(body["error"]["model"], "gpt-5.5");
+        assert_eq!(body["error"]["request_model"], "gpt-5.4");
     }
 }
