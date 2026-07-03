@@ -169,6 +169,7 @@ const normalizeAdmissionRetryConfigForSave = (
   const normalized: ProviderUpstreamAdmissionRetry = {
     enabled: config.enabled === true,
     autoEnabled: config.autoEnabled === true,
+    notifyOnSuccess: config.notifyOnSuccess === true,
   };
   const autoKeywords = Array.from(
     new Set(
@@ -190,6 +191,7 @@ const normalizeAdmissionRetryConfigForSave = (
 
   return normalized.enabled ||
     normalized.autoEnabled ||
+    normalized.notifyOnSuccess ||
     autoKeywords.length > 0 ||
     maxRetries !== undefined ||
     initialDelayMs !== undefined ||

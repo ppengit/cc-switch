@@ -1,11 +1,39 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useQueryClient } from "@tanstack/react-query";
-import type { ProxyActivityEvent, ProxyStatus } from "@/types/proxy";
+import {
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
+import { toast } from "sonner";
+import { providersApi } from "@/lib/api/providers";
+import type { AppId } from "@/lib/api/types";
+import type { Provider } from "@/types";
+import type {
+  ProviderAdmissionRetryEvent,
+  ProxyActivityEvent,
+  ProxyStatus,
+} from "@/types/proxy";
 import {
   normalizeActiveRequestTargets,
   pruneProxyStatusProviderActivity,
 } from "@/lib/proxyActivity";
+
+const APP_LABELS: Record<AppId, string> = {
+  claude: "Claude",
+  "claude-desktop": "Claude Desktop",
+  codex: "Codex",
+  gemini: "Gemini",
+  opencode: "OpenCode",
+  openclaw: "OpenClaw",
+  hermes: "Hermes",
+};
+
+interface ProvidersCacheEntry {
+  providers: Record<string, Provider>;
+  currentProviderId: string;
+}
+
+let admissionRetryAudioContext: AudioContext | null = null;
 
 function createStatusFromActivity(payload: ProxyActivityEvent): ProxyStatus {
   return {
@@ -33,6 +61,95 @@ function createStatusFromActivity(payload: ProxyActivityEvent): ProxyStatus {
   };
 }
 
+function isAppId(value: string): value is AppId {
+  return Object.prototype.hasOwnProperty.call(APP_LABELS, value);
+}
+
+async function getAdmissionRetryProvider(
+  queryClient: QueryClient,
+  appId: AppId,
+  providerId: string,
+): Promise<Provider | undefined> {
+  const cached = queryClient.getQueryData<ProvidersCacheEntry>([
+    "providers",
+    appId,
+  ]);
+  const cachedProvider = cached?.providers?.[providerId];
+  if (cachedProvider) return cachedProvider;
+
+  try {
+    const providers = await providersApi.getAll(appId);
+    return providers[providerId];
+  } catch {
+    return undefined;
+  }
+}
+
+function playAdmissionRetrySuccessTone() {
+  if (typeof window === "undefined" || typeof window.AudioContext !== "function") {
+    return;
+  }
+
+  try {
+    admissionRetryAudioContext ??= new window.AudioContext();
+    const ctx = admissionRetryAudioContext;
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => undefined);
+    }
+
+    const startedAt = ctx.currentTime + 0.01;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(880, startedAt);
+    oscillator.frequency.exponentialRampToValueAtTime(1320, startedAt + 0.12);
+
+    gain.gain.setValueAtTime(0.0001, startedAt);
+    gain.gain.exponentialRampToValueAtTime(0.08, startedAt + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startedAt + 0.24);
+
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start(startedAt);
+    oscillator.stop(startedAt + 0.25);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      gain.disconnect();
+    };
+  } catch {
+    // 桌面环境不支持音频上下文时静默降级，只保留弹窗提示。
+  }
+}
+
+async function maybeNotifyAdmissionRetrySuccess(
+  queryClient: QueryClient,
+  payload: ProviderAdmissionRetryEvent,
+) {
+  if (payload.event !== "admitted" || !isAppId(payload.appType)) {
+    return;
+  }
+
+  const provider = await getAdmissionRetryProvider(
+    queryClient,
+    payload.appType,
+    payload.providerId,
+  );
+  if (provider?.meta?.upstreamAdmissionRetry?.notifyOnSuccess !== true) {
+    return;
+  }
+
+  playAdmissionRetrySuccessTone();
+  const retrySuffix =
+    payload.retryCount > 0 ? `，累计重试 ${payload.retryCount} 次` : "";
+  toast.success(`${APP_LABELS[payload.appType]} 入场成功`, {
+    id: `admission-retry-admitted-${payload.requestId}`,
+    position: "bottom-right",
+    duration: 6000,
+    description: `${payload.providerName} 已成功进入上游${retrySuffix}。现在可以回到对应 CLI 继续会话。`,
+  });
+}
+
 /**
  * 把后端实时代理活动事件同步到 React Query 的 proxyStatus 缓存。
  *
@@ -42,13 +159,12 @@ export function useProxyActivityBridge() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
+    let unlisteners: UnlistenFn[] = [];
     let disposed = false;
 
     (async () => {
-      const off = await listen<ProxyActivityEvent>(
-        "proxy-activity-updated",
-        (event) => {
+      const [activityOff, admissionRetryOff] = await Promise.all([
+        listen<ProxyActivityEvent>("proxy-activity-updated", (event) => {
           const payload = event.payload;
           const normalizedTargets = normalizeActiveRequestTargets(
             payload.active_request_targets,
@@ -97,19 +213,27 @@ export function useProxyActivityBridge() {
           queryClient.invalidateQueries({
             queryKey: ["usage", "raw-proxy-logs"],
           });
-        },
-      );
+        }),
+        listen<ProviderAdmissionRetryEvent>("provider-admission-retry", (event) => {
+          const payload = event.payload;
+          void maybeNotifyAdmissionRetrySuccess(queryClient, payload);
+          queryClient.invalidateQueries({
+            queryKey: ["usage", "raw-proxy-logs"],
+          });
+        }),
+      ]);
 
       if (disposed) {
-        off();
+        activityOff();
+        admissionRetryOff();
       } else {
-        unlisten = off;
+        unlisteners = [activityOff, admissionRetryOff];
       }
     })();
 
     return () => {
       disposed = true;
-      unlisten?.();
+      unlisteners.forEach((off) => off());
     };
   }, [queryClient]);
 }

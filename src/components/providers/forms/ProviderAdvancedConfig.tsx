@@ -64,10 +64,13 @@ export function ProviderRoutingRetryConfig({
   const autoKeywordsText = (admissionRetryConfig.autoKeywords ?? []).join("\n");
   const hasAdmissionRetryAuto =
     admissionRetryConfig.autoEnabled === true || autoKeywordsText.trim() !== "";
+  const hasAdmissionRetryNotify =
+    admissionRetryConfig.notifyOnSuccess === true;
   const [isAdmissionRetryOpen, setIsAdmissionRetryOpen] = useState(
     admissionRetryConfig.enabled === true ||
       hasAdmissionRetryTiming ||
-      hasAdmissionRetryAuto,
+      hasAdmissionRetryAuto ||
+      hasAdmissionRetryNotify,
   );
   const [isSessionRoutingConfigOpen, setIsSessionRoutingConfigOpen] = useState(
     maxConcurrentRequests !== undefined,
@@ -77,12 +80,14 @@ export function ProviderRoutingRetryConfig({
     setIsAdmissionRetryOpen(
       admissionRetryConfig.enabled === true ||
         hasAdmissionRetryTiming ||
-        hasAdmissionRetryAuto,
+        hasAdmissionRetryAuto ||
+        hasAdmissionRetryNotify,
     );
   }, [
     admissionRetryConfig.enabled,
     hasAdmissionRetryTiming,
     hasAdmissionRetryAuto,
+    hasAdmissionRetryNotify,
   ]);
 
   useEffect(() => {
@@ -198,7 +203,7 @@ export function ProviderRoutingRetryConfig({
             <p className="text-sm text-muted-foreground">
               {t("providerAdvanced.admissionRetryConfigDesc", {
                 defaultValue:
-                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，按固定间隔持续重试同一供应商；也可在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
+                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，会按目标间隔持续重试同一供应商；若单次失败本身已耗时超过间隔，则下一次会立即发起。也可在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
               })}
             </p>
             <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
@@ -286,6 +291,31 @@ export function ProviderRoutingRetryConfig({
                 </p>
               </div>
             </div>
+            <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+              <div className="space-y-1">
+                <Label htmlFor="admission-notify-on-success">
+                  {t("providerAdvanced.admissionNotifyOnSuccess", {
+                    defaultValue: "成功通知（弹窗+声音）",
+                  })}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionNotifyOnSuccessHint", {
+                    defaultValue:
+                      "入场成功并自动停止重试后，在右下角弹出提示并播放一声提醒，便于回到对应 CLI 继续会话。",
+                  })}
+                </p>
+              </div>
+              <Switch
+                id="admission-notify-on-success"
+                checked={admissionRetryConfig.notifyOnSuccess === true}
+                onCheckedChange={(checked) =>
+                  onAdmissionRetryConfigChange({
+                    ...admissionRetryConfig,
+                    notifyOnSuccess: checked,
+                  })
+                }
+              />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="admission-max-retries">
@@ -343,6 +373,12 @@ export function ProviderRoutingRetryConfig({
                   }
                   placeholder="1000"
                 />
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionInitialDelayHint", {
+                    defaultValue:
+                      "控制首次重试的目标起始间隔；若上游这次失败本身已经耗时更久，则不会再额外补等。",
+                  })}
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="admission-max-delay">
@@ -389,6 +425,12 @@ export function ProviderRoutingRetryConfig({
                   }
                   placeholder="100"
                 />
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionJitterHint", {
+                    defaultValue:
+                      "用于打散同一时刻的并发重试；设为 0 可获得更稳定的固定节奏。",
+                  })}
+                </p>
               </div>
             </div>
           </div>

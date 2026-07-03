@@ -448,6 +448,8 @@ pub struct UpstreamAdmissionRetryConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub auto_keywords: Vec<String>,
+    #[serde(rename = "notifyOnSuccess", default)]
+    pub notify_on_success: bool,
     /// Maximum same-provider admission retries. `None` or `Some(0)` means
     /// unlimited while the switch remains enabled.
     #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
@@ -1227,6 +1229,7 @@ mod tests {
                 enabled: true,
                 auto_enabled: true,
                 auto_keywords: vec!["负载已经达到上限".to_string()],
+                notify_on_success: true,
                 max_retries: Some(4),
                 initial_delay_ms: Some(500),
                 max_delay_ms: Some(3000),
@@ -1242,6 +1245,7 @@ mod tests {
             value["upstreamAdmissionRetry"]["autoKeywords"][0],
             "负载已经达到上限"
         );
+        assert_eq!(value["upstreamAdmissionRetry"]["notifyOnSuccess"], true);
         assert_eq!(value["upstreamAdmissionRetry"]["maxRetries"], 4);
         assert_eq!(value["upstreamAdmissionRetry"]["initialDelayMs"], 500);
         assert_eq!(value["upstreamAdmissionRetry"]["maxDelayMs"], 3000);
@@ -1253,6 +1257,7 @@ mod tests {
         assert!(retry.enabled);
         assert!(retry.auto_enabled);
         assert_eq!(retry.auto_keywords, vec!["负载已经达到上限".to_string()]);
+        assert!(retry.notify_on_success);
         assert_eq!(retry.max_retries, Some(4));
         assert_eq!(retry.initial_delay_ms, Some(500));
         assert_eq!(retry.max_delay_ms, Some(3000));

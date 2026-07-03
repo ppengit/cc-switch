@@ -196,6 +196,7 @@ export interface ProviderUpstreamAdmissionRetry {
   enabled?: boolean;
   autoEnabled?: boolean;
   autoKeywords?: string[];
+  notifyOnSuccess?: boolean;
   maxRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;

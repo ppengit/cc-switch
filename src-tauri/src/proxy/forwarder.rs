@@ -1396,6 +1396,7 @@ impl RequestForwarder {
     ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
         let mut retries_used = 0u32;
         loop {
+            let attempt_started_at = std::time::Instant::now();
             match self
                 .forward(
                     app_type, method, provider, endpoint, body, headers, extensions, adapter,
@@ -1418,6 +1419,8 @@ impl RequestForwarder {
                     return Ok(result);
                 }
                 Err(error) => {
+                    let attempt_elapsed_ms =
+                        attempt_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     let category = self.categorize_proxy_error(app_type, endpoint, &error);
                     let admission_retryable = should_retry_provider_admission(category, &error);
                     let policy = self.current_admission_retry_policy(app_type, provider);
@@ -1487,27 +1490,46 @@ impl RequestForwarder {
                     }
 
                     retries_used = retries_used.saturating_add(1);
-                    let delay_ms =
-                        policy.delay_ms(retries_used, proxy_error_retry_after_ms(&error));
-                    log::warn!(
-                        "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, delay_ms={}, error={}",
-                        app_type.as_str(),
-                        provider.name,
+                    let delay_plan = policy.plan_delay(
                         retries_used,
-                        delay_ms,
-                        summarize_proxy_error(&error)
+                        proxy_error_retry_after_ms(&error),
+                        attempt_elapsed_ms,
                     );
+                    if delay_plan.used_retry_after {
+                        log::warn!(
+                            "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, wait_ms={}, retry_after_ms={}, attempt_ms={}, error={}",
+                            app_type.as_str(),
+                            provider.name,
+                            retries_used,
+                            delay_plan.sleep_ms,
+                            delay_plan.target_interval_ms,
+                            attempt_elapsed_ms,
+                            summarize_proxy_error(&error)
+                        );
+                    } else {
+                        log::warn!(
+                            "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, wait_ms={}, target_interval_ms={}, attempt_ms={}, error={}",
+                            app_type.as_str(),
+                            provider.name,
+                            retries_used,
+                            delay_plan.sleep_ms,
+                            delay_plan.target_interval_ms,
+                            attempt_elapsed_ms,
+                            summarize_proxy_error(&error)
+                        );
+                    }
                     self.emit_admission_retry_event(
                         app_type,
                         provider,
                         retries_used,
-                        delay_ms,
+                        delay_plan.sleep_ms,
                         Some(&error),
                         "retrying",
                     )
                     .await;
-                    if delay_ms > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    if delay_plan.sleep_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_plan.sleep_ms))
+                            .await;
                     }
                     if self
                         .current_admission_retry_policy(app_type, provider)
@@ -2857,6 +2879,13 @@ struct AdmissionRetryPolicy {
 
 const MAX_ADMISSION_RETRY_DELAY_MS: u64 = 600_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdmissionRetryDelayPlan {
+    target_interval_ms: u64,
+    sleep_ms: u64,
+    used_retry_after: bool,
+}
+
 impl AdmissionRetryPolicy {
     fn from_provider(provider: &Provider) -> Option<Self> {
         let config = provider
@@ -2919,6 +2948,27 @@ impl AdmissionRetryPolicy {
     fn retry_limit_reached(&self, retries_used: u32) -> bool {
         self.max_retries
             .is_some_and(|max_retries| retries_used >= max_retries)
+    }
+
+    fn plan_delay(
+        &self,
+        retry_number: u32,
+        retry_after_ms: Option<u64>,
+        attempt_elapsed_ms: u64,
+    ) -> AdmissionRetryDelayPlan {
+        let used_retry_after = retry_after_ms.is_some();
+        let target_interval_ms = self.delay_ms(retry_number, retry_after_ms);
+        let sleep_ms = if used_retry_after {
+            target_interval_ms
+        } else {
+            target_interval_ms.saturating_sub(attempt_elapsed_ms)
+        };
+
+        AdmissionRetryDelayPlan {
+            target_interval_ms,
+            sleep_ms,
+            used_retry_after,
+        }
     }
 
     fn delay_ms(&self, retry_number: u32, retry_after_ms: Option<u64>) -> u64 {
@@ -4477,6 +4527,57 @@ mod tests {
         assert!(!policy.retry_limit_reached(0));
         assert!(!policy.retry_limit_reached(2));
         assert!(policy.retry_limit_reached(3));
+    }
+
+    #[test]
+    fn admission_retry_plan_skips_extra_wait_after_slow_failure() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(1_000),
+                max_delay_ms: Some(1_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        let fast_failure = policy.plan_delay(1, None, 250);
+        assert_eq!(fast_failure.target_interval_ms, 1_000);
+        assert_eq!(fast_failure.sleep_ms, 750);
+        assert!(!fast_failure.used_retry_after);
+
+        let slow_failure = policy.plan_delay(2, None, 5_000);
+        assert_eq!(slow_failure.target_interval_ms, 1_000);
+        assert_eq!(slow_failure.sleep_ms, 0);
+        assert!(!slow_failure.used_retry_after);
+    }
+
+    #[test]
+    fn admission_retry_plan_keeps_retry_after_relative_to_response_time() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(1_000),
+                max_delay_ms: Some(1_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+        let retry_after_plan = policy.plan_delay(1, Some(2_500), 9_999);
+
+        assert_eq!(retry_after_plan.target_interval_ms, 2_500);
+        assert_eq!(retry_after_plan.sleep_ms, 2_500);
+        assert!(retry_after_plan.used_retry_after);
     }
 
     #[test]

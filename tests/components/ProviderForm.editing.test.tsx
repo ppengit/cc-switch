@@ -288,6 +288,23 @@ describe("ProviderForm edit mode", () => {
     );
   });
 
+  it("saves Claude admission retry success notification toggle from the form", async () => {
+    const { onSubmit } = renderProviderForm();
+
+    fireEvent.click(screen.getByText("上游入场重试"));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "成功通知（弹窗+声音）" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
+      {
+        notifyOnSuccess: true,
+      },
+    );
+  });
+
   it("saves Codex admission retry enable state and retry interval from the form", async () => {
     const { onSubmit } = renderCodexProviderForm();
 

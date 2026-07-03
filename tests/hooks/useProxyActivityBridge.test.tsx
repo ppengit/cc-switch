@@ -1,10 +1,28 @@
 import type { ReactNode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useProxyActivityBridge } from "@/hooks/useProxyActivityBridge";
+import type { Provider } from "@/types";
 import type { ProxyStatus } from "@/types/proxy";
 import { emitTauriEvent } from "../msw/tauriMocks";
+
+const { toastSuccessMock, getAllProvidersMock } = vi.hoisted(() => ({
+  toastSuccessMock: vi.fn(),
+  getAllProvidersMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: toastSuccessMock,
+  },
+}));
+
+vi.mock("@/lib/api/providers", () => ({
+  providersApi: {
+    getAll: getAllProvidersMock,
+  },
+}));
 
 interface WrapperProps {
   children: ReactNode;
@@ -26,6 +44,11 @@ function createWrapper() {
 }
 
 describe("useProxyActivityBridge", () => {
+  beforeEach(() => {
+    toastSuccessMock.mockReset();
+    getAllProvidersMock.mockReset();
+  });
+
   it("creates proxyStatus cache when the first activity event arrives before polling", async () => {
     const { wrapper, queryClient } = createWrapper();
     renderHook(() => useProxyActivityBridge(), { wrapper });
@@ -121,6 +144,56 @@ describe("useProxyActivityBridge", () => {
       const status = queryClient.getQueryData<ProxyStatus>(["proxyStatus"]);
       expect(status?.running).toBe(true);
       expect(status?.active_request_targets?.[0]?.provider_id).toBe("codex-2");
+    });
+  });
+
+  it("shows a bottom-right success toast when admission retry success notification is enabled", async () => {
+    const { wrapper, queryClient } = createWrapper();
+    queryClient.setQueryData(["providers", "claude"], {
+      currentProviderId: "",
+      providers: {
+        "claude-1": {
+          id: "claude-1",
+          name: "AnyRouter",
+          settingsConfig: {},
+          meta: {
+            upstreamAdmissionRetry: {
+              notifyOnSuccess: true,
+            },
+          },
+        } satisfies Provider,
+      },
+    });
+
+    renderHook(() => useProxyActivityBridge(), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      emitTauriEvent("provider-admission-retry", {
+        requestId: "req-1",
+        event: "admitted",
+        appType: "claude",
+        providerId: "claude-1",
+        providerName: "AnyRouter",
+        retryCount: 7,
+        delayMs: 0,
+        status: 200,
+        error: null,
+        updatedAt: "2026-07-03T14:20:15Z",
+      });
+    });
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Claude 入场成功",
+        expect.objectContaining({
+          position: "bottom-right",
+          duration: 6000,
+        }),
+      );
     });
   });
 });
