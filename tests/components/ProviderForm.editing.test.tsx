@@ -267,6 +267,53 @@ describe("ProviderForm edit mode", () => {
     ]);
   });
 
+  it("saves Claude admission retry enable state and retry interval from the form", async () => {
+    const { onSubmit } = renderProviderForm();
+
+    fireEvent.click(screen.getByText("上游入场重试"));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "启用入场重试" }),
+    );
+    fireEvent.change(screen.getByLabelText("重试间隔（毫秒）"), {
+      target: { value: "45000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
+      {
+        enabled: true,
+        maxDelayMs: 45000,
+      },
+    );
+  });
+
+  it("saves Codex admission retry enable state and retry interval from the form", async () => {
+    const { onSubmit } = renderCodexProviderForm();
+
+    fireEvent.click(screen.getByText("上游入场重试"));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "启用入场重试" }),
+    );
+    fireEvent.change(screen.getByLabelText("重试间隔（毫秒）"), {
+      target: { value: "45000" },
+    });
+    expect(
+      screen.queryByText(
+        "包含上游格式、模型目录、请求模型别名映射、思考能力与自定义 User-Agent。",
+      ),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
+      {
+        enabled: true,
+        maxDelayMs: 45000,
+      },
+    );
+  });
+
 });
 
 describe("ProviderForm create mode", () => {

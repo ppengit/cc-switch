@@ -190,7 +190,7 @@ export function ProviderRoutingRetryConfig({
           className={cn(
             "overflow-hidden transition-all duration-200",
             isAdmissionRetryOpen
-              ? "max-h-[900px] opacity-100"
+              ? "max-h-[1100px] opacity-100"
               : "max-h-0 opacity-0",
           )}
         >
@@ -198,9 +198,34 @@ export function ProviderRoutingRetryConfig({
             <p className="text-sm text-muted-foreground">
               {t("providerAdvanced.admissionRetryConfigDesc", {
                 defaultValue:
-                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，持续重试同一供应商；启用/关闭请在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
+                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，按固定间隔持续重试同一供应商；也可在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
               })}
             </p>
+            <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+              <div className="space-y-1">
+                <Label htmlFor="admission-enabled">
+                  {t("providerAdvanced.admissionEnabled", {
+                    defaultValue: "启用入场重试",
+                  })}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionEnabledHint", {
+                    defaultValue:
+                      "开启后，当前供应商遇到临时拥挤或限流错误时会重发同一请求，不触发故障转移或熔断。",
+                  })}
+                </p>
+              </div>
+              <Switch
+                id="admission-enabled"
+                checked={admissionRetryConfig.enabled === true}
+                onCheckedChange={(checked) =>
+                  onAdmissionRetryConfigChange({
+                    ...admissionRetryConfig,
+                    enabled: checked,
+                  })
+                }
+              />
+            </div>
             <div className="space-y-3 rounded-md border border-border/50 bg-background/40 p-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -299,14 +324,14 @@ export function ProviderRoutingRetryConfig({
               <div className="space-y-2">
                 <Label htmlFor="admission-initial-delay">
                   {t("providerAdvanced.admissionInitialDelay", {
-                    defaultValue: "初始等待（毫秒）",
+                    defaultValue: "首次等待（毫秒）",
                   })}
                 </Label>
                 <Input
                   id="admission-initial-delay"
                   type="number"
                   min={0}
-                  max={2000}
+                  max={600000}
                   value={admissionRetryConfig.initialDelayMs ?? ""}
                   onChange={(e) =>
                     onAdmissionRetryConfigChange({
@@ -316,20 +341,20 @@ export function ProviderRoutingRetryConfig({
                         : undefined,
                     })
                   }
-                  placeholder="300"
+                  placeholder="1000"
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="admission-max-delay">
                   {t("providerAdvanced.admissionMaxDelay", {
-                    defaultValue: "最大等待（毫秒）",
+                    defaultValue: "重试间隔（毫秒）",
                   })}
                 </Label>
                 <Input
                   id="admission-max-delay"
                   type="number"
                   min={0}
-                  max={3000}
+                  max={600000}
                   value={admissionRetryConfig.maxDelayMs ?? ""}
                   onChange={(e) =>
                     onAdmissionRetryConfigChange({

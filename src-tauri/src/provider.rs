@@ -454,6 +454,8 @@ pub struct UpstreamAdmissionRetryConfig {
     pub max_retries: Option<u32>,
     #[serde(rename = "initialDelayMs", skip_serializing_if = "Option::is_none")]
     pub initial_delay_ms: Option<u64>,
+    /// Fixed wait before the second and later same-provider admission retries.
+    /// Kept as `maxDelayMs` in metadata for backward compatibility with saved configs.
     #[serde(rename = "maxDelayMs", skip_serializing_if = "Option::is_none")]
     pub max_delay_ms: Option<u64>,
     #[serde(rename = "jitterMs", skip_serializing_if = "Option::is_none")]

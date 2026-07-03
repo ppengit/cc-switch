@@ -1302,6 +1302,53 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn session_routing_snapshot_lists_client_codex_session_binding() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+        let session_id = "019f21ad-bc7e-70c2-97e2-5f9e0e9fc3a8";
+
+        db.save_provider("codex", &provider_a).unwrap();
+        db.save_provider("codex", &provider_b).unwrap();
+        db.add_to_failover_queue("codex", "a").unwrap();
+        db.add_to_failover_queue("codex", "b").unwrap();
+        db.upsert_session_snapshot(
+            "codex",
+            session_id,
+            None,
+            Some("Continue current task"),
+            Some("D:\\Solution\\cc-switch"),
+            Some(1_780_000_000),
+        )
+        .unwrap();
+        enable_failover_with_session_routing(&db, "codex").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let providers = router
+            .select_providers_for_session("codex", session_id, true)
+            .await
+            .unwrap();
+        assert_eq!(providers[0].id, "a");
+
+        let snapshot = router
+            .session_routing_snapshot("codex", HashMap::new())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.bindings.len(), 1);
+        let binding = &snapshot.bindings[0];
+        assert_eq!(binding.session_id, session_id);
+        assert_eq!(binding.provider_id, "a");
+        assert_eq!(
+            binding.session_title.as_deref(),
+            Some("Continue current task")
+        );
+        assert_eq!(binding.project_name.as_deref(), Some("cc-switch"));
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn session_routing_releases_capacity_after_idle_ttl() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());

@@ -1353,12 +1353,12 @@
     "maxRetries": "最大リトライ回数",
     "admissionRetryConfig": "上流入場リトライ",
     "enableAdmissionRetry": "有効化",
-    "admissionRetryConfigDesc": "上流が overloaded、capacity、rate limit などの混雑エラーを返した場合、同じプロバイダーを継続的にリトライします。有効/無効はプロバイダー一覧で切り替えます。フェイルオーバー、劣化判定、サーキットブレーカーは発火しません。",
+    "admissionRetryConfigDesc": "上流が overloaded、capacity、rate limit などの混雑エラーを返した場合、固定間隔で同じプロバイダーを継続的にリトライします。有効/無効はプロバイダー一覧で切り替えます。フェイルオーバー、劣化判定、サーキットブレーカーは発火しません。",
     "admissionMaxRetries": "最大入場リトライ回数",
     "admissionMaxRetriesPlaceholder": "空欄または 0 は無制限",
     "admissionMaxRetriesHint": "しきい値に達すると最後の上流エラーを現在のリクエストへ返しますが、フェイルオーバー、劣化判定、サーキットブレーカーは発火しません。",
-    "admissionInitialDelay": "初期待機（ミリ秒）",
-    "admissionMaxDelay": "最大待機（ミリ秒）",
+    "admissionInitialDelay": "初回待機（ミリ秒）",
+    "admissionMaxDelay": "リトライ間隔（ミリ秒）",
     "admissionJitter": "ランダムジッター（ミリ秒）",
     "pricingConfig": "課金設定",
     "useCustomPricing": "個別設定を使用",
@@ -1436,8 +1436,7 @@
     "reasoningEffortToggle": "思考レベルに対応",
     "reasoningEffortHint": "上流が low/high/max などの思考の深さの制御に対応している場合に有効化します。有効にすると思考モードも自動的にオンになり、Codex の reasoning.effort を上流の Chat パラメータに変換します。",
     "reasoningGroupTitle": "思考能力",
-    "reasoningSectionHint": "プリセットの供給元は自動的に設定され、カスタム供給元は名前/URL から自動推論されます。自動識別が正しくない場合のみ手動で上書きしてください。",
-    "advancedSectionHint": "上流フォーマット、モデルカタログ、リクエストモデルのエイリアスマッピング、思考能力、カスタム User-Agent の設定を含みます。"
+    "reasoningSectionHint": "プリセットの供給元は自動的に設定され、カスタム供給元は名前/URL から自動推論されます。自動識別が正しくない場合のみ手動で上書きしてください。"
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",

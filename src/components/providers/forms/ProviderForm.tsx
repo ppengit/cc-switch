@@ -178,8 +178,8 @@ const normalizeAdmissionRetryConfigForSave = (
     ),
   );
   const maxRetries = clamp(config.maxRetries, 0, 1_000_000);
-  const initialDelayMs = clamp(config.initialDelayMs, 0, 2_000);
-  const maxDelayMs = clamp(config.maxDelayMs, 0, 3_000);
+  const initialDelayMs = clamp(config.initialDelayMs, 0, 600_000);
+  const maxDelayMs = clamp(config.maxDelayMs, 0, 600_000);
   const jitterMs = clamp(config.jitterMs, 0, 500);
 
   if (autoKeywords.length > 0) normalized.autoKeywords = autoKeywords;

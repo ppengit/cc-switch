@@ -23,6 +23,8 @@ import {
   Download,
   Loader2,
   Plus,
+  Replace,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
@@ -507,34 +509,29 @@ export function CodexFormFields({
         <Collapsible
           open={advancedExpanded}
           onOpenChange={setAdvancedExpanded}
-          className="rounded-lg border border-border-default p-4"
+          className="rounded-lg border border-border/50 bg-muted/20"
         >
           <CollapsibleTrigger asChild>
-            <Button
+            <button
               type="button"
-              variant={null}
-              size="sm"
-              className="h-8 w-full justify-start gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
+              className="flex w-full cursor-pointer items-center justify-between p-4 text-left transition-colors hover:bg-muted/30"
             >
+              <div className="flex min-w-0 items-center gap-3">
+                <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">
+                  {t("providerForm.advancedOptionsToggle", {
+                    defaultValue: "高级选项",
+                  })}
+                </span>
+              </div>
               {advancedExpanded ? (
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
               ) : (
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
               )}
-              {t("providerForm.advancedOptionsToggle", {
-                defaultValue: "高级选项",
-              })}
-            </Button>
+            </button>
           </CollapsibleTrigger>
-          {!advancedExpanded && (
-            <p className="mt-1 ml-1 text-xs text-muted-foreground">
-              {t("codexConfig.advancedSectionHint", {
-                defaultValue:
-                  "包含上游格式、模型目录、请求模型别名映射、思考能力与自定义 User-Agent。",
-              })}
-            </p>
-          )}
-          <CollapsibleContent className="space-y-3 pt-3">
+          <CollapsibleContent className="space-y-3 border-t border-border/50 p-4">
             {/* 上游格式 + 本地路由映射 —— 两个平级、相互独立的控件。
                 格式不依赖路由：Responses 原生供应商无需开启路由即可直连；
                 沿用 shouldShowSpeedTest 门控，cloud_provider 保持不可切换。 */}
@@ -864,6 +861,7 @@ export function CodexFormFields({
             }}
           >
             <div className="min-w-0 flex items-center gap-3">
+              <Replace className="h-4 w-4 text-muted-foreground" />
               <span className="font-medium">
                 {t("codexConfig.requestModelRoutesTitle", {
                   defaultValue: "请求模型别名映射",
@@ -906,7 +904,8 @@ export function CodexFormFields({
             <div className="space-y-4 border-t border-border/50 p-4">
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Replace className="h-4 w-4 text-muted-foreground" />
                     {t("codexConfig.requestModelRoutesTitle", {
                       defaultValue: "请求模型别名映射",
                     })}

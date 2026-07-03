@@ -1353,12 +1353,12 @@
     "maxRetries": "Max Retries",
     "admissionRetryConfig": "Upstream Admission Retry",
     "enableAdmissionRetry": "Enable",
-    "admissionRetryConfigDesc": "Continuously retries the same provider when upstream returns overloaded, capacity, or rate limit errors. Enable or disable it from the provider list. It does not trigger failover, degradation, or circuit breaking.",
+    "admissionRetryConfigDesc": "Retries the same provider at a fixed interval when upstream returns overloaded, capacity, or rate limit errors. Enable or disable it from the provider list. It does not trigger failover, degradation, or circuit breaking.",
     "admissionMaxRetries": "Max admission retries",
     "admissionMaxRetriesPlaceholder": "Blank or 0 means unlimited",
     "admissionMaxRetriesHint": "When the threshold is reached, the last upstream error is returned to the current request without triggering failover, degradation, or circuit breaking.",
-    "admissionInitialDelay": "Initial delay (ms)",
-    "admissionMaxDelay": "Max delay (ms)",
+    "admissionInitialDelay": "First wait (ms)",
+    "admissionMaxDelay": "Retry interval (ms)",
     "admissionJitter": "Random jitter (ms)",
     "pricingConfig": "Pricing Config",
     "useCustomPricing": "Use separate config",
@@ -1436,8 +1436,7 @@
     "reasoningEffortToggle": "Supports Reasoning Effort",
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
     "reasoningGroupTitle": "Reasoning Capability",
-    "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
-    "advancedSectionHint": "Includes upstream format, model catalog, request model alias mapping, reasoning overrides and custom User-Agent."
+    "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong."
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",

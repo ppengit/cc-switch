@@ -1353,12 +1353,12 @@
     "maxRetries": "最大重试次数",
     "admissionRetryConfig": "上游入场重试",
     "enableAdmissionRetry": "启用",
-    "admissionRetryConfigDesc": "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，持续重试同一供应商；启用/关闭请在供应商列表快速切换。不会触发故障转移、降级或熔断。",
+    "admissionRetryConfigDesc": "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，按固定间隔持续重试同一供应商；启用/关闭请在供应商列表快速切换。不会触发故障转移、降级或熔断。",
     "admissionMaxRetries": "最大入场重试次数",
     "admissionMaxRetriesPlaceholder": "留空或 0 表示无限",
     "admissionMaxRetriesHint": "达到阈值后会把最后一次上游错误返回给当前请求，但仍不会触发故障转移、降级或熔断。",
-    "admissionInitialDelay": "初始等待（毫秒）",
-    "admissionMaxDelay": "最大等待（毫秒）",
+    "admissionInitialDelay": "首次等待（毫秒）",
+    "admissionMaxDelay": "重试间隔（毫秒）",
     "admissionJitter": "随机抖动（毫秒）",
     "pricingConfig": "计费配置",
     "useCustomPricing": "使用单独配置",
@@ -1436,8 +1436,7 @@
     "reasoningEffortToggle": "支持思考等级",
     "reasoningEffortHint": "上游支持 low/high/max 等思考深度控制时启用。启用后会自动启用思考模式，并把 Codex 的 reasoning.effort 转成上游 Chat 参数。",
     "reasoningGroupTitle": "思考能力",
-    "reasoningSectionHint": "预设供应商已自动配置；自定义供应商会按名称/地址自动推断。仅当自动识别不准时才需手动覆盖。",
-    "advancedSectionHint": "包含上游格式、模型目录、请求模型别名映射、思考能力与自定义 User-Agent。"
+    "reasoningSectionHint": "预设供应商已自动配置；自定义供应商会按名称/地址自动推断。仅当自动识别不准时才需手动覆盖。"
   },
   "geminiConfig": {
     "envFile": "环境变量 (.env)",

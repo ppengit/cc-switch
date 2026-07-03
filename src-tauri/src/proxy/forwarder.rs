@@ -2851,9 +2851,11 @@ impl RequestForwarder {
 struct AdmissionRetryPolicy {
     max_retries: Option<u32>,
     initial_delay_ms: u64,
-    max_delay_ms: u64,
+    retry_interval_ms: u64,
     jitter_ms: u64,
 }
+
+const MAX_ADMISSION_RETRY_DELAY_MS: u64 = 600_000;
 
 impl AdmissionRetryPolicy {
     fn from_provider(provider: &Provider) -> Option<Self> {
@@ -2867,18 +2869,25 @@ impl AdmissionRetryPolicy {
         }
 
         let max_retries = config.max_retries.filter(|value| *value > 0);
-        let initial_delay_ms = config.initial_delay_ms.unwrap_or(300).min(2_000);
-        let max_delay_ms = config
+        let configured_retry_interval_ms = config
             .max_delay_ms
+            .map(|value| value.min(MAX_ADMISSION_RETRY_DELAY_MS));
+        let initial_delay_ms = config
+            .initial_delay_ms
+            .map(|value| value.min(MAX_ADMISSION_RETRY_DELAY_MS))
+            .or(configured_retry_interval_ms)
             .unwrap_or(1_000)
-            .min(3_000)
-            .max(initial_delay_ms);
+            .min(MAX_ADMISSION_RETRY_DELAY_MS);
+        let retry_interval_ms = configured_retry_interval_ms
+            .or(config.initial_delay_ms)
+            .unwrap_or(1_000)
+            .min(MAX_ADMISSION_RETRY_DELAY_MS);
         let jitter_ms = config.jitter_ms.unwrap_or(100).min(500);
 
         Some(Self {
             max_retries,
             initial_delay_ms,
-            max_delay_ms,
+            retry_interval_ms,
             jitter_ms,
         })
     }
@@ -2914,15 +2923,14 @@ impl AdmissionRetryPolicy {
 
     fn delay_ms(&self, retry_number: u32, retry_after_ms: Option<u64>) -> u64 {
         if let Some(retry_after_ms) = retry_after_ms {
-            return retry_after_ms.min(self.max_delay_ms);
+            return retry_after_ms.min(MAX_ADMISSION_RETRY_DELAY_MS);
         }
 
-        let exponent = retry_number.saturating_sub(1).min(16);
-        let multiplier = 1u64 << exponent;
-        let base = self
-            .initial_delay_ms
-            .saturating_mul(multiplier)
-            .min(self.max_delay_ms);
+        let base = if retry_number <= 1 {
+            self.initial_delay_ms
+        } else {
+            self.retry_interval_ms
+        };
         let jitter = if self.jitter_ms == 0 {
             0
         } else {
@@ -2932,7 +2940,8 @@ impl AdmissionRetryPolicy {
                 .unwrap_or(0)
         };
 
-        base.saturating_add(jitter).min(self.max_delay_ms)
+        base.saturating_add(jitter)
+            .min(MAX_ADMISSION_RETRY_DELAY_MS)
     }
 }
 
@@ -4370,11 +4379,81 @@ mod tests {
 
         assert_eq!(policy.max_retries, None);
         assert!(!policy.retry_limit_reached(u32::MAX));
-        assert_eq!(policy.initial_delay_ms, 2_000);
-        assert_eq!(policy.max_delay_ms, 2_000);
+        assert_eq!(policy.initial_delay_ms, 20_000);
+        assert_eq!(policy.retry_interval_ms, 100);
         assert_eq!(policy.jitter_ms, 0);
-        assert_eq!(policy.delay_ms(1, None), 2_000);
-        assert_eq!(policy.delay_ms(2, None), 2_000);
+        assert_eq!(policy.delay_ms(1, None), 20_000);
+        assert_eq!(policy.delay_ms(2, None), 100);
+        assert_eq!(policy.delay_ms(99, None), 100);
+    }
+
+    #[test]
+    fn admission_retry_policy_uses_retry_interval_when_initial_wait_is_empty() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: None,
+                max_delay_ms: Some(45_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        assert_eq!(policy.initial_delay_ms, 45_000);
+        assert_eq!(policy.retry_interval_ms, 45_000);
+        assert_eq!(policy.delay_ms(1, None), 45_000);
+        assert_eq!(policy.delay_ms(2, None), 45_000);
+    }
+
+    #[test]
+    fn admission_retry_policy_uses_initial_delay_as_interval_when_interval_is_empty() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(12_000),
+                max_delay_ms: None,
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        assert_eq!(policy.initial_delay_ms, 12_000);
+        assert_eq!(policy.retry_interval_ms, 12_000);
+        assert_eq!(policy.delay_ms(1, None), 12_000);
+        assert_eq!(policy.delay_ms(2, None), 12_000);
+    }
+
+    #[test]
+    fn admission_retry_policy_caps_retry_after_independently_from_interval() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(500),
+                max_delay_ms: Some(1_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        assert_eq!(policy.delay_ms(1, Some(45_000)), 45_000);
+        assert_eq!(
+            policy.delay_ms(1, Some(MAX_ADMISSION_RETRY_DELAY_MS + 1)),
+            MAX_ADMISSION_RETRY_DELAY_MS
+        );
     }
 
     #[test]

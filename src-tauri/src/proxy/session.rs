@@ -6,7 +6,8 @@
 //!
 //! 支持从客户端请求中提取 Session ID，用于关联同一对话的多个请求：
 //! - Claude: 从 `metadata.user_id` (格式: `user_xxx_session_yyy`) 或 `metadata.session_id` 提取
-//! - Codex: 从 headers 中的 `session_id` / `x-session-id` 或 `metadata.session_id` 提取
+//! - Codex: 从 headers 中的 `session_id` / `x-session-id` / `x-codex-window-id`、
+//!   body 中的稳定会话字段或 `prompt_cache_key` 提取
 //! - 其他: 生成新的 UUID
 
 use axum::http::HeaderMap;
@@ -195,6 +196,8 @@ pub enum SessionIdSource {
     MetadataUserId,
     /// 从 metadata.session_id 提取
     MetadataSessionId,
+    /// 从 prompt_cache_key 提取 (Codex)
+    PromptCacheKey,
     /// 从 headers 提取 (Codex)
     Header,
     /// 新生成
@@ -224,9 +227,10 @@ pub struct SessionIdResult {
 /// 3. 生成新 UUID
 ///
 /// ### Codex 请求
-/// 1. Headers: `session_id` 或 `x-session-id`
-/// 2. `metadata.session_id`
-/// 3. 生成新 UUID
+/// 1. Headers: `session_id`、`x-session-id`、`x-codex-session-id` 或 `x-codex-window-id`
+/// 2. Body: `metadata.session_id`、`metadata.conversation_id`、`session_id` 等稳定字段
+/// 3. Body: `prompt_cache_key`
+/// 4. 生成新 UUID
 ///
 /// ## 示例
 ///
@@ -286,13 +290,17 @@ fn extract_claude_session(
 /// 提取 Codex Session ID
 fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Option<SessionIdResult> {
     // 1. 从 headers 提取
-    for header_name in &["session_id", "x-session-id"] {
+    for header_name in &[
+        "session_id",
+        "x-session-id",
+        "x-codex-session-id",
+        "codex-session-id",
+    ] {
         if let Some(value) = headers.get(*header_name) {
             if let Ok(session_id) = value.to_str() {
-                // Codex Session ID 通常较长（UUID 格式）
-                if session_id.len() > 20 {
+                if let Some(session_id) = normalize_explicit_session_id(session_id) {
                     return Some(SessionIdResult {
-                        session_id: format!("codex_{session_id}"),
+                        session_id,
                         source: SessionIdSource::Header,
                         client_provided: true,
                     });
@@ -301,19 +309,50 @@ fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Optio
         }
     }
 
-    // 2. 从 body.metadata.session_id 提取
-    if let Some(session_id) = body
-        .get("metadata")
-        .and_then(|m| m.get("session_id"))
-        .and_then(|v| v.as_str())
-    {
-        if session_id.len() > 10 {
+    if let Some(value) = headers.get("x-codex-window-id") {
+        if let Ok(window_id) = value.to_str() {
+            if let Some(session_id) = normalize_codex_window_session_id(window_id) {
+                return Some(SessionIdResult {
+                    session_id,
+                    source: SessionIdSource::Header,
+                    client_provided: true,
+                });
+            }
+        }
+    }
+
+    // 2. 从 body 中的稳定会话字段提取
+    for path in &[
+        &["metadata", "session_id"][..],
+        &["metadata", "conversation_id"][..],
+        &["metadata", "thread_id"][..],
+        &["metadata", "codex_session_id"][..],
+        &["session_id"][..],
+        &["conversation_id"][..],
+        &["thread_id"][..],
+    ] {
+        if let Some(session_id) = string_at_path(body, path).and_then(normalize_explicit_session_id)
+        {
             return Some(SessionIdResult {
-                session_id: format!("codex_{session_id}"),
+                session_id,
                 source: SessionIdSource::MetadataSessionId,
                 client_provided: true,
             });
         }
+    }
+
+    // 3. prompt_cache_key 是 Codex/Responses 客户端可携带的稳定缓存身份，
+    // 可用于会话路由；但 previous_response_id 仍不能作为会话身份。
+    if let Some(session_id) = body
+        .get("prompt_cache_key")
+        .and_then(|v| v.as_str())
+        .and_then(normalize_explicit_session_id)
+    {
+        return Some(SessionIdResult {
+            session_id,
+            source: SessionIdSource::PromptCacheKey,
+            client_provided: true,
+        });
     }
 
     // previous_response_id 是 Responses 协议里的响应游标，不是稳定会话身份。
@@ -321,6 +360,31 @@ fn extract_codex_session(headers: &HeaderMap, body: &serde_json::Value) -> Optio
     // 若把它当 prompt_cache_key 或 Codex session header，会导致每轮请求换缓存 key。
 
     None
+}
+
+fn string_at_path<'a>(body: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    let mut value = body;
+    for key in path {
+        value = value.get(*key)?;
+    }
+    value.as_str()
+}
+
+fn normalize_explicit_session_id(value: &str) -> Option<String> {
+    let session_id = value.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    Some(session_id.to_string())
+}
+
+fn normalize_codex_window_session_id(value: &str) -> Option<String> {
+    let window_id = value.trim();
+    if window_id.is_empty() {
+        return None;
+    }
+    let session_id = window_id.split(':').next().unwrap_or(window_id).trim();
+    normalize_explicit_session_id(session_id)
 }
 
 /// 从 metadata 提取 Session ID (Claude)
@@ -587,6 +651,41 @@ mod tests {
         assert!(!result.session_id.is_empty());
         assert_eq!(result.source, SessionIdSource::Generated);
         assert!(!result.client_provided);
+    }
+
+    #[test]
+    fn test_extract_codex_session_from_window_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-window-id",
+            "019f21ad-bc7e-70c2-97e2-5f9e0e9fc3a8:0".parse().unwrap(),
+        );
+        let body = json!({
+            "model": "gpt-5.5",
+            "input": "Hello"
+        });
+
+        let result = extract_session_id(&headers, &body, "codex");
+
+        assert_eq!(result.session_id, "019f21ad-bc7e-70c2-97e2-5f9e0e9fc3a8");
+        assert_eq!(result.source, SessionIdSource::Header);
+        assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_extract_codex_session_from_prompt_cache_key() {
+        let headers = HeaderMap::new();
+        let body = json!({
+            "model": "gpt-5.5",
+            "input": "Hello",
+            "prompt_cache_key": "codex-session-cache-123"
+        });
+
+        let result = extract_session_id(&headers, &body, "codex");
+
+        assert_eq!(result.session_id, "codex-session-cache-123");
+        assert_eq!(result.source, SessionIdSource::PromptCacheKey);
+        assert!(result.client_provided);
     }
 
     #[test]
