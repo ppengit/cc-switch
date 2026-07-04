@@ -3192,6 +3192,48 @@ base_url = "http://localhost:8080"
 
     #[test]
     #[serial]
+    fn admission_retry_disable_if_enabled_is_idempotent() {
+        with_test_home(|state, _| {
+            let provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            state
+                .db
+                .save_provider(AppType::Claude.as_str(), &provider)
+                .expect("seed provider");
+
+            let changed = ProviderService::disable_upstream_admission_retry_if_enabled(
+                state,
+                &AppType::Claude,
+                "claude-a",
+            )
+            .expect("disable enabled admission retry");
+            assert!(changed);
+
+            let changed_again = ProviderService::disable_upstream_admission_retry_if_enabled(
+                state,
+                &AppType::Claude,
+                "claude-a",
+            )
+            .expect("disable already disabled admission retry");
+            assert!(!changed_again);
+
+            let saved = state
+                .db
+                .get_provider_by_id("claude-a", AppType::Claude.as_str())
+                .expect("query provider")
+                .expect("provider exists");
+            let retry_config = saved
+                .meta
+                .and_then(|meta| meta.upstream_admission_retry)
+                .expect("retry config should remain present");
+
+            assert!(!retry_config.enabled);
+            assert_eq!(retry_config.max_retries, Some(9));
+            assert_eq!(retry_config.initial_delay_ms, Some(250));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn update_persists_non_current_omo_variants_in_database() {
         with_test_home(|state, _| {
             for category in ["omo", "omo-slim"] {
@@ -3478,6 +3520,27 @@ impl ProviderService {
         if enabled {
             Self::disable_other_upstream_admission_retry_providers(state, app_type, provider_id)?;
         }
+        state.db.save_provider(app_type.as_str(), &provider)?;
+        Ok(true)
+    }
+
+    pub(crate) fn disable_upstream_admission_retry_if_enabled(
+        state: &AppState,
+        app_type: &AppType,
+        provider_id: &str,
+    ) -> Result<bool, AppError> {
+        let Some(mut provider) = state
+            .db
+            .get_provider_by_id(provider_id, app_type.as_str())?
+        else {
+            return Ok(false);
+        };
+
+        if !provider.upstream_admission_retry_enabled() {
+            return Ok(false);
+        }
+
+        provider.set_upstream_admission_retry_enabled(false);
         state.db.save_provider(app_type.as_str(), &provider)?;
         Ok(true)
     }

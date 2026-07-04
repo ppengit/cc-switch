@@ -1404,13 +1404,15 @@ impl RequestForwarder {
                 .await
             {
                 Ok(result) => {
-                    if retries_used > 0 {
+                    let admission_retry_was_enabled =
                         self.disable_admission_retry_after_admitted(app_type, provider);
+                    if admission_retry_was_enabled {
                         self.emit_admission_retry_event(
                             app_type,
                             provider,
                             retries_used,
                             0,
+                            Some(200),
                             None,
                             "admitted",
                         )
@@ -1419,8 +1421,10 @@ impl RequestForwarder {
                     return Ok(result);
                 }
                 Err(error) => {
-                    let attempt_elapsed_ms =
-                        attempt_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    let attempt_elapsed_ms = attempt_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64;
                     let category = self.categorize_proxy_error(app_type, endpoint, &error);
                     let admission_retryable = should_retry_provider_admission(category, &error);
                     let policy = self.current_admission_retry_policy(app_type, provider);
@@ -1437,6 +1441,7 @@ impl RequestForwarder {
                                 provider,
                                 retries_used,
                                 0,
+                                None,
                                 Some(&error),
                                 "cleared",
                             )
@@ -1461,6 +1466,7 @@ impl RequestForwarder {
                                 provider,
                                 retries_used,
                                 0,
+                                None,
                                 Some(&error),
                                 "cleared",
                             )
@@ -1475,6 +1481,7 @@ impl RequestForwarder {
                             provider,
                             retries_used,
                             0,
+                            None,
                             Some(&error),
                             "cleared",
                         )
@@ -1523,6 +1530,7 @@ impl RequestForwarder {
                         provider,
                         retries_used,
                         delay_plan.sleep_ms,
+                        None,
                         Some(&error),
                         "retrying",
                     )
@@ -1540,6 +1548,7 @@ impl RequestForwarder {
                             provider,
                             retries_used,
                             0,
+                            None,
                             Some(&error),
                             "cleared",
                         )
@@ -1551,36 +1560,41 @@ impl RequestForwarder {
         }
     }
 
-    fn disable_admission_retry_after_admitted(&self, app_type: &AppType, provider: &Provider) {
+    fn disable_admission_retry_after_admitted(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> bool {
         let Some(app_handle) = self.app_handle.as_ref() else {
-            return;
+            return provider.upstream_admission_retry_enabled();
         };
         let Some(state) = app_handle.try_state::<AppState>() else {
-            return;
+            return provider.upstream_admission_retry_enabled();
         };
 
-        match ProviderService::set_upstream_admission_retry_enabled(
+        match ProviderService::disable_upstream_admission_retry_if_enabled(
             state.inner(),
             app_type,
             &provider.id,
-            false,
         ) {
-            Ok(true) => log::info!(
-                "[{}] 上游入场成功，已自动关闭供应商入场重试: provider={}",
-                app_type.as_str(),
-                provider.name
-            ),
-            Ok(false) => log::warn!(
-                "[{}] 上游入场成功但未找到供应商，无法自动关闭入场重试: provider={}",
-                app_type.as_str(),
-                provider.id
-            ),
-            Err(error) => log::warn!(
-                "[{}] 上游入场成功但自动关闭供应商入场重试失败: provider={}, error={}",
-                app_type.as_str(),
-                provider.id,
-                error
-            ),
+            Ok(true) => {
+                log::info!(
+                    "[{}] 上游入场成功，已自动关闭供应商入场重试: provider={}",
+                    app_type.as_str(),
+                    provider.name
+                );
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                log::warn!(
+                    "[{}] 上游入场成功但自动关闭供应商入场重试失败: provider={}, error={}",
+                    app_type.as_str(),
+                    provider.id,
+                    error
+                );
+                false
+            }
         }
     }
 
@@ -1684,6 +1698,7 @@ impl RequestForwarder {
         provider: &Provider,
         retry_count: u32,
         delay_ms: u64,
+        status: Option<u16>,
         error: Option<&ProxyError>,
         event: &str,
     ) {
@@ -1695,7 +1710,7 @@ impl RequestForwarder {
             provider_name: provider.name.clone(),
             retry_count,
             delay_ms,
-            status: error.and_then(proxy_error_status),
+            status: status.or_else(|| error.and_then(proxy_error_status)),
             error: error.map(summarize_proxy_error),
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -5129,6 +5144,73 @@ mod tests {
             !matches!(err.error, ProxyError::NoAvailableProvider),
             "admission retry must not degrade into circuit-open no-provider before trying provider"
         );
+    }
+
+    #[tokio::test]
+    async fn admission_retry_open_provider_first_success_emits_admitted_event() {
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(|| async move {
+                axum::response::Response::builder()
+                    .status(StatusCode::OK)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"id":"resp_1","output":[]}"#))
+                    .expect("build mock success response")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                notify_on_success: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let adapter = get_adapter(&AppType::Codex);
+        let result = forwarder
+            .forward_with_admission_retry(
+                &AppType::Codex,
+                &http::Method::POST,
+                &provider,
+                "/responses",
+                &json!({ "model": "gpt-5.5", "input": "ping" }),
+                &HeaderMap::new(),
+                &Extensions::new(),
+                adapter.as_ref(),
+            )
+            .await
+            .expect("first successful response should pass through");
+        assert_eq!(result.0.status(), StatusCode::OK);
+
+        let snapshot = crate::proxy::activity::admission_retry_snapshot(
+            &forwarder.proxy_activity,
+            Some("codex"),
+        )
+        .await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].event, "admitted");
+        assert_eq!(snapshot[0].provider_id, provider.id);
+        assert_eq!(snapshot[0].retry_count, 0);
+        assert_eq!(snapshot[0].status, Some(200));
+
+        server.abort();
     }
 
     #[tokio::test]
