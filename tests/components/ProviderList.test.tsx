@@ -1,4 +1,5 @@
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -18,6 +19,11 @@ import {
   setProviders,
 } from "../msw/state";
 import { server } from "../msw/server";
+import {
+  emitTauriEvent,
+  getTauriEventListenerCount,
+  resetTauriEventListeners,
+} from "../msw/tauriMocks";
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
@@ -158,6 +164,7 @@ function renderWithQueryClient(ui: ReactElement) {
 }
 
 beforeEach(() => {
+  resetTauriEventListeners();
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   mockAddToFailoverQueueMutateAsync.mockReset();
@@ -372,6 +379,146 @@ describe("ProviderList Component", () => {
       getProviders("claude")["retry-a"].meta?.upstreamAdmissionRetry
         ?.maxRetries,
     ).toBe(7);
+  });
+
+  it("clears local admission retry count and hides the tag after disabling admission retry", async () => {
+    const provider = createProvider({
+      id: "retry-live",
+      name: "Retry Live",
+      meta: {
+        upstreamAdmissionRetry: {
+          enabled: true,
+        },
+      },
+    });
+
+    setProviders("claude", { "retry-live": provider });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "retry-live": provider }}
+        currentProviderId="retry-live"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getTauriEventListenerCount("provider-admission-retry")).toBe(1);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Retry Live")).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      const row = screen
+        .getAllByRole("row")
+        .find((candidate) => candidate.textContent?.includes("Retry Live"));
+      expect(row).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "关闭上游入场重试" }),
+    );
+
+    await waitFor(() => {
+      expect(
+        getProviders("claude")["retry-live"].meta?.upstreamAdmissionRetry
+          ?.enabled,
+      ).toBe(false);
+    });
+
+    await act(async () => {
+      emitTauriEvent("provider-admission-retry", {
+        requestId: "req-retry-live",
+        event: "retrying",
+        appType: "claude",
+        providerId: "retry-live",
+        providerName: "Retry Live",
+        retryCount: 3,
+        delayMs: 1000,
+        status: 429,
+        error: "Service Unavailable",
+        updatedAt: "2026-07-04T08:00:00Z",
+      });
+    });
+
+    await waitFor(() => {
+      const row = screen
+        .getAllByRole("row")
+        .find((candidate) => candidate.textContent?.includes("Retry Live"));
+      expect(row?.textContent).not.toContain("入场 3");
+    });
+  });
+
+  it("hides stale admission retry tag state when the provider switch is already disabled", async () => {
+    const provider = createProvider({
+      id: "retry-hidden",
+      name: "Retry Hidden",
+      meta: {
+        upstreamAdmissionRetry: {
+          enabled: false,
+        },
+      },
+    });
+
+    setProviders("claude", { "retry-hidden": provider });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "retry-hidden": provider }}
+        currentProviderId="retry-hidden"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getTauriEventListenerCount("provider-admission-retry")).toBe(1);
+    });
+
+    await act(async () => {
+      emitTauriEvent("provider-admission-retry", {
+        requestId: "req-retry-hidden",
+        event: "admitted",
+        appType: "claude",
+        providerId: "retry-hidden",
+        providerName: "Retry Hidden",
+        retryCount: 4,
+        delayMs: 0,
+        status: 200,
+        error: null,
+        updatedAt: "2026-07-04T08:00:01Z",
+      });
+    });
+
+    await waitFor(() => {
+      const row = screen
+        .getAllByRole("row")
+        .find((candidate) => candidate.textContent?.includes("Retry Hidden"));
+      expect(row).toBeTruthy();
+      expect(row?.textContent).not.toContain("入场成功");
+      expect(row?.textContent).not.toContain("入场 4");
+    });
   });
 
   it("persists model-name sorting with enabled providers first", async () => {

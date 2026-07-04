@@ -1071,9 +1071,16 @@ export function ProviderList({
   const queryClient = useQueryClient();
   const [admissionRetryRequests, setAdmissionRetryRequests] =
     useState<AdmissionRetryRequestEvents>({});
+  const [admissionRetrySuppressedIds, setAdmissionRetrySuppressedIds] = useState<
+    Set<string>
+  >(new Set());
   const [admissionRetryUpdatingIds, setAdmissionRetryUpdatingIds] = useState<
     Set<string>
   >(new Set());
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
+  const admissionRetrySuppressedIdsRef = useRef(admissionRetrySuppressedIds);
+  admissionRetrySuppressedIdsRef.current = admissionRetrySuppressedIds;
 
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
@@ -1124,23 +1131,59 @@ export function ProviderList({
     [appId, openclawDefaultModel],
   );
 
+  const isAdmissionRetryVisible = useCallback((providerId: string): boolean => {
+    return (
+      providersRef.current[providerId]?.meta?.upstreamAdmissionRetry?.enabled ===
+        true &&
+      !admissionRetrySuppressedIdsRef.current.has(providerId)
+    );
+  }, []);
+
+  const clearAdmissionRetryRequests = useCallback(
+    (providerIds: Iterable<string>) => {
+      setAdmissionRetryRequests((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const providerId of providerIds) {
+          if (!(providerId in next)) continue;
+          delete next[providerId];
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    },
+    [],
+  );
+
   useEffect(() => {
     setAdmissionRetryRequests({});
+    const nextSuppressedIds = new Set<string>();
+    admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
+    setAdmissionRetrySuppressedIds(nextSuppressedIds);
 
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
 
     const applyRetryEvent = (payload: ProviderAdmissionRetryEvent) => {
       if (payload.appType !== appId) return;
+      const shouldTrackEvent = isAdmissionRetryVisible(payload.providerId);
 
       if (
-        payload.event === "admitted" ||
-        (payload.event === "retrying" && payload.retryCount === 1)
+        shouldTrackEvent &&
+        (payload.event === "admitted" ||
+          (payload.event === "retrying" && payload.retryCount === 1))
       ) {
         void queryClient.invalidateQueries({ queryKey: ["providers", appId] });
       }
 
       setAdmissionRetryRequests((current) => {
+        if (!shouldTrackEvent) {
+          if (!(payload.providerId in current)) return current;
+          const next = { ...current };
+          delete next[payload.providerId];
+          return next;
+        }
+
         const providerRequests = {
           ...(current[payload.providerId] ?? {}),
         };
@@ -1184,7 +1227,8 @@ export function ProviderList({
         for (const payload of snapshot) {
           if (
             payload.appType !== appId ||
-            (payload.event !== "retrying" && payload.event !== "admitted")
+            (payload.event !== "retrying" && payload.event !== "admitted") ||
+            !isAdmissionRetryVisible(payload.providerId)
           ) {
             continue;
           }
@@ -1203,7 +1247,21 @@ export function ProviderList({
       disposed = true;
       unlisten?.();
     };
-  }, [appId, queryClient]);
+  }, [appId, isAdmissionRetryVisible, queryClient]);
+
+  useEffect(() => {
+    clearAdmissionRetryRequests(
+      Object.keys(admissionRetryRequests).filter(
+        (providerId) => !isAdmissionRetryVisible(providerId),
+      ),
+    );
+  }, [
+    admissionRetryRequests,
+    admissionRetrySuppressedIds,
+    clearAdmissionRetryRequests,
+    isAdmissionRetryVisible,
+    providers,
+  ]);
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
@@ -1654,7 +1712,19 @@ export function ProviderList({
         return event.retryCount >= latest.retryCount ? event : latest;
       }, undefined);
       const admissionRetryEnabled =
-        provider.meta?.upstreamAdmissionRetry?.enabled === true;
+        provider.meta?.upstreamAdmissionRetry?.enabled === true &&
+        !admissionRetrySuppressedIds.has(provider.id);
+      const visibleAdmissionRetryCount = admissionRetryEnabled
+        ? admissionRetryCount
+        : 0;
+      const visibleAdmissionRetryState = admissionRetryEnabled
+        ? latestAdmissionRetry?.event
+        : undefined;
+      const visibleAdmissionRetryAdmittedCount = admissionRetryEnabled
+        ? admittedEvents.length > 0
+          ? Math.max(...admittedEvents.map((event) => event.retryCount))
+          : 0
+        : 0;
 
       const isActiveProxyProvider =
         isCurrentAppTakeoverActive &&
@@ -1708,7 +1778,7 @@ export function ProviderList({
 
       const statusRank = !isEnabled
         ? 1
-        : admissionRetryCount > 0
+        : visibleAdmissionRetryCount > 0
           ? 5
           : activeRequestCount > 0
             ? 4
@@ -1734,16 +1804,21 @@ export function ProviderList({
         activeRequestRequestModel: activeRequest?.requestModel,
         activeRequestUpstreamModel: activeRequest?.upstreamModel,
         admissionRetryEnabled,
-        admissionRetryCount,
-        admissionRetryState: latestAdmissionRetry?.event,
-        admissionRetryAdmittedCount:
-          admittedEvents.length > 0
-            ? Math.max(...admittedEvents.map((event) => event.retryCount))
-            : 0,
-        admissionRetryStatus: latestAdmissionRetry?.status,
-        admissionRetryLastError: latestAdmissionRetry?.error,
-        admissionRetryLastFailureAt: latestAdmissionRetry?.updatedAt,
-        admissionRetryDelayMs: latestAdmissionRetry?.delayMs,
+        admissionRetryCount: visibleAdmissionRetryCount,
+        admissionRetryState: visibleAdmissionRetryState,
+        admissionRetryAdmittedCount: visibleAdmissionRetryAdmittedCount,
+        admissionRetryStatus: admissionRetryEnabled
+          ? latestAdmissionRetry?.status
+          : undefined,
+        admissionRetryLastError: admissionRetryEnabled
+          ? latestAdmissionRetry?.error
+          : undefined,
+        admissionRetryLastFailureAt: admissionRetryEnabled
+          ? latestAdmissionRetry?.updatedAt
+          : undefined,
+        admissionRetryDelayMs: admissionRetryEnabled
+          ? latestAdmissionRetry?.delayMs
+          : undefined,
         failoverPriority,
         orderNumber,
         statusRank,
@@ -1757,6 +1832,7 @@ export function ProviderList({
   }, [
     activeProviderId,
     activeRequestProviders,
+    admissionRetrySuppressedIds,
     admissionRetryRequests,
     appId,
     getFailoverPriority,
@@ -2842,6 +2918,25 @@ export function ProviderList({
           },
         },
         appId,
+      );
+
+      const nextSuppressedIds = new Set(admissionRetrySuppressedIdsRef.current);
+      if (nextEnabled) {
+        nextSuppressedIds.delete(providerId);
+        affectedProviderIds.forEach((id) => {
+          if (id !== providerId) {
+            nextSuppressedIds.add(id);
+          }
+        });
+      } else {
+        nextSuppressedIds.add(providerId);
+      }
+      admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
+      setAdmissionRetrySuppressedIds(nextSuppressedIds);
+      clearAdmissionRetryRequests(
+        Array.from(affectedProviderIds).filter(
+          (id) => !nextEnabled || id !== providerId,
+        ),
       );
 
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
