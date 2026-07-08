@@ -171,6 +171,8 @@ const normalizeAdmissionRetryConfigForSave = (
     autoEnabled: config.autoEnabled === true,
     notifyOnSuccess: config.notifyOnSuccess === true,
   };
+  const scheduleMode =
+    config.scheduleMode === "fixedInterval" ? "fixedInterval" : undefined;
   const autoKeywords = Array.from(
     new Set(
       (config.autoKeywords ?? [])
@@ -184,6 +186,7 @@ const normalizeAdmissionRetryConfigForSave = (
   const jitterMs = clamp(config.jitterMs, 0, 500);
 
   if (autoKeywords.length > 0) normalized.autoKeywords = autoKeywords;
+  if (scheduleMode !== undefined) normalized.scheduleMode = scheduleMode;
   if (maxRetries !== undefined) normalized.maxRetries = maxRetries;
   if (initialDelayMs !== undefined) normalized.initialDelayMs = initialDelayMs;
   if (maxDelayMs !== undefined) normalized.maxDelayMs = maxDelayMs;
@@ -192,6 +195,7 @@ const normalizeAdmissionRetryConfigForSave = (
   return normalized.enabled ||
     normalized.autoEnabled ||
     normalized.notifyOnSuccess ||
+    scheduleMode !== undefined ||
     autoKeywords.length > 0 ||
     maxRetries !== undefined ||
     initialDelayMs !== undefined ||

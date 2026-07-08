@@ -3234,6 +3234,42 @@ base_url = "http://localhost:8080"
 
     #[test]
     #[serial]
+    fn remove_from_live_config_disables_admission_retry() {
+        with_test_home(|state, _| {
+            let mut provider = openclaw_provider("openclaw-retry");
+            provider.meta = Some(ProviderMeta {
+                upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                    enabled: true,
+                    max_retries: Some(9),
+                    initial_delay_ms: Some(250),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            ProviderService::add(state, AppType::OpenClaw, provider, true)
+                .expect("add live OpenClaw provider");
+
+            ProviderService::remove_from_live_config(state, AppType::OpenClaw, "openclaw-retry")
+                .expect("remove from live config");
+
+            let saved = state
+                .db
+                .get_provider_by_id("openclaw-retry", AppType::OpenClaw.as_str())
+                .expect("query provider")
+                .expect("provider remains in database");
+            let meta = saved.meta.expect("provider meta should remain");
+            assert_eq!(meta.live_config_managed, Some(false));
+            let retry_config = meta
+                .upstream_admission_retry
+                .expect("retry config should remain present");
+            assert!(!retry_config.enabled);
+            assert_eq!(retry_config.max_retries, Some(9));
+            assert_eq!(retry_config.initial_delay_ms, Some(250));
+        });
+    }
+
+    #[test]
+    #[serial]
     fn update_persists_non_current_omo_variants_in_database() {
         with_test_home(|state, _| {
             for category in ["omo", "omo-slim"] {
@@ -4162,10 +4198,18 @@ impl ProviderService {
                         id,
                         variant.category,
                     )?;
+                    let _ =
+                        Self::disable_upstream_admission_retry_if_enabled(state, &app_type, id)?;
                     state.db.delete_provider(app_type.as_str(), id)?;
                     if was_current {
                         crate::services::OmoService::delete_config_file(variant)?;
                     }
+                    futures::executor::block_on(
+                        state
+                            .proxy_service
+                            .clear_provider_runtime_state(id, app_type.as_str()),
+                    )
+                    .map_err(AppError::Message)?;
                     return Ok(());
                 }
             }
@@ -4188,6 +4232,13 @@ impl ProviderService {
                     _ => {}
                 }
             }
+            let _ = Self::disable_upstream_admission_retry_if_enabled(state, &app_type, id)?;
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .clear_provider_runtime_state(id, app_type.as_str()),
+            )
+            .map_err(AppError::Message)?;
             state.db.delete_provider(app_type.as_str(), id)?;
             return Ok(());
         }
@@ -4205,6 +4256,7 @@ impl ProviderService {
         if failover_mode_active {
             // 1. 从故障转移队列移除（即使不在队列中也是 idempotent）
             state.db.remove_from_failover_queue(app_type.as_str(), id)?;
+            let _ = Self::disable_upstream_admission_retry_if_enabled(state, &app_type, id)?;
 
             // 2. 清理活动面板/active_targets/熔断器
             futures::executor::block_on(
@@ -4431,8 +4483,16 @@ impl ProviderService {
 
         if let Some(mut provider) = state.db.get_provider_by_id(id, app_type.as_str())? {
             Self::set_provider_live_config_managed(&mut provider, false);
+            provider.set_upstream_admission_retry_enabled(false);
             state.db.save_provider(app_type.as_str(), &provider)?;
         }
+
+        futures::executor::block_on(
+            state
+                .proxy_service
+                .clear_provider_runtime_state(id, app_type.as_str()),
+        )
+        .map_err(AppError::Message)?;
 
         Ok(())
     }

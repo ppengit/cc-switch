@@ -44,6 +44,7 @@ struct SessionRouteBinding {
 #[derive(Debug, Default)]
 struct SessionRoutingState {
     bindings: HashMap<SessionRouteKey, SessionRouteBinding>,
+    session_active_requests: HashMap<ProviderRouteKey, u32>,
     anonymous_active_requests: HashMap<ProviderRouteKey, u32>,
 }
 
@@ -51,6 +52,7 @@ impl SessionRoutingState {
     fn cleanup_expired(&mut self, now: Instant, ttl: Duration) {
         self.bindings
             .retain(|_, binding| now.duration_since(binding.last_seen) <= ttl);
+        self.session_active_requests.retain(|_, active| *active > 0);
         self.anonymous_active_requests
             .retain(|_, active| *active > 0);
     }
@@ -61,23 +63,32 @@ impl SessionRoutingState {
     }
 
     fn provider_occupancy_parts(&self, app_type: &str, provider_id: &str) -> (u32, u32) {
-        let session_count = self
+        let bound_session_count = self
             .bindings
             .iter()
             .filter(|(key, binding)| {
                 key.app_type == app_type && binding.provider_id.as_str() == provider_id
             })
             .count() as u32;
+        let route_key = ProviderRouteKey {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+        };
+        let session_active_count = self
+            .session_active_requests
+            .get(&route_key)
+            .copied()
+            .unwrap_or(0);
         let anonymous_count = self
             .anonymous_active_requests
-            .get(&ProviderRouteKey {
-                app_type: app_type.to_string(),
-                provider_id: provider_id.to_string(),
-            })
+            .get(&route_key)
             .copied()
             .unwrap_or(0);
 
-        (session_count, anonymous_count)
+        (
+            bound_session_count.max(session_active_count),
+            anonymous_count,
+        )
     }
 
     fn bind_session(
@@ -112,48 +123,64 @@ impl SessionRoutingState {
         );
     }
 
-    fn increment_anonymous(&mut self, app_type: &str, provider_id: &str) -> ProviderRouteKey {
+    fn increment_active(
+        &mut self,
+        app_type: &str,
+        provider_id: &str,
+        kind: SessionRoutingActiveKind,
+    ) -> ProviderRouteKey {
         let key = ProviderRouteKey {
             app_type: app_type.to_string(),
             provider_id: provider_id.to_string(),
         };
-        let active = self
-            .anonymous_active_requests
-            .entry(key.clone())
-            .or_insert(0);
+        let active_requests = match kind {
+            SessionRoutingActiveKind::Session => &mut self.session_active_requests,
+            SessionRoutingActiveKind::Anonymous => &mut self.anonymous_active_requests,
+        };
+        let active = active_requests.entry(key.clone()).or_insert(0);
         *active = active.saturating_add(1);
         key
     }
 
-    fn decrement_anonymous(&mut self, key: &ProviderRouteKey) {
-        if let Some(active) = self.anonymous_active_requests.get_mut(key) {
+    fn decrement_active(&mut self, key: &ProviderRouteKey, kind: SessionRoutingActiveKind) {
+        let active_requests = match kind {
+            SessionRoutingActiveKind::Session => &mut self.session_active_requests,
+            SessionRoutingActiveKind::Anonymous => &mut self.anonymous_active_requests,
+        };
+        if let Some(active) = active_requests.get_mut(key) {
             *active = active.saturating_sub(1);
             if *active == 0 {
-                self.anonymous_active_requests.remove(key);
+                active_requests.remove(key);
             }
         }
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SessionRoutingActiveKind {
+    Session,
+    Anonymous,
+}
+
 /// 会话路由请求占用 guard。
 ///
-/// 对客户端显式会话，请求会刷新会话绑定并由 TTL 释放供应商占用；对没有稳定
-/// sessionId 的请求，只在请求生命周期内临时占用一个匿名槽位。
+/// 对客户端显式会话，请求期间占用一个会话请求槽，绑定本身由 TTL 保留/释放；
+/// 对没有稳定 sessionId 的请求，只在请求生命周期内临时占用一个匿名槽位。
 pub(crate) struct SessionRoutingRequestGuard {
     state: Arc<RwLock<SessionRoutingState>>,
-    anonymous_key: Option<ProviderRouteKey>,
+    active_key: Option<(ProviderRouteKey, SessionRoutingActiveKind)>,
 }
 
 impl Drop for SessionRoutingRequestGuard {
     fn drop(&mut self) {
-        let Some(key) = self.anonymous_key.take() else {
+        let Some((key, kind)) = self.active_key.take() else {
             return;
         };
         let state = self.state.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut state = state.write().await;
-                state.decrement_anonymous(&key);
+                state.decrement_active(&key, kind);
             });
         }
     }
@@ -325,7 +352,7 @@ impl ProviderRouter {
         let mut state = self.session_routing.write().await;
         state.cleanup_expired(now, ttl);
 
-        let anonymous_key = if should_bind_session {
+        let active_kind = if should_bind_session {
             state.bind_session(
                 app_type,
                 session_id,
@@ -334,14 +361,15 @@ impl ProviderRouter {
                 project_name,
                 project_path,
             );
-            None
+            SessionRoutingActiveKind::Session
         } else {
-            Some(state.increment_anonymous(app_type, &provider.id))
+            SessionRoutingActiveKind::Anonymous
         };
+        let active_key = state.increment_active(app_type, &provider.id, active_kind);
 
         Some(SessionRoutingRequestGuard {
             state: self.session_routing.clone(),
-            anonymous_key,
+            active_key: Some((active_key, active_kind)),
         })
     }
 
@@ -837,13 +865,18 @@ impl ProviderRouter {
                 app_type: app_type.to_string(),
                 session_id: session_id.to_string(),
             };
-            if let Some(binding) = state.bindings.get_mut(&session_key) {
-                if providers
+            let bound_provider_id = state.bindings.get_mut(&session_key).map(|binding| {
+                binding.last_seen = now;
+                binding.provider_id.clone()
+            });
+            if let Some(bound_provider_id) = bound_provider_id {
+                if let Some(bound_provider) = providers
                     .iter()
-                    .any(|provider| provider.id == binding.provider_id)
+                    .find(|provider| provider.id.as_str() == bound_provider_id.as_str())
                 {
-                    binding.last_seen = now;
-                    return move_provider_to_front(providers, &binding.provider_id);
+                    if provider_has_capacity(&state, app_type, bound_provider) {
+                        return move_provider_to_front(providers, &bound_provider_id);
+                    }
                 }
             }
         }
@@ -1204,6 +1237,52 @@ mod tests {
 
         assert_eq!(first[0].id, "a");
         assert_eq!(second[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn session_routing_counts_concurrent_requests_for_same_session_capacity() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(2));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(2));
+
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+        enable_failover_with_session_routing(&db, "claude").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        assert_eq!(first[0].id, "a");
+        let _first_guard = router
+            .acquire_session_route_request("claude", "session-1", true, &first[0], None, None)
+            .await
+            .expect("first request should acquire a session route slot");
+
+        let second = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        assert_eq!(second[0].id, "a");
+        let _second_guard = router
+            .acquire_session_route_request("claude", "session-1", true, &second[0], None, None)
+            .await
+            .expect("second request should acquire a session route slot");
+
+        let third = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            third[0].id, "b",
+            "same-session in-flight requests must count toward max_concurrent_requests"
+        );
     }
 
     #[tokio::test]

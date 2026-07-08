@@ -6,6 +6,7 @@ use crate::app_config::AppType;
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::proxy::types::AppProxyConfig;
+use crate::services::ProviderService;
 use crate::store::AppState;
 use std::str::FromStr;
 use tauri::Emitter;
@@ -121,10 +122,20 @@ pub async fn remove_from_failover_queue(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
+    let app_enum =
+        AppType::from_str(&app_type).map_err(|_| format!("无效的应用类型: {app_type}"))?;
+
     state
         .db
         .remove_from_failover_queue(&app_type, &provider_id)
         .map_err(|e| e.to_string())?;
+
+    ProviderService::disable_upstream_admission_retry_if_enabled(
+        state.inner(),
+        &app_enum,
+        &provider_id,
+    )
+    .map_err(|e| e.to_string())?;
 
     state
         .proxy_service

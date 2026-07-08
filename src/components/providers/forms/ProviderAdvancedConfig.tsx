@@ -58,14 +58,14 @@ export function ProviderRoutingRetryConfig({
   const { t } = useTranslation();
   const hasAdmissionRetryTiming =
     admissionRetryConfig.maxRetries !== undefined ||
+    admissionRetryConfig.scheduleMode !== undefined ||
     admissionRetryConfig.initialDelayMs !== undefined ||
     admissionRetryConfig.maxDelayMs !== undefined ||
     admissionRetryConfig.jitterMs !== undefined;
   const autoKeywordsText = (admissionRetryConfig.autoKeywords ?? []).join("\n");
   const hasAdmissionRetryAuto =
     admissionRetryConfig.autoEnabled === true || autoKeywordsText.trim() !== "";
-  const hasAdmissionRetryNotify =
-    admissionRetryConfig.notifyOnSuccess === true;
+  const hasAdmissionRetryNotify = admissionRetryConfig.notifyOnSuccess === true;
   const [isAdmissionRetryOpen, setIsAdmissionRetryOpen] = useState(
     admissionRetryConfig.enabled === true ||
       hasAdmissionRetryTiming ||
@@ -137,7 +137,7 @@ export function ProviderRoutingRetryConfig({
             <p className="text-sm text-muted-foreground">
               {t("providerAdvanced.sessionRoutingConfigDesc", {
                 defaultValue:
-                  "留空或填 0 表示无限并发；这是单个供应商可承载的会话路由占用上限。",
+                  "留空或填 0 表示无限制；会话绑定和正在请求会共用这个槽位上限，同一会话的并发请求也会计入。若会话路由开启满载兜底，所有供应商满载时仍可能临时超过上限。",
               })}
             </p>
             <div className="space-y-2 max-w-sm">
@@ -195,7 +195,7 @@ export function ProviderRoutingRetryConfig({
           className={cn(
             "overflow-hidden transition-all duration-200",
             isAdmissionRetryOpen
-              ? "max-h-[1100px] opacity-100"
+              ? "max-h-[1250px] opacity-100"
               : "max-h-0 opacity-0",
           )}
         >
@@ -203,7 +203,7 @@ export function ProviderRoutingRetryConfig({
             <p className="text-sm text-muted-foreground">
               {t("providerAdvanced.admissionRetryConfigDesc", {
                 defaultValue:
-                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，会按目标间隔持续重试同一供应商；若单次失败本身已耗时超过间隔，则下一次会立即发起。也可在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
+                  "当上游返回 overloaded、capacity、rate limit 等拥挤错误时，会按所选调度持续重试同一供应商；也可在供应商列表快速切换。不会重试认证、模型不存在、上下文超限等请求错误。",
               })}
             </p>
             <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
@@ -317,6 +317,47 @@ export function ProviderRoutingRetryConfig({
               />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="admission-schedule-mode">
+                  {t("providerAdvanced.admissionScheduleMode", {
+                    defaultValue: "重试调度",
+                  })}
+                </Label>
+                <Select
+                  value={admissionRetryConfig.scheduleMode ?? "afterResponse"}
+                  onValueChange={(value) =>
+                    onAdmissionRetryConfigChange({
+                      ...admissionRetryConfig,
+                      scheduleMode:
+                        value === "fixedInterval"
+                          ? "fixedInterval"
+                          : "afterResponse",
+                    })
+                  }
+                >
+                  <SelectTrigger id="admission-schedule-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="afterResponse">
+                      {t("providerAdvanced.admissionScheduleAfterResponse", {
+                        defaultValue: "请求结束后等待",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="fixedInterval">
+                      {t("providerAdvanced.admissionScheduleFixedInterval", {
+                        defaultValue: "固定频率",
+                      })}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.admissionScheduleModeHint", {
+                    defaultValue:
+                      "请求结束后等待会在失败或超时后再等配置间隔；固定频率按请求发起时间计算间隔，单次失败耗时超过间隔时下一轮会立即开始。",
+                  })}
+                </p>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="admission-max-retries">
                   {t("providerAdvanced.admissionMaxRetries", {

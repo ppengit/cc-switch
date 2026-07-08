@@ -197,6 +197,7 @@ export interface ProviderUpstreamAdmissionRetry {
   autoEnabled?: boolean;
   autoKeywords?: string[];
   notifyOnSuccess?: boolean;
+  scheduleMode?: "afterResponse" | "fixedInterval";
   maxRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;

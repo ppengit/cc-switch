@@ -898,6 +898,7 @@ impl Database {
             "UPDATE proxy_config SET
                 enabled = ?2,
                 auto_failover_enabled = ?3,
+                session_routing_enabled = CASE WHEN ?2 = 1 AND ?3 = 1 THEN session_routing_enabled ELSE 0 END,
                 updated_at = datetime('now')
              WHERE app_type = ?1",
             rusqlite::params![
@@ -1024,6 +1025,7 @@ mod tests {
         let updated = db.get_proxy_config_for_app("claude").await?;
         assert!(!updated.enabled);
         assert!(!updated.auto_failover_enabled);
+        assert!(!updated.session_routing_enabled);
 
         Ok(())
     }

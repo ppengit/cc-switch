@@ -434,6 +434,25 @@ impl LocalProxyRequestOverrides {
 /// the same provider. It is not a response rescue mechanism: while enabled it
 /// keeps retrying the same provider without feeding those admission failures to
 /// failover / circuit breaker health, and disabling it returns to normal routing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UpstreamAdmissionRetryScheduleMode {
+    /// Wait for the current upstream attempt to finish, then sleep the
+    /// configured delay before sending the next attempt.
+    #[default]
+    AfterResponse,
+    /// Treat the delay as a target start-to-start interval. If the upstream
+    /// attempt already took longer than the interval, the next attempt starts
+    /// immediately.
+    FixedInterval,
+}
+
+impl UpstreamAdmissionRetryScheduleMode {
+    pub fn is_default(value: &Self) -> bool {
+        matches!(value, Self::AfterResponse)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct UpstreamAdmissionRetryConfig {
     #[serde(default)]
@@ -450,6 +469,12 @@ pub struct UpstreamAdmissionRetryConfig {
     pub auto_keywords: Vec<String>,
     #[serde(rename = "notifyOnSuccess", default)]
     pub notify_on_success: bool,
+    #[serde(
+        rename = "scheduleMode",
+        default,
+        skip_serializing_if = "UpstreamAdmissionRetryScheduleMode::is_default"
+    )]
+    pub schedule_mode: UpstreamAdmissionRetryScheduleMode,
     /// Maximum same-provider admission retries. `None` or `Some(0)` means
     /// unlimited while the switch remains enabled.
     #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
@@ -579,7 +604,7 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub upstream_admission_retry: Option<UpstreamAdmissionRetryConfig>,
-    /// 会话路由下该供应商最多承载的并发会话/请求占用数；None 或 0 表示无限制。
+    /// 会话路由下该供应商最多承载的会话/请求槽位数；None 或 0 表示无限制。
     #[serde(
         rename = "maxConcurrentRequests",
         skip_serializing_if = "Option::is_none"
@@ -1135,6 +1160,7 @@ mod tests {
         ClaudeModelConfig, CodexModelConfig, CodexModelRoute, GeminiModelConfig,
         LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
         ProviderMeta, UniversalProvider, UpstreamAdmissionRetryConfig,
+        UpstreamAdmissionRetryScheduleMode,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1230,6 +1256,7 @@ mod tests {
                 auto_enabled: true,
                 auto_keywords: vec!["负载已经达到上限".to_string()],
                 notify_on_success: true,
+                schedule_mode: UpstreamAdmissionRetryScheduleMode::FixedInterval,
                 max_retries: Some(4),
                 initial_delay_ms: Some(500),
                 max_delay_ms: Some(3000),
@@ -1246,6 +1273,10 @@ mod tests {
             "负载已经达到上限"
         );
         assert_eq!(value["upstreamAdmissionRetry"]["notifyOnSuccess"], true);
+        assert_eq!(
+            value["upstreamAdmissionRetry"]["scheduleMode"],
+            "fixedInterval"
+        );
         assert_eq!(value["upstreamAdmissionRetry"]["maxRetries"], 4);
         assert_eq!(value["upstreamAdmissionRetry"]["initialDelayMs"], 500);
         assert_eq!(value["upstreamAdmissionRetry"]["maxDelayMs"], 3000);
@@ -1258,6 +1289,10 @@ mod tests {
         assert!(retry.auto_enabled);
         assert_eq!(retry.auto_keywords, vec!["负载已经达到上限".to_string()]);
         assert!(retry.notify_on_success);
+        assert_eq!(
+            retry.schedule_mode,
+            UpstreamAdmissionRetryScheduleMode::FixedInterval
+        );
         assert_eq!(retry.max_retries, Some(4));
         assert_eq!(retry.initial_delay_ms, Some(500));
         assert_eq!(retry.max_delay_ms, Some(3000));

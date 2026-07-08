@@ -1071,9 +1071,8 @@ export function ProviderList({
   const queryClient = useQueryClient();
   const [admissionRetryRequests, setAdmissionRetryRequests] =
     useState<AdmissionRetryRequestEvents>({});
-  const [admissionRetrySuppressedIds, setAdmissionRetrySuppressedIds] = useState<
-    Set<string>
-  >(new Set());
+  const [admissionRetrySuppressedIds, setAdmissionRetrySuppressedIds] =
+    useState<Set<string>>(new Set());
   const [admissionRetryUpdatingIds, setAdmissionRetryUpdatingIds] = useState<
     Set<string>
   >(new Set());
@@ -1133,8 +1132,8 @@ export function ProviderList({
 
   const isAdmissionRetryVisible = useCallback((providerId: string): boolean => {
     return (
-      providersRef.current[providerId]?.meta?.upstreamAdmissionRetry?.enabled ===
-        true &&
+      providersRef.current[providerId]?.meta?.upstreamAdmissionRetry
+        ?.enabled === true &&
       !admissionRetrySuppressedIdsRef.current.has(providerId)
     );
   }, []);
@@ -1153,6 +1152,19 @@ export function ProviderList({
       });
     },
     [],
+  );
+
+  const suppressAdmissionRetryForProviders = useCallback(
+    (providerIds: Iterable<string>) => {
+      const ids = Array.from(providerIds);
+      if (ids.length === 0) return;
+      const nextSuppressedIds = new Set(admissionRetrySuppressedIdsRef.current);
+      ids.forEach((id) => nextSuppressedIds.add(id));
+      admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
+      setAdmissionRetrySuppressedIds(nextSuppressedIds);
+      clearAdmissionRetryRequests(ids);
+    },
+    [clearAdmissionRetryRequests],
   );
 
   useEffect(() => {
@@ -1684,7 +1696,9 @@ export function ProviderList({
         : isAdditiveMode
           ? isInConfig
           : isCurrent;
-      const activeRequest = activeRequestProviders?.[provider.id];
+      const activeRequest = isEnabled
+        ? activeRequestProviders?.[provider.id]
+        : undefined;
       const activeRequestCount = activeRequest?.count ?? 0;
       const isProcessingProvider = activeRequestCount > 0;
       const retryEvents = Object.values(
@@ -2317,6 +2331,7 @@ export function ProviderList({
               appType: appId,
               providerId: row.provider.id,
             });
+            suppressAdmissionRetryForProviders([row.provider.id]);
           }
         } else if (isAdditiveMode) {
           if (enabled && !row.isInConfig) {
@@ -2324,6 +2339,7 @@ export function ProviderList({
           }
           if (!enabled && row.isInConfig) {
             await providersApi.removeFromLiveConfig(row.provider.id, appId);
+            suppressAdmissionRetryForProviders([row.provider.id]);
             queryClient.setQueryData(
               ["proxyStatus"],
               (current: unknown) =>
@@ -2973,6 +2989,7 @@ export function ProviderList({
             appType: appId,
             providerId: row.provider.id,
           });
+          suppressAdmissionRetryForProviders([row.provider.id]);
         } else {
           await addToQueue.mutateAsync({
             appType: appId,
@@ -2993,6 +3010,7 @@ export function ProviderList({
             return;
           }
           await providersApi.removeFromLiveConfig(row.provider.id, appId);
+          suppressAdmissionRetryForProviders([row.provider.id]);
           queryClient.setQueryData(
             ["proxyStatus"],
             (current: unknown) =>

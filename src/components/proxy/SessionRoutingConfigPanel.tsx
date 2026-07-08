@@ -7,10 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import {
-  useAppProxyConfig,
-  useUpdateAppProxyConfig,
-} from "@/lib/query/proxy";
+import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 
 interface SessionRoutingConfigPanelProps {
   appType: "claude" | "codex";
@@ -35,9 +32,7 @@ export function SessionRoutingConfigPanel({
     if (!config) return;
     setFormData({
       sessionRoutingEnabled: config.sessionRoutingEnabled,
-      sessionRoutingIdleTtlSeconds: String(
-        config.sessionRoutingIdleTtlSeconds,
-      ),
+      sessionRoutingIdleTtlSeconds: String(config.sessionRoutingIdleTtlSeconds),
       sessionRoutingClientSessionOnly: config.sessionRoutingClientSessionOnly,
       sessionRoutingOverflowFallbackEnabled:
         config.sessionRoutingOverflowFallbackEnabled,
@@ -63,10 +58,11 @@ export function SessionRoutingConfigPanel({
     await updateConfig.mutateAsync({
       ...config,
       sessionRoutingEnabled:
-        formData.sessionRoutingEnabled && config.enabled && config.autoFailoverEnabled,
+        formData.sessionRoutingEnabled &&
+        config.enabled &&
+        config.autoFailoverEnabled,
       sessionRoutingIdleTtlSeconds: ttl,
-      sessionRoutingClientSessionOnly:
-        formData.sessionRoutingClientSessionOnly,
+      sessionRoutingClientSessionOnly: formData.sessionRoutingClientSessionOnly,
       sessionRoutingOverflowFallbackEnabled:
         formData.sessionRoutingOverflowFallbackEnabled,
     });
@@ -93,7 +89,7 @@ export function SessionRoutingConfigPanel({
         <AlertDescription className="text-sm">
           {t("sessionRouting.settings.info", {
             defaultValue:
-              "会话路由仅在本地路由接管和自动故障转移都启用时生效。同一客户端会话优先保持在同一供应商；供应商达到并发上限时会按故障转移队列选择其它可用供应商。",
+              "会话路由仅在本地路由接管和自动故障转移都启用时生效。同一客户端会话优先保持在同一供应商；供应商达到并发上限时会按故障转移队列选择其它可用供应商。开启满载兜底后，所有供应商满载时可能临时超过上限。",
           })}
         </AlertDescription>
       </Alert>
@@ -201,7 +197,7 @@ export function SessionRoutingConfigPanel({
               <span className="mt-1 block text-xs text-muted-foreground">
                 {t("sessionRouting.settings.overflowFallbackHint", {
                   defaultValue:
-                    "当所有供应商都达到最大并发上限时，仍把请求交给故障转移队列中第一个可用供应商，避免无人处理。",
+                    "当所有供应商都达到最大并发上限时，仍把请求交给故障转移队列中第一个可用供应商，避免无人处理；这会让最大并发上限成为软限制。",
                 })}
               </span>
             </span>

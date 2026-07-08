@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import type { AppId } from "@/lib/api";
+import type { ProviderMeta } from "@/types";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 vi.mock("sonner", () => ({
@@ -32,7 +33,10 @@ vi.mock("@/components/JsonEditor", () => ({
   ),
 }));
 
-const renderProviderForm = (name = "Old Provider") => {
+const renderProviderForm = (
+  name = "Old Provider",
+  meta?: Partial<ProviderMeta>,
+) => {
   const queryClient = createTestQueryClient();
   const onSubmit = vi.fn();
   const onCancel = vi.fn();
@@ -57,6 +61,7 @@ const renderProviderForm = (name = "Old Provider") => {
               ANTHROPIC_MODEL: "claude-old",
             },
           },
+          meta,
         }}
       />
     </QueryClientProvider>,
@@ -271,21 +276,44 @@ describe("ProviderForm edit mode", () => {
     const { onSubmit } = renderProviderForm();
 
     fireEvent.click(screen.getByText("上游入场重试"));
-    fireEvent.click(
-      screen.getByRole("switch", { name: "启用入场重试" }),
-    );
+    fireEvent.click(screen.getByRole("switch", { name: "启用入场重试" }));
     fireEvent.change(screen.getByLabelText("重试间隔（毫秒）"), {
       target: { value: "45000" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
-      {
+    expect(
+      onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry,
+    ).toMatchObject({
+      enabled: true,
+      maxDelayMs: 45000,
+    });
+  });
+
+  it("preserves Claude admission retry fixed interval scheduling from the form", async () => {
+    const { onSubmit } = renderProviderForm("Old Provider", {
+      upstreamAdmissionRetry: {
         enabled: true,
-        maxDelayMs: 45000,
+        scheduleMode: "fixedInterval",
+        initialDelayMs: 1000,
+        maxDelayMs: 1000,
+        jitterMs: 100,
       },
-    );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(
+      onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry,
+    ).toMatchObject({
+      enabled: true,
+      scheduleMode: "fixedInterval",
+      initialDelayMs: 1000,
+      maxDelayMs: 1000,
+      jitterMs: 100,
+    });
   });
 
   it("saves Claude admission retry success notification toggle from the form", async () => {
@@ -298,20 +326,18 @@ describe("ProviderForm edit mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
-      {
-        notifyOnSuccess: true,
-      },
-    );
+    expect(
+      onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry,
+    ).toMatchObject({
+      notifyOnSuccess: true,
+    });
   });
 
   it("saves Codex admission retry enable state and retry interval from the form", async () => {
     const { onSubmit } = renderCodexProviderForm();
 
     fireEvent.click(screen.getByText("上游入场重试"));
-    fireEvent.click(
-      screen.getByRole("switch", { name: "启用入场重试" }),
-    );
+    fireEvent.click(screen.getByRole("switch", { name: "启用入场重试" }));
     fireEvent.change(screen.getByLabelText("重试间隔（毫秒）"), {
       target: { value: "45000" },
     });
@@ -323,14 +349,13 @@ describe("ProviderForm edit mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry).toMatchObject(
-      {
-        enabled: true,
-        maxDelayMs: 45000,
-      },
-    );
+    expect(
+      onSubmit.mock.calls[0][0].meta?.upstreamAdmissionRetry,
+    ).toMatchObject({
+      enabled: true,
+      maxDelayMs: 45000,
+    });
   });
-
 });
 
 describe("ProviderForm create mode", () => {

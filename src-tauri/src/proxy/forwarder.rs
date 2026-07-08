@@ -33,7 +33,7 @@ use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::{
     app_config::AppType,
-    provider::{LocalProxyRequestOverrides, Provider},
+    provider::{LocalProxyRequestOverrides, Provider, UpstreamAdmissionRetryScheduleMode},
     services::ProviderService,
     store::AppState,
 };
@@ -2890,6 +2890,7 @@ struct AdmissionRetryPolicy {
     initial_delay_ms: u64,
     retry_interval_ms: u64,
     jitter_ms: u64,
+    schedule_mode: UpstreamAdmissionRetryScheduleMode,
 }
 
 const MAX_ADMISSION_RETRY_DELAY_MS: u64 = 600_000;
@@ -2933,6 +2934,7 @@ impl AdmissionRetryPolicy {
             initial_delay_ms,
             retry_interval_ms,
             jitter_ms,
+            schedule_mode: config.schedule_mode,
         })
     }
 
@@ -2973,7 +2975,11 @@ impl AdmissionRetryPolicy {
     ) -> AdmissionRetryDelayPlan {
         let used_retry_after = retry_after_ms.is_some();
         let target_interval_ms = self.delay_ms(retry_number, retry_after_ms);
-        let sleep_ms = if used_retry_after {
+        let sleep_ms = if used_retry_after
+            || matches!(
+                self.schedule_mode,
+                UpstreamAdmissionRetryScheduleMode::AfterResponse
+            ) {
             target_interval_ms
         } else {
             target_interval_ms.saturating_sub(attempt_elapsed_ms)
@@ -4151,7 +4157,10 @@ fn value_for_log(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::database::Database;
-    use crate::provider::{LocalProxyRequestOverrides, ProviderMeta, UpstreamAdmissionRetryConfig};
+    use crate::provider::{
+        LocalProxyRequestOverrides, ProviderMeta, UpstreamAdmissionRetryConfig,
+        UpstreamAdmissionRetryScheduleMode,
+    };
     use crate::proxy::CircuitBreakerConfig;
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
@@ -4545,11 +4554,40 @@ mod tests {
     }
 
     #[test]
-    fn admission_retry_plan_skips_extra_wait_after_slow_failure() {
+    fn admission_retry_plan_waits_after_response_by_default() {
         let mut provider = test_provider_with_type(None);
         provider.meta = Some(ProviderMeta {
             upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
                 enabled: true,
+                max_retries: Some(0),
+                initial_delay_ms: Some(1_000),
+                max_delay_ms: Some(1_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let policy = AdmissionRetryPolicy::from_provider(&provider).expect("retry policy");
+
+        let fast_failure = policy.plan_delay(1, None, 250);
+        assert_eq!(fast_failure.target_interval_ms, 1_000);
+        assert_eq!(fast_failure.sleep_ms, 1_000);
+        assert!(!fast_failure.used_retry_after);
+
+        let slow_failure = policy.plan_delay(2, None, 5_000);
+        assert_eq!(slow_failure.target_interval_ms, 1_000);
+        assert_eq!(slow_failure.sleep_ms, 1_000);
+        assert!(!slow_failure.used_retry_after);
+    }
+
+    #[test]
+    fn admission_retry_plan_fixed_interval_offsets_attempt_elapsed_time() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                schedule_mode: UpstreamAdmissionRetryScheduleMode::FixedInterval,
                 max_retries: Some(0),
                 initial_delay_ms: Some(1_000),
                 max_delay_ms: Some(1_000),

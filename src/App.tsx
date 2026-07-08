@@ -808,6 +808,11 @@ function App() {
         await providersApi.switch(providerId, activeApp);
       } else {
         await providersApi.removeFromLiveConfig(providerId, activeApp);
+        queryClient.setQueryData<ProxyStatus | undefined>(
+          ["proxyStatus"],
+          (current) =>
+            pruneProxyStatusProviderActivity(current, activeApp, providerId),
+        );
       }
     } else if (enabled) {
       await providersApi.switch(providerId, activeApp);
@@ -904,23 +909,12 @@ function App() {
       // Remove from live config only (for additive mode apps like OpenCode/OpenClaw)
       // Does NOT delete from database - provider remains in the list
       await providersApi.removeFromLiveConfig(provider.id, activeApp);
-      // Invalidate queries to refresh the isInConfig state
-      if (activeApp === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds"],
-        });
-      } else if (activeApp === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.liveProviderIds,
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      } else if (activeApp === "hermes") {
-        await queryClient.invalidateQueries({
-          queryKey: hermesKeys.liveProviderIds,
-        });
-      }
+      queryClient.setQueryData<ProxyStatus | undefined>(
+        ["proxyStatus"],
+        (current) =>
+          pruneProxyStatusProviderActivity(current, activeApp, provider.id),
+      );
+      await invalidateProviderCaches();
       toast.success(
         t("notifications.removeFromConfigSuccess", {
           defaultValue: "已从配置移除",
