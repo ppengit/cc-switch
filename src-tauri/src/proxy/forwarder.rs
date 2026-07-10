@@ -1395,6 +1395,7 @@ impl RequestForwarder {
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
         let mut retries_used = 0u32;
+        let mut auto_admission_retry_opened = false;
         loop {
             let attempt_started_at = std::time::Instant::now();
             match self
@@ -1427,14 +1428,16 @@ impl RequestForwarder {
                         .min(u64::MAX as u128) as u64;
                     let category = self.categorize_proxy_error(app_type, endpoint, &error);
                     let admission_retryable = should_retry_provider_admission(category, &error);
-                    let policy = self.current_admission_retry_policy(app_type, provider);
-                    let Some(policy) = policy.or_else(|| {
-                        if admission_retryable {
+                    let mut policy = self.current_admission_retry_policy(app_type, provider);
+                    if policy.is_none() && admission_retryable {
+                        if let Some(auto_policy) =
                             self.try_auto_enable_admission_retry(app_type, provider, &error)
-                        } else {
-                            None
+                        {
+                            auto_admission_retry_opened = true;
+                            policy = Some(auto_policy);
                         }
-                    }) else {
+                    }
+                    let Some(policy) = policy else {
                         if retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
@@ -1446,6 +1449,9 @@ impl RequestForwarder {
                                 "cleared",
                             )
                             .await;
+                        }
+                        if auto_admission_retry_opened {
+                            self.disable_auto_admission_retry_after_exit(app_type, provider);
                         }
                         return Err(AdmissionRetryForwardError::Normal(error));
                     };
@@ -1472,6 +1478,9 @@ impl RequestForwarder {
                             )
                             .await;
                         }
+                        if auto_admission_retry_opened {
+                            self.disable_auto_admission_retry_after_exit(app_type, provider);
+                        }
                         return Err(AdmissionRetryForwardError::Neutral(error));
                     }
 
@@ -1493,6 +1502,9 @@ impl RequestForwarder {
                             retries_used,
                             summarize_proxy_error(&error)
                         );
+                        if auto_admission_retry_opened {
+                            self.disable_auto_admission_retry_after_exit(app_type, provider);
+                        }
                         return Err(AdmissionRetryForwardError::Neutral(error));
                     }
 
@@ -1553,6 +1565,9 @@ impl RequestForwarder {
                             "cleared",
                         )
                         .await;
+                        if auto_admission_retry_opened {
+                            self.disable_auto_admission_retry_after_exit(app_type, provider);
+                        }
                         return Err(AdmissionRetryForwardError::Normal(error));
                     }
                 }
@@ -1595,6 +1610,34 @@ impl RequestForwarder {
                 );
                 false
             }
+        }
+    }
+
+    fn disable_auto_admission_retry_after_exit(&self, app_type: &AppType, provider: &Provider) {
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return;
+        };
+        let Some(state) = app_handle.try_state::<AppState>() else {
+            return;
+        };
+
+        match ProviderService::disable_upstream_admission_retry_if_enabled(
+            state.inner(),
+            app_type,
+            &provider.id,
+        ) {
+            Ok(true) => log::info!(
+                "[{}] 自动入场重试已结束，已关闭供应商入场重试: provider={}",
+                app_type.as_str(),
+                provider.name
+            ),
+            Ok(false) => {}
+            Err(error) => log::warn!(
+                "[{}] 自动入场重试结束但关闭供应商入场重试失败: provider={}, error={}",
+                app_type.as_str(),
+                provider.id,
+                error
+            ),
         }
     }
 
