@@ -80,7 +80,11 @@ import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { BasicFormFields } from "./BasicFormFields";
 import { ClaudeFormFields } from "./ClaudeFormFields";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
-import { CodexFormFields } from "./CodexFormFields";
+import {
+  CodexFormFields,
+  modelRouteRowsFromMap,
+  type CodexModelRouteRow,
+} from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
@@ -660,8 +664,8 @@ function ProviderFormFull({
       () => initialData?.meta?.codexChatReasoning ?? {},
     );
   const [codexModelRoutes, setCodexModelRoutes] = useState<
-    Record<string, CodexModelRoute>
-  >(() => initialData?.meta?.codexModelRoutes ?? {});
+    CodexModelRouteRow[]
+  >(() => modelRouteRowsFromMap(initialData?.meta?.codexModelRoutes ?? {}));
   const [codexModelRoutesEnabled, setCodexModelRoutesEnabled] =
     useState<boolean>(() =>
       getInitialCodexModelRoutesEnabled(initialData?.meta),
@@ -731,7 +735,9 @@ function ProviderFormFull({
     });
     setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
-    setCodexModelRoutes(seed?.meta?.codexModelRoutes ?? {});
+    setCodexModelRoutes(
+      modelRouteRowsFromMap(seed?.meta?.codexModelRoutes ?? {}),
+    );
     setCodexModelRoutesEnabled(getInitialCodexModelRoutesEnabled(seed?.meta));
     setCustomUserAgent(seed?.meta?.customUserAgent ?? "");
     setLocalProxyHeadersOverride(
@@ -1069,7 +1075,7 @@ function ProviderFormFull({
       const template = getCodexCustomTemplate();
       resetCodexConfig(template.auth, template.config);
       setCodexChatReasoning({});
-      setCodexModelRoutes({});
+      setCodexModelRoutes([]);
       setCodexModelRoutesEnabled(false);
       setCodexTakeoverEnabled(false);
     }
@@ -2117,7 +2123,18 @@ function ProviderFormFull({
       templatePreset?.providerType || initialData?.meta?.providerType;
     const normalizedCodexModelRoutes =
       appId === "codex" && category !== "official"
-        ? normalizeCodexModelRoutesForSave(codexModelRoutes)
+        ? normalizeCodexModelRoutesForSave(
+            codexModelRoutes.reduce<Record<string, CodexModelRoute>>(
+              (result, row) => {
+                const requestModel = row.requestModel.trim();
+                const upstreamModel = row.upstreamModel.trim();
+                if (!requestModel || !upstreamModel) return result;
+                result[requestModel] = { model: upstreamModel };
+                return result;
+              },
+              {},
+            ),
+          )
         : undefined;
 
     const nextMeta: ProviderMeta = {
@@ -2417,7 +2434,11 @@ function ProviderFormFull({
           setCodexChatReasoning(
             (seededSettingsConfig as any)?.meta?.codexChatReasoning ?? {},
           );
-          setCodexModelRoutes(initialData?.meta?.codexModelRoutes ?? {});
+          setCodexModelRoutes(
+            modelRouteRowsFromMap(
+              initialData?.meta?.codexModelRoutes ?? {},
+            ),
+          );
           setCodexModelRoutesEnabled(
             getInitialCodexModelRoutesEnabled(initialData?.meta),
           );
@@ -2435,7 +2456,7 @@ function ProviderFormFull({
           const template = getCodexCustomTemplate();
           resetCodexConfig(template.auth, template.config);
           setCodexChatReasoning({});
-          setCodexModelRoutes({});
+          setCodexModelRoutes([]);
           setCodexModelRoutesEnabled(false);
           setLocalCodexApiFormat(
             codexApiFormatFromWireApi(extractCodexWireApi(template.config)) ??
@@ -2484,7 +2505,7 @@ function ProviderFormFull({
 
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
-      setCodexModelRoutes({});
+      setCodexModelRoutes([]);
       setCodexModelRoutesEnabled(false);
       setCodexTakeoverEnabled((preset.modelCatalog?.length ?? 0) > 0);
       setLocalCodexApiFormat(

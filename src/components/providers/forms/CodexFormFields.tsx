@@ -92,8 +92,8 @@ interface CodexFormFieldsProps {
   // Request model routes
   modelRoutesEnabled: boolean;
   onModelRoutesEnabledChange: (enabled: boolean) => void;
-  modelRoutes?: Record<string, CodexModelRoute>;
-  onModelRoutesChange?: (routes: Record<string, CodexModelRoute>) => void;
+  modelRoutes?: CodexModelRouteRow[];
+  onModelRoutesChange?: (routes: CodexModelRouteRow[]) => void;
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -108,7 +108,7 @@ interface CodexFormFieldsProps {
 }
 
 type CodexCatalogRow = CodexCatalogModel & { rowId: string };
-type CodexModelRouteRow = {
+export type CodexModelRouteRow = {
   rowId: string;
   requestModel: string;
   upstreamModel: string;
@@ -168,37 +168,12 @@ function catalogRowsMatchModels(
   });
 }
 
-function modelRouteRowsFromMap(
+export function modelRouteRowsFromMap(
   routes: Record<string, CodexModelRoute>,
 ): CodexModelRouteRow[] {
   return Object.entries(routes).map(([requestModel, route]) =>
     createModelRouteRow(requestModel, route),
   );
-}
-
-function modelRouteRowsToMap(
-  rows: CodexModelRouteRow[],
-): Record<string, CodexModelRoute> {
-  const result: Record<string, CodexModelRoute> = {};
-  for (const row of rows) {
-    result[row.requestModel] = { model: row.upstreamModel };
-  }
-  return result;
-}
-
-function modelRouteRowsMatchMap(
-  rows: Pick<CodexModelRouteRow, "requestModel" | "upstreamModel">[],
-  routes: Record<string, CodexModelRoute>,
-): boolean {
-  const entries = Object.entries(routes);
-  if (rows.length !== entries.length) return false;
-  return rows.every((row, index) => {
-    const [requestModel, route] = entries[index];
-    return (
-      row.requestModel === requestModel &&
-      row.upstreamModel === (route?.model ?? "")
-    );
-  });
 }
 
 export function CodexFormFields({
@@ -230,7 +205,7 @@ export function CodexFormFields({
   onCatalogModelsChange,
   modelRoutesEnabled,
   onModelRoutesEnabledChange,
-  modelRoutes = {},
+  modelRoutes = [],
   onModelRoutesChange,
   speedTestEndpoints,
   customUserAgent,
@@ -260,7 +235,7 @@ export function CodexFormFields({
   const hasRequestOverrides = Boolean(
     localProxyHeadersOverride.trim() || localProxyBodyOverride.trim(),
   );
-  const hasModelRoutes = Object.keys(modelRoutes).length > 0;
+  const hasModelRoutes = modelRoutes.length > 0;
   const hasAnyAdvancedValue =
     !!customUserAgent ||
     hasRequestOverrides ||
@@ -290,10 +265,6 @@ export function CodexFormFields({
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
   );
-  const [modelRouteRows, setModelRouteRows] = useState<CodexModelRouteRow[]>(
-    () => modelRouteRowsFromMap(modelRoutes),
-  );
-
   const routeCandidateModels: FetchedModel[] = [];
   const routeCandidateIds = new Set<string>();
   const addRouteCandidate = (id: string, ownedBy = "Configured") => {
@@ -314,8 +285,6 @@ export function CodexFormFields({
 
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
-  const lastSentRoutesRef =
-    useRef<Record<string, CodexModelRoute>>(modelRoutes);
 
   // 父 → 子：仅当 prop 数据真的变化（预设切换 / 编辑加载）时才重建 rowId；
   // 同 shape 时保留现有 rowId，避免编辑过程中焦点丢失。
@@ -341,23 +310,30 @@ export function CodexFormFields({
     onCatalogModelsChange(next);
   }, [catalogRows, onCatalogModelsChange]);
 
-  useEffect(() => {
-    setModelRouteRows((current) => {
-      if (modelRouteRowsMatchMap(current, modelRoutes)) return current;
-      return modelRouteRowsFromMap(modelRoutes);
-    });
-    lastSentRoutesRef.current = modelRoutes;
-  }, [modelRoutes]);
-
-  useEffect(() => {
+  const handleAddModelRouteRow = useCallback(() => {
     if (!onModelRoutesChange) return;
-    const next = modelRouteRowsToMap(modelRouteRows);
-    if (modelRouteRowsMatchMap(modelRouteRows, lastSentRoutesRef.current)) {
-      return;
-    }
-    lastSentRoutesRef.current = next;
-    onModelRoutesChange(next);
-  }, [modelRouteRows, onModelRoutesChange]);
+    onModelRoutesChange([...modelRoutes, createModelRouteRow()]);
+  }, [modelRoutes, onModelRoutesChange]);
+
+  const handleUpdateModelRouteRow = useCallback(
+    (index: number, patch: Partial<CodexModelRouteRow>) => {
+      if (!onModelRoutesChange) return;
+      onModelRoutesChange(
+        modelRoutes.map((row, i) =>
+          i === index ? { ...row, ...patch } : row,
+        ),
+      );
+    },
+    [modelRoutes, onModelRoutesChange],
+  );
+
+  const handleRemoveModelRouteRow = useCallback(
+    (index: number) => {
+      if (!onModelRoutesChange) return;
+      onModelRoutesChange(modelRoutes.filter((_, i) => i !== index));
+    },
+    [modelRoutes, onModelRoutesChange],
+  );
 
   const handleReasoningThinkingChange = useCallback(
     (checked: boolean) => {
@@ -435,24 +411,6 @@ export function CodexFormFields({
 
   const handleRemoveCatalogRow = useCallback((index: number) => {
     setCatalogRows((current) => current.filter((_, i) => i !== index));
-  }, []);
-
-  const handleAddModelRouteRow = useCallback(() => {
-    if (!onModelRoutesChange) return;
-    setModelRouteRows((current) => [...current, createModelRouteRow()]);
-  }, [onModelRoutesChange]);
-
-  const handleUpdateModelRouteRow = useCallback(
-    (index: number, patch: Partial<CodexModelRouteRow>) => {
-      setModelRouteRows((current) =>
-        current.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-      );
-    },
-    [],
-  );
-
-  const handleRemoveModelRouteRow = useCallback((index: number) => {
-    setModelRouteRows((current) => current.filter((_, i) => i !== index));
   }, []);
 
   const renderCatalogActionButtons = (onAdd: () => void, addLabel: string) => (
@@ -958,7 +916,7 @@ export function CodexFormFields({
                 </p>
               </div>
 
-              {modelRouteRows.length > 0 ? (
+              {modelRoutes.length > 0 ? (
                 <div className="space-y-2">
                   <div className="hidden grid-cols-[1fr_1fr_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                     <span>
@@ -974,7 +932,7 @@ export function CodexFormFields({
                     <span />
                   </div>
 
-                  {modelRouteRows.map((row, index) => (
+                  {modelRoutes.map((row, index) => (
                     <div
                       key={row.rowId}
                       className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_36px]"

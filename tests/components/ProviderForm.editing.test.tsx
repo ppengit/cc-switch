@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import type { AppId } from "@/lib/api";
 import type { ProviderMeta } from "@/types";
+import { setSettings } from "../msw/state";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 vi.mock("sonner", () => ({
@@ -290,6 +291,51 @@ describe("ProviderForm edit mode", () => {
       codexModelRoutes: {
         "gpt-5.5": { model: "deepseek-v4-pro" },
       },
+    });
+  });
+
+  it("keeps a draft Codex request model route when it temporarily matches an existing route", async () => {
+    setSettings({ commonConfigConfirmed: true });
+
+    const { onSubmit } = renderCodexProviderForm({
+      meta: {
+        codexModelRoutesEnabled: true,
+        codexModelRoutes: {
+          "gpt-5.5": { model: "deepseek-v4-pro" },
+        },
+      },
+    });
+
+    await screen.findByDisplayValue("gpt-5.5");
+
+    fireEvent.click(screen.getByRole("button", { name: "添加映射" }));
+
+    let requestInputs = screen.getAllByLabelText(
+      "请求模型",
+    ) as HTMLInputElement[];
+    expect(requestInputs).toHaveLength(2);
+
+    fireEvent.change(requestInputs[1], { target: { value: "gpt-5.5" } });
+    requestInputs = screen.getAllByLabelText("请求模型") as HTMLInputElement[];
+    expect(requestInputs).toHaveLength(2);
+    expect(requestInputs[1]).toHaveValue("gpt-5.5");
+
+    fireEvent.change(requestInputs[1], {
+      target: { value: "gpt-5.5-mini" },
+    });
+    const upstreamInputs = screen.getAllByLabelText(
+      "上游模型",
+    ) as HTMLInputElement[];
+    fireEvent.change(upstreamInputs[1], {
+      target: { value: "deepseek-v4-mini" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.codexModelRoutes).toEqual({
+      "gpt-5.5": { model: "deepseek-v4-pro" },
+      "gpt-5.5-mini": { model: "deepseek-v4-mini" },
     });
   });
 
