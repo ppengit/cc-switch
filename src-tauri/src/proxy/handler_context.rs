@@ -266,6 +266,8 @@ impl RequestContext {
             self.request_epoch,
             effective_auto_failover_enabled,
             max_retries,
+            state.shutdown_epoch.clone(),
+            state.shutdown_notify.clone(),
         )
     }
 

@@ -539,7 +539,13 @@ export function SettingsPage({
               value="usage"
               className="mt-0 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-2"
             >
-              <UsageDashboard onOpenRequestDetail={onOpenRequestDetail} />
+              <UsageDashboard
+                onOpenRequestDetail={onOpenRequestDetail}
+                refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
+                onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) =>
+                  handleAutoSave({ usageDashboardRefreshIntervalMs })
+                }
+              />
             </TabsContent>
 
             <TabsContent

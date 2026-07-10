@@ -1696,9 +1696,10 @@ export function ProviderList({
         : isAdditiveMode
           ? isInConfig
           : isCurrent;
-      const activeRequest = isEnabled
-        ? activeRequestProviders?.[provider.id]
-        : undefined;
+      // Runtime activity is authoritative even if a provider was disabled or
+      // switched while an earlier request was still in flight. Hiding it behind
+      // the configured enabled state makes ongoing upstream traffic invisible.
+      const activeRequest = activeRequestProviders?.[provider.id];
       const activeRequestCount = activeRequest?.count ?? 0;
       const isProcessingProvider = activeRequestCount > 0;
       const retryEvents = Object.values(

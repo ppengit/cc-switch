@@ -7,6 +7,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import { sessionsApi } from "@/lib/api/sessions";
@@ -15,6 +16,8 @@ import { setSessionFixtures } from "../msw/state";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const GROUP_EXPANSION_STORAGE_KEY =
+  "cc-switch.sessionManager.groupExpansionState";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -56,7 +59,7 @@ vi.mock("@/components/ConfirmDialog", () => ({
     ) : null,
 }));
 
-const renderPage = () => {
+const renderPage = (appId = "codex") => {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -68,7 +71,7 @@ const renderPage = () => {
     client,
     ...render(
       <QueryClientProvider client={client}>
-        <SessionManagerPage appId="codex" />
+        <SessionManagerPage appId={appId} />
       </QueryClientProvider>,
     ),
   };
@@ -98,135 +101,52 @@ const closeSearch = () => {
   fireEvent.click(closeButton);
 };
 
-const seedProjectSessions = () => {
-  const sessions: SessionMeta[] = [
-    {
-      providerId: "codex",
-      sessionId: "alpha-1",
-      title: "Alpha One",
-      projectDir: "/workspace/alpha",
-      createdAt: 3,
-      lastActiveAt: 30,
-      sourcePath: "/workspace/alpha/session-1.jsonl",
-      resumeCommand: "codex resume alpha-1",
-    },
-    {
-      providerId: "codex",
-      sessionId: "alpha-2",
-      title: "Alpha Two",
-      projectDir: "/workspace/alpha",
-      createdAt: 2,
-      lastActiveAt: 20,
-      sourcePath: "/workspace/alpha/session-2.jsonl",
-      resumeCommand: "codex resume alpha-2",
-    },
-    {
-      providerId: "codex",
-      sessionId: "beta-1",
-      title: "Beta One",
-      projectDir: "/workspace/beta",
-      createdAt: 1,
-      lastActiveAt: 10,
-      sourcePath: "/workspace/beta/session-1.jsonl",
-      resumeCommand: "codex resume beta-1",
-    },
-  ];
-  const messages: Record<string, SessionMessage[]> = {
-    "codex:/workspace/alpha/session-1.jsonl": [
-      { role: "user", content: "alpha one", ts: 30 },
-    ],
-    "codex:/workspace/alpha/session-2.jsonl": [
-      { role: "user", content: "alpha two", ts: 20 },
-    ],
-    "codex:/workspace/beta/session-1.jsonl": [
-      { role: "user", content: "beta one", ts: 10 },
-    ],
-  };
-
-  setSessionFixtures(sessions, messages);
+const openViewModeMenu = async () => {
+  await userEvent.click(screen.getByRole("combobox", { name: /查看方式/i }));
 };
 
-const seedWindowsProjectSessions = () => {
-  const sessions: SessionMeta[] = [
-    {
-      providerId: "codex",
-      sessionId: "win-1",
-      title: "Windows One",
-      projectDir: "C:\\Repo\\App\\",
-      createdAt: 3,
-      lastActiveAt: 30,
-      sourcePath: "C:\\Repo\\App\\session-1.jsonl",
-      resumeCommand: "codex resume win-1",
-    },
-    {
-      providerId: "codex",
-      sessionId: "win-2",
-      title: "Windows Two",
-      projectDir: "c:/repo/app",
-      createdAt: 2,
-      lastActiveAt: 20,
-      sourcePath: "c:/repo/app/session-2.jsonl",
-      resumeCommand: "codex resume win-2",
-    },
-    {
-      providerId: "codex",
-      sessionId: "win-3",
-      title: "Windows Three",
-      projectDir: "C:/Repo/App//",
-      createdAt: 1,
-      lastActiveAt: 10,
-      sourcePath: "C:/Repo/App/session-3.jsonl",
-      resumeCommand: "codex resume win-3",
-    },
-  ];
-  const messages: Record<string, SessionMessage[]> = {
-    "codex:C:\\Repo\\App\\session-1.jsonl": [
-      { role: "user", content: "one", ts: 30 },
-    ],
-    "codex:c:/repo/app/session-2.jsonl": [
-      { role: "user", content: "two", ts: 20 },
-    ],
-    "codex:C:/Repo/App/session-3.jsonl": [
-      { role: "user", content: "three", ts: 10 },
-    ],
-  };
-
-  setSessionFixtures(sessions, messages);
+const switchToGroupedView = async () => {
+  await openViewModeMenu();
+  const groupedOption = await screen.findByRole("option", { name: /分类/i });
+  await userEvent.click(groupedOption);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("option", { name: /分类/i }),
+    ).not.toBeInTheDocument(),
+  );
 };
 
-const seedWindowsUncProjectSessions = () => {
-  const sessions: SessionMeta[] = [
-    {
-      providerId: "codex",
-      sessionId: "unc-1",
-      title: "UNC One",
-      projectDir: "\\\\Server\\Share\\Repo\\",
-      createdAt: 2,
-      lastActiveAt: 20,
-      sourcePath: "\\\\Server\\Share\\Repo\\session-1.jsonl",
-      resumeCommand: "codex resume unc-1",
-    },
-    {
-      providerId: "codex",
-      sessionId: "unc-2",
-      title: "UNC Two",
-      projectDir: "//server/share/repo",
-      createdAt: 1,
-      lastActiveAt: 10,
-      sourcePath: "//server/share/repo/session-2.jsonl",
-      resumeCommand: "codex resume unc-2",
-    },
-  ];
-  const messages: Record<string, SessionMessage[]> = {
-    "codex:\\\\Server\\Share\\Repo\\session-1.jsonl": [
-      { role: "user", content: "one", ts: 20 },
-    ],
-    "codex://server/share/repo/session-2.jsonl": [
-      { role: "user", content: "two", ts: 10 },
-    ],
-  };
+const switchProviderFilter = async (providerLabel: RegExp) => {
+  const providerFilterTrigger = screen.getByRole("combobox", {
+    name: /供应商筛选/i,
+  });
 
-  setSessionFixtures(sessions, messages);
+  await userEvent.click(providerFilterTrigger);
+  await userEvent.click(
+    await screen.findByRole("option", { name: providerLabel }),
+  );
+};
+
+const enterGroupedBatchMode = async () => {
+  await switchToGroupedView();
+  fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+};
+
+const collapseAllGroups = () => {
+  fireEvent.click(screen.getByRole("button", { name: /全部收起/i }));
+};
+
+const expandDirectoryGroup = (provider: string, directory: string) => {
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: new RegExp(`展开或折叠 ${provider} 供应商分组`),
+    }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: new RegExp(`展开或折叠 ${directory} 目录分组`),
+    }),
+  );
 };
 
 describe("SessionManagerPage", () => {
@@ -237,6 +157,8 @@ describe("SessionManagerPage", () => {
     Element.prototype.hasPointerCapture = vi.fn(() => false);
     Element.prototype.setPointerCapture = vi.fn();
     Element.prototype.releasePointerCapture = vi.fn();
+    window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
+    window.localStorage.removeItem(GROUP_EXPANSION_STORAGE_KEY);
 
     const sessions: SessionMeta[] = [
       {
@@ -261,6 +183,28 @@ describe("SessionManagerPage", () => {
         sourcePath: "/mock/codex/session-2.jsonl",
         resumeCommand: "codex resume codex-session-2",
       },
+      {
+        providerId: "claude",
+        sessionId: "claude-session-1",
+        title: "Claude Session",
+        summary: "Claude summary",
+        projectDir: "/mock/claude",
+        createdAt: 3,
+        lastActiveAt: 30,
+        sourcePath: "/mock/claude/session-1.jsonl",
+        resumeCommand: "claude --resume claude-session-1",
+      },
+      {
+        providerId: "codex",
+        sessionId: "codex-session-3",
+        title: "Gamma Session",
+        summary: "Gamma summary",
+        projectDir: null,
+        createdAt: 0,
+        lastActiveAt: 5,
+        sourcePath: "/mock/codex/session-3.jsonl",
+        resumeCommand: "codex resume codex-session-3",
+      },
     ];
     const messages: Record<string, SessionMessage[]> = {
       "codex:/mock/codex/session-1.jsonl": [
@@ -268,6 +212,12 @@ describe("SessionManagerPage", () => {
       ],
       "codex:/mock/codex/session-2.jsonl": [
         { role: "user", content: "beta", ts: 10 },
+      ],
+      "codex:/mock/codex/session-3.jsonl": [
+        { role: "user", content: "gamma", ts: 5 },
+      ],
+      "claude:/mock/claude/session-1.jsonl": [
+        { role: "user", content: "claude", ts: 30 },
       ],
     };
 
@@ -333,98 +283,6 @@ describe("SessionManagerPage", () => {
     expect(within(dialog).getByText(/Alpha Session/)).toBeInTheDocument();
   });
 
-  it("groups the session list by project directory and collapses a project group", async () => {
-    seedProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
-    );
-
-    const alphaGroup = screen.getByRole("button", {
-      name: /^alpha 2$/i,
-      expanded: true,
-    });
-    const betaGroup = screen.getByRole("button", {
-      name: /^beta 1$/i,
-      expanded: true,
-    });
-
-    expect(alphaGroup).toBeInTheDocument();
-    expect(betaGroup).toBeInTheDocument();
-
-    fireEvent.click(alphaGroup);
-
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: /Alpha Two/i }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(screen.getByRole("button", { name: /Beta One/i })).toBeVisible();
-
-    fireEvent.click(alphaGroup);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Alpha Two/i })).toBeVisible(),
-    );
-  });
-
-  it("keeps the session list title row separate from filter controls", async () => {
-    seedProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
-    );
-
-    const titleRow = screen.getByTestId("session-list-title-row");
-    const filterRow = screen.getByTestId("session-list-filter-row");
-    const projectFilter = screen.getByRole("combobox", {
-      name: /项目筛选|sessionManager\.projectFilter/,
-    });
-
-    expect(
-      within(titleRow).getByText("sessionManager.sessionList"),
-    ).toBeVisible();
-    expect(filterRow).toContainElement(projectFilter);
-    expect(titleRow).not.toContainElement(projectFilter);
-  });
-
-  it("shows a single project icon in the project filter trigger", async () => {
-    seedProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
-    );
-
-    const projectFilter = screen.getByRole("combobox", {
-      name: /项目筛选|sessionManager\.projectFilter/,
-    });
-
-    expect(projectFilter.querySelectorAll(".lucide-folder-open")).toHaveLength(
-      1,
-    );
-  });
-
-  it("emphasizes project names in the session tree", async () => {
-    seedProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
-    );
-
-    const alphaGroup = screen.getByRole("button", {
-      name: /^alpha 2$/i,
-      expanded: true,
-    });
-    const alphaLabel = within(alphaGroup).getByTitle("/workspace/alpha");
-
-    expect(alphaLabel).toHaveClass("font-semibold");
-    expect(alphaLabel).toHaveClass("text-foreground");
-  });
-
   it("uses consistent sizing with distinct colors for session detail actions", async () => {
     renderPage();
 
@@ -449,91 +307,6 @@ describe("SessionManagerPage", () => {
     expect(resumeButton.className).toContain("emerald");
     expect(exportButton.className).toContain("sky");
     expect(deleteButton.className).toContain("rose");
-  });
-
-  it("filters sessions by a deduplicated project directory dropdown", async () => {
-    seedProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Alpha One")).toBeInTheDocument(),
-    );
-
-    const projectFilter = screen.getByRole("combobox", {
-      name: /项目筛选|sessionManager\.projectFilter/,
-    });
-    fireEvent.pointerDown(projectFilter, {
-      button: 0,
-      ctrlKey: false,
-      pointerType: "mouse",
-    });
-    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
-    fireEvent.click(await screen.findByRole("option", { name: /beta/i }));
-
-    await waitFor(() =>
-      expect(screen.queryByText("Alpha One")).not.toBeInTheDocument(),
-    );
-    expect(screen.queryByText("Alpha Two")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Beta One/i })).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: /^beta 1$/i, expanded: true }),
-    ).toBeVisible();
-  });
-
-  it("deduplicates equivalent Windows project paths in groups and filter options", async () => {
-    seedWindowsProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("Windows One")).toBeInTheDocument(),
-    );
-
-    expect(
-      screen.getByRole("button", { name: /^App 3$/i, expanded: true }),
-    ).toBeVisible();
-
-    const projectFilter = screen.getByRole("combobox", {
-      name: /项目筛选|sessionManager\.projectFilter/,
-    });
-    fireEvent.pointerDown(projectFilter, {
-      button: 0,
-      ctrlKey: false,
-      pointerType: "mouse",
-    });
-    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
-
-    await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: /App/i })).toHaveLength(1),
-    );
-    expect(screen.getByRole("option", { name: /App.*3/i })).toBeVisible();
-  });
-
-  it("deduplicates equivalent Windows UNC project paths", async () => {
-    seedWindowsUncProjectSessions();
-    renderPage();
-
-    await waitFor(() =>
-      expect(screen.getByText("UNC One")).toBeInTheDocument(),
-    );
-
-    expect(
-      screen.getByRole("button", { name: /^Repo 2$/i, expanded: true }),
-    ).toBeVisible();
-
-    const projectFilter = screen.getByRole("combobox", {
-      name: /项目筛选|sessionManager\.projectFilter/,
-    });
-    fireEvent.pointerDown(projectFilter, {
-      button: 0,
-      ctrlKey: false,
-      pointerType: "mouse",
-    });
-    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
-
-    await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: /Repo/i })).toHaveLength(1),
-    );
-    expect(screen.getByRole("option", { name: /Repo.*2/i })).toBeVisible();
   });
 
   it("removes a deleted session from filtered search results", async () => {
@@ -643,7 +416,7 @@ describe("SessionManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
     fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
 
-    expect(screen.getByText("已选 2 项")).toBeInTheDocument();
+    expect(screen.getByText("已选 3 项")).toBeInTheDocument();
 
     openSearch();
     fireEvent.change(screen.getByRole("textbox"), {
@@ -697,5 +470,274 @@ describe("SessionManagerPage", () => {
       resolveInvalidate();
     });
     invalidateSpy.mockRestore();
+  });
+
+  it("switches to grouped view collapsed by default and shows collapse control", async () => {
+    renderPage("all");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Claude Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await switchToGroupedView();
+
+    expect(
+      screen.getByRole("button", { name: /全部收起/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /展开或折叠 codex 供应商分组/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /展开或折叠 claude 供应商分组/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Alpha Session/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("persists manual expansion and collapses all grouped sessions", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await switchToGroupedView();
+    expandDirectoryGroup("codex", "codex");
+
+    expect(
+      screen.getByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Alpha Session/ }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(GROUP_EXPANSION_STORAGE_KEY)!),
+      ).toEqual({
+        expandedProviderIds: ["codex"],
+        expandedDirectoryKeys: ["codex:/mock/codex"],
+      }),
+    );
+
+    collapseAllGroups();
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /展开或折叠 codex 目录分组/ }),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(GROUP_EXPANSION_STORAGE_KEY)!),
+      ).toEqual({
+        expandedProviderIds: [],
+        expandedDirectoryKeys: [],
+      }),
+    );
+  });
+
+  it("keeps filtered grouped sessions collapsed until expanding the group", async () => {
+    renderPage("all");
+
+    await waitFor(() =>
+      expect(screen.getByText("Alpha Session")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Alpha Session/ }));
+    await switchToGroupedView();
+    await switchProviderFilter(/Claude Code/i);
+
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument(),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Claude Session" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /展开或折叠 claude 供应商分组/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /展开或折叠 claude 目录分组/ }),
+    ).not.toBeInTheDocument();
+
+    expandDirectoryGroup("claude", "claude");
+
+    expect(
+      screen.getByRole("button", { name: /展开或折叠 claude 目录分组/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Claude Session/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Gamma Session")).not.toBeInTheDocument();
+  });
+
+  it("supports batch deletion from grouped view", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await switchToGroupedView();
+    fireEvent.click(screen.getByRole("button", { name: /批量管理/i }));
+    fireEvent.click(screen.getByRole("button", { name: /全选当前/i }));
+    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+
+    const dialog = screen.getByTestId("confirm-dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /删除所选会话/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
+      expect(screen.queryByText("Beta Session")).not.toBeInTheDocument();
+      expect(screen.queryByText("Gamma Session")).not.toBeInTheDocument();
+    });
+
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("selects visible deletable sessions by provider group in grouped batch mode", async () => {
+    renderPage("all");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Claude Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await enterGroupedBatchMode();
+
+    const codexProviderCheckbox = screen.getByRole("checkbox", {
+      name: /选择 codex 供应商分组内会话/,
+    });
+    const claudeProviderCheckbox = screen.getByRole("checkbox", {
+      name: /选择 claude 供应商分组内会话/,
+    });
+
+    fireEvent.click(codexProviderCheckbox);
+
+    expect(codexProviderCheckbox).toBeChecked();
+    expect(claudeProviderCheckbox).not.toBeChecked();
+    expect(screen.getByText("已选 3 项")).toBeInTheDocument();
+
+    fireEvent.click(codexProviderCheckbox);
+
+    expect(codexProviderCheckbox).not.toBeChecked();
+    expect(screen.getByText("已选 0 项")).toBeInTheDocument();
+  });
+
+  it("selects visible deletable sessions by directory group and marks the provider as mixed", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await enterGroupedBatchMode();
+    expandDirectoryGroup("codex", "codex");
+
+    const providerCheckbox = screen.getByRole("checkbox", {
+      name: /选择 codex 供应商分组内会话/,
+    });
+    const codexDirectoryCheckbox = screen.getByRole("checkbox", {
+      name: /选择 codex 目录分组内会话/,
+    });
+
+    fireEvent.click(codexDirectoryCheckbox);
+
+    expect(codexDirectoryCheckbox).toBeChecked();
+    expect(providerCheckbox).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByText("已选 2 项")).toBeInTheDocument();
+  });
+
+  it("marks grouped batch checkboxes as mixed when only one session is selected", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await enterGroupedBatchMode();
+    expandDirectoryGroup("codex", "codex");
+
+    fireEvent.click(screen.getAllByRole("checkbox", { name: "选择会话" })[0]);
+
+    expect(
+      screen.getByRole("checkbox", {
+        name: /选择 codex 供应商分组内会话/,
+      }),
+    ).toHaveAttribute("aria-checked", "mixed");
+    expect(
+      screen.getByRole("checkbox", { name: /选择 codex 目录分组内会话/ }),
+    ).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByText("已选 1 项")).toBeInTheDocument();
+  });
+
+  it("batch deletes only sessions selected from a grouped directory", async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    await enterGroupedBatchMode();
+    expandDirectoryGroup("codex", "codex");
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /选择 codex 目录分组内会话/,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /批量删除/i }));
+
+    const dialog = screen.getByTestId("confirm-dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /删除所选会话/i }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
+      expect(screen.queryByText("Beta Session")).not.toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByRole("button", { name: /展开或折叠 未知目录 目录分组/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: "选择会话" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /展开或折叠 未知目录 目录分组/ }),
+    );
+    expect(
+      screen.getByRole("checkbox", { name: "选择会话" }),
+    ).toBeInTheDocument();
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).toHaveBeenCalled();
   });
 });

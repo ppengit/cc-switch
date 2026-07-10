@@ -27,7 +27,7 @@ import {
   setSwitchLiveSettings,
   startProxyServerState,
 } from "../msw/state";
-import { emitTauriEvent } from "../msw/tauriMocks";
+import { emitTauriEvent, getTauriEventListenerCount } from "../msw/tauriMocks";
 
 vi.mock("@/contexts/UpdateContext", () => ({
   useUpdate: () => ({
@@ -500,6 +500,11 @@ describe("App with real ProviderList", () => {
     renderApp(App);
 
     await expectProviderVisible("Claude Alpha");
+    await waitFor(() =>
+      expect(
+        getTauriEventListenerCount("proxy-activity-updated"),
+      ).toBeGreaterThan(0),
+    );
 
     await act(async () => {
       emitTauriEvent("proxy-activity-updated", {

@@ -17,6 +17,7 @@ pub struct ModelMapping {
     pub sonnet_model: Option<String>,
     pub opus_model: Option<String>,
     pub fable_model: Option<String>,
+    pub subagent_model: Option<String>,
     pub default_model: Option<String>,
 }
 
@@ -46,6 +47,11 @@ impl ModelMapping {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from),
+            subagent_model: env
+                .and_then(|e| e.get("CLAUDE_CODE_SUBAGENT_MODEL"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             default_model: env
                 .and_then(|e| e.get("ANTHROPIC_MODEL"))
                 .and_then(|v| v.as_str())
@@ -60,6 +66,7 @@ impl ModelMapping {
             || self.sonnet_model.is_some()
             || self.opus_model.is_some()
             || self.fable_model.is_some()
+            || self.subagent_model.is_some()
             || self.default_model.is_some()
     }
 
@@ -91,6 +98,13 @@ impl ModelMapping {
         if model_lower.contains("sonnet") {
             if let Some(ref m) = self.sonnet_model {
                 return m.clone();
+            }
+        }
+
+        if let Some(ref m) = self.subagent_model {
+            if strip_one_m_suffix_for_upstream(original_model) == strip_one_m_suffix_for_upstream(m)
+            {
+                return original_model.to_string();
             }
         }
 
@@ -137,10 +151,10 @@ pub fn apply_model_mapping(
 
 /// 对 Codex 请求体应用请求级模型映射。
 ///
-/// `meta.codexModelRoutes` 使用精确模型名匹配，优先级高于旧的
-/// `settings_config.env.ANTHROPIC_*` 兼容映射。这样可以表达
-/// `gpt-5.4-mini -> gpt-5.5` 这类 Codex 内部模型别名，同时不把
-/// 其他未声明模型误改到同一个默认模型。
+/// `meta.codexModelRoutes` 使用精确模型名匹配，且只在
+/// `codexModelRoutesEnabled` 未显式关闭时生效。未命中显式 Codex
+/// 映射时保持客户端请求模型，避免退回旧的 `ANTHROPIC_MODEL` 默认值
+/// 把 Codex CLI 选择的模型误改成供应商默认模型。
 pub fn apply_codex_model_mapping(
     mut body: Value,
     provider: &Provider,
@@ -150,28 +164,37 @@ pub fn apply_codex_model_mapping(
         return (body, None, None);
     };
 
-    if let Some(route) = find_codex_model_route(provider, original) {
-        let mapped = route.model.trim();
-        if mapped.is_empty() {
+    let routes_enabled = codex_model_routes_enabled(provider);
+    let local_routing_enabled = codex_local_routing_enabled(provider);
+
+    if routes_enabled {
+        if let Some(route) = find_codex_model_route(provider, original) {
+            let mapped = route.model.trim();
+            if mapped.is_empty() {
+                return (body, Some(original.to_string()), None);
+            }
+            if mapped != original.trim() {
+                log::debug!("[ModelMapper] Codex 模型映射: {original} → {mapped}");
+                body["model"] = serde_json::json!(mapped);
+            }
+
+            let final_model = body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or(original)
+                .to_string();
+            if final_model != original {
+                return (body, Some(original.to_string()), Some(final_model));
+            }
             return (body, Some(original.to_string()), None);
         }
-        if mapped != original.trim() {
-            log::debug!("[ModelMapper] Codex 模型映射: {original} → {mapped}");
-            body["model"] = serde_json::json!(mapped);
-        }
-
-        let final_model = body
-            .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or(original)
-            .to_string();
-        if final_model != original {
-            return (body, Some(original.to_string()), Some(final_model));
-        }
-        return (body, Some(original.to_string()), None);
     }
 
-    let catalog_resolution = resolve_codex_catalog_model(provider, original);
+    let catalog_resolution = if local_routing_enabled {
+        resolve_codex_catalog_model(provider, original)
+    } else {
+        None
+    };
     let mut route_input = original.to_string();
 
     if let Some(CodexCatalogModelResolution::Alias(catalog_model)) = catalog_resolution.as_ref() {
@@ -180,25 +203,27 @@ pub fn apply_codex_model_mapping(
         route_input = catalog_model.clone();
     }
 
-    if let Some(route) = find_codex_model_route(provider, &route_input) {
-        let mapped = route.model.trim();
-        if mapped.is_empty() {
+    if routes_enabled {
+        if let Some(route) = find_codex_model_route(provider, &route_input) {
+            let mapped = route.model.trim();
+            if mapped.is_empty() {
+                return (body, Some(original.to_string()), None);
+            }
+            if mapped != route_input {
+                log::debug!("[ModelMapper] Codex 模型映射: {route_input} → {mapped}");
+                body["model"] = serde_json::json!(mapped);
+            }
+
+            let final_model = body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or(original)
+                .to_string();
+            if final_model != original {
+                return (body, Some(original.to_string()), Some(final_model));
+            }
             return (body, Some(original.to_string()), None);
         }
-        if mapped != route_input {
-            log::debug!("[ModelMapper] Codex 模型映射: {route_input} → {mapped}");
-            body["model"] = serde_json::json!(mapped);
-        }
-
-        let final_model = body
-            .get("model")
-            .and_then(|m| m.as_str())
-            .unwrap_or(original)
-            .to_string();
-        if final_model != original {
-            return (body, Some(original.to_string()), Some(final_model));
-        }
-        return (body, Some(original.to_string()), None);
     }
 
     match catalog_resolution {
@@ -216,7 +241,36 @@ pub fn apply_codex_model_mapping(
         None => {}
     }
 
-    apply_model_mapping(body, provider)
+    (body, Some(original.to_string()), None)
+}
+
+fn codex_model_routes_enabled(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .map(|meta| {
+            meta.codex_model_routes_enabled
+                .unwrap_or(!meta.codex_model_routes.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+fn codex_local_routing_enabled(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.codex_local_routing_enabled)
+        .unwrap_or_else(|| codex_catalog_count(provider) > 0)
+}
+
+fn codex_catalog_count(provider: &Provider) -> usize {
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+        .map(|models| models.len())
+        .unwrap_or(0)
 }
 
 fn find_codex_model_route<'a>(
@@ -480,6 +534,42 @@ mod tests {
     }
 
     #[test]
+    fn test_subagent_model_preserved_before_default_fallback() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "default-model",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4-mini"
+            }
+        });
+
+        let body = json!({"model": "gpt-5.4-mini"});
+        let (result, original, mapped) = apply_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.4-mini");
+        assert_eq!(original, Some("gpt-5.4-mini".to_string()));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn test_subagent_model_preserved_with_one_m_suffix_before_default_fallback() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "default-model",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4-mini"
+            }
+        });
+
+        let body = json!({"model": "gpt-5.4-mini[1M]"});
+        let (result, original, mapped) = apply_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.4-mini[1M]");
+        assert_eq!(original, Some("gpt-5.4-mini[1M]".to_string()));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
     fn test_no_mapping_configured() {
         let provider = create_provider_without_mapping();
         let body = json!({"model": "claude-sonnet-4-5"});
@@ -679,13 +769,62 @@ mod tests {
     }
 
     #[test]
-    fn codex_model_routes_fall_back_to_legacy_env_mapping() {
+    fn codex_without_explicit_route_preserves_request_model() {
         let provider = create_provider_with_mapping();
         let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
         let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
 
-        assert_eq!(result["model"], "default-model");
-        assert_eq!(mapped.as_deref(), Some("default-model"));
+        assert_eq!(result["model"], "gpt-5.4-mini");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn codex_model_routes_disabled_preserves_request_model() {
+        let mut provider = create_provider_with_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(false),
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4-mini".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.4-mini");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn codex_local_routing_disabled_ignores_catalog_alias() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_MODEL": "legacy-default-model"
+            },
+            "modelCatalog": {
+                "models": [
+                    {
+                        "displayName": "gpt-5.5",
+                        "model": "deepseek-v4-pro"
+                    }
+                ]
+            }
+        });
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_local_routing_enabled: Some(false),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.5", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert!(mapped.is_none());
     }
 
     #[test]

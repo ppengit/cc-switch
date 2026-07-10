@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
+use serde::Deserialize;
 use serde_json::Value;
-use toml_edit::DocumentMut;
 
 use crate::codex_config::{get_codex_config_dir, read_codex_config_text};
+use crate::codex_state_db::codex_state_db_paths;
 use crate::session_manager::{SessionMessage, SessionMeta};
 
 use super::utils::{
@@ -19,7 +20,7 @@ use super::utils::{
 };
 
 const PROVIDER_ID: &str = "codex";
-const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
+const CODEX_SESSION_INDEX_FILENAME: &str = "session_index.jsonl";
 const VSCODE_CONTEXT_PREFIX: &str = "# Context from my IDE setup:";
 const CODEX_REQUEST_MARKER: &str = "my request for codex";
 
@@ -28,11 +29,16 @@ static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+#[derive(Deserialize)]
+struct SessionIndexEntry {
+    id: String,
+    thread_name: String,
+}
+
 pub fn scan_sessions() -> Vec<SessionMeta> {
-    let config_dir = get_codex_config_dir();
-    let roots = session_roots_for_config_dir(&config_dir);
-    let thread_titles = codex_thread_title_map(&config_dir);
-    scan_sessions_in_roots_with_titles(&roots, Some(&thread_titles))
+    let roots = session_roots();
+    let thread_titles = load_thread_titles();
+    scan_sessions_in_roots_with_titles(&roots, &thread_titles)
 }
 
 pub fn session_roots() -> Vec<PathBuf> {
@@ -49,12 +55,13 @@ fn session_roots_for_config_dir(config_dir: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 fn scan_sessions_in_roots(roots: &[PathBuf]) -> Vec<SessionMeta> {
-    scan_sessions_in_roots_with_titles(roots, None)
+    let thread_titles = HashMap::new();
+    scan_sessions_in_roots_with_titles(roots, &thread_titles)
 }
 
 fn scan_sessions_in_roots_with_titles(
     roots: &[PathBuf],
-    thread_titles: Option<&HashMap<String, String>>,
+    thread_titles: &HashMap<String, String>,
 ) -> Vec<SessionMeta> {
     let mut files = Vec::new();
     for root in roots {
@@ -69,6 +76,176 @@ fn scan_sessions_in_roots_with_titles(
     }
 
     sessions
+}
+
+fn load_thread_titles() -> HashMap<String, String> {
+    let config_dir = get_codex_config_dir();
+    load_thread_titles_for_config_dir(&config_dir)
+}
+
+fn load_thread_titles_for_config_dir(config_dir: &Path) -> HashMap<String, String> {
+    let config_text = read_codex_config_text().unwrap_or_default();
+    let db_paths = codex_state_db_paths(config_dir, &config_text);
+    load_thread_titles_from_paths(&config_dir.join(CODEX_SESSION_INDEX_FILENAME), &db_paths)
+}
+
+fn load_thread_titles_from_paths(
+    session_index_path: &Path,
+    db_paths: &[PathBuf],
+) -> HashMap<String, String> {
+    let mut titles = load_thread_titles_from_session_index(session_index_path);
+    for db_path in db_paths {
+        titles.extend(load_thread_titles_from_db(db_path));
+    }
+    titles
+}
+
+fn load_thread_titles_from_session_index(index_path: &Path) -> HashMap<String, String> {
+    if !index_path.exists() {
+        return HashMap::new();
+    }
+
+    let file = match File::open(index_path) {
+        Ok(file) => file,
+        Err(err) => {
+            log::warn!(
+                "Failed to open Codex session index {}: {err}",
+                index_path.display()
+            );
+            return HashMap::new();
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let mut titles = HashMap::new();
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let Ok(entry) = serde_json::from_str::<SessionIndexEntry>(line.trim()) else {
+            continue;
+        };
+        let id = entry.id.trim();
+        let title = entry.thread_name.trim();
+        if !id.is_empty() && !title.is_empty() {
+            titles.insert(id.to_string(), title.to_string());
+        }
+    }
+
+    titles
+}
+
+fn load_thread_titles_from_db(db_path: &Path) -> HashMap<String, String> {
+    if !db_path.exists() {
+        return HashMap::new();
+    }
+
+    let conn = match Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(conn) => conn,
+        Err(err) => {
+            log::warn!(
+                "Failed to open Codex state database {}: {err}",
+                db_path.display()
+            );
+            return HashMap::new();
+        }
+    };
+    // Codex keeps this DB open and write-locked while running; without a busy
+    // timeout a read during a write fails immediately and titles silently drop.
+    if let Err(err) = conn.busy_timeout(Duration::from_secs(2)) {
+        log::warn!(
+            "Failed to set Codex state database busy timeout for {}: {err}",
+            db_path.display()
+        );
+        return HashMap::new();
+    }
+
+    if !sqlite_table_exists(&conn, "threads").unwrap_or(false)
+        || !sqlite_has_column(&conn, "threads", "id").unwrap_or(false)
+        || !sqlite_has_column(&conn, "threads", "title").unwrap_or(false)
+    {
+        return HashMap::new();
+    }
+
+    let has_rollout_path = sqlite_has_column(&conn, "threads", "rollout_path").unwrap_or(false);
+    let has_first_user_message =
+        sqlite_has_column(&conn, "threads", "first_user_message").unwrap_or(false);
+
+    // Mirror Codex's own `distinct_thread_metadata_title` when the column
+    // exists, but never SELECT the unbounded `first_user_message` blob.
+    let sql = match (has_rollout_path, has_first_user_message) {
+        (true, true) => {
+            "SELECT id, rollout_path, title FROM threads \
+             WHERE title IS NOT NULL AND TRIM(title) <> '' \
+             AND (first_user_message IS NULL OR TRIM(title) <> TRIM(first_user_message))"
+        }
+        (true, false) => {
+            "SELECT id, rollout_path, title FROM threads \
+             WHERE title IS NOT NULL AND TRIM(title) <> ''"
+        }
+        (false, true) => {
+            "SELECT id, NULL AS rollout_path, title FROM threads \
+             WHERE title IS NOT NULL AND TRIM(title) <> '' \
+             AND (first_user_message IS NULL OR TRIM(title) <> TRIM(first_user_message))"
+        }
+        (false, false) => {
+            "SELECT id, NULL AS rollout_path, title FROM threads \
+             WHERE title IS NOT NULL AND TRIM(title) <> ''"
+        }
+    };
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            log::warn!(
+                "Failed to prepare Codex thread title query for {}: {err}",
+                db_path.display()
+            );
+            return HashMap::new();
+        }
+    };
+
+    let rows = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(err) => {
+            log::warn!(
+                "Failed to query Codex thread titles from {}: {err}",
+                db_path.display()
+            );
+            return HashMap::new();
+        }
+    };
+
+    let mut titles = HashMap::new();
+    for row in rows.flatten() {
+        let (id, rollout_path, title) = row;
+        let Some(title) = title
+            .as_deref()
+            .and_then(crate::session_manager::sanitize_detected_title_candidate)
+            .map(|value| truncate_summary(&value, TITLE_MAX_CHARS))
+        else {
+            continue;
+        };
+
+        if let Some(id) = id {
+            insert_thread_title_key(&mut titles, &id, &title);
+        }
+        if let Some(rollout_path) = rollout_path {
+            insert_thread_title_key(&mut titles, &rollout_path, &title);
+        }
+    }
+
+    titles
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
@@ -160,12 +337,12 @@ pub fn delete_session(_root: &Path, path: &Path, session_id: &str) -> Result<boo
 }
 
 fn parse_session(path: &Path) -> Option<SessionMeta> {
-    parse_session_with_titles(path, None)
+    parse_session_with_titles(path, &HashMap::new())
 }
 
 fn parse_session_with_titles(
     path: &Path,
-    thread_titles: Option<&HashMap<String, String>>,
+    thread_titles: &HashMap<String, String>,
 ) -> Option<SessionMeta> {
     let (head, tail) = read_head_tail_lines(path, 10, 30).ok()?;
 
@@ -307,151 +484,6 @@ fn extract_codex_title_from_session_meta(payload: &Value) -> Option<String> {
         })
 }
 
-fn codex_thread_title_map(config_dir: &Path) -> HashMap<String, String> {
-    let config_text = read_codex_config_text().unwrap_or_default();
-    let db_paths = codex_state_db_paths(config_dir, &config_text);
-    codex_thread_title_map_from_paths(&db_paths)
-}
-
-fn codex_thread_title_map_from_paths(db_paths: &[PathBuf]) -> HashMap<String, String> {
-    let mut titles = HashMap::new();
-    for db_path in db_paths {
-        load_codex_thread_titles(db_path, &mut titles);
-    }
-    titles
-}
-
-fn codex_state_db_paths(config_dir: &Path, config_text: &str) -> Vec<PathBuf> {
-    let mut paths = vec![config_dir.join(CODEX_STATE_DB_FILENAME)];
-    if let Some(sqlite_home) = sqlite_home_from_codex_config(config_text) {
-        let db_path = sqlite_home.join(CODEX_STATE_DB_FILENAME);
-        if !paths.contains(&db_path) {
-            paths.push(db_path);
-        }
-    }
-    paths
-}
-
-fn sqlite_home_from_codex_config(config_text: &str) -> Option<PathBuf> {
-    if let Ok(doc) = config_text.parse::<DocumentMut>() {
-        if let Some(raw) = doc.get("sqlite_home").and_then(|item| item.as_str()) {
-            let raw = raw.trim();
-            if !raw.is_empty() {
-                return Some(resolve_user_path(raw));
-            }
-        }
-    }
-
-    let raw = top_level_toml_string_value(config_text, "sqlite_home")?;
-    if raw.is_empty() {
-        return None;
-    }
-    Some(resolve_user_path(&raw))
-}
-
-fn top_level_toml_string_value(config_text: &str, key: &str) -> Option<String> {
-    for line in config_text.lines() {
-        let line = line.trim_start();
-        if line.starts_with('[') {
-            break;
-        }
-
-        let Some((candidate_key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if candidate_key.trim() != key {
-            continue;
-        }
-
-        let raw = lenient_toml_string_value(value.trim())?.trim().to_string();
-        if !raw.is_empty() {
-            return Some(raw);
-        }
-    }
-
-    None
-}
-
-fn lenient_toml_string_value(value: &str) -> Option<&str> {
-    let quote = value.chars().next()?;
-    if quote == '"' || quote == '\'' {
-        let rest = &value[quote.len_utf8()..];
-        let end = rest.find(quote)?;
-        return Some(&rest[..end]);
-    }
-
-    Some(value.split('#').next().unwrap_or(value).trim())
-}
-
-fn resolve_user_path(raw: &str) -> PathBuf {
-    if raw == "~" {
-        return crate::config::get_home_dir();
-    }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return crate::config::get_home_dir().join(rest);
-    }
-    if let Some(rest) = raw.strip_prefix("~\\") {
-        return crate::config::get_home_dir().join(rest);
-    }
-    PathBuf::from(raw)
-}
-
-fn load_codex_thread_titles(db_path: &Path, titles: &mut HashMap<String, String>) {
-    if !db_path.exists() {
-        return;
-    }
-
-    let Ok(conn) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-        return;
-    };
-    let _ = conn.busy_timeout(Duration::from_millis(500));
-
-    if !sqlite_table_exists(&conn, "threads").unwrap_or(false)
-        || !sqlite_has_column(&conn, "threads", "id").unwrap_or(false)
-        || !sqlite_has_column(&conn, "threads", "title").unwrap_or(false)
-    {
-        return;
-    }
-
-    let has_rollout_path = sqlite_has_column(&conn, "threads", "rollout_path").unwrap_or(false);
-    let sql = if has_rollout_path {
-        "SELECT id, rollout_path, title FROM threads WHERE title IS NOT NULL AND TRIM(title) <> ''"
-    } else {
-        "SELECT id, NULL AS rollout_path, title FROM threads WHERE title IS NOT NULL AND TRIM(title) <> ''"
-    };
-
-    let Ok(mut stmt) = conn.prepare(sql) else {
-        return;
-    };
-    let Ok(rows) = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, Option<String>>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    }) else {
-        return;
-    };
-
-    for row in rows.flatten() {
-        let (id, rollout_path, title) = row;
-        let Some(title) = title
-            .as_deref()
-            .and_then(crate::session_manager::sanitize_detected_title_candidate)
-            .map(|value| truncate_summary(&value, TITLE_MAX_CHARS))
-        else {
-            continue;
-        };
-
-        if let Some(id) = id {
-            insert_thread_title_key(titles, &id, &title);
-        }
-        if let Some(rollout_path) = rollout_path {
-            insert_thread_title_key(titles, &rollout_path, &title);
-        }
-    }
-}
-
 fn sqlite_table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -478,12 +510,10 @@ fn quote_sql_identifier(value: &str) -> String {
 }
 
 fn lookup_codex_thread_title(
-    titles: Option<&HashMap<String, String>>,
+    titles: &HashMap<String, String>,
     session_id: &str,
     path: &Path,
 ) -> Option<String> {
-    let titles = titles?;
-
     titles
         .get(session_id)
         .cloned()
@@ -644,6 +674,7 @@ fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex_state_db::CODEX_STATE_DB_FILENAME;
     use tempfile::tempdir;
 
     fn write_codex_session(path: &Path, session_id: &str, message: &str) {
@@ -722,27 +753,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_prefers_codex_thread_title() {
+    fn parse_session_prefers_thread_title() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("session.jsonl");
         std::fs::write(
             &path,
             concat!(
                 "{\"timestamp\":\"2026-03-06T21:50:12Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"test-id\",\"cwd\":\"/tmp/project\"}}\n",
-                "{\"timestamp\":\"2026-03-06T21:50:13Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"First user message\"}}\n"
+                "{\"timestamp\":\"2026-03-06T21:50:13Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"How do I deploy?\"}}\n"
             ),
         )
         .expect("write");
 
-        let mut titles = HashMap::new();
-        titles.insert("test-id".to_string(), "Codex Desktop Title".to_string());
+        let mut thread_titles = HashMap::new();
+        thread_titles.insert(
+            "test-id".to_string(),
+            "Renamed deployment thread".to_string(),
+        );
 
-        let meta = parse_session_with_titles(&path, Some(&titles)).unwrap();
-        assert_eq!(meta.title.as_deref(), Some("Codex Desktop Title"));
+        let meta = parse_session_with_titles(&path, &thread_titles).unwrap();
+        assert_eq!(meta.title.as_deref(), Some("Renamed deployment thread"));
     }
 
     #[test]
-    fn codex_thread_title_map_reads_rollout_paths_from_state_db() {
+    fn load_thread_titles_from_state_db_reads_rollout_paths() {
         let temp = tempdir().expect("tempdir");
         let session_path = temp.path().join("session.jsonl");
         let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
@@ -763,31 +797,147 @@ mod tests {
         .expect("insert title");
         drop(conn);
 
-        let titles = codex_thread_title_map_from_paths(&[db_path]);
+        let titles = load_thread_titles_from_db(&db_path);
         assert_eq!(
             titles.get("thread-id").map(String::as_str),
             Some("State DB Title")
         );
         assert_eq!(
-            lookup_codex_thread_title(Some(&titles), "missing-id", &session_path).as_deref(),
+            lookup_codex_thread_title(&titles, "missing-id", &session_path).as_deref(),
             Some("State DB Title")
         );
     }
 
     #[test]
-    fn codex_state_db_paths_reads_raw_windows_sqlite_home() {
-        let config_dir = PathBuf::from(r"C:\Users\tester\.codex");
-        let config_text = r#"sqlite_home = "C:\Users\tester\AppData\Local\Codex State""#;
+    fn load_thread_titles_from_state_db_trims_and_filters_titles() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&db_path).expect("open sqlite db");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, first_user_message TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads table");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-1", "  Renamed Codex thread  ", "First prompt"),
+        )
+        .expect("insert renamed thread");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-2", "   ", "First prompt"),
+        )
+        .expect("insert blank thread");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-3", "  First prompt  ", "First prompt"),
+        )
+        .expect("insert first-message title");
+        drop(conn);
 
-        let paths = codex_state_db_paths(&config_dir, config_text);
+        let titles = load_thread_titles_from_db(&db_path);
 
         assert_eq!(
-            paths,
-            vec![
-                config_dir.join(CODEX_STATE_DB_FILENAME),
-                PathBuf::from(r"C:\Users\tester\AppData\Local\Codex State")
-                    .join(CODEX_STATE_DB_FILENAME),
-            ]
+            titles.get("thread-1").map(String::as_str),
+            Some("Renamed Codex thread")
+        );
+        assert!(!titles.contains_key("thread-2"));
+        assert!(!titles.contains_key("thread-3"));
+    }
+
+    #[test]
+    fn load_thread_titles_from_state_db_keeps_title_when_first_user_message_null() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&db_path).expect("open sqlite db");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, first_user_message TEXT)",
+            [],
+        )
+        .expect("create threads table");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, NULL)",
+            ("thread-1", "Renamed thread"),
+        )
+        .expect("insert renamed thread without first message");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-2", "First prompt", "First prompt"),
+        )
+        .expect("insert first-message title");
+        drop(conn);
+
+        let titles = load_thread_titles_from_db(&db_path);
+
+        assert_eq!(
+            titles.get("thread-1").map(String::as_str),
+            Some("Renamed thread")
+        );
+        assert!(!titles.contains_key("thread-2"));
+    }
+
+    #[test]
+    fn load_thread_titles_from_session_index_uses_latest_name() {
+        let temp = tempdir().expect("tempdir");
+        let index_path = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::write(
+            &index_path,
+            concat!(
+                "{\"id\":\"thread-1\",\"thread_name\":\"Old name\",\"updated_at\":\"2026-07-01T00:00:00Z\"}\n",
+                "{\"id\":\"thread-2\",\"thread_name\":\"   \",\"updated_at\":\"2026-07-01T00:00:00Z\"}\n",
+                "not json\n",
+                "{\"id\":\"thread-1\",\"thread_name\":\"  New name  \",\"updated_at\":\"2026-07-02T00:00:00Z\"}\n"
+            ),
+        )
+        .expect("write session index");
+
+        let titles = load_thread_titles_from_session_index(&index_path);
+
+        assert_eq!(titles.get("thread-1").map(String::as_str), Some("New name"));
+        assert!(!titles.contains_key("thread-2"));
+    }
+
+    #[test]
+    fn load_thread_titles_prefers_state_db_explicit_title_over_session_index() {
+        let temp = tempdir().expect("tempdir");
+        let index_path = temp.path().join(CODEX_SESSION_INDEX_FILENAME);
+        std::fs::write(
+            &index_path,
+            concat!(
+                "{\"id\":\"thread-1\",\"thread_name\":\"Legacy name\",\"updated_at\":\"2026-07-01T00:00:00Z\"}\n",
+                "{\"id\":\"thread-2\",\"thread_name\":\"Legacy fallback\",\"updated_at\":\"2026-07-01T00:00:00Z\"}\n"
+            ),
+        )
+        .expect("write session index");
+
+        let db_path = temp.path().join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&db_path).expect("open sqlite db");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, first_user_message TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads table");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-1", "SQLite name", "First prompt"),
+        )
+        .expect("insert sqlite title");
+        conn.execute(
+            "INSERT INTO threads (id, title, first_user_message) VALUES (?1, ?2, ?3)",
+            ("thread-2", "First prompt", "First prompt"),
+        )
+        .expect("insert first-message sqlite title");
+        drop(conn);
+
+        let titles = load_thread_titles_from_paths(&index_path, &[db_path]);
+
+        assert_eq!(
+            titles.get("thread-1").map(String::as_str),
+            Some("SQLite name")
+        );
+        assert_eq!(
+            titles.get("thread-2").map(String::as_str),
+            Some("Legacy fallback")
         );
     }
 

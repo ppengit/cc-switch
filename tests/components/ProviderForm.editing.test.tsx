@@ -272,6 +272,27 @@ describe("ProviderForm edit mode", () => {
     ]);
   });
 
+  it("preserves Codex request model routes while their enable switch is off", async () => {
+    const { onSubmit } = renderCodexProviderForm({
+      meta: {
+        codexModelRoutesEnabled: false,
+        codexModelRoutes: {
+          "gpt-5.5": { model: "deepseek-v4-pro" },
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta).toMatchObject({
+      codexModelRoutesEnabled: false,
+      codexModelRoutes: {
+        "gpt-5.5": { model: "deepseek-v4-pro" },
+      },
+    });
+  });
+
   it("saves Claude admission retry enable state and retry interval from the form", async () => {
     const { onSubmit } = renderProviderForm();
 

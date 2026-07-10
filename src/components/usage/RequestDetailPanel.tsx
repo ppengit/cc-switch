@@ -54,7 +54,11 @@ export function RequestDetailPanel({
   if (isLoading && !resolvedRequest) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent zIndex="top" closeOnInteractOutside className="max-w-4xl">
+        <DialogContent
+          zIndex="top"
+          closeOnInteractOutside
+          className="max-w-4xl"
+        >
           <DialogCloseButton
             label={t("common.close", { defaultValue: "关闭" })}
           />
@@ -72,7 +76,11 @@ export function RequestDetailPanel({
   if (!resolvedRequest) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent zIndex="top" closeOnInteractOutside className="max-w-4xl">
+        <DialogContent
+          zIndex="top"
+          closeOnInteractOutside
+          className="max-w-4xl"
+        >
           <DialogCloseButton
             label={t("common.close", { defaultValue: "关闭" })}
           />
@@ -131,7 +139,9 @@ export function RequestDetailPanel({
         closeOnInteractOutside
         className="max-w-4xl max-h-[88vh] overflow-y-auto"
       >
-        <DialogCloseButton label={t("common.close", { defaultValue: "关闭" })} />
+        <DialogCloseButton
+          label={t("common.close", { defaultValue: "关闭" })}
+        />
         <DialogHeader>
           <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
           <DialogDescription>

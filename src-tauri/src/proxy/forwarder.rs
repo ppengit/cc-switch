@@ -40,9 +40,12 @@ use crate::{
 use futures::StreamExt;
 use http::Extensions;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tauri::Manager;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 type ForwardAttemptOutput = (ProxyResponse, Option<String>, Option<String>);
@@ -178,6 +181,10 @@ pub struct RequestForwarder {
     /// 本请求开始时该应用的"是否启用故障转移"快照。
     /// 故障转移开启时本请求成功完成后绝不写 is_current（不再有"当前"概念）。
     auto_failover_enabled_at_start: bool,
+    /// 代理停止代次；stop 时递增并唤醒等待中的 admission retry。
+    shutdown_epoch: Arc<AtomicU64>,
+    shutdown_epoch_at_start: u64,
+    shutdown_notify: Arc<Notify>,
 }
 
 impl RequestForwarder {
@@ -250,10 +257,13 @@ impl RequestForwarder {
         request_epoch: u64,
         auto_failover_enabled_at_start: bool,
         max_retries: u32,
+        shutdown_epoch: Arc<AtomicU64>,
+        shutdown_notify: Arc<Notify>,
     ) -> Self {
         // max_retries 是「失败后重试次数」语义，attempt 上限 = retries + 1。
         // saturating_add 防止 u32::MAX + 1 溢出。
         let max_attempts = (max_retries as usize).saturating_add(1);
+        let shutdown_epoch_at_start = shutdown_epoch.load(Ordering::SeqCst);
         Self {
             router,
             status,
@@ -279,6 +289,9 @@ impl RequestForwarder {
             switch_epoch,
             request_epoch,
             auto_failover_enabled_at_start,
+            shutdown_epoch,
+            shutdown_epoch_at_start,
+            shutdown_notify,
         }
     }
 
@@ -291,6 +304,77 @@ impl RequestForwarder {
     async fn epoch_is_current(&self, app_type_str: &str) -> bool {
         let epochs = self.switch_epoch.read().await;
         epochs.get(app_type_str).copied().unwrap_or(0) == self.request_epoch
+    }
+
+    fn proxy_shutdown_requested(&self) -> bool {
+        self.shutdown_epoch.load(Ordering::SeqCst) != self.shutdown_epoch_at_start
+    }
+
+    fn proxy_shutdown_retry_error(&self) -> ProxyError {
+        ProxyError::ForwardFailed("代理已停止，已取消上游入场重试".to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn forward_attempt_or_shutdown(
+        &self,
+        app_type: &AppType,
+        method: &http::Method,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &axum::http::HeaderMap,
+        extensions: &Extensions,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<ForwardAttemptOutput, ProxyError> {
+        let shutdown_notified = self.shutdown_notify.notified();
+        tokio::pin!(shutdown_notified);
+        shutdown_notified.as_mut().enable();
+
+        if self.proxy_shutdown_requested() {
+            return Err(self.proxy_shutdown_retry_error());
+        }
+
+        let forward_fut = self.forward(
+            app_type, method, provider, endpoint, body, headers, extensions, adapter,
+        );
+        tokio::pin!(forward_fut);
+
+        tokio::select! {
+            result = &mut forward_fut => result,
+            _ = &mut shutdown_notified => {
+                Err(self.proxy_shutdown_retry_error())
+            }
+        }
+    }
+
+    async fn wait_admission_retry_delay_or_shutdown(
+        &self,
+        delay_ms: u64,
+    ) -> Result<(), ProxyError> {
+        let shutdown_notified = self.shutdown_notify.notified();
+        tokio::pin!(shutdown_notified);
+        shutdown_notified.as_mut().enable();
+
+        if self.proxy_shutdown_requested() {
+            return Err(self.proxy_shutdown_retry_error());
+        }
+
+        if delay_ms == 0 {
+            return Ok(());
+        }
+
+        let sleep = tokio::time::sleep(std::time::Duration::from_millis(delay_ms));
+        tokio::pin!(sleep);
+        tokio::select! {
+            _ = &mut sleep => Ok(()),
+            _ = &mut shutdown_notified => {
+                if self.proxy_shutdown_requested() {
+                    Err(self.proxy_shutdown_retry_error())
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     async fn record_success_result(
@@ -1397,9 +1481,18 @@ impl RequestForwarder {
         let mut retries_used = 0u32;
         let mut auto_admission_retry_opened = false;
         loop {
+            if self.proxy_shutdown_requested() {
+                if auto_admission_retry_opened {
+                    self.disable_auto_admission_retry_after_exit(app_type, provider);
+                }
+                return Err(AdmissionRetryForwardError::Neutral(
+                    self.proxy_shutdown_retry_error(),
+                ));
+            }
+
             let attempt_started_at = std::time::Instant::now();
             match self
-                .forward(
+                .forward_attempt_or_shutdown(
                     app_type, method, provider, endpoint, body, headers, extensions, adapter,
                 )
                 .await
@@ -1422,6 +1515,13 @@ impl RequestForwarder {
                     return Ok(result);
                 }
                 Err(error) => {
+                    if self.proxy_shutdown_requested() {
+                        if auto_admission_retry_opened {
+                            self.disable_auto_admission_retry_after_exit(app_type, provider);
+                        }
+                        return Err(AdmissionRetryForwardError::Neutral(error));
+                    }
+
                     let attempt_elapsed_ms = attempt_started_at
                         .elapsed()
                         .as_millis()
@@ -1548,8 +1648,25 @@ impl RequestForwarder {
                     )
                     .await;
                     if delay_plan.sleep_ms > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_plan.sleep_ms))
+                        if let Err(shutdown_error) = self
+                            .wait_admission_retry_delay_or_shutdown(delay_plan.sleep_ms)
+                            .await
+                        {
+                            self.emit_admission_retry_event(
+                                app_type,
+                                provider,
+                                retries_used,
+                                0,
+                                None,
+                                Some(&shutdown_error),
+                                "cleared",
+                            )
                             .await;
+                            if auto_admission_retry_opened {
+                                self.disable_auto_admission_retry_after_exit(app_type, provider);
+                            }
+                            return Err(AdmissionRetryForwardError::Neutral(shutdown_error));
+                        }
                     }
                     if self
                         .current_admission_retry_policy(app_type, provider)
@@ -4211,6 +4328,7 @@ mod tests {
     use http::StatusCode;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
     fn test_provider_with_type(provider_type: Option<&str>) -> Provider {
@@ -4238,6 +4356,7 @@ mod tests {
         streaming_first_byte_timeout: Duration,
     ) -> RequestForwarder {
         let db = Arc::new(Database::memory().expect("memory db"));
+        let shutdown_epoch = Arc::new(AtomicU64::new(0));
 
         RequestForwarder {
             router: Arc::new(ProviderRouter::new(db.clone())),
@@ -4262,6 +4381,9 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start: false,
+            shutdown_epoch: shutdown_epoch.clone(),
+            shutdown_epoch_at_start: shutdown_epoch.load(Ordering::SeqCst),
+            shutdown_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -4270,6 +4392,7 @@ mod tests {
         db: Arc<Database>,
         auto_failover_enabled_at_start: bool,
     ) -> RequestForwarder {
+        let shutdown_epoch = Arc::new(AtomicU64::new(0));
         RequestForwarder {
             router,
             status: Arc::new(RwLock::new(ProxyStatus::default())),
@@ -4293,6 +4416,9 @@ mod tests {
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
             request_epoch: 0,
             auto_failover_enabled_at_start,
+            shutdown_epoch: shutdown_epoch.clone(),
+            shutdown_epoch_at_start: shutdown_epoch.load(Ordering::SeqCst),
+            shutdown_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -5295,6 +5421,311 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_shutdown_cancels_waiting_admission_retry_before_next_request() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    handler_count.fetch_add(1, Ordering::SeqCst);
+                    axum::response::Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"error":{"message":"rate limit reached"}}"#,
+                        ))
+                        .expect("build mock rate-limit response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(3),
+                initial_delay_ms: Some(60_000),
+                max_delay_ms: Some(60_000),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let shutdown_epoch = forwarder.shutdown_epoch.clone();
+        let shutdown_notify = forwarder.shutdown_notify.clone();
+        let proxy_activity = forwarder.proxy_activity.clone();
+        let adapter = get_adapter(&AppType::Codex);
+        let task = tokio::spawn(async move {
+            forwarder
+                .forward_with_admission_retry(
+                    &AppType::Codex,
+                    &http::Method::POST,
+                    &provider,
+                    "/responses",
+                    &json!({ "model": "gpt-5.5", "input": "ping" }),
+                    &HeaderMap::new(),
+                    &Extensions::new(),
+                    adapter.as_ref(),
+                )
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = crate::proxy::activity::admission_retry_snapshot(
+                    &proxy_activity,
+                    Some("codex"),
+                )
+                .await;
+                if snapshot.iter().any(|item| item.event == "retrying") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("admission retry should enter its wait state");
+
+        shutdown_epoch.fetch_add(1, Ordering::SeqCst);
+        shutdown_notify.notify_waiters();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown should promptly cancel admission retry")
+            .expect("retry task should join");
+        assert!(matches!(
+            result,
+            Err(AdmissionRetryForwardError::Neutral(
+                ProxyError::ForwardFailed(message)
+            )) if message.contains("代理已停止")
+        ));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_shutdown_cancels_in_flight_upstream_attempt() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    handler_count.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(r#"{"id":"resp_1","output":[]}"#))
+                        .expect("build delayed upstream response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(120), Duration::from_secs(120));
+        let shutdown_epoch = forwarder.shutdown_epoch.clone();
+        let shutdown_notify = forwarder.shutdown_notify.clone();
+        let adapter = get_adapter(&AppType::Codex);
+        let task = tokio::spawn(async move {
+            forwarder
+                .forward_with_admission_retry(
+                    &AppType::Codex,
+                    &http::Method::POST,
+                    &provider,
+                    "/responses",
+                    &json!({ "model": "gpt-5.5", "input": "ping" }),
+                    &HeaderMap::new(),
+                    &Extensions::new(),
+                    adapter.as_ref(),
+                )
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while request_count.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("upstream attempt should start");
+
+        shutdown_epoch.fetch_add(1, Ordering::SeqCst);
+        shutdown_notify.notify_waiters();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown should promptly cancel the in-flight attempt")
+            .expect("forward task should join");
+        assert!(matches!(
+            result,
+            Err(AdmissionRetryForwardError::Neutral(
+                ProxyError::ForwardFailed(message)
+            )) if message.contains("代理已停止")
+        ));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn codex_failover_applies_each_provider_model_route_to_original_body() {
+        let first_bodies = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let first_captured = first_bodies.clone();
+        let first_app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let first_captured = first_captured.clone();
+                async move {
+                    first_captured.lock().expect("lock first bodies").push(body);
+                    axum::response::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"error":{"message":"temporary upstream failure"}}"#,
+                        ))
+                        .expect("build first upstream response")
+                }
+            }),
+        );
+        let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind first upstream");
+        let first_addr = first_listener.local_addr().expect("first upstream addr");
+        let first_server = tokio::spawn(async move {
+            axum::serve(first_listener, first_app)
+                .await
+                .expect("run first upstream");
+        });
+
+        let second_bodies = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let second_captured = second_bodies.clone();
+        let second_app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let second_captured = second_captured.clone();
+                async move {
+                    second_captured
+                        .lock()
+                        .expect("lock second bodies")
+                        .push(body);
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(r#"{"id":"resp_2","output":[]}"#))
+                        .expect("build second upstream response")
+                }
+            }),
+        );
+        let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind second upstream");
+        let second_addr = second_listener.local_addr().expect("second upstream addr");
+        let second_server = tokio::spawn(async move {
+            axum::serve(second_listener, second_app)
+                .await
+                .expect("run second upstream");
+        });
+
+        let provider_with_route = |id: &str, base_url: String, mapped_model: &str| {
+            let mut provider = test_provider_with_type(None);
+            provider.id = id.to_string();
+            provider.name = id.to_string();
+            provider.settings_config = json!({
+                "base_url": base_url,
+                "apiKey": "test-key"
+            });
+            provider.meta = Some(ProviderMeta {
+                codex_model_routes_enabled: Some(true),
+                codex_model_routes: std::collections::HashMap::from([(
+                    "gpt-5.5".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: mapped_model.to_string(),
+                    },
+                )]),
+                ..Default::default()
+            });
+            provider
+        };
+        let first_provider = provider_with_route(
+            "provider-a",
+            format!("http://{first_addr}"),
+            "provider-a-model",
+        );
+        let second_provider = provider_with_route(
+            "provider-b",
+            format!("http://{second_addr}"),
+            "provider-b-model",
+        );
+
+        let mut forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        forwarder.max_attempts = 2;
+        forwarder.auto_failover_enabled_at_start = true;
+        let result = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                json!({ "model": "gpt-5.5", "input": "ping" }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![first_provider, second_provider],
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => panic!("second provider should succeed: {}", error.error),
+        };
+
+        assert_eq!(result.response.status(), StatusCode::OK);
+        assert_eq!(
+            first_bodies.lock().expect("lock first bodies")[0]["model"],
+            "provider-a-model"
+        );
+        assert_eq!(
+            second_bodies.lock().expect("lock second bodies")[0]["model"],
+            "provider-b-model",
+            "second provider must map the original client model, not the first provider's body"
+        );
+
+        first_server.abort();
+        second_server.abort();
+    }
+
+    #[tokio::test]
     async fn streaming_success_primes_first_chunk_and_replays_it() {
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let response = ProxyResponse::streamed(
@@ -5615,7 +6046,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_model_mapping_uses_provider_env_mapping() {
+    fn codex_model_mapping_ignores_provider_env_default() {
         let provider = Provider {
             id: "provider-1".to_string(),
             name: "Provider One".to_string(),
@@ -5639,9 +6070,9 @@ mod tests {
         let (mapped_body, original, mapped) =
             apply_scoped_model_mapping(AppType::Codex.as_str(), body, &provider);
 
-        assert_eq!(mapped_body["model"], "gpt-5.4");
+        assert_eq!(mapped_body["model"], "gpt-5.3-codex");
         assert_eq!(original.as_deref(), Some("gpt-5.3-codex"));
-        assert_eq!(mapped.as_deref(), Some("gpt-5.4"));
+        assert_eq!(mapped, None);
     }
 
     #[test]
@@ -5742,7 +6173,7 @@ base_url = "https://api.example.com/v1"
     }
 
     #[test]
-    fn codex_model_mapping_applies_before_compact_forwarding() {
+    fn codex_compact_forwarding_preserves_request_model_without_explicit_route() {
         let provider = Provider {
             id: "provider-1".to_string(),
             name: "Provider One".to_string(),
@@ -5766,9 +6197,9 @@ base_url = "https://api.example.com/v1"
         let (mapped_body, original, mapped) =
             apply_scoped_model_mapping(AppType::Codex.as_str(), body, &provider);
 
-        assert_eq!(mapped_body["model"], "upstream-compact-model");
+        assert_eq!(mapped_body["model"], "gpt-5.5");
         assert_eq!(original.as_deref(), Some("gpt-5.5"));
-        assert_eq!(mapped.as_deref(), Some("upstream-compact-model"));
+        assert_eq!(mapped, None);
     }
 
     #[test]

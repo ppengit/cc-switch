@@ -395,6 +395,8 @@ pub struct AppSettings {
     /// User has confirmed the usage query first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_confirmed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_dashboard_refresh_interval_ms: Option<u32>,
     /// User has confirmed the stream check first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_check_confirmed: Option<bool>,
@@ -599,6 +601,7 @@ impl Default for AppSettings {
             enable_local_proxy: false,
             proxy_confirmed: None,
             usage_confirmed: None,
+            usage_dashboard_refresh_interval_ms: None,
             stream_check_confirmed: None,
             enable_failover_toggle: false,
             show_proxy_activity_floating_window: false,

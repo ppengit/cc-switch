@@ -102,33 +102,11 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
         })
 }
 
-fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
-    codex_provider_catalog_model_ids_vec(provider)
-        .into_iter()
-        .collect()
-}
-
-fn codex_provider_route_target_model_ids(provider: &Provider) -> HashSet<String> {
-    provider
-        .meta
-        .as_ref()
-        .map(|meta| {
-            meta.codex_model_routes
-                .values()
-                .filter_map(|route| {
-                    let model = route.model.trim();
-                    if model.is_empty() {
-                        None
-                    } else {
-                        Some(model.to_string())
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn codex_provider_catalog_model_ids_vec(provider: &Provider) -> Vec<String> {
+    if !codex_local_routing_enabled(provider) {
+        return Vec::new();
+    }
+
     provider
         .settings_config
         .get("modelCatalog")
@@ -157,6 +135,24 @@ fn codex_provider_catalog_model_ids_vec(provider: &Provider) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn codex_local_routing_enabled(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.codex_local_routing_enabled)
+        .unwrap_or_else(|| codex_catalog_count(provider) > 0)
+}
+
+fn codex_catalog_count(provider: &Provider) -> usize {
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+        .map(|models| models.len())
+        .unwrap_or(0)
 }
 
 /// Model IDs advertised by a Codex provider, ordered from explicit catalog
@@ -224,8 +220,10 @@ pub fn codex_model_list_response(
     })
 }
 
-/// For Codex Chat providers, ensure the request uses the configured upstream
-/// model before converting the request to Chat Completions.
+/// For Codex Chat providers, fill a missing request model from the configured
+/// default before converting the request to Chat Completions. Non-empty client
+/// models are preserved; explicit Codex catalog/routes are handled earlier by
+/// `apply_codex_model_mapping`.
 pub fn apply_codex_chat_upstream_model(
     provider: &Provider,
     body: &mut JsonValue,
@@ -234,19 +232,13 @@ pub fn apply_codex_chat_upstream_model(
         return None;
     }
 
-    let catalog_model_ids = codex_provider_catalog_model_ids(provider);
-    let route_target_model_ids = codex_provider_route_target_model_ids(provider);
     if let Some(request_model) = body
         .get("model")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty())
     {
-        if catalog_model_ids.contains(request_model)
-            || route_target_model_ids.contains(request_model)
-        {
-            return Some(request_model.to_string());
-        }
+        return Some(request_model.to_string());
     }
 
     let upstream_model = codex_provider_upstream_model(provider)?;
@@ -736,6 +728,34 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_model_list_response_ignores_catalog_when_local_routing_disabled() {
+        let mut provider = create_provider(json!({
+            "model": "gpt-5.5",
+            "modelCatalog": {
+                "models": [
+                    { "model": "deepseek-v4-flash" },
+                    { "model": "kimi-k2" }
+                ]
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_local_routing_enabled: Some(false),
+            ..Default::default()
+        });
+
+        let response = codex_model_list_response(&[provider], Some("fallback-model"));
+        let ids = response
+            .get("data")
+            .and_then(|data| data.as_array())
+            .expect("model list data")
+            .iter()
+            .filter_map(|model| model.get("id").and_then(|id| id.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["gpt-5.5"]);
+    }
+
+    #[test]
     fn test_codex_model_list_response_uses_fallback_when_empty() {
         let response = codex_model_list_response(&[], Some(" gpt-5.5 "));
         let data = response
@@ -961,7 +981,7 @@ wire_api = "chat"
     }
 
     #[test]
-    fn test_apply_codex_chat_upstream_model_uses_provider_config_model() {
+    fn test_apply_codex_chat_upstream_model_preserves_request_model() {
         let mut provider = create_provider(json!({
             "config": r#"
 model_provider = "deepseek"
@@ -981,6 +1001,34 @@ wire_api = "responses"
             "model": "placeholder-client-model",
             "input": "ping"
         });
+
+        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+
+        assert_eq!(upstream_model.as_deref(), Some("placeholder-client-model"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("placeholder-client-model")
+        );
+    }
+
+    #[test]
+    fn test_apply_codex_chat_upstream_model_uses_provider_config_model_when_missing() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "deepseek"
+model = "deepseek-v4-flash"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com/v1"
+wire_api = "responses"
+"#
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            ..Default::default()
+        });
+        let mut body = json!({"input": "ping"});
 
         let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
 

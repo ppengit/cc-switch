@@ -262,10 +262,24 @@ export const normalizeCodexCatalogModelsForSave = (
       ? Number.parseInt(rawContextWindow, 10)
       : undefined;
 
+    const inputModalities = item.inputModalities?.filter(
+      (m) => typeof m === "string" && m.trim(),
+    );
+
+    const baseInstructions = item.baseInstructions?.trim();
+
     normalized.push({
       model,
       ...(displayName ? { displayName } : {}),
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
+      // Native Responses profile overrides (ignored by the chat/proxy profile).
+      ...(typeof item.supportsParallelToolCalls === "boolean"
+        ? { supportsParallelToolCalls: item.supportsParallelToolCalls }
+        : {}),
+      ...(inputModalities && inputModalities.length > 0
+        ? { inputModalities }
+        : {}),
+      ...(baseInstructions ? { baseInstructions } : {}),
     });
   }
 
@@ -855,6 +869,7 @@ function ProviderFormFull({
     defaultOpusModelName,
     defaultFableModel,
     defaultFableModelName,
+    subagentModel,
     handleModelChange,
   } = useModelState({
     settingsConfig: form.getValues("settingsConfig"),
@@ -2100,6 +2115,10 @@ function ProviderFormFull({
     // 确定 providerType（新建时从预设获取，编辑时从现有数据获取）
     const providerType =
       templatePreset?.providerType || initialData?.meta?.providerType;
+    const normalizedCodexModelRoutes =
+      appId === "codex" && category !== "official"
+        ? normalizeCodexModelRoutesForSave(codexModelRoutes)
+        : undefined;
 
     const nextMeta: ProviderMeta = {
       ...(baseMeta ?? {}),
@@ -2129,7 +2148,6 @@ function ProviderFormFull({
       codexChatReasoning:
         appId === "codex" &&
         category !== "official" &&
-        codexTakeoverEnabled &&
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
@@ -2137,10 +2155,7 @@ function ProviderFormFull({
         appId === "codex" && category !== "official"
           ? codexTakeoverEnabled
           : undefined,
-      codexModelRoutes:
-        appId === "codex" && category !== "official" && codexModelRoutesEnabled
-          ? normalizeCodexModelRoutesForSave(codexModelRoutes)
-          : undefined,
+      codexModelRoutes: normalizedCodexModelRoutes,
       codexModelRoutesEnabled:
         appId === "codex" && category !== "official"
           ? codexModelRoutesEnabled
@@ -2471,13 +2486,12 @@ function ProviderFormFull({
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
       setCodexModelRoutes({});
       setCodexModelRoutesEnabled(false);
+      setCodexTakeoverEnabled((preset.modelCatalog?.length ?? 0) > 0);
       setLocalCodexApiFormat(
         preset.apiFormat ??
           codexApiFormatFromWireApi(extractCodexWireApi(config)) ??
           "openai_responses",
       );
-      // 路由开关与格式无关，仅按预设是否带模型映射决定
-      setCodexTakeoverEnabled((preset.modelCatalog?.length ?? 0) > 0);
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2911,6 +2925,7 @@ function ProviderFormFull({
               defaultOpusModelName={defaultOpusModelName}
               defaultFableModel={defaultFableModel}
               defaultFableModelName={defaultFableModelName}
+              subagentModel={subagentModel}
               onModelChange={handleModelChange}
               speedTestEndpoints={speedTestEndpoints}
               apiFormat={localApiFormat}

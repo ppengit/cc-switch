@@ -26,8 +26,11 @@ use axum::{
 };
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::{oneshot, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use tokio::sync::{oneshot, Notify, RwLock};
 use tokio::task::JoinHandle;
 
 /// 代理服务器状态（共享）
@@ -57,6 +60,10 @@ pub struct ProxyState {
     /// `current_providers` / `is_current` / 托盘 / `status` 之前必须比较 epoch，
     /// 比 snapshot 大说明"切换已发生"，本次成功完成的 inflight 不应再倒写状态。
     pub switch_epoch: Arc<RwLock<std::collections::HashMap<String, u64>>>,
+    /// 代理服务器停止代次。进行中的上游入场重试会捕获启动时的代次，
+    /// stop 时递增并唤醒等待者，避免关闭代理/退出应用后继续请求上游。
+    pub shutdown_epoch: Arc<AtomicU64>,
+    pub shutdown_notify: Arc<Notify>,
 }
 
 /// 代理HTTP服务器
@@ -101,6 +108,8 @@ impl ProxyServer {
                 ProxyActivityState::with_raw_log_retention_minutes(raw_log_retention_minutes),
             )),
             switch_epoch: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            shutdown_epoch: Arc::new(AtomicU64::new(0)),
+            shutdown_notify: Arc::new(Notify::new()),
         };
 
         Self {
@@ -243,6 +252,9 @@ impl ProxyServer {
     }
 
     pub async fn stop(&self) -> Result<(), ProxyError> {
+        self.state.shutdown_epoch.fetch_add(1, Ordering::SeqCst);
+        self.state.shutdown_notify.notify_waiters();
+
         // 1. 发送关闭信号
         if let Some(tx) = self.shutdown_tx.write().await.take() {
             let _ = tx.send(());
@@ -531,5 +543,128 @@ impl ProxyServer {
             .provider_router
             .record_result(provider_id, app_type, false, success, error_msg)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{Provider, ProviderMeta, UpstreamAdmissionRetryConfig};
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn disconnected_client_does_not_keep_replaying_upstream_request() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let upstream_app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    handler_count.fetch_add(1, Ordering::SeqCst);
+                    axum::response::Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"error":{"message":"rate limit reached"}}"#,
+                        ))
+                        .expect("build mock rate-limit response")
+                }
+            }),
+        );
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let upstream_addr = upstream_listener.local_addr().expect("mock upstream addr");
+        let upstream_server = tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream_app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let db = Arc::new(Database::memory().expect("init memory db"));
+        let mut provider = Provider::with_id(
+            "codex-disconnect".to_string(),
+            "Codex Disconnect".to_string(),
+            json!({
+                "base_url": format!("http://{upstream_addr}"),
+                "apiKey": "test-key"
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(20),
+                initial_delay_ms: Some(200),
+                max_delay_ms: Some(200),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("codex", &provider)
+            .expect("save test provider");
+        db.add_to_failover_queue("codex", &provider.id)
+            .expect("queue test provider");
+        let mut app_config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("read codex proxy config");
+        app_config.enabled = true;
+        app_config.auto_failover_enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable codex failover");
+
+        let proxy = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db,
+            None,
+        );
+        let proxy_info = proxy.start().await.expect("start test proxy");
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", proxy_info.port))
+            .await
+            .expect("connect test client");
+        let body = r#"{"model":"gpt-5.5","input":"ping"}"#;
+        client
+            .write_all(
+                format!(
+                    "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("send proxy request");
+        client.flush().await.expect("flush proxy request");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while request_count.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("first upstream attempt should start");
+        drop(client);
+
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        let final_request_count = request_count.load(Ordering::SeqCst);
+
+        proxy.stop().await.expect("stop test proxy");
+        upstream_server.abort();
+
+        assert_eq!(
+            final_request_count, 1,
+            "dropping the client connection must cancel its admission retry loop"
+        );
     }
 }

@@ -1183,6 +1183,8 @@ mod tests {
                 crate::proxy::activity::ProxyActivityState::default(),
             )),
             switch_epoch: Arc::new(RwLock::new(HashMap::new())),
+            shutdown_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 

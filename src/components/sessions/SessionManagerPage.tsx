@@ -27,6 +27,9 @@ import {
   X,
   CheckSquare,
   Pencil,
+  ListTree,
+  List,
+  ChevronsDownUp,
 } from "lucide-react";
 import {
   useDeleteSessionMutation,
@@ -38,15 +41,20 @@ import type { SessionMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Dialog,
@@ -75,10 +83,19 @@ import {
   getBaseName,
   getProviderIconName,
   getProviderLabel,
+  getSessionDirectoryGroupKey,
   getSessionKey,
+  groupSessionsByProviderAndDirectory,
+  type SessionDirectoryGroup,
+  type SessionProviderGroup,
   shouldHideCodexMessageFromToc,
 } from "./utils";
 import { cn } from "@/lib/utils";
+
+const SESSION_LIST_VIEW_MODE_STORAGE_KEY =
+  "cc-switch.sessionManager.listViewMode";
+const SESSION_GROUP_EXPANSION_STORAGE_KEY =
+  "cc-switch.sessionManager.groupExpansionState";
 
 type ProviderFilter =
   | "all"
@@ -89,66 +106,107 @@ type ProviderFilter =
   | "gemini"
   | "hermes";
 
-const ALL_PROJECTS_FILTER = "__all_projects__";
-const UNCATEGORIZED_PROJECT_KEY = "__uncategorized__";
 const detailActionButtonBase = "h-8 gap-1.5 border px-3";
 const detailRenameButtonClass = `${detailActionButtonBase} border-violet-200 bg-violet-50/80 text-violet-700 hover:border-violet-300 hover:bg-violet-100 hover:text-violet-800 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:border-violet-800 dark:hover:bg-violet-950/50 dark:hover:text-violet-200`;
 const detailResumeButtonClass = `${detailActionButtonBase} border-emerald-200 bg-emerald-50/80 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:border-emerald-800 dark:hover:bg-emerald-950/50 dark:hover:text-emerald-200`;
 const detailExportButtonClass = `${detailActionButtonBase} border-sky-200 bg-sky-50/80 text-sky-700 hover:border-sky-300 hover:bg-sky-100 hover:text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:border-sky-800 dark:hover:bg-sky-950/50 dark:hover:text-sky-200`;
 const detailDeleteButtonClass = `${detailActionButtonBase} border-rose-200 bg-rose-50/80 text-rose-700 hover:border-rose-300 hover:bg-rose-100 hover:text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:border-rose-800 dark:hover:bg-rose-950/50 dark:hover:text-rose-200`;
 
-interface ProjectOption {
-  key: string;
-  label: string;
-  path: string | null;
-  count: number;
-}
+type SessionListViewMode = "flat" | "grouped";
 
-interface SessionProjectGroup extends ProjectOption {
-  sessions: SessionMeta[];
-}
-
-const getParentDirectory = (value?: string | null) => {
-  if (!value) return "";
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  const normalized = trimmed.replace(/[\\/]+$/, "");
-  const slashIndex = normalized.lastIndexOf("/");
-  const backslashIndex = normalized.lastIndexOf("\\");
-  const index = Math.max(slashIndex, backslashIndex);
-  return index > 0 ? normalized.slice(0, index) : "";
+type GroupSelectionState = {
+  checked: boolean | "indeterminate";
+  isSelected: boolean;
+  selectedCount: number;
+  selectableCount: number;
 };
 
-const normalizeProjectPathDisplay = (value?: string | null) => {
-  if (!value) return "";
-  const trimmed = value.trim().replace(/[\\/]+$/, "");
-  if (!trimmed) return "";
-
-  const hasUncPrefix = /^[\\/]{2,}[^\\/]/.test(trimmed);
-  const normalized = trimmed.replace(/[\\/]+/g, "/");
-
-  return hasUncPrefix && !normalized.startsWith("//")
-    ? `/${normalized}`
-    : normalized;
+type SessionGroupExpansionState = {
+  expandedProviderIds: Set<string>;
+  expandedDirectoryKeys: Set<string>;
 };
 
-const normalizeProjectPathKey = (value?: string | null) => {
-  const normalized = normalizeProjectPathDisplay(value);
-  if (!normalized) return "";
-  return /^[A-Za-z]:/.test(normalized) || normalized.startsWith("//")
-    ? normalized.toLowerCase()
-    : normalized;
+const readInitialSessionListViewMode = (): SessionListViewMode => {
+  if (typeof window === "undefined") return "flat";
+  const stored = window.localStorage.getItem(
+    SESSION_LIST_VIEW_MODE_STORAGE_KEY,
+  );
+  return stored === "grouped" || stored === "flat" ? stored : "flat";
 };
 
-const getSessionProjectPath = (session: SessionMeta) => {
-  const projectDir = session.projectDir?.trim();
-  if (projectDir) return normalizeProjectPathDisplay(projectDir);
-  return normalizeProjectPathDisplay(getParentDirectory(session.sourcePath));
-};
+const readInitialSessionGroupExpansionState =
+  (): SessionGroupExpansionState => {
+    if (typeof window === "undefined") {
+      return {
+        expandedProviderIds: new Set(),
+        expandedDirectoryKeys: new Set(),
+      };
+    }
 
-const getSessionProjectKey = (session: SessionMeta) =>
-  normalizeProjectPathKey(getSessionProjectPath(session)) ||
-  UNCATEGORIZED_PROJECT_KEY;
+    try {
+      const stored = window.localStorage.getItem(
+        SESSION_GROUP_EXPANSION_STORAGE_KEY,
+      );
+      const parsed = stored ? JSON.parse(stored) : null;
+
+      if (!parsed || typeof parsed !== "object") {
+        return {
+          expandedProviderIds: new Set(),
+          expandedDirectoryKeys: new Set(),
+        };
+      }
+
+      const expandedProviderIds = Array.isArray(parsed.expandedProviderIds)
+        ? parsed.expandedProviderIds.filter(
+            (providerId: unknown): providerId is string =>
+              typeof providerId === "string",
+          )
+        : [];
+      const expandedDirectoryKeys = Array.isArray(parsed.expandedDirectoryKeys)
+        ? parsed.expandedDirectoryKeys.filter(
+            (directoryKey: unknown): directoryKey is string =>
+              typeof directoryKey === "string",
+          )
+        : [];
+
+      return {
+        expandedProviderIds: new Set(expandedProviderIds),
+        expandedDirectoryKeys: new Set(expandedDirectoryKeys),
+      };
+    } catch {
+      return {
+        expandedProviderIds: new Set(),
+        expandedDirectoryKeys: new Set(),
+      };
+    }
+  };
+
+const serializeSessionGroupExpansionState = (
+  expandedProviderGroups: Set<string>,
+  expandedDirectoryGroups: Set<string>,
+) =>
+  JSON.stringify({
+    expandedProviderIds: Array.from(expandedProviderGroups).sort(),
+    expandedDirectoryKeys: Array.from(expandedDirectoryGroups).sort(),
+  });
+
+const filterSetToAllowedValues = (
+  current: Set<string>,
+  allowedValues: Set<string>,
+) => {
+  let changed = false;
+  const next = new Set<string>();
+
+  current.forEach((value) => {
+    if (allowedValues.has(value)) {
+      next.add(value);
+    } else {
+      changed = true;
+    }
+  });
+
+  return changed ? next : current;
+};
 
 export function SessionManagerPage({ appId }: { appId: string }) {
   const { t } = useTranslation();
@@ -186,11 +244,19 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(
     appId as ProviderFilter,
   );
-  const [projectFilter, setProjectFilter] = useState(ALL_PROJECTS_FILTER);
-  const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [listViewMode, setListViewMode] = useState<SessionListViewMode>(
+    readInitialSessionListViewMode,
+  );
+  const [initialGroupExpansionState] = useState(
+    readInitialSessionGroupExpansionState,
+  );
+  const [expandedProviderGroups, setExpandedProviderGroups] = useState<
+    Set<string>
+  >(() => initialGroupExpansionState.expandedProviderIds);
+  const [expandedDirectoryGroups, setExpandedDirectoryGroups] = useState<
+    Set<string>
+  >(() => initialGroupExpansionState.expandedDirectoryKeys);
 
   // 使用 FlexSearch 全文搜索
   const { search: searchSessions } = useSessionSearch({
@@ -198,74 +264,60 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     providerFilter,
   });
 
-  const getProjectLabel = useCallback(
-    (key: string, path: string | null) => {
-      if (key === UNCATEGORIZED_PROJECT_KEY) {
-        return t("sessionManager.uncategorizedProject", {
-          defaultValue: "未归类",
-        });
-      }
-      return getBaseName(path) || path || key;
-    },
-    [t],
-  );
-
-  const projectOptions = useMemo<ProjectOption[]>(() => {
-    const optionMap = new Map<string, ProjectOption>();
-
-    sessions
-      .filter(
-        (session) =>
-          providerFilter === "all" || session.providerId === providerFilter,
-      )
-      .forEach((session) => {
-        const key = getSessionProjectKey(session);
-        const path = getSessionProjectPath(session) || null;
-        const existing = optionMap.get(key);
-
-        if (existing) {
-          existing.count += 1;
-          if (path && existing.path && path.length < existing.path.length) {
-            existing.path = path;
-            existing.label = getProjectLabel(key, path);
-          }
-        } else {
-          optionMap.set(key, {
-            key,
-            label: getProjectLabel(key, path),
-            path,
-            count: 1,
-          });
-        }
-      });
-
-    return Array.from(optionMap.values()).sort((a, b) =>
-      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
-    );
-  }, [getProjectLabel, providerFilter, sessions]);
-
-  useEffect(() => {
-    if (
-      projectFilter !== ALL_PROJECTS_FILTER &&
-      !projectOptions.some((option) => option.key === projectFilter)
-    ) {
-      setProjectFilter(ALL_PROJECTS_FILTER);
-    }
-  }, [projectFilter, projectOptions]);
-
-  const searchFilteredSessions = useMemo(() => {
+  const filteredSessions = useMemo(() => {
     return searchSessions(search);
   }, [searchSessions, search]);
 
-  const filteredSessions = useMemo(() => {
-    if (projectFilter === ALL_PROJECTS_FILTER) {
-      return searchFilteredSessions;
-    }
+  const groupedSessions = useMemo(
+    () =>
+      groupSessionsByProviderAndDirectory(
+        filteredSessions,
+        t("sessionManager.unknownDirectory", {
+          defaultValue: "未知目录",
+        }),
+      ),
+    [filteredSessions, t],
+  );
 
-    return searchFilteredSessions.filter(
-      (session) => getSessionProjectKey(session) === projectFilter,
+  const validGroupExpansionKeys = useMemo(
+    () => ({
+      providerIds: new Set(sessions.map((session) => session.providerId)),
+      directoryKeys: new Set(
+        sessions.map((session) =>
+          getSessionDirectoryGroupKey(session.providerId, session.projectDir),
+        ),
+      ),
+    }),
+    [sessions],
+  );
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SESSION_LIST_VIEW_MODE_STORAGE_KEY,
+      listViewMode,
     );
-  }, [projectFilter, searchFilteredSessions]);
+  }, [listViewMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SESSION_GROUP_EXPANSION_STORAGE_KEY,
+      serializeSessionGroupExpansionState(
+        expandedProviderGroups,
+        expandedDirectoryGroups,
+      ),
+    );
+  }, [expandedDirectoryGroups, expandedProviderGroups]);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    setExpandedProviderGroups((current) =>
+      filterSetToAllowedValues(current, validGroupExpansionKeys.providerIds),
+    );
+    setExpandedDirectoryGroups((current) =>
+      filterSetToAllowedValues(current, validGroupExpansionKeys.directoryKeys),
+    );
+  }, [isLoading, validGroupExpansionKeys]);
 
   useEffect(() => {
     if (filteredSessions.length === 0) {
@@ -290,6 +342,15 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       ) || null
     );
   }, [filteredSessions, selectedKey]);
+
+  const listViewModeLabel =
+    listViewMode === "grouped"
+      ? t("sessionManager.viewModeGrouped", {
+          defaultValue: "分类",
+        })
+      : t("sessionManager.viewModeFlat", {
+          defaultValue: "列表",
+        });
 
   const { data: messages = [], isLoading: isLoadingMessages } =
     useSessionMessagesQuery(
@@ -685,6 +746,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       selectedSessionKeys.has(getSessionKey(session)),
     );
 
+  const getGroupSelectionState = (
+    groupSessions: SessionMeta[],
+  ): GroupSelectionState => {
+    const selectableSessions = groupSessions.filter((session) =>
+      Boolean(session.sourcePath),
+    );
+    const selectedCount = selectableSessions.filter((session) =>
+      selectedSessionKeys.has(getSessionKey(session)),
+    ).length;
+    const isSelected =
+      selectableSessions.length > 0 &&
+      selectedCount === selectableSessions.length;
+
+    return {
+      checked:
+        selectedCount === 0 ? false : isSelected ? true : "indeterminate",
+      isSelected,
+      selectedCount,
+      selectableCount: selectableSessions.length,
+    };
+  };
+
   const toggleSessionChecked = (session: SessionMeta, checked: boolean) => {
     if (!session.sourcePath) return;
     const key = getSessionKey(session);
@@ -697,6 +780,141 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       }
       return next;
     });
+  };
+
+  const toggleSessionGroupChecked = (
+    groupSessions: SessionMeta[],
+    checked: boolean,
+  ) => {
+    const selectableSessions = groupSessions.filter((session) =>
+      Boolean(session.sourcePath),
+    );
+    if (selectableSessions.length === 0) return;
+
+    setSelectedSessionKeys((current) => {
+      const next = new Set(current);
+      selectableSessions.forEach((session) => {
+        const sessionKey = getSessionKey(session);
+        if (checked) {
+          next.add(sessionKey);
+        } else {
+          next.delete(sessionKey);
+        }
+      });
+      return next;
+    });
+  };
+
+  const toggleProviderGroup = (providerId: string) => {
+    setExpandedProviderGroups((current) => {
+      const next = new Set(current);
+      if (next.has(providerId)) {
+        next.delete(providerId);
+      } else {
+        next.add(providerId);
+      }
+      return next;
+    });
+  };
+
+  const toggleDirectoryGroup = (directoryKey: string) => {
+    setExpandedDirectoryGroups((current) => {
+      const next = new Set(current);
+      if (next.has(directoryKey)) {
+        next.delete(directoryKey);
+      } else {
+        next.add(directoryKey);
+      }
+      return next;
+    });
+  };
+
+  const handleCollapseAllGroups = () => {
+    setExpandedProviderGroups(new Set());
+    setExpandedDirectoryGroups(new Set());
+  };
+
+  const renderSessionItem = (session: SessionMeta) => {
+    const sessionKey = getSessionKey(session);
+    const isSelected = selectedKey !== null && sessionKey === selectedKey;
+
+    return (
+      <SessionItem
+        key={sessionKey}
+        session={session}
+        isSelected={isSelected}
+        selectionMode={selectionMode}
+        searchQuery={search}
+        isChecked={selectedSessionKeys.has(sessionKey)}
+        isCheckDisabled={!session.sourcePath}
+        onSelect={setSelectedKey}
+        onToggleChecked={(checked) => toggleSessionChecked(session, checked)}
+        onContextMenu={(event) => handleSessionContextMenu(event, session)}
+      />
+    );
+  };
+
+  const renderGroupSelectionBadge = (
+    selectionState: GroupSelectionState,
+    totalCount: number,
+    variant: "secondary" | "outline",
+  ) => (
+    <Badge variant={variant} className="shrink-0 text-xs">
+      {selectionMode
+        ? `${selectionState.selectedCount}/${selectionState.selectableCount}`
+        : totalCount}
+    </Badge>
+  );
+
+  const renderProviderGroupCheckbox = (
+    providerGroup: SessionProviderGroup,
+    providerLabel: string,
+    selectionState: GroupSelectionState,
+  ) => {
+    if (!selectionMode) return null;
+
+    return (
+      <Checkbox
+        checked={selectionState.checked}
+        disabled={selectionState.selectableCount === 0}
+        aria-label={t("sessionManager.selectProviderGroupForBatch", {
+          defaultValue: "选择 {{provider}} 供应商分组内会话",
+          provider: providerLabel,
+        })}
+        onClick={(event) => event.stopPropagation()}
+        onCheckedChange={() =>
+          toggleSessionGroupChecked(
+            providerGroup.sessions,
+            !selectionState.isSelected,
+          )
+        }
+      />
+    );
+  };
+
+  const renderDirectoryGroupCheckbox = (
+    directoryGroup: SessionDirectoryGroup,
+    selectionState: GroupSelectionState,
+  ) => {
+    if (!selectionMode) return null;
+
+    return (
+      <Checkbox
+        checked={selectionState.checked}
+        disabled={selectionState.selectableCount === 0}
+        aria-label={t("sessionManager.selectDirectoryGroupForBatch", {
+          defaultValue: "选择 {{directory}} 目录分组内会话",
+          directory: directoryGroup.label,
+        })}
+        onClick={(event) => event.stopPropagation()}
+        onCheckedChange={() =>
+          toggleSessionGroupChecked(
+            directoryGroup.sessions,
+            !selectionState.isSelected,
+          )
+        }
+      />
+    );
   };
 
   const handleToggleSelectAll = () => {
@@ -724,65 +942,6 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     setSelectionMode(false);
     setSelectedSessionKeys(new Set());
   };
-
-  const sessionGroups = useMemo<SessionProjectGroup[]>(() => {
-    const groupMap = new Map<string, SessionProjectGroup>();
-
-    filteredSessions.forEach((session) => {
-      const key = getSessionProjectKey(session);
-      const path = getSessionProjectPath(session) || null;
-      const existing = groupMap.get(key);
-
-      if (existing) {
-        existing.sessions.push(session);
-        existing.count += 1;
-        if (path && existing.path && path.length < existing.path.length) {
-          existing.path = path;
-          existing.label = getProjectLabel(key, path);
-        }
-      } else {
-        groupMap.set(key, {
-          key,
-          label: getProjectLabel(key, path),
-          path,
-          count: 1,
-          sessions: [session],
-        });
-      }
-    });
-
-    return Array.from(groupMap.values());
-  }, [filteredSessions, getProjectLabel]);
-
-  useEffect(() => {
-    const validGroupKeys = new Set(sessionGroups.map((group) => group.key));
-    setCollapsedProjectKeys((current) => {
-      let changed = false;
-      const next = new Set<string>();
-
-      current.forEach((key) => {
-        if (validGroupKeys.has(key)) {
-          next.add(key);
-        } else {
-          changed = true;
-        }
-      });
-
-      return changed ? next : current;
-    });
-  }, [sessionGroups]);
-
-  const toggleProjectGroup = useCallback((key: string) => {
-    setCollapsedProjectKeys((current) => {
-      const next = new Set(current);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  }, []);
 
   return (
     <TooltipProvider>
@@ -871,244 +1030,268 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {filteredSessions.length}
                         </Badge>
                       </div>
-                    </div>
-                    <div
-                      data-testid="session-list-filter-row"
-                      className="grid min-w-0 grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-center gap-1"
-                    >
-                      {(selectionMode ||
-                        deletableFilteredSessions.length > 0) && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant={selectionMode ? "secondary" : "ghost"}
-                              size="icon"
-                              className={
-                                selectionMode
-                                  ? "size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
-                                  : "size-7"
-                              }
-                              aria-label={
-                                selectionMode
-                                  ? t("sessionManager.exitBatchModeTooltip", {
-                                      defaultValue: "退出批量管理",
-                                    })
-                                  : t("sessionManager.manageBatchTooltip", {
-                                      defaultValue: "批量管理",
-                                    })
-                              }
-                              onClick={() => {
-                                if (selectionMode) {
-                                  exitSelectionMode();
-                                } else {
-                                  setSelectionMode(true);
+                      <div className="flex items-center gap-1 shrink-0">
+                        {(selectionMode ||
+                          deletableFilteredSessions.length > 0) && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant={selectionMode ? "secondary" : "ghost"}
+                                size="icon"
+                                className={
+                                  selectionMode
+                                    ? "size-7 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/60"
+                                    : "size-7"
                                 }
-                              }}
-                            >
-                              <CheckSquare className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {selectionMode
-                              ? t("sessionManager.exitBatchModeTooltip", {
-                                  defaultValue: "退出批量管理",
-                                })
-                              : t("sessionManager.manageBatchTooltip", {
-                                  defaultValue: "批量管理",
-                                })}
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7"
-                            onClick={() => {
-                              setIsSearchOpen(true);
-                              setTimeout(
-                                () => searchInputRef.current?.focus(),
-                                0,
-                              );
-                            }}
-                          >
-                            <Search className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {t("sessionManager.searchSessions")}
-                        </TooltipContent>
-                      </Tooltip>
-
-                      <Select
-                        value={providerFilter}
-                        onValueChange={(value) =>
-                          setProviderFilter(value as ProviderFilter)
-                        }
-                      >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <SelectTrigger className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted">
-                              <ProviderIcon
-                                icon={
-                                  providerFilter === "all"
-                                    ? "apps"
-                                    : getProviderIconName(providerFilter)
+                                aria-label={
+                                  selectionMode
+                                    ? t("sessionManager.exitBatchModeTooltip", {
+                                        defaultValue: "退出批量管理",
+                                      })
+                                    : t("sessionManager.manageBatchTooltip", {
+                                        defaultValue: "批量管理",
+                                      })
                                 }
-                                name={providerFilter}
-                                size={14}
-                              />
-                            </SelectTrigger>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {providerFilter === "all"
-                              ? t("sessionManager.providerFilterAll")
-                              : providerFilter}
-                          </TooltipContent>
-                        </Tooltip>
-                        <SelectContent>
-                          <SelectItem value="all">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon icon="apps" name="all" size={14} />
-                              <span>
-                                {t("sessionManager.providerFilterAll")}
-                              </span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="codex">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon
-                                icon="openai"
-                                name="codex"
-                                size={14}
-                              />
-                              <span>Codex</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="claude">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon
-                                icon="claude"
-                                name="claude"
-                                size={14}
-                              />
-                              <span>Claude Code</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="opencode">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon
-                                icon="opencode"
-                                name="opencode"
-                                size={14}
-                              />
-                              <span>OpenCode</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="openclaw">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon
-                                icon="openclaw"
-                                name="openclaw"
-                                size={14}
-                              />
-                              <span>OpenClaw</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="gemini">
-                            <div className="flex items-center gap-2">
-                              <ProviderIcon
-                                icon="gemini"
-                                name="gemini"
-                                size={14}
-                              />
-                              <span>Gemini CLI</span>
-                            </div>
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-
-                      {projectOptions.length > 0 ? (
+                                onClick={() => {
+                                  if (selectionMode) {
+                                    exitSelectionMode();
+                                  } else {
+                                    setSelectionMode(true);
+                                  }
+                                }}
+                              >
+                                <CheckSquare className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {selectionMode
+                                ? t("sessionManager.exitBatchModeTooltip", {
+                                    defaultValue: "退出批量管理",
+                                  })
+                                : t("sessionManager.manageBatchTooltip", {
+                                    defaultValue: "批量管理",
+                                  })}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                         <Select
-                          value={projectFilter}
-                          onValueChange={setProjectFilter}
+                          value={listViewMode}
+                          onValueChange={(value) =>
+                            setListViewMode(value as SessionListViewMode)
+                          }
                         >
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <SelectTrigger
-                                aria-label={t("sessionManager.projectFilter", {
-                                  defaultValue: "项目筛选",
-                                })}
-                                className="h-7 min-w-0 gap-1.5 border-0 bg-transparent px-2 hover:bg-muted"
+                                className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted"
+                                aria-label={t(
+                                  "sessionManager.viewModeTooltip",
+                                  {
+                                    defaultValue: "查看方式",
+                                  },
+                                )}
                               >
-                                <SelectValue
-                                  placeholder={t(
-                                    "sessionManager.projectFilterAll",
-                                    {
-                                      defaultValue: "全部项目",
-                                    },
-                                  )}
-                                />
+                                <span className="sr-only">
+                                  {t("sessionManager.viewModeTooltip", {
+                                    defaultValue: "查看方式",
+                                  })}
+                                </span>
+                                {listViewMode === "grouped" ? (
+                                  <ListTree className="size-3.5" />
+                                ) : (
+                                  <List className="size-3.5" />
+                                )}
                               </SelectTrigger>
                             </TooltipTrigger>
-                            <TooltipContent>
-                              {projectFilter === ALL_PROJECTS_FILTER
-                                ? t("sessionManager.projectFilterAll", {
-                                    defaultValue: "全部项目",
-                                  })
-                                : projectOptions.find(
-                                    (option) => option.key === projectFilter,
-                                  )?.path || t("sessionManager.projectFilter")}
-                            </TooltipContent>
+                            <TooltipContent>{listViewModeLabel}</TooltipContent>
                           </Tooltip>
-                          <SelectContent className="max-w-[300px]">
-                            <SelectItem value={ALL_PROJECTS_FILTER}>
-                              <div className="flex min-w-0 items-center gap-2">
-                                <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                          <SelectContent className="w-40">
+                            <SelectItem value="flat">
+                              <div className="flex items-center gap-2">
+                                <List className="size-3.5" />
                                 <span>
-                                  {t("sessionManager.projectFilterAll", {
-                                    defaultValue: "全部项目",
+                                  {t("sessionManager.viewModeFlat", {
+                                    defaultValue: "列表",
                                   })}
                                 </span>
                               </div>
                             </SelectItem>
-                            {projectOptions.map((option) => (
-                              <SelectItem
-                                key={option.key}
-                                value={option.key}
-                                title={option.path ?? option.label}
-                              >
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                                  <span className="truncate">
-                                    {option.label}
-                                  </span>
-                                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                                    {option.count}
-                                  </span>
-                                </div>
-                              </SelectItem>
-                            ))}
+                            <SelectItem value="grouped">
+                              <div className="flex items-center gap-2">
+                                <ListTree className="size-3.5" />
+                                <span>
+                                  {t("sessionManager.viewModeGrouped", {
+                                    defaultValue: "分类",
+                                  })}
+                                </span>
+                              </div>
+                            </SelectItem>
                           </SelectContent>
                         </Select>
-                      ) : (
-                        <div />
-                      )}
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7"
-                            onClick={() => void refetch()}
-                          >
-                            <RefreshCw className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>{t("common.refresh")}</TooltipContent>
-                      </Tooltip>
+                        {listViewMode === "grouped" && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7"
+                                aria-label={t(
+                                  "sessionManager.collapseAllGroups",
+                                  {
+                                    defaultValue: "全部收起",
+                                  },
+                                )}
+                                onClick={handleCollapseAllGroups}
+                              >
+                                <ChevronsDownUp className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("sessionManager.collapseAllGroups", {
+                                defaultValue: "全部收起",
+                              })}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              onClick={() => {
+                                setIsSearchOpen(true);
+                                setTimeout(
+                                  () => searchInputRef.current?.focus(),
+                                  0,
+                                );
+                              }}
+                            >
+                              <Search className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("sessionManager.searchSessions")}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Select
+                          value={providerFilter}
+                          onValueChange={(value) =>
+                            setProviderFilter(value as ProviderFilter)
+                          }
+                        >
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <SelectTrigger
+                                className="size-7 p-0 justify-center border-0 bg-transparent hover:bg-muted"
+                                aria-label={t(
+                                  "sessionManager.providerFilterTooltip",
+                                  {
+                                    defaultValue: "供应商筛选",
+                                  },
+                                )}
+                              >
+                                <span className="sr-only">
+                                  {t("sessionManager.providerFilterTooltip", {
+                                    defaultValue: "供应商筛选",
+                                  })}
+                                </span>
+                                <ProviderIcon
+                                  icon={
+                                    providerFilter === "all"
+                                      ? "apps"
+                                      : getProviderIconName(providerFilter)
+                                  }
+                                  name={providerFilter}
+                                  size={14}
+                                />
+                              </SelectTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {providerFilter === "all"
+                                ? t("sessionManager.providerFilterAll")
+                                : providerFilter}
+                            </TooltipContent>
+                          </Tooltip>
+                          <SelectContent>
+                            <SelectItem value="all">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="apps"
+                                  name="all"
+                                  size={14}
+                                />
+                                <span>
+                                  {t("sessionManager.providerFilterAll")}
+                                </span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="codex">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="openai"
+                                  name="codex"
+                                  size={14}
+                                />
+                                <span>Codex</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="claude">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="claude"
+                                  name="claude"
+                                  size={14}
+                                />
+                                <span>Claude Code</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="opencode">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="opencode"
+                                  name="opencode"
+                                  size={14}
+                                />
+                                <span>OpenCode</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="openclaw">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="openclaw"
+                                  name="openclaw"
+                                  size={14}
+                                />
+                                <span>OpenClaw</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="gemini">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon
+                                  icon="gemini"
+                                  name="gemini"
+                                  size={14}
+                                />
+                                <span>Gemini CLI</span>
+                              </div>
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              onClick={() => void refetch()}
+                            >
+                              <RefreshCw className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>{t("common.refresh")}</TooltipContent>
+                        </Tooltip>
+                      </div>
                     </div>
                     {selectionMode && (
                       <div className="grid gap-3 rounded-md border bg-muted/40 px-3 py-2.5">
@@ -1195,76 +1378,167 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                           {t("sessionManager.noSessions")}
                         </p>
                       </div>
-                    ) : (
+                    ) : listViewMode === "grouped" ? (
                       <div className="space-y-2">
-                        {sessionGroups.map((group) => {
-                          const isCollapsed = collapsedProjectKeys.has(
-                            group.key,
+                        {groupedSessions.map((providerGroup) => {
+                          const providerOpen = expandedProviderGroups.has(
+                            providerGroup.providerId,
+                          );
+                          const providerLabel = getProviderLabel(
+                            providerGroup.providerId,
+                            t,
+                          );
+                          const providerSelectionState = getGroupSelectionState(
+                            providerGroup.sessions,
                           );
 
                           return (
-                            <div key={group.key} className="min-w-0">
-                              <button
-                                type="button"
-                                aria-expanded={!isCollapsed}
-                                onClick={() => toggleProjectGroup(group.key)}
-                                className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
-                              >
-                                {isCollapsed ? (
-                                  <ChevronRight className="size-3.5 shrink-0" />
-                                ) : (
-                                  <ChevronDown className="size-3.5 shrink-0" />
+                            <Collapsible
+                              key={providerGroup.providerId}
+                              open={providerOpen}
+                              onOpenChange={() =>
+                                toggleProviderGroup(providerGroup.providerId)
+                              }
+                            >
+                              <div className="flex w-full items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-2 transition-colors hover:bg-muted">
+                                {renderProviderGroupCheckbox(
+                                  providerGroup,
+                                  providerLabel,
+                                  providerSelectionState,
                                 )}
-                                <FolderOpen className="size-3.5 shrink-0 text-foreground/70" />
-                                <span
-                                  className="min-w-0 flex-1 truncate font-semibold text-foreground"
-                                  title={group.path ?? group.label}
-                                >
-                                  {group.label}
-                                </span>
-                                <Badge
-                                  variant="outline"
-                                  className="h-5 shrink-0 px-1.5 text-[10px]"
-                                >
-                                  {group.count}
-                                </Badge>
-                              </button>
-                              {!isCollapsed && (
-                                <div className="mt-1 space-y-1 border-l border-border-default/70 pl-2">
-                                  {group.sessions.map((session) => {
-                                    const isSelected =
-                                      selectedKey !== null &&
-                                      getSessionKey(session) === selectedKey;
+                                <CollapsibleTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                    aria-label={t(
+                                      "sessionManager.toggleProviderGroup",
+                                      {
+                                        defaultValue:
+                                          "展开或折叠 {{provider}} 供应商分组",
+                                        provider: providerLabel,
+                                      },
+                                    )}
+                                  >
+                                    {providerOpen ? (
+                                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                                    ) : (
+                                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                                    )}
+                                    <ProviderIcon
+                                      icon={getProviderIconName(
+                                        providerGroup.providerId,
+                                      )}
+                                      name={providerGroup.providerId}
+                                      size={16}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                      {providerLabel}
+                                    </span>
+                                    {renderGroupSelectionBadge(
+                                      providerSelectionState,
+                                      providerGroup.sessions.length,
+                                      "secondary",
+                                    )}
+                                  </button>
+                                </CollapsibleTrigger>
+                              </div>
+                              <CollapsibleContent className="mt-1 space-y-1 pl-2">
+                                {providerGroup.directories.map(
+                                  (directoryGroup) => {
+                                    const directoryOpen =
+                                      expandedDirectoryGroups.has(
+                                        directoryGroup.key,
+                                      );
+                                    const directorySelectionState =
+                                      getGroupSelectionState(
+                                        directoryGroup.sessions,
+                                      );
 
                                     return (
-                                      <SessionItem
-                                        key={getSessionKey(session)}
-                                        session={session}
-                                        isSelected={isSelected}
-                                        selectionMode={selectionMode}
-                                        searchQuery={search}
-                                        isChecked={selectedSessionKeys.has(
-                                          getSessionKey(session),
-                                        )}
-                                        isCheckDisabled={!session.sourcePath}
-                                        onSelect={setSelectedKey}
-                                        onToggleChecked={(checked) =>
-                                          toggleSessionChecked(session, checked)
-                                        }
-                                        onContextMenu={(event) =>
-                                          handleSessionContextMenu(
-                                            event,
-                                            session,
+                                      <Collapsible
+                                        key={directoryGroup.key}
+                                        open={directoryOpen}
+                                        onOpenChange={() =>
+                                          toggleDirectoryGroup(
+                                            directoryGroup.key,
                                           )
                                         }
-                                      />
+                                      >
+                                        <div className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+                                          {renderDirectoryGroupCheckbox(
+                                            directoryGroup,
+                                            directorySelectionState,
+                                          )}
+                                          <CollapsibleTrigger asChild>
+                                            <button
+                                              type="button"
+                                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                              aria-label={t(
+                                                "sessionManager.toggleDirectoryGroup",
+                                                {
+                                                  defaultValue:
+                                                    "展开或折叠 {{directory}} 目录分组",
+                                                  directory:
+                                                    directoryGroup.label,
+                                                },
+                                              )}
+                                            >
+                                              {directoryOpen ? (
+                                                <ChevronDown className="size-3.5 shrink-0" />
+                                              ) : (
+                                                <ChevronRight className="size-3.5 shrink-0" />
+                                              )}
+                                              <FolderOpen className="size-3.5 shrink-0" />
+                                              <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                                                    {directoryGroup.label}
+                                                  </span>
+                                                </TooltipTrigger>
+                                                <TooltipContent
+                                                  side="bottom"
+                                                  className="max-w-xs"
+                                                >
+                                                  <p className="font-mono text-xs break-all">
+                                                    {directoryGroup.projectDir ??
+                                                      t(
+                                                        "sessionManager.unknownDirectory",
+                                                        {
+                                                          defaultValue:
+                                                            "未知目录",
+                                                        },
+                                                      )}
+                                                  </p>
+                                                </TooltipContent>
+                                              </Tooltip>
+                                              {renderGroupSelectionBadge(
+                                                directorySelectionState,
+                                                directoryGroup.sessions.length,
+                                                "outline",
+                                              )}
+                                            </button>
+                                          </CollapsibleTrigger>
+                                        </div>
+                                        <CollapsibleContent className="mt-1 space-y-1 pl-3">
+                                          {directoryGroup.sessions.map(
+                                            (session) =>
+                                              renderSessionItem(session),
+                                          )}
+                                        </CollapsibleContent>
+                                      </Collapsible>
                                     );
-                                  })}
-                                </div>
-                              )}
-                            </div>
+                                  },
+                                )}
+                              </CollapsibleContent>
+                            </Collapsible>
                           );
                         })}
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        {filteredSessions.map((session) =>
+                          renderSessionItem(session),
+                        )}
                       </div>
                     )}
                   </div>
@@ -1601,8 +1875,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                                       searchQuery={search}
                                       displayContentOverride={
                                         isCodexSession &&
-                                        messages[virtualRow.index]?.role.toLowerCase() ===
-                                          "user"
+                                        messages[
+                                          virtualRow.index
+                                        ]?.role.toLowerCase() === "user"
                                           ? extractCodexPromptPreview(
                                               messages[virtualRow.index]
                                                 ?.content ?? "",

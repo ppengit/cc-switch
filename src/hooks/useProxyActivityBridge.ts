@@ -1,9 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { providersApi } from "@/lib/api/providers";
 import type { AppId } from "@/lib/api/types";
@@ -86,7 +83,10 @@ async function getAdmissionRetryProvider(
 }
 
 function playAdmissionRetrySuccessTone() {
-  if (typeof window === "undefined" || typeof window.AudioContext !== "function") {
+  if (
+    typeof window === "undefined" ||
+    typeof window.AudioContext !== "function"
+  ) {
     return;
   }
 
@@ -170,6 +170,10 @@ export function useProxyActivityBridge() {
             payload.active_request_targets,
             payload.active_request_count,
           );
+          // A mount-time status request can finish after this event and overwrite
+          // fresher in-flight activity with an older snapshot. Cancel it before
+          // updating the cache; normal polling resumes from the event state.
+          void queryClient.cancelQueries({ queryKey: ["proxyStatus"] });
           queryClient.setQueryData<ProxyStatus | undefined>(
             ["proxyStatus"],
             (current) => {
@@ -214,13 +218,16 @@ export function useProxyActivityBridge() {
             queryKey: ["usage", "raw-proxy-logs"],
           });
         }),
-        listen<ProviderAdmissionRetryEvent>("provider-admission-retry", (event) => {
-          const payload = event.payload;
-          void maybeNotifyAdmissionRetrySuccess(queryClient, payload);
-          queryClient.invalidateQueries({
-            queryKey: ["usage", "raw-proxy-logs"],
-          });
-        }),
+        listen<ProviderAdmissionRetryEvent>(
+          "provider-admission-retry",
+          (event) => {
+            const payload = event.payload;
+            void maybeNotifyAdmissionRetrySuccess(queryClient, payload);
+            queryClient.invalidateQueries({
+              queryKey: ["usage", "raw-proxy-logs"],
+            });
+          },
+        ),
       ]);
 
       if (disposed) {
