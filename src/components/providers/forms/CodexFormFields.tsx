@@ -907,7 +907,7 @@ export function CodexFormFields({
                   {modelRoutesEnabled
                     ? t("codexConfig.requestModelRoutesHint", {
                         defaultValue:
-                          "按 Codex 实际发出的 model 字段精确匹配并改写。若模型目录先把菜单项解析成实际请求模型，这里会在解析后继续改写。",
+                          "按 Codex 实际发出的 model 字段匹配并改写。可用 模型@等级 配置等级专用映射；纯模型映射会保留 Codex CLI 的思考等级。",
                       })
                     : t("codexConfig.requestModelRoutesDisabledHint", {
                         defaultValue:
@@ -948,7 +948,7 @@ export function CodexFormFields({
                           placeholder={t(
                             "codexConfig.requestModelPlaceholder",
                             {
-                              defaultValue: "例如: gpt-5.4-mini",
+                              defaultValue: "例如: gpt-5.5@xhigh",
                             },
                           )}
                           aria-label={t("codexConfig.requestModelColumn", {
@@ -978,7 +978,7 @@ export function CodexFormFields({
                           placeholder={t(
                             "codexConfig.upstreamModelPlaceholder",
                             {
-                              defaultValue: "例如: gpt-5.5",
+                              defaultValue: "例如: gpt-5.6-sol@max",
                             },
                           )}
                           aria-label={t("codexConfig.upstreamModelColumn", {

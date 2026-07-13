@@ -296,10 +296,14 @@ export const normalizeCodexModelRoutesForSave = (
   if (!routes) return undefined;
 
   const normalized: Record<string, CodexModelRoute> = {};
+  const seen = new Set<string>();
   for (const [requestModelRaw, route] of Object.entries(routes)) {
     const requestModel = requestModelRaw.trim();
     const upstreamModel = route?.model?.trim();
     if (!requestModel || !upstreamModel) continue;
+    const lookup = requestModel.toLocaleLowerCase("en-US");
+    if (seen.has(lookup)) continue;
+    seen.add(lookup);
     normalized[requestModel] = { model: upstreamModel };
   }
 

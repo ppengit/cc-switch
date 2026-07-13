@@ -32,6 +32,19 @@ describe("ProviderForm Codex catalog helpers", () => {
     });
   });
 
+  it("preserves effort routes and removes case-insensitive duplicates", () => {
+    expect(
+      normalizeCodexModelRoutesForSave({
+        " GPT-5.5@XHIGH ": { model: " GPT-5.6-SOL@MAX " },
+        "gpt-5.5@xhigh": { model: "duplicate" },
+        "gpt-5.4": { model: "gpt-5.5" },
+      }),
+    ).toEqual({
+      "GPT-5.5@XHIGH": { model: "GPT-5.6-SOL@MAX" },
+      "gpt-5.4": { model: "gpt-5.5" },
+    });
+  });
+
   it("adds https scheme to provider request URLs before saving", () => {
     expect(normalizeUrlForSave(" api.example.com/v1/ ")).toBe(
       "https://api.example.com/v1",

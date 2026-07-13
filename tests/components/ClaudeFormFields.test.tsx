@@ -136,6 +136,28 @@ describe("ClaudeFormFields", () => {
     expect(copilotApiMock.copilotGetModelsForAccount).not.toHaveBeenCalled();
   });
 
+  it("高级选项使用与 Codex 一致的整行折叠容器样式", () => {
+    renderCopilotForm();
+
+    const trigger = screen.getByRole("button", {
+      name: /高级选项|providerForm\.advancedOptionsToggle/,
+    });
+    const container = trigger.parentElement;
+
+    expect(container).toHaveClass(
+      "rounded-lg",
+      "border",
+      "border-border/50",
+      "bg-muted/20",
+    );
+    expect(trigger).toHaveClass(
+      "w-full",
+      "justify-between",
+      "p-4",
+      "hover:bg-muted/30",
+    );
+  });
+
   it("点击获取模型列表后才请求当前 Copilot 账号的模型", async () => {
     renderCopilotForm();
 

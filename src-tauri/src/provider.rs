@@ -397,7 +397,8 @@ pub struct ClaudeDesktopModelRoute {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexModelRoute {
-    /// 真实上游模型名，只保存在 CC Switch 内部，不写入 Codex model catalog。
+    /// 真实上游模型名，可附加 `@effort` 覆盖思考等级；只保存在 CC Switch
+    /// 内部，不写入 Codex model catalog。
     pub model: String,
 }
 

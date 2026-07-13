@@ -30,6 +30,7 @@ import {
   ChevronRight,
   Download,
   Loader2,
+  SlidersHorizontal,
   Wand2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
@@ -716,28 +717,35 @@ export function ClaudeFormFields({
       )}
 
       {shouldShowModelSelector && (
-        <Collapsible open={advancedExpanded} onOpenChange={setAdvancedExpanded}>
+        <Collapsible
+          open={advancedExpanded}
+          onOpenChange={setAdvancedExpanded}
+          className="rounded-lg border border-border/50 bg-muted/20"
+        >
           <CollapsibleTrigger asChild>
-            <Button
+            <button
               type="button"
-              variant={null}
-              size="sm"
-              className="h-8 gap-1.5 px-0 text-sm font-medium text-foreground hover:opacity-70"
+              className="flex w-full cursor-pointer items-center justify-between p-4 text-left transition-colors hover:bg-muted/30"
             >
+              <div className="flex min-w-0 items-center gap-3">
+                <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">
+                  {t("providerForm.advancedOptionsToggle")}
+                </span>
+              </div>
               {advancedExpanded ? (
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
               ) : (
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
               )}
-              {t("providerForm.advancedOptionsToggle")}
-            </Button>
+            </button>
           </CollapsibleTrigger>
           {!advancedExpanded && (
-            <p className="text-xs text-muted-foreground mt-1 ml-1">
+            <p className="mt-1 ml-1 text-xs text-muted-foreground">
               {t("providerForm.advancedOptionsHint")}
             </p>
           )}
-          <CollapsibleContent className="space-y-4 pt-2">
+          <CollapsibleContent className="space-y-4 border-t border-border/50 p-4">
             {/* API 格式选择（仅非云服务商显示） */}
             {category !== "cloud_provider" && (
               <div className="space-y-2">

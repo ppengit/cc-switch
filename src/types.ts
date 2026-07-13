@@ -150,6 +150,7 @@ export interface ClaudeDesktopModelRoute {
 }
 
 export interface CodexModelRoute {
+  // Optional routing notation: model@effort (for example gpt-5.6-sol@max).
   model: string;
 }
 

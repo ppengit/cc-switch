@@ -4,11 +4,74 @@
 
 use crate::claude_desktop_config::ONE_M_CONTEXT_MARKER;
 use crate::provider::Provider;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 enum CodexCatalogModelResolution {
     Listed,
     Alias(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelEffortSpec {
+    model: String,
+    effort: Option<&'static str>,
+}
+
+fn normalize_reasoning_effort(effort: &str) -> Option<&'static str> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" => Some("none"),
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+/// Parse the routing-only `model@effort` notation. Only known effort names are
+/// recognized so provider model IDs that legitimately contain `@` stay intact.
+fn parse_model_effort_spec(value: &str) -> ModelEffortSpec {
+    let trimmed = value.trim();
+    let without_one_m = strip_one_m_suffix_for_upstream(trimmed);
+
+    if let Some((model, effort)) = without_one_m.rsplit_once('@') {
+        if let Some(effort) = normalize_reasoning_effort(effort) {
+            let model = model.trim();
+            if !model.is_empty() {
+                return ModelEffortSpec {
+                    model: model.to_string(),
+                    effort: Some(effort),
+                };
+            }
+        }
+    }
+
+    ModelEffortSpec {
+        model: trimmed.to_string(),
+        effort: None,
+    }
+}
+
+fn request_reasoning_effort<'a>(body: &'a Value, pointer: &str) -> Option<&'a str> {
+    body.pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+}
+
+fn set_nested_effort(body: &mut Value, field: &str, effort: &str) {
+    let Some(root) = body.as_object_mut() else {
+        return;
+    };
+    let container = root.entry(field.to_string()).or_insert_with(|| json!({}));
+    if !container.is_object() {
+        *container = json!({});
+    }
+    if let Some(object) = container.as_object_mut() {
+        object.insert("effort".to_string(), json!(effort));
+    }
 }
 
 /// 模型映射配置
@@ -138,11 +201,17 @@ pub fn apply_model_mapping(
 
     if let Some(ref original) = original_model {
         let mapped = mapping.map_model(original);
+        let mapped_spec = parse_model_effort_spec(&mapped);
+        let model_changed = mapped_spec.model != original.trim();
 
-        if mapped != *original {
+        if model_changed || mapped_spec.effort.is_some() {
             log::debug!("[ModelMapper] 模型映射: {original} → {mapped}");
-            body["model"] = serde_json::json!(mapped);
-            return (body, Some(original.clone()), Some(mapped));
+            body["model"] = json!(&mapped_spec.model);
+            if let Some(effort) = mapped_spec.effort {
+                set_nested_effort(&mut body, "output_config", effort);
+            }
+            let mapped_model = model_changed.then_some(mapped_spec.model);
+            return (body, Some(original.clone()), mapped_model);
         }
     }
 
@@ -168,14 +237,21 @@ pub fn apply_codex_model_mapping(
     let local_routing_enabled = codex_local_routing_enabled(provider);
 
     if routes_enabled {
-        if let Some(route) = find_codex_model_route(provider, original) {
-            let mapped = route.model.trim();
-            if mapped.is_empty() {
+        let request_effort = request_reasoning_effort(&body, "/reasoning/effort");
+        if let Some(route) = find_codex_model_route(provider, original, request_effort) {
+            let mapped_spec = parse_model_effort_spec(&route.model);
+            if mapped_spec.model.is_empty() {
                 return (body, Some(original.to_string()), None);
             }
-            if mapped != original.trim() {
-                log::debug!("[ModelMapper] Codex 模型映射: {original} → {mapped}");
-                body["model"] = serde_json::json!(mapped);
+            if mapped_spec.model != original.trim() || mapped_spec.effort.is_some() {
+                log::debug!(
+                    "[ModelMapper] Codex 模型映射: {original} → {}",
+                    route.model.trim()
+                );
+                body["model"] = json!(&mapped_spec.model);
+                if let Some(effort) = mapped_spec.effort {
+                    set_nested_effort(&mut body, "reasoning", effort);
+                }
             }
 
             let final_model = body
@@ -204,14 +280,21 @@ pub fn apply_codex_model_mapping(
     }
 
     if routes_enabled {
-        if let Some(route) = find_codex_model_route(provider, &route_input) {
-            let mapped = route.model.trim();
-            if mapped.is_empty() {
+        let request_effort = request_reasoning_effort(&body, "/reasoning/effort");
+        if let Some(route) = find_codex_model_route(provider, &route_input, request_effort) {
+            let mapped_spec = parse_model_effort_spec(&route.model);
+            if mapped_spec.model.is_empty() {
                 return (body, Some(original.to_string()), None);
             }
-            if mapped != route_input {
-                log::debug!("[ModelMapper] Codex 模型映射: {route_input} → {mapped}");
-                body["model"] = serde_json::json!(mapped);
+            if mapped_spec.model != route_input || mapped_spec.effort.is_some() {
+                log::debug!(
+                    "[ModelMapper] Codex 模型映射: {route_input} → {}",
+                    route.model.trim()
+                );
+                body["model"] = json!(&mapped_spec.model);
+                if let Some(effort) = mapped_spec.effort {
+                    set_nested_effort(&mut body, "reasoning", effort);
+                }
             }
 
             let final_model = body
@@ -276,18 +359,29 @@ fn codex_catalog_count(provider: &Provider) -> usize {
 fn find_codex_model_route<'a>(
     provider: &'a Provider,
     model: &str,
+    request_effort: Option<&str>,
 ) -> Option<&'a crate::provider::CodexModelRoute> {
     let lookup = model.trim();
-    provider.meta.as_ref().and_then(|meta| {
-        meta.codex_model_routes.get(model).or_else(|| {
-            meta.codex_model_routes.get(lookup).or_else(|| {
-                meta.codex_model_routes
-                    .iter()
-                    .find(|(key, _)| key.trim().eq_ignore_ascii_case(lookup))
-                    .map(|(_, route)| route)
-            })
+    let routes = &provider.meta.as_ref()?.codex_model_routes;
+
+    // An effort-qualified route is more specific than a plain model route.
+    // Both the model and effort portions match case-insensitively.
+    if let Some(request_effort) = request_effort.and_then(normalize_reasoning_effort) {
+        if let Some((_, route)) = routes.iter().find(|(key, _)| {
+            let spec = parse_model_effort_spec(key);
+            spec.effort == Some(request_effort) && spec.model.eq_ignore_ascii_case(lookup)
+        }) {
+            return Some(route);
+        }
+    }
+
+    routes
+        .iter()
+        .find(|(key, _)| {
+            let spec = parse_model_effort_spec(key);
+            spec.effort.is_none() && spec.model.eq_ignore_ascii_case(lookup)
         })
-    })
+        .map(|(_, route)| route)
 }
 
 fn resolve_codex_catalog_model(
@@ -628,6 +722,159 @@ mod tests {
         assert_eq!(result["model"], "deepseek-v4-pro");
         assert_eq!(original.as_deref(), Some(" GPT-5.5 "));
         assert_eq!(mapped.as_deref(), Some("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn codex_model_routes_map_reasoning_effort_case_insensitively() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "GPT-5.5@XHIGH".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.6-sol@MAX".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({
+            "model": "gpt-5.5",
+            "reasoning": {"effort": "xHiGh", "summary": "auto"},
+            "input": "hello"
+        });
+        let (result, original, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.6-sol");
+        assert_eq!(result["reasoning"]["effort"], "max");
+        assert_eq!(result["reasoning"]["summary"], "auto");
+        assert_eq!(original.as_deref(), Some("gpt-5.5"));
+        assert_eq!(mapped.as_deref(), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn codex_effort_route_precedes_plain_route() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([
+                (
+                    "gpt-5.5".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "plain-target".to_string(),
+                    },
+                ),
+                (
+                    "gpt-5.5@xhigh".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "gpt-5.6-sol@max".to_string(),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        });
+
+        let body = json!({
+            "model": "gpt-5.5",
+            "reasoning": {"effort": "xhigh"}
+        });
+        let (result, _, _) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.6-sol");
+        assert_eq!(result["reasoning"]["effort"], "max");
+    }
+
+    #[test]
+    fn codex_plain_model_route_preserves_cli_reasoning_effort() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({
+            "model": "gpt-5.4",
+            "reasoning": {"effort": "high", "summary": "auto"}
+        });
+        let (result, _, _) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(result["reasoning"]["effort"], "high");
+        assert_eq!(result["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn codex_nonmatching_effort_route_falls_back_to_plain_route() {
+        let mut provider = create_provider_without_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes: std::collections::HashMap::from([
+                (
+                    "gpt-5.5".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "plain-target".to_string(),
+                    },
+                ),
+                (
+                    "gpt-5.5@xhigh".to_string(),
+                    crate::provider::CodexModelRoute {
+                        model: "effort-target@max".to_string(),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        });
+
+        let body = json!({
+            "model": "gpt-5.5",
+            "reasoning": {"effort": "medium"}
+        });
+        let (result, _, _) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "plain-target");
+        assert_eq!(result["reasoning"]["effort"], "medium");
+    }
+
+    #[test]
+    fn claude_model_mapping_target_can_override_effort() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "GPT-5.6-SOL@MAX"
+            }
+        });
+        let body = json!({
+            "model": "claude-sonnet-4-6",
+            "output_config": {"effort": "high", "temperature": 0.5}
+        });
+
+        let (result, _, mapped) = apply_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "GPT-5.6-SOL");
+        assert_eq!(result["output_config"]["effort"], "max");
+        assert_eq!(result["output_config"]["temperature"], 0.5);
+        assert_eq!(mapped.as_deref(), Some("GPT-5.6-SOL"));
+    }
+
+    #[test]
+    fn claude_plain_model_mapping_preserves_requested_effort() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config = json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5"
+            }
+        });
+        let body = json!({
+            "model": "claude-sonnet-4-6",
+            "output_config": {"effort": "xhigh"}
+        });
+
+        let (result, _, _) = apply_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.5");
+        assert_eq!(result["output_config"]["effort"], "xhigh");
     }
 
     #[test]
