@@ -221,7 +221,7 @@ export interface ProviderMeta {
   codexModelRoutes?: Record<string, CodexModelRoute>;
   // Codex 本地路由开关：独立于 modelCatalog，避免空目录时丢失用户意图
   codexLocalRoutingEnabled?: boolean;
-  // Codex 请求模型别名映射开关：关闭时保留 codexModelRoutes 数据
+  // Codex 请求模型映射开关：关闭时保留 codexModelRoutes 数据
   codexModelRoutesEnabled?: boolean;
   // 用量查询脚本配置
   usage_script?: UsageScript;

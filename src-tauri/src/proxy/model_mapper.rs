@@ -221,7 +221,7 @@ pub fn apply_model_mapping(
 /// 对 Codex 请求体应用请求级模型映射。
 ///
 /// `meta.codexModelRoutes` 使用精确模型名匹配，且只在
-/// `codexModelRoutesEnabled` 未显式关闭时生效。未命中显式 Codex
+/// `codexModelRoutesEnabled` 显式开启时生效。未命中显式 Codex
 /// 映射时保持客户端请求模型，避免退回旧的 `ANTHROPIC_MODEL` 默认值
 /// 把 Codex CLI 选择的模型误改成供应商默认模型。
 pub fn apply_codex_model_mapping(
@@ -331,10 +331,7 @@ fn codex_model_routes_enabled(provider: &Provider) -> bool {
     provider
         .meta
         .as_ref()
-        .map(|meta| {
-            meta.codex_model_routes_enabled
-                .unwrap_or(!meta.codex_model_routes.is_empty())
-        })
+        .and_then(|meta| meta.codex_model_routes_enabled)
         .unwrap_or(false)
 }
 
@@ -686,6 +683,7 @@ mod tests {
     fn codex_model_routes_map_exact_request_model() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "gpt-5.4-mini".to_string(),
                 crate::provider::CodexModelRoute {
@@ -707,6 +705,7 @@ mod tests {
     fn codex_model_routes_match_trimmed_case_insensitive_request_model() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "gpt-5.5".to_string(),
                 crate::provider::CodexModelRoute {
@@ -728,6 +727,7 @@ mod tests {
     fn codex_model_routes_map_reasoning_effort_case_insensitively() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "GPT-5.5@XHIGH".to_string(),
                 crate::provider::CodexModelRoute {
@@ -755,6 +755,7 @@ mod tests {
     fn codex_effort_route_precedes_plain_route() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([
                 (
                     "gpt-5.5".to_string(),
@@ -786,6 +787,7 @@ mod tests {
     fn codex_plain_model_route_preserves_cli_reasoning_effort() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "gpt-5.4".to_string(),
                 crate::provider::CodexModelRoute {
@@ -810,6 +812,7 @@ mod tests {
     fn codex_nonmatching_effort_route_falls_back_to_plain_route() {
         let mut provider = create_provider_without_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([
                 (
                     "gpt-5.5".to_string(),
@@ -891,6 +894,7 @@ mod tests {
             }
         });
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([
                 (
                     "gpt-5.5".to_string(),
@@ -930,6 +934,7 @@ mod tests {
             }
         });
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "B".to_string(),
                 crate::provider::CodexModelRoute {
@@ -999,6 +1004,7 @@ mod tests {
     fn codex_model_routes_take_priority_over_default_env_mapping() {
         let mut provider = create_provider_with_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
+            codex_model_routes_enabled: Some(true),
             codex_model_routes: std::collections::HashMap::from([(
                 "gpt-5.4-mini".to_string(),
                 crate::provider::CodexModelRoute {
@@ -1030,6 +1036,26 @@ mod tests {
         let mut provider = create_provider_with_mapping();
         provider.meta = Some(crate::provider::ProviderMeta {
             codex_model_routes_enabled: Some(false),
+            codex_model_routes: std::collections::HashMap::from([(
+                "gpt-5.4-mini".to_string(),
+                crate::provider::CodexModelRoute {
+                    model: "gpt-5.5".to_string(),
+                },
+            )]),
+            ..Default::default()
+        });
+
+        let body = json!({"model": "gpt-5.4-mini", "input": "hello"});
+        let (result, _, mapped) = apply_codex_model_mapping(body, &provider);
+
+        assert_eq!(result["model"], "gpt-5.4-mini");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn codex_model_routes_without_enabled_flag_preserves_request_model() {
+        let mut provider = create_provider_with_mapping();
+        provider.meta = Some(crate::provider::ProviderMeta {
             codex_model_routes: std::collections::HashMap::from([(
                 "gpt-5.4-mini".to_string(),
                 crate::provider::CodexModelRoute {

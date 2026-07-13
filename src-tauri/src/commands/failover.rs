@@ -139,6 +139,11 @@ pub async fn remove_from_failover_queue(
 
     state
         .proxy_service
+        .reset_provider_recovery_state(&provider_id, &app_type)
+        .await?;
+
+    state
+        .proxy_service
         .reconcile_failover_after_provider_removal(&provider_id, &app_type)
         .await?;
 

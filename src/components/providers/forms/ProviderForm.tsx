@@ -240,10 +240,7 @@ const getInitialCodexLocalRoutingEnabled = (
 const getInitialCodexModelRoutesEnabled = (
   meta: ProviderMeta | undefined,
 ): boolean => {
-  if (meta?.codexModelRoutesEnabled !== undefined) {
-    return meta.codexModelRoutesEnabled;
-  }
-  return Object.keys(meta?.codexModelRoutes ?? {}).length > 0;
+  return meta?.codexModelRoutesEnabled === true;
 };
 
 export const normalizeCodexCatalogModelsForSave = (

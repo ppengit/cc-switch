@@ -6091,6 +6091,7 @@ mod tests {
             sort_index: None,
             notes: None,
             meta: Some(crate::provider::ProviderMeta {
+                codex_model_routes_enabled: Some(true),
                 codex_model_routes: std::collections::HashMap::from([(
                     "gpt-5.4-mini".to_string(),
                     crate::provider::CodexModelRoute {

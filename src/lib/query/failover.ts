@@ -140,6 +140,16 @@ export function useAddToFailoverQueue() {
         queryKey: ["providers", variables.appType],
       });
       queryClient.invalidateQueries({
+        queryKey: ["providerHealth", variables.providerId, variables.appType],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [
+          "circuitBreakerStats",
+          variables.providerId,
+          variables.appType,
+        ],
+      });
+      queryClient.invalidateQueries({
         queryKey: ["proxyStatus"],
       });
     },

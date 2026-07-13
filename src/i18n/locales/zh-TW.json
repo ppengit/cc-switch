@@ -1275,7 +1275,7 @@
 
     "localRoutingToggle": "需要本地路由映射",
     "localRoutingOnHint": "打開後可在下方設定模型目錄，讓 Codex 的 /model 選單顯示自訂模型名。",
-    "localRoutingOffHint": "不需要產生 Codex /model 選單自訂模型目錄時，可保持關閉；請求模型別名映射可在下方單獨設定。",
+    "localRoutingOffHint": "不需要產生 Codex /model 選單自訂模型目錄時，可保持關閉；請求模型映射可在下方單獨設定。",
 
     "upstreamFormatLabel": "上游格式",
     "upstreamFormatHint": "供應商原生為 Responses API 就選 Responses（直連，不轉換格式）；使用 Chat Completions 協定就選 Chat（需開啟路由接管才能轉換為 Chat Completions）。",
@@ -1283,7 +1283,7 @@
     "upstreamFormatResponses": "Responses（原生）",
     "modelMappingTitle": "模型目錄",
     "modelMappingHint": "產生 Codex model_catalog_json，讓 /model 指令顯示這些第三方模型名；表中條目按填寫內容原樣儲存。修改後需要重新啟動 Codex 才能重新整理模型清單。",
-    "requestModelRoutesTitle": "請求模型別名映射",
+    "requestModelRoutesTitle": "請求模型映射",
     "requestModelRoutesHint": "按 Codex 實際發出的 model 欄位匹配並改寫，模型名與思考等級忽略大小寫。可用 模型@等級 設定等級專用映射（例如 gpt-5.5@xhigh → gpt-5.6-sol@max）；純模型映射只改模型並保留 Codex CLI 的思考等級。",
     "requestModelRoutesDisabledHint": "關閉後不會套用這些別名映射，但已填寫的資料會保留，方便之後再次啟用。",
     "addRequestModelRoute": "新增映射",
@@ -1302,7 +1302,7 @@
     "contextWindow": "上下文視窗",
     "contextWindowPlaceholder": "例如: 128000",
     "upstreamModelName": "上游模型名稱",
-    "upstreamModelNameHint": "Chat 格式下這裡是請求缺少 model 時的預設模型；既有 Codex 請求模型不會被它覆蓋。若上游不接受 Codex 模型名稱，請使用請求模型別名映射。",
+    "upstreamModelNameHint": "Chat 格式下這裡是請求缺少 model 時的預設模型；既有 Codex 請求模型不會被它覆蓋。若上游不接受 Codex 模型名稱，請使用請求模型映射。",
     "modelMetadataAdvanced": "模型中繼資料進階選項",
     "modelMetadataAdvancedHint": "用於未知模型的 Codex 中繼資料覆寫；清空欄位會從 config.toml 刪除對應設定。",
     "reasoningModeToggle": "支援思考模式",

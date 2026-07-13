@@ -294,6 +294,30 @@ describe("ProviderForm edit mode", () => {
     });
   });
 
+  it("keeps legacy Codex request model routes disabled when the enable flag is missing", async () => {
+    const { onSubmit } = renderCodexProviderForm({
+      meta: {
+        codexModelRoutes: {
+          "gpt-5.5": { model: "deepseek-v4-pro" },
+        },
+      },
+    });
+
+    expect(
+      screen.getByRole("switch", { name: "请求模型映射" }),
+    ).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta).toMatchObject({
+      codexModelRoutesEnabled: false,
+      codexModelRoutes: {
+        "gpt-5.5": { model: "deepseek-v4-pro" },
+      },
+    });
+  });
+
   it("keeps a draft Codex request model route when it temporarily matches an existing route", async () => {
     setSettings({ commonConfigConfirmed: true });
 
@@ -410,7 +434,7 @@ describe("ProviderForm edit mode", () => {
     });
     expect(
       screen.queryByText(
-        "包含上游格式、模型目录、请求模型别名映射、思考能力与自定义 User-Agent。",
+        "包含上游格式、模型目录、请求模型映射、思考能力与自定义 User-Agent。",
       ),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

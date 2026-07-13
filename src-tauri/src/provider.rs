@@ -533,7 +533,7 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub codex_local_routing_enabled: Option<bool>,
-    /// Codex 请求模型别名映射是否生效；关闭时保留 codexModelRoutes 数据。
+    /// Codex 请求模型映射是否生效；关闭时保留 codexModelRoutes 数据。
     #[serde(
         rename = "codexModelRoutesEnabled",
         skip_serializing_if = "Option::is_none"

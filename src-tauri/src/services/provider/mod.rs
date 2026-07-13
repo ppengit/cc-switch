@@ -212,6 +212,58 @@ mod tests {
             .port()
     }
 
+    async fn seed_provider_failure_state(state: &AppState, app_type: &str, provider_id: &str) {
+        state
+            .db
+            .update_provider_health(provider_id, app_type, false, Some("boom".into()))
+            .await
+            .expect("seed unhealthy state");
+        state
+            .proxy_service
+            .record_provider_result_for_test(provider_id, app_type, false, Some("boom".into()))
+            .await
+            .expect("seed breaker failure");
+
+        let health = state
+            .db
+            .get_provider_health(provider_id, app_type)
+            .await
+            .expect("health before reset");
+        assert!(health.consecutive_failures > 0);
+
+        let stats = state
+            .proxy_service
+            .get_circuit_breaker_stats(provider_id, app_type)
+            .await
+            .expect("stats before reset")
+            .expect("breaker should exist before reset");
+        assert!(stats.failed_requests > 0);
+    }
+
+    async fn assert_provider_recovery_state_reset(
+        state: &AppState,
+        app_type: &str,
+        provider_id: &str,
+    ) {
+        let health = state
+            .db
+            .get_provider_health(provider_id, app_type)
+            .await
+            .expect("health after reset");
+        assert!(health.is_healthy);
+        assert_eq!(health.consecutive_failures, 0);
+        assert!(health.last_error.is_none());
+
+        let stats = state
+            .proxy_service
+            .get_circuit_breaker_stats(provider_id, app_type)
+            .await
+            .expect("stats after reset")
+            .expect("breaker should still exist after reset");
+        assert_eq!(stats.failed_requests, 0);
+        assert_eq!(stats.consecutive_failures, 0);
+    }
+
     #[cfg(windows)]
     fn claude_desktop_profile_path(home: &Path) -> PathBuf {
         home.join("AppData")
@@ -3560,6 +3612,111 @@ command = "legacy-cmd"
         });
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn remove_from_live_config_resets_health_and_breaker_state() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: reserve_free_tcp_port(),
+            ..Default::default()
+        })
+        .await
+        .expect("seed proxy port");
+
+        let provider = openclaw_provider("openclaw-reset");
+        ProviderService::add(&state, AppType::OpenClaw, provider, true)
+            .expect("add live OpenClaw provider");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        seed_provider_failure_state(&state, AppType::OpenClaw.as_str(), "openclaw-reset").await;
+
+        ProviderService::remove_from_live_config(&state, AppType::OpenClaw, "openclaw-reset")
+            .expect("remove from live config");
+
+        assert_provider_recovery_state_reset(&state, AppType::OpenClaw.as_str(), "openclaw-reset")
+            .await;
+
+        let saved = state
+            .db
+            .get_provider_by_id("openclaw-reset", AppType::OpenClaw.as_str())
+            .expect("query provider")
+            .expect("provider remains in database");
+        assert_eq!(
+            saved.meta.and_then(|meta| meta.live_config_managed),
+            Some(false)
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn switching_additive_provider_to_live_resets_health_and_breaker_state() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("in-memory database"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: reserve_free_tcp_port(),
+            ..Default::default()
+        })
+        .await
+        .expect("seed proxy port");
+
+        let provider = openclaw_provider("openclaw-enable-reset");
+        ProviderService::add(&state, AppType::OpenClaw, provider, false)
+            .expect("add DB-only OpenClaw provider");
+
+        state
+            .proxy_service
+            .start()
+            .await
+            .expect("start proxy service");
+        seed_provider_failure_state(&state, AppType::OpenClaw.as_str(), "openclaw-enable-reset")
+            .await;
+
+        ProviderService::switch(&state, AppType::OpenClaw, "openclaw-enable-reset")
+            .expect("enable OpenClaw provider");
+
+        assert_provider_recovery_state_reset(
+            &state,
+            AppType::OpenClaw.as_str(),
+            "openclaw-enable-reset",
+        )
+        .await;
+
+        let saved = state
+            .db
+            .get_provider_by_id("openclaw-enable-reset", AppType::OpenClaw.as_str())
+            .expect("query provider")
+            .expect("provider remains in database");
+        assert_eq!(
+            saved.meta.and_then(|meta| meta.live_config_managed),
+            Some(true)
+        );
+
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .expect("stop proxy service");
+        }
+    }
+
     #[test]
     #[serial]
     fn update_persists_non_current_omo_variants_in_database() {
@@ -3791,6 +3948,19 @@ impl ProviderService {
             .meta
             .get_or_insert_with(Default::default)
             .live_config_managed = Some(managed);
+    }
+
+    fn reset_provider_recovery_state(
+        state: &AppState,
+        app_type: &AppType,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        futures::executor::block_on(
+            state
+                .proxy_service
+                .reset_provider_recovery_state(provider_id, app_type.as_str()),
+        )
+        .map_err(AppError::Message)
     }
 
     fn disable_other_upstream_admission_retry_providers(
@@ -4793,6 +4963,7 @@ impl ProviderService {
                 .clear_provider_runtime_state(id, app_type.as_str()),
         )
         .map_err(AppError::Message)?;
+        Self::reset_provider_recovery_state(state, &app_type, id)?;
 
         Ok(())
     }
@@ -4964,6 +5135,7 @@ impl ProviderService {
                     .set_omo_provider_current(app_type.as_str(), id, enable.category)?;
                 crate::services::OmoService::write_config_to_file(state, enable)?;
                 let _ = crate::services::OmoService::delete_config_file(disable);
+                Self::reset_provider_recovery_state(state, &app_type, id)?;
                 return Ok(SwitchResult::default());
             }
         }
@@ -5039,12 +5211,6 @@ impl ProviderService {
 
             // Update database is_current (as default for new devices)
             state.db.set_current_provider(app_type.as_str(), id)?;
-            futures::executor::block_on(
-                state
-                    .proxy_service
-                    .reset_provider_recovery_state(id, app_type.as_str()),
-            )
-            .map_err(AppError::Message)?;
         }
 
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
@@ -5102,6 +5268,8 @@ impl ProviderService {
                 }
             }
         }
+
+        Self::reset_provider_recovery_state(state, &app_type, id)?;
 
         // 切换重写了目标应用的 live，只重投影该应用的 MCP（Codex 的
         // [mcp_servers] 与 live 同文件，整体替换后必须补回；其余应用的

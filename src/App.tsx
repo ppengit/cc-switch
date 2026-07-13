@@ -717,6 +717,8 @@ function App() {
     await queryClient.invalidateQueries({
       queryKey: ["failoverQueue", activeApp],
     });
+    await queryClient.invalidateQueries({ queryKey: ["providerHealth"] });
+    await queryClient.invalidateQueries({ queryKey: ["circuitBreakerStats"] });
 
     if (activeApp === "opencode") {
       await queryClient.invalidateQueries({

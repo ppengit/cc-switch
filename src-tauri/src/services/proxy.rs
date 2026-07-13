@@ -4201,6 +4201,23 @@ impl ProxyService {
         Ok(None)
     }
 
+    #[cfg(test)]
+    pub async fn record_provider_result_for_test(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return server
+                .record_provider_result_for_test(provider_id, app_type, success, error_msg)
+                .await
+                .map_err(|e| e.to_string());
+        }
+        Err("proxy server is not running".to_string())
+    }
+
     pub async fn get_raw_logs(
         &self,
         limit: usize,

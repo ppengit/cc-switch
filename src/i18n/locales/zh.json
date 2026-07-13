@@ -1421,7 +1421,7 @@
 
     "modelNamePlaceholder": "例如: gpt-5.5",
     "localRoutingToggle": "需要本地路由映射",
-    "localRoutingOffHint": "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型别名映射可在下方单独配置。",
+    "localRoutingOffHint": "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型映射可在下方单独配置。",
     "localRoutingOnHint": "打开后可在下方配置模型目录，让 Codex 的 /model 菜单显示自定义模型名。",
 
     "upstreamFormatLabel": "上游格式",
@@ -1429,7 +1429,7 @@
     "upstreamFormatChat": "Chat Completions（需开启路由）",
     "upstreamFormatResponses": "Responses（原生）",
     "upstreamModelName": "上游模型名称",
-    "upstreamModelNameHint": "Chat 格式下这里是请求缺少 model 时的默认模型；已有的 Codex 请求模型不会被它覆盖。若上游不接受 Codex 模型名，请使用请求模型别名映射。",
+    "upstreamModelNameHint": "Chat 格式下这里是请求缺少 model 时的默认模型；已有的 Codex 请求模型不会被它覆盖。若上游不接受 Codex 模型名，请使用请求模型映射。",
     "contextWindow1M": "1M 上下文窗口",
     "contextWindow": "上下文窗口",
     "contextWindowPlaceholder": "例如: 128000",
@@ -1441,7 +1441,7 @@
     "modelMetadataAdvancedHint": "用于未知模型的 Codex 元数据覆盖；清空字段会从 config.toml 删除对应配置。",
     "modelMappingTitle": "模型目录",
     "modelMappingHint": "生成 Codex model_catalog_json，让 /model 命令显示这些第三方模型名；表中条目按填写内容原样保存。修改后需要重启 Codex 才能刷新模型列表。",
-    "requestModelRoutesTitle": "请求模型别名映射",
+    "requestModelRoutesTitle": "请求模型映射",
     "requestModelRoutesHint": "按 Codex 实际发出的 model 字段匹配并改写，模型名和思考等级忽略大小写。可用 模型@等级 配置等级专用映射（如 gpt-5.5@xhigh → gpt-5.6-sol@max）；纯模型映射只改模型并保留 Codex CLI 的思考等级。",
     "requestModelRoutesDisabledHint": "关闭后不会应用这些别名映射，但已填写的数据会保留，方便后续再次启用。",
     "addRequestModelRoute": "添加映射",

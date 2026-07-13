@@ -220,7 +220,7 @@ export function CodexFormFields({
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   // 思考能力随“本地接管 + Chat 格式”显示；模型目录由接管开关门控，
-  // 请求模型别名映射独立保留为出站改写层。
+  // 请求模型映射独立保留为出站改写层。
   const isChatFormat = apiFormat === "openai_chat";
   const canEditCatalog = Boolean(onCatalogModelsChange);
   const canEditModelRoutes = Boolean(onModelRoutesChange);
@@ -578,7 +578,7 @@ export function CodexFormFields({
                           })
                         : t("codexConfig.localRoutingOffHint", {
                             defaultValue:
-                              "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型别名映射可在下方单独配置。",
+                              "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型映射可在下方单独配置。",
                           })}
                     </p>
                   </div>
@@ -850,7 +850,7 @@ export function CodexFormFields({
               <Replace className="h-4 w-4 text-muted-foreground" />
               <span className="font-medium">
                 {t("codexConfig.requestModelRoutesTitle", {
-                  defaultValue: "请求模型别名映射",
+                  defaultValue: "请求模型映射",
                 })}
               </span>
             </div>
@@ -868,7 +868,7 @@ export function CodexFormFields({
                   checked={modelRoutesEnabled}
                   onCheckedChange={onModelRoutesEnabledChange}
                   aria-label={t("codexConfig.requestModelRoutesTitle", {
-                    defaultValue: "请求模型别名映射",
+                    defaultValue: "请求模型映射",
                   })}
                 />
               </div>
@@ -893,7 +893,7 @@ export function CodexFormFields({
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <Replace className="h-4 w-4 text-muted-foreground" />
                     {t("codexConfig.requestModelRoutesTitle", {
-                      defaultValue: "请求模型别名映射",
+                      defaultValue: "请求模型映射",
                     })}
                   </div>
                   {renderCatalogActionButtons(
@@ -1013,7 +1013,7 @@ export function CodexFormFields({
               ) : (
                 <div className="rounded-md border border-dashed border-border/60 px-3 py-4 text-sm text-muted-foreground">
                   {t("codexConfig.requestModelRoutesEmpty", {
-                    defaultValue: "暂无请求模型别名映射。",
+                    defaultValue: "暂无请求模型映射。",
                   })}
                 </div>
               )}

@@ -1421,7 +1421,7 @@
 
     "modelNamePlaceholder": "例: gpt-5.5",
     "localRoutingToggle": "ローカルルーティングが必要",
-    "localRoutingOffHint": "Codex の /model メニュー向けカスタムモデルカタログが不要な場合はオフのままで構いません。リクエストモデルのエイリアスマッピングは下で別途設定できます。",
+    "localRoutingOffHint": "Codex の /model メニュー向けカスタムモデルカタログが不要な場合はオフのままで構いません。リクエストモデルマッピングは下で別途設定できます。",
     "localRoutingOnHint": "オンにすると下でモデルカタログを設定し、Codex の /model メニューにカスタムモデル名を表示できます。",
 
     "upstreamFormatLabel": "上流フォーマット",
@@ -1429,7 +1429,7 @@
     "upstreamFormatChat": "Chat Completions（ルーティング必須）",
     "upstreamFormatResponses": "Responses（ネイティブ）",
     "upstreamModelName": "上流モデル名",
-    "upstreamModelNameHint": "Chat 形式では、リクエストに model がない場合のみここを既定値として使います。Codex が指定したモデルは保持されます。上流が Codex のモデル名を受け付けない場合は、リクエストモデルのエイリアスマッピングを使用してください。",
+    "upstreamModelNameHint": "Chat 形式では、リクエストに model がない場合のみここを既定値として使います。Codex が指定したモデルは保持されます。上流が Codex のモデル名を受け付けない場合は、リクエストモデルマッピングを使用してください。",
     "contextWindow1M": "1M コンテキストウィンドウ",
     "contextWindow": "コンテキストウィンドウ",
     "contextWindowPlaceholder": "例: 128000",
@@ -1441,7 +1441,7 @@
     "modelMetadataAdvancedHint": "未知のモデル向けに Codex メタデータを上書きします。空にすると対応する config.toml 設定を削除します。",
     "modelMappingTitle": "モデルカタログ",
     "modelMappingHint": "Codex model_catalog_json を生成し、/model コマンドでこれらの第三者モデル名を表示できるようにします。リストの内容はそのまま保存されます。変更後、モデルリストを更新するには Codex の再起動が必要です。",
-    "requestModelRoutesTitle": "リクエストモデルのエイリアスマッピング",
+    "requestModelRoutesTitle": "リクエストモデルマッピング",
     "requestModelRoutesHint": "Codex が送信する model フィールドを、モデル名と思考レベルの大文字小文字を無視して照合・書き換えます。モデル@レベル でレベル別ルート（例: gpt-5.5@xhigh → gpt-5.6-sol@max）を設定できます。モデルのみのルートは Codex CLI の思考レベルを維持します。",
     "requestModelRoutesDisabledHint": "無効にするとエイリアスは適用されませんが、入力済みのマッピングは再度有効にするため保持されます。",
     "addRequestModelRoute": "マッピングを追加",
