@@ -15,11 +15,16 @@ import {
 import { providersApi, settingsApi, type AppId } from "@/lib/api";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { useSettingsQuery } from "@/lib/query";
+import {
+  normalizeResponseReplayConfigForSave,
+  responseReplayEditorConfig,
+} from "@/lib/responseReplay";
 import type {
   ProviderCategory,
   ProviderMeta,
   ProviderTestConfig,
   ProviderUpstreamAdmissionRetry,
+  ProviderUpstreamResponseReplay,
   ClaudeApiFormat,
   CodexApiFormat,
   CodexCatalogModel,
@@ -657,6 +662,11 @@ function ProviderFormFull({
       ...(initialData?.meta?.upstreamAdmissionRetry ?? {}),
       enabled: initialData?.meta?.upstreamAdmissionRetry?.enabled ?? false,
     }));
+  const [responseReplayConfig, setResponseReplayConfig] =
+    useState<ProviderUpstreamResponseReplay>(() => {
+      const existing = initialData?.meta?.upstreamResponseReplay;
+      return existing ? responseReplayEditorConfig(existing) : {};
+    });
   const [maxConcurrentRequests, setMaxConcurrentRequests] = useState<
     number | undefined
   >(() => initialData?.meta?.maxConcurrentRequests);
@@ -734,6 +744,12 @@ function ProviderFormFull({
       ...(seed?.meta?.upstreamAdmissionRetry ?? {}),
       enabled: seed?.meta?.upstreamAdmissionRetry?.enabled ?? false,
     });
+    const existingResponseReplay = seed?.meta?.upstreamResponseReplay;
+    setResponseReplayConfig(
+      existingResponseReplay
+        ? responseReplayEditorConfig(existingResponseReplay)
+        : {},
+    );
     setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
     setCodexModelRoutes(
@@ -2187,6 +2203,10 @@ function ProviderFormFull({
         : undefined,
       upstreamAdmissionRetry:
         normalizeAdmissionRetryConfigForSave(admissionRetryConfig),
+      upstreamResponseReplay:
+        appId === "codex"
+          ? normalizeResponseReplayConfigForSave(responseReplayConfig)
+          : undefined,
       maxConcurrentRequests: normalizeMaxConcurrentRequestsForSave(
         maxConcurrentRequests,
       ),
@@ -2436,9 +2456,7 @@ function ProviderFormFull({
             (seededSettingsConfig as any)?.meta?.codexChatReasoning ?? {},
           );
           setCodexModelRoutes(
-            modelRouteRowsFromMap(
-              initialData?.meta?.codexModelRoutes ?? {},
-            ),
+            modelRouteRowsFromMap(initialData?.meta?.codexModelRoutes ?? {}),
           );
           setCodexModelRoutesEnabled(
             getInitialCodexModelRoutesEnabled(initialData?.meta),
@@ -3130,8 +3148,11 @@ function ProviderFormFull({
             appId !== "hermes" && (
               <ProviderRoutingRetryConfig
                 admissionRetryConfig={admissionRetryConfig}
+                responseReplayConfig={responseReplayConfig}
+                showResponseReplay={appId === "codex"}
                 maxConcurrentRequests={maxConcurrentRequests}
                 onAdmissionRetryConfigChange={setAdmissionRetryConfig}
+                onResponseReplayConfigChange={setResponseReplayConfig}
                 onMaxConcurrentRequestsChange={setMaxConcurrentRequests}
               />
             )}

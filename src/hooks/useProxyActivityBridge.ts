@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { providersApi } from "@/lib/api/providers";
+import { proxyApi } from "@/lib/api/proxy";
 import type { AppId } from "@/lib/api/types";
 import type { Provider } from "@/types";
 import type {
@@ -31,6 +32,18 @@ interface ProvidersCacheEntry {
 }
 
 let admissionRetryAudioContext: AudioContext | null = null;
+const admissionRetryNotifiedKeys = new Set<string>();
+const MAX_ADMISSION_RETRY_NOTIFIED_KEYS = 512;
+
+type AudioContextConstructor = new () => AudioContext;
+
+function getAudioContextConstructor(): AudioContextConstructor | undefined {
+  if (typeof window === "undefined") return undefined;
+  const audioWindow = window as typeof window & {
+    webkitAudioContext?: AudioContextConstructor;
+  };
+  return window.AudioContext ?? audioWindow.webkitAudioContext;
+}
 
 function createStatusFromActivity(payload: ProxyActivityEvent): ProxyStatus {
   return {
@@ -82,21 +95,26 @@ async function getAdmissionRetryProvider(
   }
 }
 
-function playAdmissionRetrySuccessTone() {
-  if (
-    typeof window === "undefined" ||
-    typeof window.AudioContext !== "function"
-  ) {
-    return;
-  }
-
+async function ensureAdmissionRetryAudioReady(): Promise<AudioContext | null> {
+  const AudioContextClass = getAudioContextConstructor();
+  if (!AudioContextClass) return null;
   try {
-    admissionRetryAudioContext ??= new window.AudioContext();
+    admissionRetryAudioContext ??= new AudioContextClass();
     const ctx = admissionRetryAudioContext;
     if (ctx.state === "suspended") {
-      void ctx.resume().catch(() => undefined);
+      await ctx.resume();
     }
+    return ctx.state === "running" ? ctx : null;
+  } catch {
+    return null;
+  }
+}
 
+async function playAdmissionRetrySuccessTone() {
+  const ctx = await ensureAdmissionRetryAudioReady();
+  if (!ctx) return;
+
+  try {
     const startedAt = ctx.currentTime + 0.01;
     const oscillator = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -106,7 +124,7 @@ function playAdmissionRetrySuccessTone() {
     oscillator.frequency.exponentialRampToValueAtTime(1320, startedAt + 0.12);
 
     gain.gain.setValueAtTime(0.0001, startedAt);
-    gain.gain.exponentialRampToValueAtTime(0.08, startedAt + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.12, startedAt + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, startedAt + 0.24);
 
     oscillator.connect(gain);
@@ -122,6 +140,19 @@ function playAdmissionRetrySuccessTone() {
   }
 }
 
+function claimAdmissionRetryNotification(payload: ProviderAdmissionRetryEvent) {
+  const key = `${payload.appType}:${payload.providerId}:${payload.requestId}`;
+  if (admissionRetryNotifiedKeys.has(key)) return false;
+
+  admissionRetryNotifiedKeys.add(key);
+  while (admissionRetryNotifiedKeys.size > MAX_ADMISSION_RETRY_NOTIFIED_KEYS) {
+    const oldest = admissionRetryNotifiedKeys.values().next().value;
+    if (oldest === undefined) break;
+    admissionRetryNotifiedKeys.delete(oldest);
+  }
+  return true;
+}
+
 async function maybeNotifyAdmissionRetrySuccess(
   queryClient: QueryClient,
   payload: ProviderAdmissionRetryEvent,
@@ -130,16 +161,23 @@ async function maybeNotifyAdmissionRetrySuccess(
     return;
   }
 
-  const provider = await getAdmissionRetryProvider(
-    queryClient,
-    payload.appType,
-    payload.providerId,
-  );
-  if (provider?.meta?.upstreamAdmissionRetry?.notifyOnSuccess !== true) {
+  let shouldNotify = payload.notifyOnSuccess;
+  if (shouldNotify === undefined) {
+    const provider = await getAdmissionRetryProvider(
+      queryClient,
+      payload.appType,
+      payload.providerId,
+    );
+    shouldNotify =
+      provider?.meta?.upstreamAdmissionRetry?.notifyOnSuccess === true;
+  }
+  if (!shouldNotify) {
+    return;
+  }
+  if (!claimAdmissionRetryNotification(payload)) {
     return;
   }
 
-  playAdmissionRetrySuccessTone();
   const retrySuffix =
     payload.retryCount > 0 ? `，累计重试 ${payload.retryCount} 次` : "";
   toast.success(`${APP_LABELS[payload.appType]} 入场成功`, {
@@ -148,6 +186,23 @@ async function maybeNotifyAdmissionRetrySuccess(
     duration: 6000,
     description: `${payload.providerName} 已成功进入上游${retrySuffix}。现在可以回到对应 CLI 继续会话。`,
   });
+  void playAdmissionRetrySuccessTone();
+}
+
+async function notifyAdmissionRetrySnapshot(queryClient: QueryClient) {
+  try {
+    const snapshot = await proxyApi.getProviderAdmissionRetrySnapshot();
+    for (const payload of snapshot) {
+      // Only admitted snapshots can produce a success notification. The live
+      // listener continues to own retry-progress UI state elsewhere.
+      if (payload.event === "admitted") {
+        void maybeNotifyAdmissionRetrySuccess(queryClient, payload);
+      }
+    }
+  } catch {
+    // The snapshot command is unavailable in a renderer-only/test runtime;
+    // live events remain the primary notification path.
+  }
 }
 
 /**
@@ -161,6 +216,14 @@ export function useProxyActivityBridge() {
   useEffect(() => {
     let unlisteners: UnlistenFn[] = [];
     let disposed = false;
+
+    // WebView follows browser autoplay rules. Prime/resume the AudioContext on
+    // a real user gesture so a later background admission event can make sound.
+    const unlockAudio = () => {
+      void ensureAdmissionRetryAudioReady();
+    };
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+    window.addEventListener("keydown", unlockAudio);
 
     (async () => {
       const [activityOff, admissionRetryOff] = await Promise.all([
@@ -235,12 +298,18 @@ export function useProxyActivityBridge() {
         admissionRetryOff();
       } else {
         unlisteners = [activityOff, admissionRetryOff];
+        // A success event can happen between app startup and the async
+        // listener registration. Recover an admitted event that is still in
+        // the backend activity snapshot so the notification is not lost.
+        void notifyAdmissionRetrySnapshot(queryClient);
       }
     })();
 
     return () => {
       disposed = true;
       unlisteners.forEach((off) => off());
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
     };
   }, [queryClient]);
 }

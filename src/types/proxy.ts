@@ -94,6 +94,7 @@ export interface ProviderAdmissionRetryEvent {
   delayMs: number;
   status?: number | null;
   error?: string | null;
+  notifyOnSuccess?: boolean;
   updatedAt: string;
 }
 

@@ -1177,6 +1177,7 @@ mod tests {
             delay_ms: 300,
             status: Some(429),
             error: Some("上游 HTTP 429: capacity".to_string()),
+            notify_on_success: false,
             updated_at: now.to_rfc3339(),
         });
         state.record_admission_retry(ProviderAdmissionRetryEvent {
@@ -1189,6 +1190,7 @@ mod tests {
             delay_ms: 300,
             status: Some(429),
             error: Some("上游 HTTP 429: capacity".to_string()),
+            notify_on_success: false,
             updated_at: (now + chrono::Duration::seconds(1)).to_rfc3339(),
         });
 

@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This local integration release merges upstream v3.16.5 while preserving the customized provider/configuration ownership model, proxy routing, admission retry, and session-routing behavior.
 
+### Added
+
+- **Controlled Codex Error Response Replay**: Codex providers can opt into same-provider replay for HTTP 429 and configurable response-error rules. Status codes, endpoint paths, and case-insensitive keyword groups are editable per provider; terms within a group use AND semantics, groups use OR semantics, and `*` is an explicit endpoint/body wildcard. Defaults cover the known `/responses` HTTP 400 `bad_response_status_code` and distinctive `new_api_error` JSON-parse signatures, but the matcher itself reads the saved variables rather than fixed phrases. The policy is disabled by default, bounded to 0-10 additional sends, supports capped `Retry-After`, delay, and jitter controls, and excludes permanent quota, authentication, billing, and model errors. Successful requests stay on the existing fast path without response-body inspection or added scheduling.
+
 ### Fixed
 
+- **Admission Retry Success Notifications**: Success events now carry the provider's notification setting before the backend automatically closes admission retry, so stale frontend provider state cannot suppress the bottom-right toast. The renderer also recovers admitted events from the backend activity snapshot after listener startup, primes and resumes Web Audio on user interaction, supports WebKit's AudioContext fallback, and deduplicates both the toast and tone per request.
 - **Proxy Shutdown and Client-Lifecycle Cancellation**: Stopping the local proxy now cancels both in-flight upstream attempts and admission-retry waits before another request can be sent. The shutdown signal is race-safe, automatic retry state is cleared on exit, and a disconnected Claude/Codex client no longer leaves its retry loop replaying upstream requests.
 - **Codex Request Model Preservation**: When request-model mapping is disabled or has no matching route, the model selected by Codex CLI is preserved instead of falling back to a provider `ANTHROPIC_MODEL` or `config.toml` default. Saved route data remains intact while disabled, local catalog routing obeys its own switch, and Chat providers use their configured model only when the request omits `model`.
 - **Per-Provider Failover Mapping Isolation**: Every failover provider now derives its outbound model from the original client body, preventing the first provider's catalog/route transformation from leaking into later attempts.

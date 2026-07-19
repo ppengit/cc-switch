@@ -3503,7 +3503,13 @@ command = "legacy-cmd"
     #[serial]
     fn admission_retry_service_toggle_preserves_config_when_disabling() {
         with_test_home(|state, _| {
-            let provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            let mut provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            provider
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.upstream_admission_retry.as_mut())
+                .expect("retry config")
+                .notify_on_success = true;
             state
                 .db
                 .save_provider(AppType::Claude.as_str(), &provider)
@@ -3529,6 +3535,7 @@ command = "legacy-cmd"
                 .expect("retry config should remain present");
 
             assert!(!retry_config.enabled);
+            assert!(retry_config.notify_on_success);
             assert_eq!(retry_config.max_retries, Some(9));
             assert_eq!(retry_config.initial_delay_ms, Some(250));
         });
@@ -3538,7 +3545,13 @@ command = "legacy-cmd"
     #[serial]
     fn admission_retry_disable_if_enabled_is_idempotent() {
         with_test_home(|state, _| {
-            let provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            let mut provider = claude_provider_with_admission_retry("claude-a", true, Some(9));
+            provider
+                .meta
+                .as_mut()
+                .and_then(|meta| meta.upstream_admission_retry.as_mut())
+                .expect("retry config")
+                .notify_on_success = true;
             state
                 .db
                 .save_provider(AppType::Claude.as_str(), &provider)
@@ -3571,6 +3584,7 @@ command = "legacy-cmd"
                 .expect("retry config should remain present");
 
             assert!(!retry_config.enabled);
+            assert!(retry_config.notify_on_success);
             assert_eq!(retry_config.max_retries, Some(9));
             assert_eq!(retry_config.initial_delay_ms, Some(250));
         });

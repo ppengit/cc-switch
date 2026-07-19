@@ -6,6 +6,7 @@ import {
   Coins,
   DoorOpen,
   FlaskConical,
+  RefreshCw,
   Route,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -20,9 +21,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_RESPONSE_REPLAY_MATCH_ENDPOINTS,
+  DEFAULT_RESPONSE_REPLAY_MATCH_KEYWORD_GROUPS,
+  DEFAULT_RESPONSE_REPLAY_MATCH_STATUSES,
+  formatResponseReplayEndpoints,
+  formatResponseReplayKeywordGroups,
+  formatResponseReplayStatuses,
+  parseResponseReplayEndpoints,
+  parseResponseReplayKeywordGroups,
+  parseResponseReplayStatuses,
+  responseReplayEditorConfig,
+} from "@/lib/responseReplay";
 import type {
   ProviderTestConfig,
   ProviderUpstreamAdmissionRetry,
+  ProviderUpstreamResponseReplay,
 } from "@/types";
 
 export type PricingModelSourceOption = "inherit" | "request" | "response";
@@ -35,9 +49,14 @@ interface ProviderPricingConfig {
 
 interface ProviderRoutingRetryConfigProps {
   admissionRetryConfig: ProviderUpstreamAdmissionRetry;
+  responseReplayConfig: ProviderUpstreamResponseReplay;
+  showResponseReplay?: boolean;
   maxConcurrentRequests?: number;
   onAdmissionRetryConfigChange: (
     config: ProviderUpstreamAdmissionRetry,
+  ) => void;
+  onResponseReplayConfigChange: (
+    config: ProviderUpstreamResponseReplay,
   ) => void;
   onMaxConcurrentRequestsChange: (value?: number) => void;
 }
@@ -51,8 +70,11 @@ interface ProviderAdvancedConfigProps {
 
 export function ProviderRoutingRetryConfig({
   admissionRetryConfig,
+  responseReplayConfig,
+  showResponseReplay = false,
   maxConcurrentRequests,
   onAdmissionRetryConfigChange,
+  onResponseReplayConfigChange,
   onMaxConcurrentRequestsChange,
 }: ProviderRoutingRetryConfigProps) {
   const { t } = useTranslation();
@@ -75,6 +97,22 @@ export function ProviderRoutingRetryConfig({
   const [isSessionRoutingConfigOpen, setIsSessionRoutingConfigOpen] = useState(
     maxConcurrentRequests !== undefined,
   );
+  const hasResponseReplayConfig =
+    responseReplayConfig.enabled === true ||
+    responseReplayConfig.retryHttp429 === false ||
+    responseReplayConfig.retryCodexConfiguredErrors === false ||
+    responseReplayConfig.retryCodexBadResponse400 === false ||
+    responseReplayConfig.codexMatchStatuses !== undefined ||
+    responseReplayConfig.codexMatchEndpoints !== undefined ||
+    responseReplayConfig.codexMatchKeywordGroups !== undefined ||
+    responseReplayConfig.maxRetries !== undefined ||
+    responseReplayConfig.initialDelayMs !== undefined ||
+    responseReplayConfig.maxDelayMs !== undefined ||
+    responseReplayConfig.jitterMs !== undefined ||
+    responseReplayConfig.honorRetryAfter === false;
+  const [isResponseReplayOpen, setIsResponseReplayOpen] = useState(
+    hasResponseReplayConfig,
+  );
 
   useEffect(() => {
     setIsAdmissionRetryOpen(
@@ -95,6 +133,10 @@ export function ProviderRoutingRetryConfig({
       setIsSessionRoutingConfigOpen(true);
     }
   }, [maxConcurrentRequests]);
+
+  useEffect(() => {
+    if (hasResponseReplayConfig) setIsResponseReplayOpen(true);
+  }, [hasResponseReplayConfig]);
 
   return (
     <div className="space-y-4">
@@ -477,6 +519,365 @@ export function ProviderRoutingRetryConfig({
           </div>
         </div>
       </div>
+
+      {showResponseReplay && (
+        <div className="rounded-lg border border-border/50 bg-muted/20">
+          <div
+            role="button"
+            tabIndex={0}
+            className="flex w-full cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+            onClick={() => setIsResponseReplayOpen((current) => !current)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setIsResponseReplayOpen((current) => !current);
+              }
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <RefreshCw className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">
+                {t("providerAdvanced.responseReplayConfig", {
+                  defaultValue: "错误响应重放",
+                })}
+              </span>
+            </div>
+            {isResponseReplayOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+          <div
+            className={cn(
+              "overflow-hidden transition-all duration-200",
+              isResponseReplayOpen
+                ? "max-h-[1600px] opacity-100"
+                : "max-h-0 opacity-0",
+            )}
+          >
+            <div className="space-y-4 border-t border-border/50 p-4">
+              <p className="text-sm text-muted-foreground">
+                {t("providerAdvanced.responseReplayConfigDesc", {
+                  defaultValue:
+                    "仅在上游已经返回选定的瞬时错误、且尚未向 Codex CLI 返回响应时，重放同一请求。正常成功请求不增加等待或响应体检查。",
+                })}
+              </p>
+
+              <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="space-y-1">
+                  <Label htmlFor="response-replay-enabled">
+                    {t("providerAdvanced.responseReplayEnabled", {
+                      defaultValue: "启用错误响应重放",
+                    })}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.responseReplayEnabledHint", {
+                      defaultValue:
+                        "开关关闭时完全保持原有返回流程；开启后，重放耗尽才把最后错误交回故障转移或客户端。",
+                    })}
+                  </p>
+                </div>
+                <Switch
+                  id="response-replay-enabled"
+                  checked={responseReplayConfig.enabled === true}
+                  onCheckedChange={(checked) =>
+                    onResponseReplayConfigChange({
+                      ...(checked
+                        ? responseReplayEditorConfig(responseReplayConfig)
+                        : responseReplayConfig),
+                      enabled: checked,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-3 rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="response-replay-http-429">
+                      {t("providerAdvanced.responseReplayHttp429", {
+                        defaultValue: "重放 HTTP 429",
+                      })}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      {t("providerAdvanced.responseReplayHttp429Hint", {
+                        defaultValue:
+                          "Too Many Requests 会重放；明确的余额、永久配额或鉴权错误仍直接返回。",
+                      })}
+                    </p>
+                  </div>
+                  <Switch
+                    id="response-replay-http-429"
+                    checked={responseReplayConfig.retryHttp429 !== false}
+                    onCheckedChange={(checked) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        retryHttp429: checked,
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 border-t border-border/40 pt-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="response-replay-codex-matcher">
+                      {t("providerAdvanced.responseReplayCodexMatcher", {
+                        defaultValue: "启用自定义 Codex 错误匹配",
+                      })}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      {t("providerAdvanced.responseReplayCodexMatcherHint", {
+                        defaultValue:
+                          "状态码、端点和关键词组全部满足时才重放；每组关键词为 AND，多组之间为 OR。永久配额、鉴权和计费错误仍不会重放。",
+                      })}
+                    </p>
+                  </div>
+                  <Switch
+                    id="response-replay-codex-matcher"
+                    checked={
+                      responseReplayConfig.retryCodexConfiguredErrors ??
+                      responseReplayConfig.retryCodexBadResponse400 ??
+                      true
+                    }
+                    onCheckedChange={(checked) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        retryCodexConfiguredErrors: checked,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-match-statuses">
+                    {t("providerAdvanced.responseReplayMatchStatuses", {
+                      defaultValue: "匹配状态码",
+                    })}
+                  </Label>
+                  <Input
+                    id="response-replay-match-statuses"
+                    value={formatResponseReplayStatuses(
+                      responseReplayConfig.codexMatchStatuses ??
+                        DEFAULT_RESPONSE_REPLAY_MATCH_STATUSES,
+                    )}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        codexMatchStatuses: parseResponseReplayStatuses(
+                          event.target.value,
+                        ),
+                      })
+                    }
+                    placeholder="400, 409"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.responseReplayMatchStatusesHint", {
+                      defaultValue:
+                        "用逗号、空格或分号分隔，支持 400-599；清空后不匹配状态码。",
+                    })}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-match-endpoints">
+                    {t("providerAdvanced.responseReplayMatchEndpoints", {
+                      defaultValue: "匹配端点",
+                    })}
+                  </Label>
+                  <Textarea
+                    id="response-replay-match-endpoints"
+                    rows={3}
+                    value={formatResponseReplayEndpoints(
+                      responseReplayConfig.codexMatchEndpoints ??
+                        DEFAULT_RESPONSE_REPLAY_MATCH_ENDPOINTS,
+                    )}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        codexMatchEndpoints: parseResponseReplayEndpoints(
+                          event.target.value,
+                        ),
+                      })
+                    }
+                    placeholder="/responses"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.responseReplayMatchEndpointsHint", {
+                      defaultValue:
+                        "每行一个路径；会自动忽略查询串并兼容 /v1 前缀。填写 * 可匹配任意端点。",
+                    })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="response-replay-match-keywords">
+                  {t("providerAdvanced.responseReplayMatchKeywords", {
+                    defaultValue: "匹配关键词组",
+                  })}
+                </Label>
+                <Textarea
+                  id="response-replay-match-keywords"
+                  rows={5}
+                  value={formatResponseReplayKeywordGroups(
+                    responseReplayConfig.codexMatchKeywordGroups ??
+                      DEFAULT_RESPONSE_REPLAY_MATCH_KEYWORD_GROUPS,
+                  )}
+                  onChange={(event) =>
+                    onResponseReplayConfigChange({
+                      ...responseReplayConfig,
+                      codexMatchKeywordGroups: parseResponseReplayKeywordGroups(
+                        event.target.value,
+                      ),
+                    })
+                  }
+                  placeholder={
+                    "bad_response_status_code\nnew_api_error && invalid character"
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.responseReplayMatchKeywordsHint", {
+                    defaultValue:
+                      "每行是一组 OR 条件，组内用 && 表示 AND；关键词不区分大小写，* 表示任意正文。清空可关闭这类匹配。",
+                  })}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-max-retries">
+                    {t("providerAdvanced.responseReplayMaxRetries", {
+                      defaultValue: "最大重放次数",
+                    })}
+                  </Label>
+                  <Input
+                    id="response-replay-max-retries"
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={responseReplayConfig.maxRetries ?? ""}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        maxRetries: event.target.value
+                          ? parseInt(event.target.value, 10)
+                          : undefined,
+                      })
+                    }
+                    placeholder="2"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.responseReplayMaxRetriesHint", {
+                      defaultValue: "额外重发次数，范围 0-10；0 表示不重放。",
+                    })}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-initial-delay">
+                    {t("providerAdvanced.responseReplayInitialDelay", {
+                      defaultValue: "重放等待（毫秒）",
+                    })}
+                  </Label>
+                  <Input
+                    id="response-replay-initial-delay"
+                    type="number"
+                    min={0}
+                    max={60000}
+                    value={responseReplayConfig.initialDelayMs ?? ""}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        initialDelayMs: event.target.value
+                          ? parseInt(event.target.value, 10)
+                          : undefined,
+                      })
+                    }
+                    placeholder="250"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-max-delay">
+                    {t("providerAdvanced.responseReplayMaxDelay", {
+                      defaultValue: "最大等待（毫秒）",
+                    })}
+                  </Label>
+                  <Input
+                    id="response-replay-max-delay"
+                    type="number"
+                    min={0}
+                    max={60000}
+                    value={responseReplayConfig.maxDelayMs ?? ""}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        maxDelayMs: event.target.value
+                          ? parseInt(event.target.value, 10)
+                          : undefined,
+                      })
+                    }
+                    placeholder="5000"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="response-replay-jitter">
+                    {t("providerAdvanced.responseReplayJitter", {
+                      defaultValue: "随机抖动（毫秒）",
+                    })}
+                  </Label>
+                  <Input
+                    id="response-replay-jitter"
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={responseReplayConfig.jitterMs ?? ""}
+                    onChange={(event) =>
+                      onResponseReplayConfigChange({
+                        ...responseReplayConfig,
+                        jitterMs: event.target.value
+                          ? parseInt(event.target.value, 10)
+                          : undefined,
+                      })
+                    }
+                    placeholder="100"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="space-y-1">
+                  <Label htmlFor="response-replay-retry-after">
+                    {t("providerAdvanced.responseReplayHonorRetryAfter", {
+                      defaultValue: "遵循 Retry-After",
+                    })}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerAdvanced.responseReplayHonorRetryAfterHint", {
+                      defaultValue:
+                        "上游提供 Retry-After 时优先使用，但不会超过最大等待。",
+                    })}
+                  </p>
+                </div>
+                <Switch
+                  id="response-replay-retry-after"
+                  checked={responseReplayConfig.honorRetryAfter !== false}
+                  onCheckedChange={(checked) =>
+                    onResponseReplayConfigChange({
+                      ...responseReplayConfig,
+                      honorRetryAfter: checked,
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

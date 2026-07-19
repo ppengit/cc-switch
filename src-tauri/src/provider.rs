@@ -498,6 +498,136 @@ pub struct UpstreamAdmissionRetryConfig {
     pub jitter_ms: Option<u64>,
 }
 
+/// Per-provider replay policy for transient HTTP error responses.
+///
+/// This is deliberately separate from admission retry. Admission retry is a
+/// provider-capacity mode, while response replay is an opt-in rescue for a
+/// small, explicitly selected set of responses that can make a CLI session
+/// stop even though the request itself is valid.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamResponseReplayConfig {
+    /// Master switch. Disabled by default so existing providers keep exactly
+    /// the previous one-attempt behavior.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Replay HTTP 429 responses unless the body clearly signals a permanent
+    /// quota/authentication failure.
+    #[serde(rename = "retryHttp429", default = "default_true")]
+    pub retry_http_429: bool,
+    /// Enable the configurable Codex response matcher. The default variables
+    /// cover the known transient `/responses` 400 signatures, but users may
+    /// replace the status, endpoint, and keyword groups per provider.
+    /// `retryCodexBadResponse400` remains an input alias for older local data.
+    #[serde(
+        rename = "retryCodexConfiguredErrors",
+        alias = "retryCodexBadResponse400",
+        default = "default_true"
+    )]
+    pub retry_codex_configured_errors: bool,
+    /// HTTP statuses considered by the configurable Codex matcher.
+    #[serde(
+        rename = "codexMatchStatuses",
+        default = "default_response_replay_codex_match_statuses"
+    )]
+    pub codex_match_statuses: Vec<u16>,
+    /// Endpoint paths considered by the configurable Codex matcher. `*` is
+    /// accepted as an explicit wildcard; otherwise paths are normalized before
+    /// exact comparison.
+    #[serde(
+        rename = "codexMatchEndpoints",
+        default = "default_response_replay_codex_match_endpoints"
+    )]
+    pub codex_match_endpoints: Vec<String>,
+    /// Each inner list is an AND group; any matching group enables replay.
+    /// Terms are case-insensitive substrings of the upstream error body.
+    #[serde(
+        rename = "codexMatchKeywordGroups",
+        default = "default_response_replay_codex_match_keyword_groups"
+    )]
+    pub codex_match_keyword_groups: Vec<Vec<String>>,
+    /// Number of additional sends after the first failed response. Zero means
+    /// no replay (it never means unlimited for this safety-sensitive feature).
+    #[serde(rename = "maxRetries", default = "default_response_replay_max_retries")]
+    pub max_retries: u32,
+    /// Base wait after a failed response before the next send.
+    #[serde(
+        rename = "initialDelayMs",
+        default = "default_response_replay_initial_delay_ms"
+    )]
+    pub initial_delay_ms: u64,
+    /// Upper bound for the wait, including a received Retry-After value.
+    #[serde(
+        rename = "maxDelayMs",
+        default = "default_response_replay_max_delay_ms"
+    )]
+    pub max_delay_ms: u64,
+    /// Random extra wait used to avoid synchronized retries.
+    #[serde(rename = "jitterMs", default = "default_response_replay_jitter_ms")]
+    pub jitter_ms: u64,
+    /// Whether a valid upstream Retry-After header should override the base
+    /// delay (still capped by max_delay_ms).
+    #[serde(rename = "honorRetryAfter", default = "default_true")]
+    pub honor_retry_after: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_response_replay_max_retries() -> u32 {
+    2
+}
+
+fn default_response_replay_initial_delay_ms() -> u64 {
+    250
+}
+
+fn default_response_replay_max_delay_ms() -> u64 {
+    5_000
+}
+
+fn default_response_replay_jitter_ms() -> u64 {
+    100
+}
+
+fn default_response_replay_codex_match_statuses() -> Vec<u16> {
+    vec![400]
+}
+
+fn default_response_replay_codex_match_endpoints() -> Vec<String> {
+    vec!["/responses".to_string()]
+}
+
+fn default_response_replay_codex_match_keyword_groups() -> Vec<Vec<String>> {
+    vec![
+        vec!["bad_response_status_code".to_string()],
+        vec![
+            "new_api_error".to_string(),
+            "invalid character".to_string(),
+            "looking for beginning of value".to_string(),
+        ],
+    ]
+}
+
+impl Default for UpstreamResponseReplayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retry_http_429: true,
+            retry_codex_configured_errors: true,
+            codex_match_statuses: default_response_replay_codex_match_statuses(),
+            codex_match_endpoints: default_response_replay_codex_match_endpoints(),
+            codex_match_keyword_groups: default_response_replay_codex_match_keyword_groups(),
+            max_retries: default_response_replay_max_retries(),
+            initial_delay_ms: default_response_replay_initial_delay_ms(),
+            max_delay_ms: default_response_replay_max_delay_ms(),
+            jitter_ms: default_response_replay_jitter_ms(),
+            honor_retry_after: true,
+        }
+    }
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -613,6 +743,12 @@ pub struct ProviderMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub upstream_admission_retry: Option<UpstreamAdmissionRetryConfig>,
+    /// 同一供应商的瞬时错误响应重放配置（Codex 429 / 特定 400）。
+    #[serde(
+        rename = "upstreamResponseReplay",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub upstream_response_replay: Option<UpstreamResponseReplayConfig>,
     /// 会话路由下该供应商最多承载的会话/请求槽位数；None 或 0 表示无限制。
     #[serde(
         rename = "maxConcurrentRequests",
@@ -1169,7 +1305,7 @@ mod tests {
         ClaudeModelConfig, CodexModelConfig, CodexModelRoute, GeminiModelConfig,
         LocalProxyRequestOverrides, OpenCodeProviderConfig, Provider, ProviderManager,
         ProviderMeta, UniversalProvider, UpstreamAdmissionRetryConfig,
-        UpstreamAdmissionRetryScheduleMode,
+        UpstreamAdmissionRetryScheduleMode, UpstreamResponseReplayConfig,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1306,6 +1442,134 @@ mod tests {
         assert_eq!(retry.initial_delay_ms, Some(500));
         assert_eq!(retry.max_delay_ms, Some(3000));
         assert_eq!(retry.jitter_ms, Some(250));
+    }
+
+    #[test]
+    fn provider_meta_roundtrips_upstream_response_replay() {
+        let meta = ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: true,
+                retry_http_429: true,
+                retry_codex_configured_errors: true,
+                codex_match_statuses: vec![400, 409],
+                codex_match_endpoints: vec!["/responses".to_string()],
+                codex_match_keyword_groups: vec![
+                    vec!["bad_response_status_code".to_string()],
+                    vec!["provider_busy".to_string(), "try again".to_string()],
+                ],
+                max_retries: 3,
+                initial_delay_ms: 150,
+                max_delay_ms: 4_000,
+                jitter_ms: 75,
+                honor_retry_after: false,
+            }),
+            ..ProviderMeta::default()
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize ProviderMeta");
+        assert_eq!(value["upstreamResponseReplay"]["enabled"], true);
+        assert_eq!(value["upstreamResponseReplay"]["retryHttp429"], true);
+        assert_eq!(
+            value["upstreamResponseReplay"]["retryCodexConfiguredErrors"],
+            true
+        );
+        assert_eq!(value["upstreamResponseReplay"]["maxRetries"], 3);
+        assert_eq!(
+            value["upstreamResponseReplay"]["codexMatchStatuses"],
+            json!([400, 409])
+        );
+        assert_eq!(
+            value["upstreamResponseReplay"]["codexMatchEndpoints"],
+            json!(["/responses"])
+        );
+        assert_eq!(
+            value["upstreamResponseReplay"]["codexMatchKeywordGroups"],
+            json!([["bad_response_status_code"], ["provider_busy", "try again"]])
+        );
+        assert_eq!(value["upstreamResponseReplay"]["initialDelayMs"], 150);
+        assert_eq!(value["upstreamResponseReplay"]["maxDelayMs"], 4_000);
+        assert_eq!(value["upstreamResponseReplay"]["jitterMs"], 75);
+        assert_eq!(value["upstreamResponseReplay"]["honorRetryAfter"], false);
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(value).expect("deserialize ProviderMeta");
+        let replay = decoded
+            .upstream_response_replay
+            .expect("response replay config");
+        assert!(replay.enabled);
+        assert!(replay.retry_http_429);
+        assert!(replay.retry_codex_configured_errors);
+        assert_eq!(replay.codex_match_statuses, vec![400, 409]);
+        assert_eq!(replay.codex_match_endpoints, vec!["/responses"]);
+        assert_eq!(
+            replay.codex_match_keyword_groups,
+            vec![
+                vec!["bad_response_status_code".to_string()],
+                vec!["provider_busy".to_string(), "try again".to_string()]
+            ]
+        );
+        assert_eq!(replay.max_retries, 3);
+        assert_eq!(replay.initial_delay_ms, 150);
+        assert_eq!(replay.max_delay_ms, 4_000);
+        assert_eq!(replay.jitter_ms, 75);
+        assert!(!replay.honor_retry_after);
+    }
+
+    #[test]
+    fn response_replay_preserves_explicit_empty_matchers_and_legacy_toggle_alias() {
+        let value = json!({
+            "upstreamResponseReplay": {
+                "enabled": true,
+                "retryCodexBadResponse400": false,
+                "codexMatchStatuses": [],
+                "codexMatchEndpoints": [],
+                "codexMatchKeywordGroups": []
+            }
+        });
+
+        let decoded: ProviderMeta =
+            serde_json::from_value(value).expect("deserialize legacy response replay config");
+        let replay = decoded
+            .upstream_response_replay
+            .as_ref()
+            .expect("response replay config");
+        assert!(!replay.retry_codex_configured_errors);
+        assert!(replay.codex_match_statuses.is_empty());
+        assert!(replay.codex_match_endpoints.is_empty());
+        assert!(replay.codex_match_keyword_groups.is_empty());
+
+        let serialized = serde_json::to_value(decoded).expect("serialize response replay config");
+        let replay = &serialized["upstreamResponseReplay"];
+        assert_eq!(replay["retryCodexConfiguredErrors"], false);
+        assert!(replay.get("retryCodexBadResponse400").is_none());
+        assert_eq!(replay["codexMatchStatuses"], json!([]));
+        assert_eq!(replay["codexMatchEndpoints"], json!([]));
+        assert_eq!(replay["codexMatchKeywordGroups"], json!([]));
+    }
+
+    #[test]
+    fn response_replay_uses_safe_matcher_defaults_when_variables_are_omitted() {
+        let decoded: ProviderMeta = serde_json::from_value(json!({
+            "upstreamResponseReplay": { "enabled": true }
+        }))
+        .expect("deserialize response replay defaults");
+        let replay = decoded
+            .upstream_response_replay
+            .expect("response replay config");
+
+        assert_eq!(replay.codex_match_statuses, vec![400]);
+        assert_eq!(replay.codex_match_endpoints, vec!["/responses"]);
+        assert_eq!(
+            replay.codex_match_keyword_groups,
+            vec![
+                vec!["bad_response_status_code".to_string()],
+                vec![
+                    "new_api_error".to_string(),
+                    "invalid character".to_string(),
+                    "looking for beginning of value".to_string()
+                ]
+            ]
+        );
     }
 
     #[test]

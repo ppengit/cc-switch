@@ -447,6 +447,68 @@ describe("ProviderForm edit mode", () => {
       maxDelayMs: 45000,
     });
   });
+
+  it("saves Codex transient response replay rules and timing", async () => {
+    const { onSubmit } = renderCodexProviderForm();
+
+    fireEvent.click(screen.getByText("错误响应重放"));
+    fireEvent.click(screen.getByRole("switch", { name: "启用错误响应重放" }));
+    fireEvent.change(screen.getByLabelText("最大重放次数"), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByLabelText("重放等待（毫秒）"), {
+      target: { value: "150" },
+    });
+    fireEvent.change(screen.getByLabelText("匹配状态码"), {
+      target: { value: "400, 409" },
+    });
+    fireEvent.change(screen.getByLabelText("匹配端点"), {
+      target: { value: "/responses\n/responses/compact" },
+    });
+    fireEvent.change(screen.getByLabelText("匹配关键词组"), {
+      target: {
+        value: "provider_busy && please retry\ninvalid character",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].meta?.upstreamResponseReplay).toEqual({
+      enabled: true,
+      retryHttp429: true,
+      retryCodexConfiguredErrors: true,
+      codexMatchStatuses: [400, 409],
+      codexMatchEndpoints: ["/responses", "/responses/compact"],
+      codexMatchKeywordGroups: [
+        ["provider_busy", "please retry"],
+        ["invalid character"],
+      ],
+      maxRetries: 3,
+      initialDelayMs: 150,
+      maxDelayMs: 5000,
+      jitterMs: 100,
+      honorRetryAfter: true,
+    });
+  });
+
+  it("preserves an explicitly empty Codex matcher variable", async () => {
+    const { onSubmit } = renderCodexProviderForm();
+
+    fireEvent.click(screen.getByText("错误响应重放"));
+    fireEvent.click(screen.getByRole("switch", { name: "启用错误响应重放" }));
+    fireEvent.change(screen.getByLabelText("匹配状态码"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(
+      onSubmit.mock.calls[0][0].meta?.upstreamResponseReplay,
+    ).toMatchObject({
+      enabled: true,
+      codexMatchStatuses: [],
+    });
+  });
 });
 
 describe("ProviderForm create mode", () => {

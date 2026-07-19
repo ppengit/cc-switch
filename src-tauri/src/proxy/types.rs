@@ -176,6 +176,11 @@ pub struct ProviderAdmissionRetryEvent {
     pub delay_ms: u64,
     pub status: Option<u16>,
     pub error: Option<String>,
+    /// Whether the provider had success notification enabled when this event
+    /// was produced. Carrying the snapshot avoids a frontend cache race after
+    /// the backend automatically disables the admission switch.
+    #[serde(default)]
+    pub notify_on_success: bool,
     pub updated_at: String,
 }
 

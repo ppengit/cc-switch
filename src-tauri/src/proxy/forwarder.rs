@@ -347,10 +347,7 @@ impl RequestForwarder {
         }
     }
 
-    async fn wait_admission_retry_delay_or_shutdown(
-        &self,
-        delay_ms: u64,
-    ) -> Result<(), ProxyError> {
+    async fn wait_retry_delay_or_shutdown(&self, delay_ms: u64) -> Result<(), ProxyError> {
         let shutdown_notified = self.shutdown_notify.notified();
         tokio::pin!(shutdown_notified);
         shutdown_notified.as_mut().enable();
@@ -1479,6 +1476,7 @@ impl RequestForwarder {
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
         let mut retries_used = 0u32;
+        let mut response_replays_used = 0u32;
         let mut auto_admission_retry_opened = false;
         loop {
             if self.proxy_shutdown_requested() {
@@ -1526,6 +1524,83 @@ impl RequestForwarder {
                         .elapsed()
                         .as_millis()
                         .min(u64::MAX as u128) as u64;
+
+                    // Response replay is deliberately evaluated only after a
+                    // complete non-2xx response has been received. The normal
+                    // success path does no body inspection or extra scheduling.
+                    if let Some(response_policy) =
+                        self.current_response_replay_policy(app_type, provider)
+                    {
+                        if let Some(response_kind) =
+                            response_policy.match_error(app_type, endpoint, &error)
+                        {
+                            if response_policy.retry_limit_reached(response_replays_used) {
+                                log::warn!(
+                                    "[{}] 错误响应重放达到上限，交回原有错误流程: provider={}, kind={}, retries={}, error={}",
+                                    app_type.as_str(),
+                                    provider.name,
+                                    response_kind.as_str(),
+                                    response_replays_used,
+                                    summarize_proxy_error(&error)
+                                );
+                                if auto_admission_retry_opened {
+                                    self.disable_auto_admission_retry_after_exit(
+                                        app_type, provider,
+                                    );
+                                }
+                                return Err(AdmissionRetryForwardError::Normal(error));
+                            }
+
+                            response_replays_used = response_replays_used.saturating_add(1);
+                            let delay_ms = response_policy.delay_ms(
+                                response_replays_used,
+                                proxy_error_retry_after_ms(&error),
+                            );
+                            log::warn!(
+                                "[{}] 命中错误响应重放规则，重发同一 Provider: provider={}, kind={}, retry={}/{}, wait_ms={}, error={}",
+                                app_type.as_str(),
+                                provider.name,
+                                response_kind.as_str(),
+                                response_replays_used,
+                                response_policy.max_retries,
+                                delay_ms,
+                                summarize_proxy_error(&error)
+                            );
+                            if delay_ms > 0 {
+                                if let Err(shutdown_error) =
+                                    self.wait_retry_delay_or_shutdown(delay_ms).await
+                                {
+                                    if auto_admission_retry_opened {
+                                        self.disable_auto_admission_retry_after_exit(
+                                            app_type, provider,
+                                        );
+                                    }
+                                    return Err(AdmissionRetryForwardError::Neutral(
+                                        shutdown_error,
+                                    ));
+                                }
+                            }
+                            // Re-read the policy after the delay so disabling or
+                            // editing the matcher while a replay is waiting
+                            // cannot cause an unexpected extra upstream send.
+                            let still_matches = self
+                                .current_response_replay_policy(app_type, provider)
+                                .map(|policy| {
+                                    policy.match_error(app_type, endpoint, &error).is_some()
+                                })
+                                .unwrap_or(false);
+                            if !still_matches {
+                                if auto_admission_retry_opened {
+                                    self.disable_auto_admission_retry_after_exit(
+                                        app_type, provider,
+                                    );
+                                }
+                                return Err(AdmissionRetryForwardError::Normal(error));
+                            }
+                            continue;
+                        }
+                    }
+
                     let category = self.categorize_proxy_error(app_type, endpoint, &error);
                     let admission_retryable = should_retry_provider_admission(category, &error);
                     let mut policy = self.current_admission_retry_policy(app_type, provider);
@@ -1648,9 +1723,8 @@ impl RequestForwarder {
                     )
                     .await;
                     if delay_plan.sleep_ms > 0 {
-                        if let Err(shutdown_error) = self
-                            .wait_admission_retry_delay_or_shutdown(delay_plan.sleep_ms)
-                            .await
+                        if let Err(shutdown_error) =
+                            self.wait_retry_delay_or_shutdown(delay_plan.sleep_ms).await
                         {
                             self.emit_admission_retry_event(
                                 app_type,
@@ -1783,6 +1857,16 @@ impl RequestForwarder {
         AdmissionRetryPolicy::from_provider(provider)
     }
 
+    fn current_response_replay_policy(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Option<ResponseReplayPolicy> {
+        let latest = self.latest_provider_for_policy(app_type, provider);
+        let policy_source = latest.as_ref().unwrap_or(provider);
+        ResponseReplayPolicy::from_provider(policy_source)
+    }
+
     fn try_auto_enable_admission_retry(
         &self,
         app_type: &AppType,
@@ -1842,7 +1926,7 @@ impl RequestForwarder {
             Ok(latest) => latest,
             Err(error) => {
                 log::warn!(
-                    "[{}] 读取 Provider 入场重试自动开关失败，使用请求开始时快照: provider={}, error={}",
+                    "[{}] 读取 Provider 最新重试配置失败，使用请求开始时快照: provider={}, error={}",
                     app_type.as_str(),
                     provider.id,
                     error
@@ -1862,6 +1946,14 @@ impl RequestForwarder {
         error: Option<&ProxyError>,
         event: &str,
     ) {
+        let notify_on_success = self
+            .latest_provider_for_policy(app_type, provider)
+            .as_ref()
+            .or(Some(provider))
+            .and_then(|current| current.meta.as_ref())
+            .and_then(|meta| meta.upstream_admission_retry.as_ref())
+            .map(|config| config.notify_on_success)
+            .unwrap_or(false);
         let payload = ProviderAdmissionRetryEvent {
             request_id: self.request_id.clone(),
             event: event.to_string(),
@@ -1872,8 +1964,19 @@ impl RequestForwarder {
             delay_ms,
             status: status.or_else(|| error.and_then(proxy_error_status)),
             error: error.map(summarize_proxy_error),
+            notify_on_success,
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
+
+        if event == "admitted" {
+            log::info!(
+                "[{}] 已发出上游入场成功事件: provider={}, retries={}, notify_on_success={}",
+                app_type.as_str(),
+                provider.name,
+                retry_count,
+                notify_on_success
+            );
+        }
 
         record_admission_retry(&self.proxy_activity, self.app_handle.as_ref(), payload).await;
     }
@@ -3044,6 +3147,262 @@ impl RequestForwarder {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseReplayKind {
+    Http429,
+    CodexConfigured,
+}
+
+impl ResponseReplayKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http429 => "http-429",
+            Self::CodexConfigured => "codex-configured-error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResponseReplayPolicy {
+    retry_http_429: bool,
+    retry_codex_configured_errors: bool,
+    codex_match_statuses: Vec<u16>,
+    codex_match_endpoints: Vec<String>,
+    codex_match_keyword_groups: Vec<Vec<String>>,
+    max_retries: u32,
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_ms: u64,
+    honor_retry_after: bool,
+}
+
+const MAX_RESPONSE_REPLAY_RETRIES: u32 = 10;
+const MAX_RESPONSE_REPLAY_DELAY_MS: u64 = 60_000;
+const MAX_RESPONSE_REPLAY_MATCH_STATUSES: usize = 16;
+const MAX_RESPONSE_REPLAY_MATCH_ENDPOINTS: usize = 16;
+const MAX_RESPONSE_REPLAY_MATCH_GROUPS: usize = 16;
+const MAX_RESPONSE_REPLAY_MATCH_TERMS: usize = 8;
+const MAX_RESPONSE_REPLAY_MATCH_TEXT_LEN: usize = 128;
+
+impl ResponseReplayPolicy {
+    fn from_provider(provider: &Provider) -> Option<Self> {
+        let config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.upstream_response_replay.as_ref())?;
+
+        if !config.enabled || (!config.retry_http_429 && !config.retry_codex_configured_errors) {
+            return None;
+        }
+
+        let max_retries = config.max_retries.min(MAX_RESPONSE_REPLAY_RETRIES);
+        if max_retries == 0 {
+            return None;
+        }
+
+        let max_delay_ms = config.max_delay_ms.min(MAX_RESPONSE_REPLAY_DELAY_MS);
+        Some(Self {
+            retry_http_429: config.retry_http_429,
+            retry_codex_configured_errors: config.retry_codex_configured_errors,
+            codex_match_statuses: normalize_response_replay_statuses(&config.codex_match_statuses),
+            codex_match_endpoints: normalize_response_replay_endpoints(
+                &config.codex_match_endpoints,
+            ),
+            codex_match_keyword_groups: normalize_response_replay_keyword_groups(
+                &config.codex_match_keyword_groups,
+            ),
+            max_retries,
+            initial_delay_ms: config.initial_delay_ms.min(max_delay_ms),
+            max_delay_ms,
+            jitter_ms: config.jitter_ms.min(500),
+            honor_retry_after: config.honor_retry_after,
+        })
+    }
+
+    fn match_error(
+        &self,
+        app_type: &AppType,
+        endpoint: &str,
+        error: &ProxyError,
+    ) -> Option<ResponseReplayKind> {
+        if !matches!(app_type, AppType::Codex) {
+            return None;
+        }
+
+        let ProxyError::UpstreamError { status, body, .. } = error else {
+            return None;
+        };
+
+        if *status == 429
+            && self.retry_http_429
+            && !body
+                .as_deref()
+                .map(|value| body_signals_permanent_failure(&value.to_ascii_lowercase()))
+                .unwrap_or(false)
+        {
+            return Some(ResponseReplayKind::Http429);
+        }
+
+        if self.matches_configured_codex_error(*status, endpoint, body.as_deref()) {
+            return Some(ResponseReplayKind::CodexConfigured);
+        }
+
+        None
+    }
+
+    fn retry_limit_reached(&self, retries_used: u32) -> bool {
+        retries_used >= self.max_retries
+    }
+
+    fn matches_configured_codex_error(
+        &self,
+        status: u16,
+        endpoint: &str,
+        body: Option<&str>,
+    ) -> bool {
+        if !self.retry_codex_configured_errors || !self.codex_match_statuses.contains(&status) {
+            return false;
+        }
+
+        let endpoint = normalize_response_replay_endpoint(endpoint);
+        if !self
+            .codex_match_endpoints
+            .iter()
+            .any(|configured| configured == "*" || configured == &endpoint)
+        {
+            return false;
+        }
+
+        let body = body.unwrap_or_default().trim().to_ascii_lowercase();
+        if body_signals_permanent_failure(&body) {
+            return false;
+        }
+
+        self.codex_match_keyword_groups.iter().any(|group| {
+            !group.is_empty() && group.iter().all(|term| term == "*" || body.contains(term))
+        })
+    }
+
+    fn delay_ms(&self, _retry_number: u32, retry_after_ms: Option<u64>) -> u64 {
+        if self.honor_retry_after {
+            if let Some(retry_after_ms) = retry_after_ms {
+                return retry_after_ms.min(self.max_delay_ms);
+            }
+        }
+
+        let jitter = if self.jitter_ms == 0 {
+            0
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.subsec_nanos() as u64 % (self.jitter_ms + 1))
+                .unwrap_or(0)
+        };
+
+        self.initial_delay_ms
+            .saturating_add(jitter)
+            .min(self.max_delay_ms)
+    }
+}
+
+fn normalize_response_replay_statuses(values: &[u16]) -> Vec<u16> {
+    let mut normalized = Vec::new();
+    for value in values.iter().copied() {
+        if !(400..=599).contains(&value) || normalized.contains(&value) {
+            continue;
+        }
+        normalized.push(value);
+        if normalized.len() >= MAX_RESPONSE_REPLAY_MATCH_STATUSES {
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_response_replay_endpoint(value: &str) -> String {
+    let value = value.trim();
+    if value == "*" {
+        return "*".to_string();
+    }
+    let path = url::Url::parse(value)
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|_| split_endpoint_and_query(value).0.to_string());
+    let mut path = path.trim().trim_end_matches('/').to_ascii_lowercase();
+    if path == "*" {
+        return path;
+    }
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    if path == "/codex" {
+        path = "/".to_string();
+    } else if let Some(stripped) = path.strip_prefix("/codex/") {
+        path = format!("/{stripped}");
+    }
+    loop {
+        if path == "/v1" {
+            path = "/".to_string();
+            break;
+        }
+        let Some(stripped) = path.strip_prefix("/v1/") else {
+            break;
+        };
+        path = format!("/{stripped}");
+    }
+    if path.is_empty() {
+        "/".to_string()
+    } else {
+        path
+    }
+}
+
+fn normalize_response_replay_endpoints(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || value.len() > MAX_RESPONSE_REPLAY_MATCH_TEXT_LEN {
+            continue;
+        }
+        let endpoint = normalize_response_replay_endpoint(value);
+        if normalized.contains(&endpoint) {
+            continue;
+        }
+        normalized.push(endpoint);
+        if normalized.len() >= MAX_RESPONSE_REPLAY_MATCH_ENDPOINTS {
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_response_replay_keyword_groups(values: &[Vec<String>]) -> Vec<Vec<String>> {
+    let mut groups = Vec::new();
+    for value in values {
+        let mut group = Vec::new();
+        for term in value {
+            let term = term.trim().to_ascii_lowercase();
+            if term.is_empty()
+                || term.len() > MAX_RESPONSE_REPLAY_MATCH_TEXT_LEN
+                || group.contains(&term)
+            {
+                continue;
+            }
+            group.push(term);
+            if group.len() >= MAX_RESPONSE_REPLAY_MATCH_TERMS {
+                break;
+            }
+        }
+        if group.is_empty() || groups.contains(&group) {
+            continue;
+        }
+        groups.push(group);
+        if groups.len() >= MAX_RESPONSE_REPLAY_MATCH_GROUPS {
+            break;
+        }
+    }
+    groups
+}
+
 #[derive(Debug, Clone)]
 struct AdmissionRetryPolicy {
     max_retries: Option<u32>,
@@ -3236,12 +3595,18 @@ fn body_signals_permanent_failure(text: &str) -> bool {
         &[
             "insufficient_quota",
             "insufficient quota",
+            "quota_exceeded",
             "quota exceeded",
             "billing",
+            "billing_hard_limit",
             "credit",
             "payment required",
+            "payment_required",
+            "account deactivated",
+            "account_deactivated",
             "invalid_api_key",
             "invalid api key",
+            "authentication",
             "unauthorized",
             "forbidden",
             "permission",
@@ -4319,7 +4684,7 @@ mod tests {
     use crate::database::Database;
     use crate::provider::{
         LocalProxyRequestOverrides, ProviderMeta, UpstreamAdmissionRetryConfig,
-        UpstreamAdmissionRetryScheduleMode,
+        UpstreamAdmissionRetryScheduleMode, UpstreamResponseReplayConfig,
     };
     use crate::proxy::CircuitBreakerConfig;
     use axum::http::header::{HeaderValue, ACCEPT};
@@ -4514,10 +4879,266 @@ mod tests {
     }
 
     #[test]
+    fn response_replay_matches_only_selected_codex_transient_errors() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: true,
+                retry_http_429: true,
+                retry_codex_configured_errors: true,
+                codex_match_statuses: vec![400],
+                codex_match_endpoints: vec!["/responses".to_string()],
+                codex_match_keyword_groups: vec![
+                    vec!["bad_response_status_code".to_string()],
+                    vec![
+                        "new_api_error".to_string(),
+                        "invalid character".to_string(),
+                        "looking for beginning of value".to_string(),
+                    ],
+                ],
+                max_retries: 2,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                jitter_ms: 0,
+                honor_retry_after: true,
+            }),
+            ..ProviderMeta::default()
+        });
+        let policy = ResponseReplayPolicy::from_provider(&provider).expect("replay policy");
+
+        let rate_limited = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"message":"Too Many Requests"}}"#.to_string()),
+            retry_after_ms: Some(900),
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &rate_limited),
+            Some(ResponseReplayKind::Http429)
+        );
+        assert_eq!(policy.delay_ms(1, Some(900)), 0);
+
+        let quota = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(r#"{"error":{"code":"insufficient_quota"}}"#.to_string()),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &quota),
+            None
+        );
+
+        let bad_response = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"type":"bad_response_status_code","code":"bad_response_status_code","message":"openai_error"}}"#.to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/v1/responses?stream=true", &bad_response),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+
+        let wrapped_bad_response = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. Provider: https://example.invalid/v1; model: gpt-test; upstream_status: HTTP 400; cause: openai_error","type":"bad_response_status_code","code":"bad_response_status_code","param":"","provider":"https://example.invalid/v1","model":"gpt-test","endpoint":"/responses","upstream_status":400}}"#.to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &wrapped_bad_response,),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+
+        let wrapped_invalid_json = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. Provider: https://example.invalid/v1; model: gpt-test; upstream_status: HTTP 400; cause: Invalid request: Invalid request: invalid character '.' looking for beginning of value (request id: req-test)","type":"new_api_error","code":"","param":"","provider":"https://example.invalid/v1","model":"gpt-test","endpoint":"/responses","upstream_status":400}}"#.to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &wrapped_invalid_json),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+
+        let ordinary_new_api_error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(
+                r#"{"error":{"message":"invalid model name","type":"new_api_error"}}"#.to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &ordinary_new_api_error),
+            None
+        );
+
+        let ordinary_bad_request = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(r#"{"error":{"message":"invalid input item"}}"#.to_string()),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &ordinary_bad_request),
+            None
+        );
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/v1/responses/compact", &bad_response),
+            None
+        );
+        assert_eq!(
+            policy.match_error(&AppType::Claude, "/responses", &bad_response),
+            None
+        );
+    }
+
+    #[test]
+    fn response_replay_matches_user_configured_status_endpoint_and_keyword_groups() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: true,
+                retry_http_429: false,
+                retry_codex_configured_errors: true,
+                codex_match_statuses: vec![409],
+                codex_match_endpoints: vec!["/responses/compact".to_string()],
+                codex_match_keyword_groups: vec![vec![
+                    "provider_busy".to_string(),
+                    "please retry".to_string(),
+                ]],
+                max_retries: 2,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                jitter_ms: 0,
+                honor_retry_after: false,
+            }),
+            ..ProviderMeta::default()
+        });
+        let policy = ResponseReplayPolicy::from_provider(&provider).expect("custom replay policy");
+
+        let matching = ProxyError::UpstreamError {
+            status: 409,
+            body: Some(
+                r#"{"error":{"type":"provider_busy","message":"Please retry shortly"}}"#
+                    .to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(
+                &AppType::Codex,
+                "https://example.invalid/v1/responses/compact?stream=true",
+                &matching,
+            ),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+        assert_eq!(
+            policy.match_error(
+                &AppType::Codex,
+                "/codex/v1/responses/compact?stream=true",
+                &matching,
+            ),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+
+        let missing_and_term = ProxyError::UpstreamError {
+            status: 409,
+            body: Some(r#"{"error":{"type":"provider_busy"}}"#.to_string()),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses/compact", &missing_and_term,),
+            None
+        );
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses", &matching),
+            None
+        );
+
+        let permanent = ProxyError::UpstreamError {
+            status: 409,
+            body: Some(
+                r#"{"error":{"type":"provider_busy","message":"Please retry after fixing insufficient_quota"}}"#
+                    .to_string(),
+            ),
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            policy.match_error(&AppType::Codex, "/responses/compact", &permanent),
+            None
+        );
+
+        let config = provider
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.upstream_response_replay.as_mut())
+            .expect("response replay config");
+        config.codex_match_statuses = vec![503];
+        config.codex_match_endpoints = vec!["*".to_string()];
+        config.codex_match_keyword_groups = vec![vec!["*".to_string()]];
+        let wildcard_policy =
+            ResponseReplayPolicy::from_provider(&provider).expect("wildcard replay policy");
+        let empty_body = ProxyError::UpstreamError {
+            status: 503,
+            body: None,
+            retry_after_ms: None,
+        };
+        assert_eq!(
+            wildcard_policy.match_error(&AppType::Codex, "/custom/endpoint", &empty_body),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+    }
+
+    #[test]
+    fn response_replay_policy_clamps_limits_and_requires_explicit_enable() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: false,
+                codex_match_statuses: vec![399, 400, 400, 599, 600],
+                codex_match_endpoints: vec!["/v1/responses/".to_string(), "/responses".to_string()],
+                codex_match_keyword_groups: vec![vec![
+                    " Provider_Busy ".to_string(),
+                    "provider_busy".to_string(),
+                ]],
+                max_retries: u32::MAX,
+                initial_delay_ms: u64::MAX,
+                max_delay_ms: u64::MAX,
+                jitter_ms: u64::MAX,
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+        assert!(ResponseReplayPolicy::from_provider(&provider).is_none());
+
+        provider
+            .meta
+            .as_mut()
+            .unwrap()
+            .upstream_response_replay
+            .as_mut()
+            .unwrap()
+            .enabled = true;
+        let policy = ResponseReplayPolicy::from_provider(&provider).expect("replay policy");
+        assert_eq!(policy.max_retries, MAX_RESPONSE_REPLAY_RETRIES);
+        assert_eq!(policy.max_delay_ms, MAX_RESPONSE_REPLAY_DELAY_MS);
+        assert_eq!(policy.jitter_ms, 500);
+        assert_eq!(policy.codex_match_statuses, vec![400, 599]);
+        assert_eq!(policy.codex_match_endpoints, vec!["/responses"]);
+        assert_eq!(
+            policy.codex_match_keyword_groups,
+            vec![vec!["provider_busy".to_string()]]
+        );
+    }
+
+    #[test]
     fn body_permanent_failure_signals_block_admission_retry() {
         // 永久失败信号：死磕同一家也不会成功，入场重试必须放行回原流程。
         for body in [
             r#"{"error":{"code":"insufficient_quota"}}"#,
+            r#"{"error":{"code":"quota_exceeded"}}"#,
             r#"{"error":{"message":"invalid api key"}}"#,
             r#"{"error":{"message":"model not found"}}"#,
             r#"{"error":{"message":"context length exceeded"}}"#,
@@ -5416,7 +6037,163 @@ mod tests {
         assert_eq!(snapshot[0].provider_id, provider.id);
         assert_eq!(snapshot[0].retry_count, 0);
         assert_eq!(snapshot[0].status, Some(200));
+        assert!(snapshot[0].notify_on_success);
 
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn response_replay_recovers_codex_bad_response_400_before_client_return() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    let attempt = handler_count.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        return axum::response::Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .header(axum::http::header::CONTENT_TYPE, "application/json")
+                            .body(axum::body::Body::from(
+                                r#"{"error":{"message":"openai_error","type":"bad_response_status_code","code":"bad_response_status_code"}}"#,
+                            ))
+                            .expect("build mock transient 400 response");
+                    }
+
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(r#"{"id":"resp_400_recovered","output":[]}"#))
+                        .expect("build mock success response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: true,
+                max_retries: 2,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                jitter_ms: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let adapter = get_adapter(&AppType::Codex);
+        let result = forwarder
+            .forward_with_admission_retry(
+                &AppType::Codex,
+                &http::Method::POST,
+                &provider,
+                "/responses",
+                &json!({ "model": "gpt-5.6-sol", "input": "ping" }),
+                &HeaderMap::new(),
+                &Extensions::new(),
+                adapter.as_ref(),
+            )
+            .await
+            .expect("transient 400 should be hidden by replay");
+
+        assert_eq!(result.0.status(), StatusCode::OK);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn response_replay_recovers_http_429_before_client_return() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    let attempt = handler_count.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        return axum::response::Response::builder()
+                            .status(StatusCode::TOO_MANY_REQUESTS)
+                            .header(axum::http::header::CONTENT_TYPE, "application/json")
+                            .header(axum::http::header::RETRY_AFTER, "0")
+                            .body(axum::body::Body::from(
+                                r#"{"error":{"message":"Too Many Requests"}}"#,
+                            ))
+                            .expect("build mock 429 response");
+                    }
+
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"id":"resp_429_recovered","output":[]}"#,
+                        ))
+                        .expect("build mock success response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_response_replay: Some(UpstreamResponseReplayConfig {
+                enabled: true,
+                max_retries: 2,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                jitter_ms: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let adapter = get_adapter(&AppType::Codex);
+        let result = forwarder
+            .forward_with_admission_retry(
+                &AppType::Codex,
+                &http::Method::POST,
+                &provider,
+                "/responses",
+                &json!({ "model": "gpt-5.6-sol", "input": "ping" }),
+                &HeaderMap::new(),
+                &Extensions::new(),
+                adapter.as_ref(),
+            )
+            .await
+            .expect("HTTP 429 should be hidden by replay");
+
+        assert_eq!(result.0.status(), StatusCode::OK);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
         server.abort();
     }
 

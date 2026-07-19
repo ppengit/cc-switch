@@ -7,10 +7,12 @@ import type { Provider } from "@/types";
 import type { ProxyStatus } from "@/types/proxy";
 import { emitTauriEvent } from "../msw/tauriMocks";
 
-const { toastSuccessMock, getAllProvidersMock } = vi.hoisted(() => ({
-  toastSuccessMock: vi.fn(),
-  getAllProvidersMock: vi.fn(),
-}));
+const { toastSuccessMock, getAllProvidersMock, getAdmissionRetrySnapshotMock } =
+  vi.hoisted(() => ({
+    toastSuccessMock: vi.fn(),
+    getAllProvidersMock: vi.fn(),
+    getAdmissionRetrySnapshotMock: vi.fn(),
+  }));
 
 vi.mock("sonner", () => ({
   toast: {
@@ -21,6 +23,12 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
     getAll: getAllProvidersMock,
+  },
+}));
+
+vi.mock("@/lib/api/proxy", () => ({
+  proxyApi: {
+    getProviderAdmissionRetrySnapshot: getAdmissionRetrySnapshotMock,
   },
 }));
 
@@ -47,6 +55,8 @@ describe("useProxyActivityBridge", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     getAllProvidersMock.mockReset();
+    getAdmissionRetrySnapshotMock.mockReset();
+    getAdmissionRetrySnapshotMock.mockResolvedValue([]);
   });
 
   it("creates proxyStatus cache when the first activity event arrives before polling", async () => {
@@ -84,9 +94,7 @@ describe("useProxyActivityBridge", () => {
       const status = queryClient.getQueryData<ProxyStatus>(["proxyStatus"]);
       expect(status?.running).toBe(true);
       expect(status?.active_request_count).toBe(1);
-      expect(status?.active_request_targets?.[0]?.provider_id).toBe(
-        "claude-2",
-      );
+      expect(status?.active_request_targets?.[0]?.provider_id).toBe("claude-2");
     });
   });
 
@@ -182,6 +190,7 @@ describe("useProxyActivityBridge", () => {
         delayMs: 0,
         status: 200,
         error: null,
+        notifyOnSuccess: true,
         updatedAt: "2026-07-03T14:20:15Z",
       });
     });
@@ -195,5 +204,136 @@ describe("useProxyActivityBridge", () => {
         }),
       );
     });
+  });
+
+  it("uses the backend notification snapshot when the provider cache is stale", async () => {
+    const { wrapper, queryClient } = createWrapper();
+    queryClient.setQueryData(["providers", "codex"], {
+      currentProviderId: "codex-1",
+      providers: {
+        "codex-1": {
+          id: "codex-1",
+          name: "Transient Upstream",
+          settingsConfig: {},
+          meta: {
+            upstreamAdmissionRetry: {
+              enabled: false,
+              notifyOnSuccess: false,
+            },
+          },
+        } satisfies Provider,
+      },
+    });
+
+    renderHook(() => useProxyActivityBridge(), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      emitTauriEvent("provider-admission-retry", {
+        requestId: "req-cache-race",
+        event: "admitted",
+        appType: "codex",
+        providerId: "codex-1",
+        providerName: "Transient Upstream",
+        retryCount: 2,
+        delayMs: 0,
+        status: 200,
+        error: null,
+        notifyOnSuccess: true,
+        updatedAt: "2026-07-19T05:50:00Z",
+      });
+    });
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Codex 入场成功",
+        expect.objectContaining({ position: "bottom-right" }),
+      );
+    });
+    expect(getAllProvidersMock).not.toHaveBeenCalled();
+  });
+
+  it("recovers an admitted snapshot and plays the success tone only once", async () => {
+    const resumeMock = vi.fn(async function (this: {
+      currentState: AudioContextState;
+    }) {
+      this.currentState = "running";
+    });
+    const startMock = vi.fn();
+    const stopMock = vi.fn();
+    const oscillatorDisconnectMock = vi.fn();
+    const gainDisconnectMock = vi.fn();
+    const FakeAudioContext = class {
+      currentState: AudioContextState = "suspended";
+      currentTime = 0;
+      destination = {} as AudioNode;
+
+      get state() {
+        return this.currentState;
+      }
+
+      resume = resumeMock;
+
+      createOscillator() {
+        return {
+          type: "sine",
+          frequency: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+          },
+          connect: vi.fn(),
+          start: startMock,
+          stop: stopMock,
+          disconnect: oscillatorDisconnectMock,
+          onended: null,
+        } as unknown as OscillatorNode;
+      }
+
+      createGain() {
+        return {
+          gain: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+          },
+          connect: vi.fn(),
+          disconnect: gainDisconnectMock,
+        } as unknown as GainNode;
+      }
+    };
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+
+    const payload = {
+      requestId: "req-snapshot-admitted",
+      event: "admitted" as const,
+      appType: "codex",
+      providerId: "codex-1",
+      providerName: "Transient Upstream",
+      retryCount: 2,
+      delayMs: 0,
+      status: 200,
+      error: null,
+      notifyOnSuccess: true,
+      updatedAt: "2026-07-19T06:00:00Z",
+    };
+    getAdmissionRetrySnapshotMock.mockResolvedValue([payload]);
+
+    const { wrapper } = createWrapper();
+    renderHook(() => useProxyActivityBridge(), { wrapper });
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+      expect(startMock).toHaveBeenCalledTimes(1);
+    });
+    expect(resumeMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      emitTauriEvent("provider-admission-retry", payload);
+      emitTauriEvent("provider-admission-retry", payload);
+    });
+    expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+    expect(startMock).toHaveBeenCalledTimes(1);
+    expect(stopMock).toHaveBeenCalledTimes(1);
   });
 });

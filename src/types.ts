@@ -207,6 +207,23 @@ export interface ProviderUpstreamAdmissionRetry {
   jitterMs?: number;
 }
 
+export interface ProviderUpstreamResponseReplay {
+  enabled?: boolean;
+  retryHttp429?: boolean;
+  /** Flexible status/endpoint/body matcher for Codex response errors. */
+  retryCodexConfiguredErrors?: boolean;
+  /** @deprecated Read only for configs written by the first local preview. */
+  retryCodexBadResponse400?: boolean;
+  codexMatchStatuses?: number[];
+  codexMatchEndpoints?: string[];
+  codexMatchKeywordGroups?: string[][];
+  maxRetries?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  jitterMs?: number;
+  honorRetryAfter?: boolean;
+}
+
 // 供应商元数据（字段名与后端一致，保持 snake_case）
 export interface ProviderMeta {
   // 自定义端点：以 URL 为键，值为端点信息
@@ -266,6 +283,8 @@ export interface ProviderMeta {
   // Upstream admission retry. Retries the same provider briefly when the upstream
   // is overloaded / rate-limited before failing over.
   upstreamAdmissionRetry?: ProviderUpstreamAdmissionRetry;
+  // Opt-in same-provider replay for selected transient HTTP error responses.
+  upstreamResponseReplay?: ProviderUpstreamResponseReplay;
   // 会话路由最大并发占用数；为空或 0 表示不限制。
   maxConcurrentRequests?: number;
   // 供应商类型（用于识别 Copilot 等特殊供应商）
