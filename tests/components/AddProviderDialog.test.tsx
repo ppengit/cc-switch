@@ -283,4 +283,49 @@ describe("AddProviderDialog", () => {
       ),
     );
   });
+
+  it("新建 Grok Build 自定义供应商时不补默认 Grok 图标", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    mockFormValues = {
+      name: "tes 1",
+      websiteUrl: "",
+      icon: "",
+      iconColor: "",
+      settingsConfig: JSON.stringify({
+        config: `[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://grok.example.com/v1"
+name = "tes 1"
+api_key = "secret"
+api_backend = "responses"
+context_window = 500000
+`,
+      }),
+    };
+
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="grokbuild"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+
+    const submitted = handleSubmit.mock.calls[0][0];
+    expect(submitted.provider.icon).toBeUndefined();
+    expect(submitted.provider.iconColor).toBeUndefined();
+  });
 });

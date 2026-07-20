@@ -176,7 +176,13 @@ export interface UsageRangeSelection {
  * `opencode` and `hermes` appear via imported session usage rather than proxy
  * traffic. `openclaw` is not listed until it has a usage source.
  */
-export type AppType = "claude" | "codex" | "gemini" | "opencode" | "hermes";
+export type AppType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "grokbuild"
+  | "opencode"
+  | "hermes";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -184,6 +190,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "claude",
   "codex",
   "gemini",
+  "grokbuild",
   "opencode",
   "hermes",
 ];
@@ -203,6 +210,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
 export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
   "codex",
   "gemini",
+  "grokbuild",
 ]);
 
 /** Subset of request-log fields needed to derive cache-normalized input. */

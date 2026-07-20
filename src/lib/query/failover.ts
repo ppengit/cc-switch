@@ -281,11 +281,13 @@ export function useSetAutoFailoverEnabled() {
             ? "Codex"
             : variables.appType === "gemini"
               ? "Gemini"
-              : variables.appType === "openclaw"
-                ? "OpenClaw"
-                : variables.appType === "hermes"
-                  ? "Hermes"
-                  : "OpenCode";
+              : variables.appType === "grokbuild"
+                ? "Grok Build"
+                : variables.appType === "openclaw"
+                  ? "OpenClaw"
+                  : variables.appType === "hermes"
+                    ? "Hermes"
+                    : "OpenCode";
 
       toast.success(
         variables.enabled

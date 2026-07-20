@@ -185,7 +185,7 @@ export function EditProviderDialog({
   }, [
     open, // Re-read latest provider data each time the dialog is opened.
     provider?.id, // Keep typing stable across provider object refreshes.
-    provider?.meta,
+    provider?.meta, // 供应商元数据变化时重新初始化表单
     initialSettingsConfig,
   ]);
 

@@ -12,6 +12,7 @@ use crate::app_config::AppType;
 
 pub(crate) const LEGACY_CLAUDE_OFFICIAL_SETTINGS_CONFIG_JSON: &str = r#"{"env":{"ANTHROPIC_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-4-6","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}"#;
 pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
+pub(crate) const CODEX_OFFICIAL_PROVIDER_ID: &str = "codex-official";
 
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
@@ -50,7 +51,7 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         settings_config_json: r#"{"env":{}}"#,
     },
     OfficialProviderSeed {
-        id: "codex-official",
+        id: CODEX_OFFICIAL_PROVIDER_ID,
         app_type: AppType::Codex,
         name: "OpenAI Official",
         website_url: "https://chatgpt.com/codex",

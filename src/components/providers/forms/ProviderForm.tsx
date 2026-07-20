@@ -22,7 +22,6 @@ import {
 import type {
   ProviderCategory,
   ProviderMeta,
-  ProviderTestConfig,
   ProviderUpstreamAdmissionRetry,
   ProviderUpstreamResponseReplay,
   ClaudeApiFormat,
@@ -30,6 +29,7 @@ import type {
   CodexCatalogModel,
   CodexModelRoute,
   CodexChatReasoning,
+  PromptCacheRoutingMode,
   ClaudeApiKeyField,
 } from "@/types";
 import {
@@ -71,8 +71,10 @@ import {
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import {
+  codexApiFormatFromWireApi,
   extractCodexWireApi,
   setCodexWireApi,
+  extractCodexModelName,
   setCodexModelName as setCodexModelNameInConfig,
 } from "@/utils/providerConfigUtils";
 import { isNonNegativeDecimalString } from "@/types/usage";
@@ -85,6 +87,7 @@ import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { BasicFormFields } from "./BasicFormFields";
 import { ClaudeFormFields } from "./ClaudeFormFields";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
+import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import {
   CodexFormFields,
   modelRouteRowsFromMap,
@@ -142,25 +145,6 @@ type PresetEntry = {
     | OpenCodeProviderPreset
     | OpenClawProviderPreset
     | HermesProviderPreset;
-};
-
-const codexApiFormatFromWireApi = (
-  wireApi: string | undefined,
-): CodexApiFormat | undefined => {
-  switch (wireApi?.trim().toLowerCase()) {
-    case "chat":
-    case "chat_completions":
-    case "chat-completions":
-    case "openai_chat":
-    case "openai-chat":
-      return "openai_chat";
-    case "responses":
-    case "openai_responses":
-    case "openai-responses":
-      return "openai_responses";
-    default:
-      return undefined;
-  }
 };
 
 const normalizeAdmissionRetryConfigForSave = (
@@ -373,6 +357,7 @@ const getInitialCodexApiFormat = (
   settingsConfig: Record<string, unknown> | undefined,
 ): CodexApiFormat => {
   if (meta?.apiFormat === "openai_chat") return "openai_chat";
+  if (meta?.apiFormat === "anthropic") return "anthropic";
   if (meta?.apiFormat === "openai_responses") return "openai_responses";
 
   return (
@@ -567,6 +552,9 @@ export function ProviderForm(props: ProviderFormProps) {
   if (props.appId === "claude-desktop") {
     return <ClaudeDesktopProviderForm {...props} />;
   }
+  if (props.appId === "grokbuild") {
+    return <GrokBuildProviderForm {...props} />;
+  }
 
   return <ProviderFormFull {...props} />;
 }
@@ -641,9 +629,6 @@ function ProviderFormFull({
     return initialData?.meta?.isFullUrl ?? false;
   });
 
-  const [testConfig, setTestConfig] = useState<ProviderTestConfig>(
-    () => initialData?.meta?.testConfig ?? { enabled: false },
-  );
   const [pricingConfig, setPricingConfig] = useState<{
     enabled: boolean;
     costMultiplier?: string;
@@ -673,6 +658,10 @@ function ProviderFormFull({
   const [codexChatReasoning, setCodexChatReasoning] =
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
+    );
+  const [promptCacheRouting, setPromptCacheRouting] =
+    useState<PromptCacheRoutingMode>(
+      () => initialData?.meta?.promptCacheRouting ?? "auto",
     );
   const [codexModelRoutes, setCodexModelRoutes] = useState<
     CodexModelRouteRow[]
@@ -730,7 +719,6 @@ function ProviderFormFull({
     setLocalIsFullUrl(
       supportsFullUrl ? (seed?.meta?.isFullUrl ?? false) : false,
     );
-    setTestConfig(seed?.meta?.testConfig ?? { enabled: false });
     setPricingConfig({
       enabled:
         seed?.meta?.costMultiplier !== undefined ||
@@ -752,6 +740,7 @@ function ProviderFormFull({
     );
     setMaxConcurrentRequests(seed?.meta?.maxConcurrentRequests);
     setCodexChatReasoning(seed?.meta?.codexChatReasoning ?? {});
+    setPromptCacheRouting(seed?.meta?.promptCacheRouting ?? "auto");
     setCodexModelRoutes(
       modelRouteRowsFromMap(seed?.meta?.codexModelRoutes ?? {}),
     );
@@ -949,7 +938,6 @@ function ProviderFormFull({
   const [codexFastMode, setCodexFastMode] = useState<boolean>(
     () => initialData?.meta?.codexFastMode ?? false,
   );
-
   const codexInitialData = useMemo(() => {
     if (appId !== "codex") return undefined;
     return {
@@ -971,6 +959,7 @@ function ProviderFormFull({
     codexConfig,
     codexApiKey,
     codexBaseUrl,
+    codexModel,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -978,6 +967,7 @@ function ProviderFormFull({
     setCodexCatalogModels,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange: originalHandleCodexBaseUrlChange,
+    handleCodexModelChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({
@@ -1055,6 +1045,28 @@ function ProviderFormFull({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, formSeedKey]);
 
+  // Auth-field choice for the Anthropic Messages upstream (defaults to the Bearer form)
+  const initialCodexAnthropicAuthField: ClaudeApiKeyField =
+    initialData?.meta?.apiKeyField === "ANTHROPIC_API_KEY"
+      ? "ANTHROPIC_API_KEY"
+      : "ANTHROPIC_AUTH_TOKEN";
+  const [localCodexAnthropicAuthField, setLocalCodexAnthropicAuthField] =
+    useState<ClaudeApiKeyField>(initialCodexAnthropicAuthField);
+
+  // Emulate the Claude Code client: off by default, enabled only when the user explicitly turns it on (true)
+  const [localCodexImpersonateClaudeCode, setLocalCodexImpersonateClaudeCode] =
+    useState<boolean>(initialData?.meta?.impersonateClaudeCode === true);
+
+  // Codex → Anthropic output ceiling override (empty string = use the 8192 default).
+  // Kept as a string so the numeric input can be cleared; parsed on save.
+  const [localCodexMaxOutputTokens, setLocalCodexMaxOutputTokens] =
+    useState<string>(
+      typeof initialData?.meta?.maxOutputTokens === "number" &&
+        initialData.meta.maxOutputTokens > 0
+        ? String(initialData.meta.maxOutputTokens)
+        : "",
+    );
+
   const { configError: codexConfigError, debouncedValidate } =
     useCodexTomlValidation();
 
@@ -1092,6 +1104,7 @@ function ProviderFormFull({
       const template = getCodexCustomTemplate();
       resetCodexConfig(template.auth, template.config);
       setCodexChatReasoning({});
+      setPromptCacheRouting("auto");
       setCodexModelRoutes([]);
       setCodexModelRoutesEnabled(false);
       setCodexTakeoverEnabled(false);
@@ -1930,8 +1943,13 @@ function ProviderFormFull({
           category !== "official" && codexTakeoverEnabled
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
-        // Sync first catalog row's model into config.toml so Codex uses it as default
-        if (normalizedCatalogModels.length > 0) {
+        // The default-model field writes the top-level `model` into the TOML
+        // as the user types; only when it was left empty fall back to the
+        // first catalog row so "fill mapping only" keeps its old behavior.
+        if (
+          normalizedCatalogModels.length > 0 &&
+          !extractCodexModelName(normalizedCodexConfig)
+        ) {
           normalizedCodexConfig = setCodexModelNameInConfig(
             normalizedCodexConfig,
             normalizedCatalogModels[0].model,
@@ -2194,6 +2212,13 @@ function ProviderFormFull({
         appId === "codex" && category !== "official"
           ? codexModelRoutesEnabled
           : undefined,
+      promptCacheRouting:
+        appId === "codex" &&
+        category !== "official" &&
+        localCodexApiFormat === "openai_chat" &&
+        promptCacheRouting !== "auto"
+          ? promptCacheRouting
+          : undefined,
       customUserAgent:
         (appId === "claude" || appId === "codex") && category !== "official"
           ? customUserAgent.trim() || undefined
@@ -2210,7 +2235,6 @@ function ProviderFormFull({
       maxConcurrentRequests: normalizeMaxConcurrentRequestsForSave(
         maxConcurrentRequests,
       ),
-      testConfig: testConfig.enabled ? testConfig : undefined,
       costMultiplier: pricingConfig.enabled
         ? pricingConfig.costMultiplier
         : undefined,
@@ -2229,6 +2253,28 @@ function ProviderFormFull({
         category !== "official" &&
         localApiKeyField !== "ANTHROPIC_AUTH_TOKEN"
           ? localApiKeyField
+          : appId === "codex" &&
+              category !== "official" &&
+              localCodexApiFormat === "anthropic" &&
+              localCodexAnthropicAuthField !== "ANTHROPIC_AUTH_TOKEN"
+            ? localCodexAnthropicAuthField
+            : undefined,
+      // Off by default; persist true only for codex+anthropic when the user explicitly enables it
+      impersonateClaudeCode:
+        appId === "codex" &&
+        category !== "official" &&
+        localCodexApiFormat === "anthropic" &&
+        localCodexImpersonateClaudeCode
+          ? true
+          : undefined,
+      // Persist only for codex+anthropic when a positive value was entered
+      maxOutputTokens:
+        appId === "codex" &&
+        category !== "official" &&
+        localCodexApiFormat === "anthropic" &&
+        localCodexMaxOutputTokens.trim() !== "" &&
+        Number(localCodexMaxOutputTokens) > 0
+          ? Number(localCodexMaxOutputTokens)
           : undefined,
       isFullUrl: nextIsFullUrl ? true : undefined,
     };
@@ -2455,6 +2501,9 @@ function ProviderFormFull({
           setCodexChatReasoning(
             (seededSettingsConfig as any)?.meta?.codexChatReasoning ?? {},
           );
+          setPromptCacheRouting(
+            (seededSettingsConfig as any)?.meta?.promptCacheRouting ?? "auto",
+          );
           setCodexModelRoutes(
             modelRouteRowsFromMap(initialData?.meta?.codexModelRoutes ?? {}),
           );
@@ -2475,6 +2524,7 @@ function ProviderFormFull({
           const template = getCodexCustomTemplate();
           resetCodexConfig(template.auth, template.config);
           setCodexChatReasoning({});
+          setPromptCacheRouting("auto");
           setCodexModelRoutes([]);
           setCodexModelRoutesEnabled(false);
           setLocalCodexApiFormat(
@@ -2524,6 +2574,7 @@ function ProviderFormFull({
 
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
+      setPromptCacheRouting(preset.promptCacheRouting ?? "auto");
       setCodexModelRoutes([]);
       setCodexModelRoutesEnabled(false);
       setCodexTakeoverEnabled((preset.modelCatalog?.length ?? 0) > 0);
@@ -3007,10 +3058,20 @@ function ProviderFormFull({
               onAutoSelectChange={setEndpointAutoSelect}
               takeoverEnabled={codexTakeoverEnabled}
               onTakeoverEnabledChange={setCodexTakeoverEnabled}
+              codexModel={codexModel}
+              onModelChange={handleCodexModelChange}
               apiFormat={localCodexApiFormat}
               onApiFormatChange={handleCodexApiFormatChange}
+              anthropicAuthField={localCodexAnthropicAuthField}
+              onAnthropicAuthFieldChange={setLocalCodexAnthropicAuthField}
+              impersonateClaudeCode={localCodexImpersonateClaudeCode}
+              onImpersonateClaudeCodeChange={setLocalCodexImpersonateClaudeCode}
+              maxOutputTokens={localCodexMaxOutputTokens}
+              onMaxOutputTokensChange={setLocalCodexMaxOutputTokens}
               codexChatReasoning={codexChatReasoning}
               onCodexChatReasoningChange={setCodexChatReasoning}
+              promptCacheRouting={promptCacheRouting}
+              onPromptCacheRoutingChange={setPromptCacheRouting}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
               modelRoutesEnabled={codexModelRoutesEnabled}
@@ -3069,6 +3130,8 @@ function ProviderFormFull({
               partnerPromotionKey={opencodePartnerPromotionKey}
               baseUrl={opencodeForm.opencodeBaseUrl}
               onBaseUrlChange={opencodeForm.handleOpencodeBaseUrlChange}
+              headers={opencodeForm.opencodeHeaders}
+              onHeadersChange={opencodeForm.handleOpencodeHeadersChange}
               models={opencodeForm.opencodeModels}
               onModelsChange={opencodeForm.handleOpencodeModelsChange}
               extraOptions={opencodeForm.opencodeExtraOptions}
@@ -3315,9 +3378,7 @@ function ProviderFormFull({
             appId !== "openclaw" &&
             appId !== "hermes" && (
               <ProviderAdvancedConfig
-                testConfig={testConfig}
                 pricingConfig={pricingConfig}
-                onTestConfigChange={setTestConfig}
                 onPricingConfigChange={setPricingConfig}
               />
             )}

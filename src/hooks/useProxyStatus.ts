@@ -144,11 +144,13 @@ export function useProxyStatus() {
             ? "Codex"
             : variables.appType === "gemini"
               ? "Gemini"
-              : variables.appType === "openclaw"
-                ? "OpenClaw"
-                : variables.appType === "hermes"
-                  ? "Hermes"
-                  : "OpenCode";
+              : variables.appType === "grokbuild"
+                ? "Grok Build"
+                : variables.appType === "openclaw"
+                  ? "OpenClaw"
+                  : variables.appType === "hermes"
+                    ? "Hermes"
+                    : "OpenCode";
 
       toast.success(
         variables.enabled
@@ -248,6 +250,7 @@ export function useProxyStatus() {
       takeoverStatus?.codex ||
       takeoverStatus?.gemini ||
       takeoverStatus?.opencode ||
+      takeoverStatus?.grokbuild ||
       takeoverStatus?.openclaw ||
       takeoverStatus?.hermes ||
       false,

@@ -123,18 +123,6 @@ export interface UsageResult {
   error?: string;
 }
 
-// 供应商单独的连通检测配置（覆盖全局配置）
-export interface ProviderTestConfig {
-  // 是否启用单独配置（false 时使用全局配置）
-  enabled: boolean;
-  // 超时时间（秒）
-  timeoutSecs?: number;
-  // 降级阈值（毫秒）
-  degradedThresholdMs?: number;
-  // 最大重试次数
-  maxRetries?: number;
-}
-
 export type AuthBindingSource = "provider_config" | "managed_account";
 
 export interface AuthBinding {
@@ -189,6 +177,8 @@ export interface CodexChatReasoning {
   // 声明性字段：标注上游 reasoning 回传位置。当前提取靠穷举字段，未读取此值（think_tags 尚未接线）。
   outputFormat?: CodexChatReasoningOutputFormat;
 }
+
+export type PromptCacheRoutingMode = "auto" | "enabled" | "disabled";
 
 export interface LocalProxyRequestOverrides {
   headers?: Record<string, string>;
@@ -248,8 +238,6 @@ export interface ProviderMeta {
   isPartner?: boolean;
   // 合作伙伴促销 key（用于后端识别 PackyCode 等）
   partnerPromotionKey?: string;
-  // 供应商单独的模型测试配置
-  testConfig?: ProviderTestConfig;
   // 供应商成本倍率
   costMultiplier?: string;
   // 供应商计费模式来源
@@ -272,10 +260,21 @@ export interface ProviderMeta {
   isFullUrl?: boolean;
   // Prompt cache key for OpenAI Responses-compatible endpoints (improves cache hit rate)
   promptCacheKey?: string;
+  // Session-based prompt-cache routing for Codex Responses -> Chat conversions.
+  // auto enables only for known-compatible upstreams; enabled/disabled are user overrides.
+  promptCacheRouting?: PromptCacheRoutingMode;
   // Codex OAuth FAST mode: injects service_tier="priority" on ChatGPT Codex requests
   codexFastMode?: boolean;
   // Codex Responses -> Chat Completions reasoning capability metadata
   codexChatReasoning?: CodexChatReasoning;
+  // Codex → Anthropic path: emulate the Claude Code client (disabled by default; only an explicit true enables it)
+  impersonateClaudeCode?: boolean;
+  // Codex → Anthropic path: override the Anthropic max_tokens (output ceiling).
+  // Codex does not forward model_max_output_tokens in the request body; without
+  // this the path falls back to a conservative 8192 default, which can truncate
+  // long/thinking-heavy responses. When set (>0) it takes precedence over the
+  // request value and the default.
+  maxOutputTokens?: number;
   // Custom User-Agent for local proxy routing. Only applied by the local proxy.
   customUserAgent?: string;
   // Local proxy request overrides. Only applied by the local proxy after route transforms.
@@ -332,15 +331,16 @@ export type ClaudeApiFormat =
 // Codex API 格式类型
 // - "openai_responses": OpenAI Responses API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
-export type CodexApiFormat = "openai_responses" | "openai_chat";
+// - "anthropic": native Anthropic Messages format, needs local routing to convert to Responses
+export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
 
 export interface CodexCatalogModel {
   model: string;
   displayName?: string;
   contextWindow?: string | number;
-  // Native Responses (direct) profile overrides for the generated
-  // model-catalogs.json. Ignored by the chat/proxy profile.
-  // e.g. MiniMax: supportsParallelToolCalls=true, inputModalities=["text","image"].
+  // Hidden provider capability metadata for the generated model catalog.
+  // supportsParallelToolCalls is native-profile-only; inputModalities wins over
+  // automatic text-only model detection for every profile.
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
   // Vendor's OFFICIAL base_instructions (model identity / system preamble).
@@ -358,6 +358,7 @@ export interface VisibleApps {
   "claude-desktop": boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;
@@ -440,8 +441,6 @@ export interface Settings {
   // User has confirmed the usage query first-run notice
   usageConfirmed?: boolean;
   usageDashboardRefreshIntervalMs?: number;
-  // User has confirmed the stream check first-run notice
-  streamCheckConfirmed?: boolean;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
   // 是否显示实时请求独立浮窗
@@ -458,6 +457,8 @@ export interface Settings {
   proxyActivityFloatingPosition?: ProxyActivityFloatingPosition | null;
   // 实时请求 Mini 面板上次尺寸
   proxyActivityFloatingSize?: ProxyActivityFloatingSize | null;
+  // Whether to show the project profile switcher on the main page header
+  showProfileSwitcher?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // Run official Codex under the shared "custom" provider id so future
@@ -486,6 +487,8 @@ export interface Settings {
   codexConfigDir?: string;
   // 覆盖 Gemini 配置目录（可选）
   geminiConfigDir?: string;
+  // 覆盖 Grok Build 配置目录（可选）
+  grokConfigDir?: string;
   // 覆盖 OpenCode 配置目录（可选）
   opencodeConfigDir?: string;
   // 覆盖 OpenClaw 配置目录（可选）
@@ -580,6 +583,7 @@ export interface McpApps {
   "claude-desktop"?: boolean;
   codex: boolean;
   gemini: boolean;
+  grokbuild?: boolean;
   opencode: boolean;
   openclaw: boolean;
   hermes: boolean;

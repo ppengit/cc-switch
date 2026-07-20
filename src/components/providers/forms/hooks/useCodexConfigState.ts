@@ -2,7 +2,9 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   extractCodexBaseUrl,
   extractCodexExperimentalBearerToken,
+  extractCodexModelName,
   setCodexBaseUrl as setCodexBaseUrlInConfig,
+  setCodexModelName as setCodexModelNameInConfig,
   updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
@@ -40,12 +42,14 @@ export function useCodexConfigState({
   const [codexConfig, setCodexConfigState] = useState("");
   const [codexApiKey, setCodexApiKey] = useState("");
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
+  const [codexModel, setCodexModel] = useState("");
   const [codexCatalogModels, setCodexCatalogModels] = useState<
     CodexCatalogModel[]
   >([]);
   const [codexAuthError, setCodexAuthError] = useState("");
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
+  const isUpdatingCodexModelRef = useRef(false);
   const initialDataRef = useRef(initialData);
   initialDataRef.current = initialData;
   const autoInitializationData =
@@ -138,6 +142,15 @@ export function useCodexConfigState({
     }
     const extracted = extractCodexBaseUrl(codexConfig) || "";
     setCodexBaseUrl((prev) => (prev === extracted ? prev : extracted));
+  }, [codexConfig]);
+
+  // 与 TOML 配置保持默认模型同步（顶层 model 键）
+  useEffect(() => {
+    if (isUpdatingCodexModelRef.current) {
+      return;
+    }
+    const extracted = extractCodexModelName(codexConfig) || "";
+    setCodexModel((prev) => (prev === extracted ? prev : extracted));
   }, [codexConfig]);
 
   // 获取 API Key（从 auth JSON）
@@ -233,6 +246,22 @@ export function useCodexConfigState({
     [setCodexConfig],
   );
 
+  // 处理默认模型变化（写回 TOML 顶层 model；清空则删掉该行，交回 Codex 内置默认）
+  // 剥控制字符：值可能来自 /models 下拉（远端数据），换行等会破坏单行 TOML 语义
+  const handleCodexModelChange = useCallback(
+    (model: string) => {
+      const sanitized = model.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+      setCodexModel(sanitized);
+
+      isUpdatingCodexModelRef.current = true;
+      setCodexConfig((prev) => setCodexModelNameInConfig(prev, sanitized));
+      setTimeout(() => {
+        isUpdatingCodexModelRef.current = false;
+      }, 0);
+    },
+    [setCodexConfig],
+  );
+
   // 处理 config 变化（同步 Base URL）
   const handleCodexConfigChange = useCallback(
     (value: string) => {
@@ -275,6 +304,7 @@ export function useCodexConfigState({
     codexConfig,
     codexApiKey,
     codexBaseUrl,
+    codexModel,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -282,6 +312,7 @@ export function useCodexConfigState({
     setCodexCatalogModels,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
+    handleCodexModelChange,
     handleCodexConfigChange,
     resetCodexConfig,
     getCodexAuthApiKey,
