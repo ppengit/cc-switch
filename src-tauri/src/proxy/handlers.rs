@@ -1565,6 +1565,7 @@ fn build_codex_anthropic_sse_response(
     let usage_collector = if usage_logging_enabled(state) {
         let state = state.clone();
         let provider_id = ctx.provider.id.clone();
+        let provider_name = ctx.provider.name.clone();
         let request_model = ctx.request_model.clone();
         let fallback_model = ctx
             .outbound_model
@@ -1572,10 +1573,22 @@ fn build_codex_anthropic_sse_response(
             .unwrap_or_else(|| ctx.request_model.clone());
         let app_type_str = ctx.app_type_str;
         let start_time = ctx.start_time;
+        let request_id = ctx.request_id.clone();
         let session_id = ctx.session_id.clone();
+        let proxy_activity = state.proxy_activity.clone();
+        let app_handle = state.app_handle.clone();
+        let activity_update = ActivityModelUpdate::new(
+            proxy_activity,
+            app_handle,
+            request_id,
+            "codex".to_string(),
+            provider_id.clone(),
+            provider_name,
+        );
 
         Some(SseUsageCollector::new(
             start_time,
+            Some(activity_update),
             Some(codex_stream_usage_event_filter),
             move |events, first_token_ms| {
                 let usage = TokenUsage::from_codex_stream_events_auto(&events).unwrap_or_default();
@@ -1625,6 +1638,27 @@ fn build_codex_anthropic_sse_response(
         usage_collector,
         ctx.streaming_timeout_config(),
         connection_guard,
+        Some({
+            let proxy_activity = state.proxy_activity.clone();
+            let app_handle = state.app_handle.clone();
+            let request_id = ctx.request_id.clone();
+            let status_code = status.as_u16();
+            Arc::new(move || {
+                let proxy_activity = proxy_activity.clone();
+                let app_handle = app_handle.clone();
+                let request_id = request_id.clone();
+                tokio::spawn(async move {
+                    finish_request(
+                        &proxy_activity,
+                        app_handle.as_ref(),
+                        &request_id,
+                        Some(status_code),
+                        None,
+                    )
+                    .await;
+                });
+            }) as Arc<dyn Fn() + Send + Sync + 'static>
+        }),
     );
 
     let mut headers = axum::http::HeaderMap::new();

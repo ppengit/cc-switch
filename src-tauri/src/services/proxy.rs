@@ -160,6 +160,7 @@ impl ProxyService {
             AppType::Claude => crate::services::mcp::McpService::import_from_claude(&state),
             AppType::Codex => crate::services::mcp::McpService::import_from_codex(&state),
             AppType::Gemini => crate::services::mcp::McpService::import_from_gemini(&state),
+            AppType::GrokBuild => crate::services::mcp::McpService::import_from_grokbuild(&state),
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
                 Ok(0)
             }
@@ -721,6 +722,12 @@ impl ProxyService {
         ProviderService::live_settings_can_backfill_provider(db, app_type, live_config, provider)
     }
 
+    /// 更新 TOML 字符串中的 base_url（委托给 codex_config 共享实现）
+    fn update_toml_base_url(toml_str: &str, new_url: &str) -> String {
+        crate::codex_config::update_codex_toml_field(toml_str, "base_url", new_url)
+            .unwrap_or_else(|_| toml_str.to_string())
+    }
+
     fn rewrite_codex_base_urls_for_takeover(toml_str: &str, proxy_codex_base_url: &str) -> String {
         let mut doc = match toml_str.parse::<toml_edit::DocumentMut>() {
             Ok(doc) => doc,
@@ -813,52 +820,6 @@ impl ProxyService {
         )
         .map_err(|e| format!("构建 claude 有效配置失败: {e}"))?;
         Ok(effective_provider)
-    }
-
-    pub async fn sync_claude_live_from_provider_while_proxy_active(
-        &self,
-        provider: &Provider,
-    ) -> Result<(), String> {
-        let effective_provider = self.claude_provider_with_effective_settings(provider)?;
-        let mut effective_settings = effective_provider.settings_config.clone();
-        let (proxy_url, _) = self.build_proxy_urls().await?;
-
-        Self::apply_claude_takeover_fields_for_provider(
-            &mut effective_settings,
-            &proxy_url,
-            &effective_provider,
-        );
-        self.write_claude_live(&effective_settings)?;
-        Ok(())
-    }
-
-    pub async fn sync_codex_live_from_provider_while_proxy_active(
-        &self,
-        provider: &Provider,
-    ) -> Result<(), String> {
-        let existing_live = self.read_codex_live().ok();
-        let mut effective_settings = build_effective_settings_with_common_config(
-            self.db.as_ref(),
-            &AppType::Codex,
-            provider,
-        )
-        .map_err(|e| format!("构建 codex 有效配置失败: {e}"))?;
-        if let Some(existing_live) = existing_live.as_ref() {
-            self.preserve_toml_mcp_servers_from_existing_config(
-                &mut effective_settings,
-                existing_live,
-            )?;
-        }
-        let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
-
-        Self::apply_codex_takeover_fields_for_provider(
-            &mut effective_settings,
-            &proxy_codex_base_url,
-            provider,
-        )?;
-
-        self.write_codex_takeover_live_for_provider(&effective_settings, Some(provider))?;
-        Ok(())
     }
 
     pub async fn sync_grok_live_from_provider_while_proxy_active(
@@ -1051,7 +1012,10 @@ impl ProxyService {
         &self,
         app_type: &AppType,
     ) -> Result<(), String> {
-        if !matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        if !matches!(
+            app_type,
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
+        ) {
             return Err("该应用不支持代理接管".to_string());
         }
 
@@ -1059,6 +1023,17 @@ impl ProxyService {
             .takeover_restore_target_provider_for_app(app_type)
             .await?;
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
+        let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+
+        // Grok Build reuses live config + apply_grok_takeover_fields rather than
+        // the Claude/Codex/Gemini local access templates.
+        if matches!(app_type, AppType::GrokBuild) {
+            let mut live_config = self.read_grok_live()?;
+            Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
+            self.write_grok_live(&live_config)?;
+            return Ok(());
+        }
+
         let mut live_config = build_proxy_takeover_settings(
             self.db.as_ref(),
             app_type,
@@ -1090,6 +1065,7 @@ impl ProxyService {
                 Self::apply_gemini_takeover_fields(&mut live_config, &proxy_url);
                 self.write_live_config_for_app(app_type, &live_config)?;
             }
+            AppType::GrokBuild => unreachable!("handled above"),
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
                 unreachable!()
             }
@@ -2440,13 +2416,6 @@ impl ProxyService {
             }
         }
 
-        // Grok Build: keep its own provider namespace while reusing Responses forwarding.
-        if let Ok(mut live_config) = self.read_grok_live() {
-            Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
-            self.write_grok_live(&live_config)?;
-            log::info!("Grok Build Live 配置已接管，代理地址: {proxy_grok_base_url}");
-        }
-
         Ok(())
     }
 
@@ -2802,6 +2771,11 @@ impl ProxyService {
             AppType::Gemini => {
                 Self::apply_gemini_takeover_fields(&mut normalized, &proxy_url);
             }
+            AppType::GrokBuild => {
+                let proxy_grok_base_url =
+                    format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+                Self::apply_grok_takeover_fields(&mut normalized, &proxy_grok_base_url)?;
+            }
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {}
         }
 
@@ -2837,6 +2811,8 @@ impl ProxyService {
     ) -> Result<bool, String> {
         let (proxy_url, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
+        let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+
         Ok(match app_type {
             AppType::Claude => match self.read_claude_live() {
                 Ok(config) => Self::is_claude_live_effectively_taken_over(&config, &proxy_url),
@@ -2850,6 +2826,12 @@ impl ProxyService {
             },
             AppType::Gemini => match self.read_gemini_live() {
                 Ok(config) => Self::is_gemini_live_effectively_taken_over(&config, &proxy_url),
+                Err(_) => false,
+            },
+            AppType::GrokBuild => match self.read_grok_live() {
+                Ok(config) => {
+                    Self::is_grok_live_effectively_taken_over(&config, &proxy_grok_base_url)
+                }
                 Err(_) => false,
             },
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
@@ -3361,6 +3343,22 @@ impl ProxyService {
             .and_then(Value::as_str)
             .is_some_and(|config_toml| {
                 crate::grok_config::has_proxy_placeholder(config_toml, PROXY_TOKEN_PLACEHOLDER)
+            })
+    }
+
+    #[allow(dead_code)]
+    fn is_grok_live_effectively_taken_over(config: &Value, proxy_grok_base_url: &str) -> bool {
+        if !Self::is_grok_live_taken_over(config) {
+            return false;
+        }
+
+        config
+            .get("config")
+            .and_then(Value::as_str)
+            .is_some_and(|config_toml| {
+                crate::grok_config::base_url_matches(config_toml, |url| {
+                    Self::proxy_urls_equal(url, proxy_grok_base_url)
+                })
             })
     }
 

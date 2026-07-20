@@ -343,6 +343,11 @@ fn app_config_files_for(app_type: &AppType) -> Vec<(String, String, PathBuf)> {
                 crate::gemini_config::get_gemini_settings_path(),
             ),
         ],
+        AppType::GrokBuild => vec![(
+            "config".to_string(),
+            "config.toml".to_string(),
+            crate::grok_config::get_grok_config_path(),
+        )],
         AppType::OpenCode => vec![(
             "config".to_string(),
             "opencode.json".to_string(),
@@ -426,6 +431,8 @@ fn validate_app_config_file_content(
             }
             parse_json_object(content, label)
         }
+        (AppType::GrokBuild, "config") => crate::grok_config::validate_config_toml(content)
+            .map_err(|e| format!("{label} TOML 格式错误: {e}")),
         (AppType::OpenCode, "config") => {
             if trimmed.is_empty() {
                 return Err("opencode.json 不能为空；如不需要该文件，请保持文件不存在".to_string());
@@ -514,6 +521,18 @@ fn validate_app_config_template_files(
                 proxy_token,
                 "{}",
             ),
+            (AppType::GrokBuild, "config") => {
+                // Grok live uses /grokbuild/v1 under the proxy base URL.
+                let proxy_grok_base_url =
+                    format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+                render_template_preview(
+                    &file.content,
+                    &proxy_grok_base_url,
+                    proxy_codex_base_url,
+                    proxy_token,
+                    "",
+                )
+            }
             _ => file.content.clone(),
         };
 
@@ -756,6 +775,7 @@ pub async fn import_mcp_from_app_live(
         AppType::Claude => crate::services::McpService::import_from_claude(state.inner()),
         AppType::Codex => crate::services::McpService::import_from_codex(state.inner()),
         AppType::Gemini => crate::services::McpService::import_from_gemini(state.inner()),
+        AppType::GrokBuild => crate::services::McpService::import_from_grokbuild(state.inner()),
         AppType::OpenCode => crate::services::McpService::import_from_opencode(state.inner()),
         AppType::Hermes => crate::services::McpService::import_from_hermes(state.inner()),
         AppType::ClaudeDesktop => {

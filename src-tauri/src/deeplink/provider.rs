@@ -15,6 +15,7 @@ use std::str::FromStr;
 const DEFAULT_PROVIDER_TEMPLATE_MODEL: &str = "gpt-5.5";
 const DEFAULT_CLAUDE_TEMPLATE_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_GEMINI_TEMPLATE_MODEL: &str = "gemini-3.1-pro-preview";
+const DEFAULT_GROK_TEMPLATE_MODEL: &str = "grok-4.5";
 
 /// Import a provider from a deep link request
 ///
@@ -285,6 +286,12 @@ fn provider_template_model(provider: &Provider, app_type: &AppType) -> String {
             .unwrap_or_default()
             .trim()
             .to_string(),
+        AppType::GrokBuild => settings
+            .get("config")
+            .and_then(Value::as_str)
+            .and_then(crate::grok_config::extract_model_config)
+            .map(|config| config.model)
+            .unwrap_or_default(),
         AppType::OpenCode => settings
             .get("models")
             .and_then(Value::as_object)
@@ -317,6 +324,7 @@ fn default_provider_template_model_for_app(app_type: &AppType) -> &'static str {
     match app_type {
         AppType::Claude | AppType::ClaudeDesktop => DEFAULT_CLAUDE_TEMPLATE_MODEL,
         AppType::Gemini => DEFAULT_GEMINI_TEMPLATE_MODEL,
+        AppType::GrokBuild => DEFAULT_GROK_TEMPLATE_MODEL,
         _ => DEFAULT_PROVIDER_TEMPLATE_MODEL,
     }
 }
@@ -595,6 +603,67 @@ fn protect_provider_template_credentials(
                 &["env", "GEMINI_API_KEY"],
                 "apiKey",
             );
+        }
+        AppType::GrokBuild => {
+            // Credentials live inside the TOML `config` string (not JSON paths).
+            // Preserve non-empty current values when the provider template did not
+            // supply {baseUrl}/{apiKey} placeholders (or rendering left them empty).
+            if let Some(current_config) = current_settings.get("config").and_then(Value::as_str) {
+                let template_config =
+                    template.get("config").and_then(Value::as_str).unwrap_or("");
+                let mut config_text = rendered
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if config_text.trim().is_empty() {
+                    set_string_at_path(&mut rendered, &["config"], current_config);
+                } else {
+                    if let Some(current_base_url) =
+                        crate::grok_config::extract_base_url(current_config)
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                    {
+                        let next_base_url = crate::grok_config::extract_base_url(&config_text)
+                            .map(|value| value.trim().to_string())
+                            .unwrap_or_default();
+                        if next_base_url.is_empty() || !template_config.contains("{baseUrl}") {
+                            let keep_api_key =
+                                crate::grok_config::extract_inline_api_key(&config_text)
+                                    .or_else(|| {
+                                        crate::grok_config::extract_inline_api_key(current_config)
+                                    })
+                                    .unwrap_or_default();
+                            if let Ok(updated) = crate::grok_config::apply_proxy_takeover(
+                                &config_text,
+                                &current_base_url,
+                                &keep_api_key,
+                            ) {
+                                config_text = updated;
+                            }
+                        }
+                    }
+
+                    if let Some(current_api_key) =
+                        crate::grok_config::extract_inline_api_key(current_config)
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                    {
+                        let next_api_key = crate::grok_config::extract_inline_api_key(&config_text)
+                            .map(|value| value.trim().to_string())
+                            .unwrap_or_default();
+                        if next_api_key.is_empty() || !template_config.contains("{apiKey}") {
+                            if let Ok(updated) =
+                                crate::grok_config::update_api_key(&config_text, &current_api_key)
+                            {
+                                config_text = updated;
+                            }
+                        }
+                    }
+
+                    set_string_at_path(&mut rendered, &["config"], &config_text);
+                }
+            }
         }
         AppType::OpenCode => {
             preserve_non_empty_string(

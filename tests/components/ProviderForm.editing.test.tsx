@@ -561,7 +561,7 @@ describe("ProviderForm create mode", () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const submitted = onSubmit.mock.calls[0][0];
     const settingsConfig = JSON.parse(submitted.settingsConfig);
-    expect(settingsConfig.config).toContain('model = "gpt-5.5"');
+    expect(settingsConfig.config).toContain('model = "gpt-5.6"');
     expect(settingsConfig.config).not.toContain('model = ""');
     expect(settingsConfig.config).not.toContain("{model}");
   });
@@ -663,7 +663,7 @@ describe("ProviderForm create mode", () => {
     fireEvent.change(configEditor, {
       target: {
         value: configEditor.value.replace(
-          'model = "gpt-5.5"',
+          'model = "gpt-5.6"',
           'model = "provider-model"',
         ),
       },

@@ -139,6 +139,7 @@ describe("SettingsPage real general controls", () => {
         "claude-desktop": true,
         codex: true,
         gemini: false,
+        grokbuild: false,
         opencode: false,
         openclaw: false,
         hermes: false,

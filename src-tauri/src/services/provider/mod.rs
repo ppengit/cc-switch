@@ -4376,6 +4376,10 @@ impl ProviderService {
                 .pointer("/env/GOOGLE_GEMINI_BASE_URL")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            AppType::GrokBuild => settings
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(crate::grok_config::extract_base_url),
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes => None,
         }
     }

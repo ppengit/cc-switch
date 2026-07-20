@@ -522,6 +522,10 @@ export function GrokBuildProviderForm({
           onLocalProxyHeadersOverrideChange={setHeadersOverride}
           localProxyBodyOverride={bodyOverride}
           onLocalProxyBodyOverrideChange={setBodyOverride}
+          takeoverEnabled={false}
+          onTakeoverEnabledChange={() => {}}
+          modelRoutesEnabled={false}
+          onModelRoutesEnabledChange={() => {}}
         />
 
         <div className="space-y-2">

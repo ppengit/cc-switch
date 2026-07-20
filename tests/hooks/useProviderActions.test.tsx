@@ -60,6 +60,7 @@ const settingsApiApplyMock = vi.fn();
 const openclawApiGetModelCatalogMock = vi.fn();
 const openclawApiGetDefaultModelMock = vi.fn();
 const openclawApiSetDefaultModelMock = vi.fn();
+const proxyApiSwitchProxyProviderMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   providersApi: {
@@ -79,6 +80,10 @@ vi.mock("@/lib/api", () => ({
       openclawApiGetDefaultModelMock(...args),
     setDefaultModel: (...args: unknown[]) =>
       openclawApiSetDefaultModelMock(...args),
+  },
+  proxyApi: {
+    switchProxyProvider: (...args: unknown[]) =>
+      proxyApiSwitchProxyProviderMock(...args),
   },
 }));
 
@@ -118,6 +123,7 @@ beforeEach(() => {
   openclawApiGetModelCatalogMock.mockReset();
   openclawApiGetDefaultModelMock.mockReset();
   openclawApiSetDefaultModelMock.mockReset();
+  proxyApiSwitchProxyProviderMock.mockReset();
   toastSuccessMock.mockReset();
   toastErrorMock.mockReset();
   toastInfoMock.mockReset();
@@ -301,7 +307,8 @@ describe("useProviderActions", () => {
   });
 
   it("allows the built-in Codex official provider during takeover", async () => {
-    switchProviderMutateAsync.mockResolvedValueOnce(undefined);
+    // Takeover + proxy running uses hot-switch via proxyApi, not the provider mutation.
+    proxyApiSwitchProxyProviderMock.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();
     const provider = createProvider({
       id: "codex-official",
@@ -317,7 +324,11 @@ describe("useProviderActions", () => {
       await result.current.switchProvider(provider);
     });
 
-    expect(switchProviderMutateAsync).toHaveBeenCalledWith("codex-official");
+    expect(proxyApiSwitchProxyProviderMock).toHaveBeenCalledWith(
+      "codex",
+      "codex-official",
+    );
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
 

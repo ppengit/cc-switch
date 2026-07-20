@@ -117,32 +117,32 @@ const getLastCommandBody = (fetchSpy: FetchSpyLike, command: string) => {
   return bodies.at(-1);
 };
 
-const openModelTestAccordion = async (
+const openConnectivityCheckAccordion = async (
   user: ReturnType<typeof userEvent.setup>,
 ) => {
-  const modelTestHeading = await screen.findByText(
-    "settings.advanced.modelTest.title",
+  const connectivityHeading = await screen.findByText(
+    "settings.advanced.connectivityCheck.title",
   );
-  const modelTestTrigger = modelTestHeading.closest("button");
-  if (!modelTestTrigger) {
-    throw new Error("Model test accordion trigger not found");
+  const connectivityTrigger = connectivityHeading.closest("button");
+  if (!connectivityTrigger) {
+    throw new Error("Connectivity check accordion trigger not found");
   }
-  await user.click(modelTestTrigger);
+  await user.click(connectivityTrigger);
   await waitFor(() =>
     expect(screen.getByLabelText("streamCheck.timeout")).toBeInTheDocument(),
   );
 };
 
-const getModelTestPanelRoot = () => {
+const getConnectivityCheckPanelRoot = () => {
   const heading = screen.getByText("streamCheck.checkParams");
   const root = heading.parentElement?.parentElement;
   if (!root) {
-    throw new Error("Model test panel root not found");
+    throw new Error("Connectivity check panel root not found");
   }
   return root as HTMLElement;
 };
 
-describe("SettingsPage with real ModelTestConfigPanel", () => {
+describe("SettingsPage with real ConnectivityCheckConfigPanel", () => {
   beforeEach(() => {
     resetProviderState();
     setStreamCheckConfigState({
@@ -166,7 +166,7 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
       ).toHaveAttribute("data-state", "active"),
     );
 
-    await openModelTestAccordion(user);
+    await openConnectivityCheckAccordion(user);
 
     const timeoutInput = screen.getByLabelText("streamCheck.timeout");
     const maxRetriesInput = screen.getByLabelText("streamCheck.maxRetries");
@@ -186,7 +186,7 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
     await user.type(degradedThresholdInput, "9000");
 
     await user.click(
-      within(getModelTestPanelRoot()).getByRole("button", {
+      within(getConnectivityCheckPanelRoot()).getByRole("button", {
         name: "common.save",
       }),
     );
@@ -224,7 +224,7 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
       ).toHaveAttribute("data-state", "active"),
     );
 
-    await openModelTestAccordion(user);
+    await openConnectivityCheckAccordion(user);
 
     const timeoutInput = screen.getByLabelText("streamCheck.timeout");
     const maxRetriesInput = screen.getByLabelText("streamCheck.maxRetries");
@@ -237,7 +237,7 @@ describe("SettingsPage with real ModelTestConfigPanel", () => {
     await user.clear(degradedThresholdInput);
 
     await user.click(
-      within(getModelTestPanelRoot()).getByRole("button", {
+      within(getConnectivityCheckPanelRoot()).getByRole("button", {
         name: "common.save",
       }),
     );

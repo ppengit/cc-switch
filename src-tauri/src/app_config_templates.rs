@@ -1,11 +1,12 @@
 use crate::app_config::AppType;
 
-const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.6";
 const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_CLAUDE_HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
 const DEFAULT_CLAUDE_SONNET_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_CLAUDE_OPUS_MODEL: &str = "claude-opus-4-7";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.1-pro-preview";
+const DEFAULT_GROK_MODEL: &str = "grok-4.5";
 
 /// One editable file inside an application's access/live configuration template.
 ///
@@ -81,6 +82,18 @@ pub fn default_template_files_for(app_type: &AppType) -> Vec<AppConfigTemplateFi
                 content: format!("{{\n  \"mcpServers\": {{mcpConfig}},\n  \"model\": {{\n    \"name\": \"{DEFAULT_GEMINI_MODEL}\"\n  }},\n  \"security\": {{\n    \"auth\": {{\n      \"selectedType\": \"gemini-api-key\"\n    }}\n  }}\n}}\n"),
             },
         ],
+        // Grok Build live settings are `{ "config": "<toml string>" }` written to ~/.grok/config.toml.
+        // Takeover rewrites base_url/api_key from live content; this template still produces valid
+        // settings when rendered via render_access_template with {proxyBaseUrl}/{proxyToken}.
+        // Callers that need the Grok proxy path pass format!("{}/grokbuild/v1", proxy_url) as
+        // the proxyBaseUrl binding (see build_proxy_takeover_settings).
+        AppType::GrokBuild => vec![AppConfigTemplateFile {
+            key: "config".to_string(),
+            label: "config.toml".to_string(),
+            content: format!(
+                "[models]\ndefault = \"{DEFAULT_GROK_MODEL}\"\n\n[model.\"{DEFAULT_GROK_MODEL}\"]\nmodel = \"{DEFAULT_GROK_MODEL}\"\nbase_url = \"{{proxyBaseUrl}}\"\nname = \"Grok\"\napi_key = \"{{proxyToken}}\"\napi_backend = \"responses\"\ncontext_window = 500000\n"
+            ),
+        }],
         AppType::OpenCode => vec![AppConfigTemplateFile {
             key: "config".to_string(),
             label: "opencode.json".to_string(),
@@ -163,5 +176,16 @@ mod tests {
 
         assert!(env.contains("GEMINI_MODEL=gemini-3.1-pro-preview"));
         assert!(settings.contains("\"name\": \"gemini-3.1-pro-preview\""));
+    }
+
+    #[test]
+    fn grokbuild_default_template_uses_grok_model_and_proxy_placeholders() {
+        let content = content_for(AppType::GrokBuild, "config");
+
+        assert!(content.contains("default = \"grok-4.5\""));
+        assert!(content.contains("[model.\"grok-4.5\"]"));
+        assert!(content.contains("base_url = \"{proxyBaseUrl}\""));
+        assert!(content.contains("api_key = \"{proxyToken}\""));
+        assert!(content.contains("api_backend = \"responses\""));
     }
 }

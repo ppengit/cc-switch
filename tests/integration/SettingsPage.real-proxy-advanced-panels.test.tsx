@@ -173,12 +173,13 @@ describe("SettingsPage real proxy advanced panels", () => {
       enabled: true,
       requestThinkingSignature: true,
       requestThinkingBudget: true,
+      requestMediaFallback: true,
+      requestMediaHeuristic: true,
     };
     let optimizerConfig = {
       enabled: false,
       thinkingOptimizer: true,
       cacheInjection: true,
-      cacheTtl: "1h",
     };
     const rectifierSaves: Array<Record<string, unknown>> = [];
     const optimizerSaves: Array<Record<string, unknown>> = [];
@@ -213,14 +214,16 @@ describe("SettingsPage real proxy advanced panels", () => {
     await clickSwitchNear(user, "settings.advanced.rectifier.enabled");
     await clickSwitchNear(user, "settings.advanced.optimizer.enabled");
 
-    const ttlSelect = await screen.findByRole("combobox");
-    fireEvent.change(ttlSelect, { target: { value: "5m" } });
+    // Upstream dropped the cache TTL combobox; only toggle coverage remains.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 
     await waitFor(() =>
       expect(rectifierSaves).toContainEqual({
         enabled: false,
         requestThinkingSignature: true,
         requestThinkingBudget: true,
+        requestMediaFallback: true,
+        requestMediaHeuristic: true,
       }),
     );
     await waitFor(() =>
@@ -228,15 +231,6 @@ describe("SettingsPage real proxy advanced panels", () => {
         enabled: true,
         thinkingOptimizer: true,
         cacheInjection: true,
-        cacheTtl: "1h",
-      }),
-    );
-    await waitFor(() =>
-      expect(optimizerSaves).toContainEqual({
-        enabled: true,
-        thinkingOptimizer: true,
-        cacheInjection: true,
-        cacheTtl: "5m",
       }),
     );
   });

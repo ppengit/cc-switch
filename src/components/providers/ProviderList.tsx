@@ -852,6 +852,12 @@ const getEndpointFromProvider = (provider: Provider, appId: AppId) => {
     return firstNonEmpty(cfg.env?.GOOGLE_GEMINI_BASE_URL);
   }
 
+  if (appId === "grokbuild") {
+    const configToml = typeof cfg.config === "string" ? cfg.config : "";
+    const baseMatch = configToml.match(/base_url\s*=\s*"([^"]+)"/);
+    return baseMatch?.[1]?.trim() || "";
+  }
+
   if (appId === "opencode") {
     return firstNonEmpty(cfg.options?.baseURL);
   }
@@ -899,6 +905,31 @@ const getModelDisplayByApp = (provider: Provider, appId: AppId) => {
   if (appId === "gemini") {
     const model = firstNonEmpty(cfg.env?.GEMINI_MODEL);
     return model || "-";
+  }
+
+  if (appId === "grokbuild") {
+    try {
+      const configToml =
+        typeof cfg.config === "string" ? cfg.config : undefined;
+      if (configToml?.trim()) {
+        // Lazy parse: reuse simple TOML default/model extraction without hard dependency path.
+        const defaultMatch = configToml.match(
+          /\[models\][\s\S]*?default\s*=\s*"([^"]+)"/,
+        );
+        const profile = defaultMatch?.[1]?.trim();
+        if (profile) {
+          const modelMatch = configToml.match(
+            new RegExp(
+              `\\[model\\."?${profile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"?\\][\\s\\S]*?model\\s*=\\s*"([^"]+)"`,
+            ),
+          );
+          return modelMatch?.[1]?.trim() || profile;
+        }
+      }
+    } catch {
+      // fall through
+    }
+    return "-";
   }
 
   if (appId === "opencode") {
@@ -1030,6 +1061,18 @@ const buildTemplateByApp = (appId: AppId): AppConfigTemplateFile[] => {
         label: "config.yaml",
         content:
           'model:\n  default: "gpt-5.5"\n  provider: "openai"\n  base_url: "https://api.openai.com/v1"\n  context_length: 400000\n  max_tokens: 128000\nagent:\n  reasoning_effort: "high"\ncustom_providers:\n  - name: "openai"\n    base_url: "https://api.openai.com/v1"\n    api_key: ""\n    api_mode: "codex_responses"\n    model: "gpt-5.5"\n    models:\n      gpt-5.5:\n        context_length: 400000\nmcp_servers: {}\n',
+      },
+    ];
+  }
+
+  if (appId === "grokbuild") {
+    return [
+      {
+        key: "config",
+        label: "config.toml",
+        // {proxyBaseUrl} is rendered as the Grok proxy path (…/grokbuild/v1) by the backend.
+        content:
+          '[models]\ndefault = "grok-4.5"\n\n[model."grok-4.5"]\nmodel = "grok-4.5"\nbase_url = "{proxyBaseUrl}"\nname = "Grok 4.5"\napi_key = "{proxyToken}"\napi_backend = "responses"\ncontext_window = 500000\n\n{mcpConfig}\n',
       },
     ];
   }

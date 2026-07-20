@@ -152,6 +152,7 @@ describe("SettingsPage general tab with real auto-save settings", () => {
         "claude-desktop": false,
         codex: true,
         gemini: false,
+        grokbuild: false,
         opencode: false,
         openclaw: false,
         hermes: false,

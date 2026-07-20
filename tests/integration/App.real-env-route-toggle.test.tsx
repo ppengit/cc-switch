@@ -174,6 +174,7 @@ describe("App real env banner and Claude Desktop route toggle", () => {
       claude: false,
       codex: false,
       gemini: false,
+      grokbuild: false,
       opencode: false,
       openclaw: false,
       hermes: false,

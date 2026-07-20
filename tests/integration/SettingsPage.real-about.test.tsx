@@ -179,6 +179,7 @@ describe("SettingsPage real about section", () => {
         "claude",
         "codex",
         "gemini",
+        "grok",
         "hermes",
         "openclaw",
         "opencode",

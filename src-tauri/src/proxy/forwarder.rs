@@ -1291,7 +1291,7 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度
                     // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
-                    let category = self.categorize_proxy_error(app_type, endpoint, &e, provider);
+                    let category = self.categorize_proxy_error(app_type, endpoint, &e, &provider);
 
                     match category {
                         ErrorCategory::ProviderCapability => {

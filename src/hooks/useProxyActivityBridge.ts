@@ -21,6 +21,7 @@ const APP_LABELS: Record<AppId, string> = {
   "claude-desktop": "Claude Desktop",
   codex: "Codex",
   gemini: "Gemini",
+  grokbuild: "Grok Build",
   opencode: "OpenCode",
   openclaw: "OpenClaw",
   hermes: "Hermes",

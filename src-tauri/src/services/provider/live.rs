@@ -565,7 +565,11 @@ pub(crate) fn inject_db_managed_mcp_into_settings(
                 config_obj.insert("mcpServers".to_string(), mcp_value);
             }
         }
+        // Grok Build MCP is projected into live config.toml via mcp/grokbuild.rs
+        // (same [mcp_servers] layout as Codex). Provider snapshots strip MCP
+        // separately; leave takeover/template injection as a no-op here.
         AppType::Claude
+        | AppType::GrokBuild
         | AppType::OpenCode
         | AppType::OpenClaw
         | AppType::Hermes
@@ -1018,6 +1022,29 @@ pub(crate) fn build_proxy_takeover_settings(
 
             inject_db_managed_mcp_into_settings(db, app_type, &mut result)?;
             Ok(result)
+        }
+        AppType::GrokBuild => {
+            let template = get_template_content_by_key(db, app_type, "config");
+            // Grok clients talk to the local proxy under /grokbuild/v1 (Responses-compatible).
+            let proxy_grok_base_url =
+                format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+            let mut config_text = render_access_template(
+                &template,
+                &proxy_grok_base_url,
+                proxy_codex_base_url,
+                proxy_token,
+                "",
+            );
+            if !config_text.trim().is_empty() {
+                crate::grok_config::validate_config_toml(&config_text).map_err(|e| {
+                    AppError::Message(format!("Invalid rendered Grok Build config template: {e}"))
+                })?;
+                if !config_text.ends_with('\n') {
+                    config_text.push('\n');
+                }
+            }
+
+            Ok(json!({ "config": config_text }))
         }
         AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop => {
             Err(AppError::Message("该应用不支持代理接管".to_string()))
