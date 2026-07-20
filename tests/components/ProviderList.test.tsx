@@ -521,6 +521,111 @@ describe("ProviderList Component", () => {
     });
   });
 
+  it("keeps continuous order numbers for mixed failover queue membership", async () => {
+    // 禁用项在前、启用项在后时，旧逻辑会把启用项的队列优先级 1..k
+    // 与禁用项的列表位置 1..m 混用，出现 1,2,3,1,2 这类重复序号。
+    const disabledA = createProvider({
+      id: "disabled-a",
+      name: "Disabled A",
+      sortIndex: 0,
+    });
+    const disabledB = createProvider({
+      id: "disabled-b",
+      name: "Disabled B",
+      sortIndex: 1,
+    });
+    const disabledC = createProvider({
+      id: "disabled-c",
+      name: "Disabled C",
+      sortIndex: 2,
+    });
+    const enabledD = createProvider({
+      id: "enabled-d",
+      name: "Enabled D",
+      sortIndex: 3,
+    });
+    const enabledE = createProvider({
+      id: "enabled-e",
+      name: "Enabled E",
+      sortIndex: 4,
+    });
+    const enabledF = createProvider({
+      id: "enabled-f",
+      name: "Enabled F",
+      sortIndex: 5,
+    });
+    const enabledG = createProvider({
+      id: "enabled-g",
+      name: "Enabled G",
+      sortIndex: 6,
+    });
+    const enabledH = createProvider({
+      id: "enabled-h",
+      name: "Enabled H",
+      sortIndex: 7,
+    });
+
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [
+      { providerId: "enabled-d", providerName: "Enabled D" },
+      { providerId: "enabled-e", providerName: "Enabled E" },
+      { providerId: "enabled-f", providerName: "Enabled F" },
+      { providerId: "enabled-g", providerName: "Enabled G" },
+      { providerId: "enabled-h", providerName: "Enabled H" },
+    ];
+
+    const sortedProviders = [
+      disabledA,
+      disabledB,
+      disabledC,
+      enabledD,
+      enabledE,
+      enabledF,
+      enabledG,
+      enabledH,
+    ];
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders,
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={Object.fromEntries(
+          sortedProviders.map((provider) => [provider.id, provider]),
+        )}
+        currentProviderId=""
+        appId="claude"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const rows = screen
+      .getAllByRole("row")
+      .filter((row) =>
+        sortedProviders.some((provider) =>
+          row.textContent?.includes(provider.name),
+        ),
+      );
+
+    expect(rows).toHaveLength(8);
+
+    const orderNumbers = rows.map((row) => {
+      const cells = within(row).getAllByRole("cell");
+      // 列：选择 / 序号 / 名称 / ...
+      return cells[1]?.textContent?.replace(/\s/g, "") ?? "";
+    });
+
+    expect(orderNumbers).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]);
+  });
+
   it("persists model-name sorting with enabled providers first", async () => {
     const providerAlpha = createProvider({
       id: "alpha",

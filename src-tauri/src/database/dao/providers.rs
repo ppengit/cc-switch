@@ -587,7 +587,7 @@ impl Database {
     }
 
     /// 计算指定 app 下一个可用的 sort_index（追加到末尾）。
-    fn next_sort_index_for_app(&self, app_type: &str) -> Result<usize, AppError> {
+    pub fn next_sort_index_for_app(&self, app_type: &str) -> Result<usize, AppError> {
         let conn = lock_conn!(self.conn);
         let max: Option<i64> = conn
             .query_row(

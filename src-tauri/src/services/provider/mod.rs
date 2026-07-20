@@ -4306,6 +4306,13 @@ impl ProviderService {
             Self::disable_other_upstream_admission_retry_providers(state, &app_type, &provider.id)?;
         }
 
+        // 未指定 sort_index 时追加到当前 app 末尾，避免多个 NULL 在多次增删后
+        // 与已有序号交错，导致前端展示队列不稳定。
+        if provider.sort_index.is_none() {
+            provider.sort_index =
+                Some(state.db.next_sort_index_for_app(app_type.as_str())?);
+        }
+
         // Save to database
         state.db.save_provider(app_type.as_str(), &provider)?;
 
@@ -4422,6 +4429,14 @@ impl ProviderService {
         Self::validate_provider_settings(&app_type, &provider)?;
         normalize_provider_common_config_for_storage(state.db.as_ref(), &app_type, &mut provider)?;
         Self::normalize_usage_script_credential_overrides(&app_type, &mut provider);
+
+        // 编辑提交若未带 sort_index，保留库中原值，避免多次编辑把序号清空后
+        // 与后续新增供应商发生排序碰撞。
+        if provider.sort_index.is_none() {
+            if let Some(existing) = existing_provider.as_ref() {
+                provider.sort_index = existing.sort_index;
+            }
+        }
 
         if provider_id_changed {
             if !app_type.is_additive_mode() {

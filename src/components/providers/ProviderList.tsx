@@ -1762,8 +1762,11 @@ export function ProviderList({
               ? "live_current"
               : "inactive";
 
-      const orderNumber =
-        failoverPriority ?? (sortedIndexMap.get(provider.id) ?? 0) + 1;
+      // 序号始终按展示队列（sort_index 排序后的位置）连续编号 1..n。
+      // 不能复用 failoverPriority：故障转移优先级只在“队列内”从 1 起算，
+      // 未入队供应商若再回落到列表位置，会出现 1..k 与 1..m 两套序号交错/重复
+      // （例如启用 5 个显示 12345，禁用 3 个又显示 123）。
+      const orderNumber = (sortedIndexMap.get(provider.id) ?? 0) + 1;
 
       const endpoint = normalizeOptionalUrl(
         getEndpointFromProvider(provider, appId),
