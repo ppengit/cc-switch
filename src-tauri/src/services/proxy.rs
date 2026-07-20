@@ -976,12 +976,50 @@ impl ProxyService {
                         existing_live,
                     )?;
                 }
-                Self::apply_codex_takeover_fields(&mut effective_settings, &proxy_codex_base_url);
-                Self::apply_codex_takeover_provider_identity_fields(
+
+                let is_official =
+                    crate::proxy::providers::is_codex_official_provider(provider);
+                if is_official {
+                    // Official ChatGPT route: project dedicated model_provider pointing
+                    // at local proxy with requires_openai_auth; never inject PROXY_MANAGED.
+                    let config_str = effective_settings
+                        .get("config")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let updated = Self::apply_codex_proxy_toml_config_for_provider(
+                        config_str,
+                        &proxy_codex_base_url,
+                        Some(provider),
+                    )?;
+                    if let Some(root) = effective_settings.as_object_mut() {
+                        root.insert("config".to_string(), json!(updated));
+                    }
+                } else {
+                    Self::apply_codex_takeover_fields(
+                        &mut effective_settings,
+                        &proxy_codex_base_url,
+                    );
+                    Self::apply_codex_takeover_provider_identity_fields(
+                        &mut effective_settings,
+                        provider,
+                    )?;
+                    let config_str = effective_settings
+                        .get("config")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let updated = Self::apply_codex_proxy_toml_config_for_provider(
+                        config_str,
+                        &proxy_codex_base_url,
+                        Some(provider),
+                    )?;
+                    if let Some(root) = effective_settings.as_object_mut() {
+                        root.insert("config".to_string(), json!(updated));
+                    }
+                }
+                Self::attach_codex_model_catalog_from_provider(
                     &mut effective_settings,
-                    provider,
-                )?;
-                Self::apply_codex_takeover_fields(&mut effective_settings, &proxy_codex_base_url);
+                    Some(provider),
+                );
                 self.write_codex_takeover_live_for_provider(&effective_settings, Some(provider))?;
             }
             AppType::Gemini => {
@@ -2466,11 +2504,13 @@ impl ProxyService {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let codex_provider = current_provider.as_ref();
+                // Must unwrap Result to a plain TOML string — json!(Result) serializes as
+                // {"Ok":"..."} and later as_str() fails, wiping config.toml content.
                 let updated_config = Self::apply_codex_proxy_toml_config_for_provider(
                     config_str,
                     &proxy_codex_base_url,
                     codex_provider,
-                );
+                )?;
                 live_config["config"] = json!(updated_config);
                 Self::attach_codex_model_catalog_from_provider(&mut live_config, codex_provider);
 
@@ -2554,19 +2594,24 @@ impl ProxyService {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let codex_provider = current_provider.as_ref();
-                    let updated_config = Self::apply_codex_proxy_toml_config_for_provider(
+                    match Self::apply_codex_proxy_toml_config_for_provider(
                         config_str,
                         &proxy_codex_base_url,
                         codex_provider,
-                    );
-                    live_config["config"] = json!(updated_config);
-                    Self::attach_codex_model_catalog_from_provider(
-                        &mut live_config,
-                        codex_provider,
-                    );
-
-                    let _ =
-                        self.write_codex_takeover_live_for_provider(&live_config, codex_provider);
+                    ) {
+                        Ok(updated_config) => {
+                            live_config["config"] = json!(updated_config);
+                            Self::attach_codex_model_catalog_from_provider(
+                                &mut live_config,
+                                codex_provider,
+                            );
+                            let _ = self
+                                .write_codex_takeover_live_for_provider(&live_config, codex_provider);
+                        }
+                        Err(err) => {
+                            log::warn!("Codex 接管投影失败，跳过 live 重写: {err}");
+                        }
+                    }
                 }
             }
             AppType::Gemini => {
@@ -3482,13 +3527,9 @@ impl ProxyService {
             AppType::GrokBuild => serde_json::to_string(&effective_settings)
                 .map_err(|e| format!("序列化 Grok Build 配置失败: {e}"))?,
             AppType::Gemini => {
-                // Gemini takeover 仅修改 .env；settings.json（含 mcpServers）保持原样。
-                let env_backup = if let Some(env) = effective_settings.get("env") {
-                    json!({ "env": env })
-                } else {
-                    json!({ "env": {} })
-                };
-                serde_json::to_string(&env_backup)
+                // Restore after takeover needs both .env (endpoint/key) and
+                // settings.json (theme, mcpServers, etc.). Keep full SSOT snapshot.
+                serde_json::to_string(&effective_settings)
                     .map_err(|e| format!("序列化 Gemini 配置失败: {e}"))?
             }
             _ => return Err(format!("未知的应用类型: {app_type}")),
@@ -3768,6 +3809,20 @@ impl ProxyService {
                 "[hot_switch] {} switch_epoch -> {} (target={})",
                 app_type_enum.as_str(),
                 new_epoch,
+                provider.id
+            );
+        }
+
+        // Manual/hot switch to a provider is an explicit recovery intent: clear
+        // health + circuit-breaker failure counters for the chosen target so it
+        // is not immediately treated as open after a previous outage.
+        if let Err(error) = self
+            .reset_provider_recovery_state(&provider.id, app_type)
+            .await
+        {
+            log::warn!(
+                "热切换后重置 {} 供应商 {} 恢复状态失败: {error}",
+                app_type,
                 provider.id
             );
         }
@@ -4216,6 +4271,54 @@ impl ProxyService {
         Ok(merged)
     }
 
+    fn live_codex_auth_has_native_oauth() -> bool {
+        let Ok(live_auth) =
+            crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())
+        else {
+            return false;
+        };
+        let has_tokens = live_auth
+            .get("tokens")
+            .and_then(Value::as_object)
+            .is_some_and(|tokens| {
+                tokens
+                    .get("access_token")
+                    .and_then(Value::as_str)
+                    .is_some_and(|token| !token.trim().is_empty())
+            });
+        let is_chatgpt = live_auth
+            .get("auth_mode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("chatgpt"));
+        has_tokens || is_chatgpt
+    }
+
+    fn write_codex_takeover_config_only_for_provider(
+        &self,
+        config: &Value,
+        provider: Option<&Provider>,
+        auth_for_token: &Value,
+    ) -> Result<(), String> {
+        let config_str = config.get("config").and_then(|v| v.as_str()).unwrap_or("");
+        let profile = provider
+            .map(crate::proxy::providers::resolve_codex_catalog_tool_profile)
+            .unwrap_or_else(|| {
+                crate::codex_config::CodexCatalogToolProfile::from_api_format(
+                    provider.and_then(|p| p.meta.as_ref()?.api_format.as_deref()),
+                )
+            });
+        let prepared_config =
+            crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
+                config, config_str, profile,
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+        let live_config =
+            crate::codex_config::prepare_codex_provider_live_config(auth_for_token, &prepared_config)
+                .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+        crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))
+    }
+
     fn write_codex_takeover_live_for_provider(
         &self,
         config: &Value,
@@ -4244,11 +4347,19 @@ impl ProxyService {
             return Ok(());
         }
 
-        let result = if !crate::settings::preserve_codex_official_auth_on_switch() {
-            if let Some(auth) = config
-                .get("auth")
-                .filter(|auth| Self::codex_auth_has_proxy_placeholder(auth))
-            {
+        // Native ChatGPT OAuth in live auth.json must never be clobbered with
+        // PROXY_MANAGED. Placeholder tokens only belong in config.toml bearer.
+        // This is independent of the legacy "preserve official auth on switch" toggle.
+        let preserve_native_oauth = Self::live_codex_auth_has_native_oauth()
+            || crate::settings::preserve_codex_official_auth_on_switch();
+
+        let result = if let Some(auth) = config
+            .get("auth")
+            .filter(|auth| Self::codex_auth_has_proxy_placeholder(auth))
+        {
+            if preserve_native_oauth {
+                self.write_codex_takeover_config_only_for_provider(config, provider, auth)
+            } else {
                 let mut config = config.clone();
                 if let Some(root) = config.as_object_mut() {
                     root.insert(
@@ -4257,31 +4368,6 @@ impl ProxyService {
                     );
                 }
                 self.write_codex_live_for_provider(&config, provider)
-            } else {
-                self.write_codex_live_for_provider(config, provider)
-            }
-        } else if crate::settings::preserve_codex_official_auth_on_switch() {
-            if let Some(auth) = config
-                .get("auth")
-                .filter(|auth| Self::codex_auth_has_proxy_placeholder(auth))
-            {
-                let config_str = config.get("config").and_then(|v| v.as_str()).unwrap_or("");
-                let profile = crate::codex_config::CodexCatalogToolProfile::from_api_format(
-                    provider.and_then(|p| p.meta.as_ref()?.api_format.as_deref()),
-                );
-                let prepared_config =
-                    crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
-                        config, config_str, profile,
-                    )
-                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                let live_config =
-                    crate::codex_config::prepare_codex_provider_live_config(auth, &prepared_config)
-                        .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
-                    .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
-                Ok(())
-            } else {
-                self.write_codex_live_for_provider(config, provider)
             }
         } else {
             self.write_codex_live_for_provider(config, provider)

@@ -1482,6 +1482,38 @@ impl Database {
         } else {
             "''"
         };
+        // Legacy rollups may predate app_type; adapt SELECT so sequential
+        // migrations from ancient schemas (e.g. v12 test fixtures) still work.
+        let has_app_type = Self::has_column(conn, "usage_daily_rollups", "app_type")?;
+        let app_type_expr = if has_app_type {
+            "app_type"
+        } else {
+            "''"
+        };
+        let has_provider_id = Self::has_column(conn, "usage_daily_rollups", "provider_id")?;
+        let provider_id_expr = if has_provider_id {
+            "provider_id"
+        } else {
+            "''"
+        };
+        let has_model = Self::has_column(conn, "usage_daily_rollups", "model")?;
+        let model_expr = if has_model { "model" } else { "''" };
+        let col = |name: &str, default: &str| -> Result<String, AppError> {
+            Ok(if Self::has_column(conn, "usage_daily_rollups", name)? {
+                name.to_string()
+            } else {
+                default.to_string()
+            })
+        };
+        let date_expr = col("date", "''")?;
+        let request_count_expr = col("request_count", "0")?;
+        let success_count_expr = col("success_count", "0")?;
+        let input_tokens_expr = col("input_tokens", "0")?;
+        let output_tokens_expr = col("output_tokens", "0")?;
+        let cache_read_expr = col("cache_read_tokens", "0")?;
+        let cache_creation_expr = col("cache_creation_tokens", "0")?;
+        let total_cost_expr = col("total_cost_usd", "'0'")?;
+        let avg_latency_expr = col("avg_latency_ms", "0")?;
         let sql = format!(
             "DROP TABLE IF EXISTS usage_daily_rollups_v17;
              ALTER TABLE usage_daily_rollups RENAME TO usage_daily_rollups_v17;
@@ -1506,9 +1538,9 @@ impl Database {
                  (date, app_type, provider_id, model, request_model, pricing_model,
                   request_count, success_count, input_tokens, output_tokens,
                   cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms)
-             SELECT date, app_type, provider_id, model, {request_model_expr}, {pricing_model_expr},
-                  request_count, success_count, input_tokens, output_tokens,
-                  cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms
+             SELECT {date_expr}, {app_type_expr}, {provider_id_expr}, {model_expr}, {request_model_expr}, {pricing_model_expr},
+                  {request_count_expr}, {success_count_expr}, {input_tokens_expr}, {output_tokens_expr},
+                  {cache_read_expr}, {cache_creation_expr}, {total_cost_expr}, {avg_latency_expr}
              FROM usage_daily_rollups_v17;
              DROP TABLE usage_daily_rollups_v17;"
         );
