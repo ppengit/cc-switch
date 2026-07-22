@@ -14,6 +14,7 @@ use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::usage_stats::{
+    archive_without_live_duplicate_filter, effective_archive_usage_log_filter,
     effective_usage_log_filter, find_model_pricing, should_skip_session_insert, DedupKey,
 };
 use rust_decimal::Decimal;
@@ -475,8 +476,7 @@ fn insert_session_log_entry(
         ),
     };
 
-    let inserted_rows = conn
-        .execute(
+    conn.execute(
             "INSERT OR IGNORE INTO proxy_request_logs (
             request_id, provider_id, app_type, model, request_model,
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -513,11 +513,6 @@ fn insert_session_log_entry(
         )
         .map_err(|e| AppError::Database(format!("插入会话日志失败: {e}")))?;
 
-    // 仅在确实写入新行时通知前端，避免 INSERT OR IGNORE 跳过时产生空刷新
-    if inserted_rows > 0 {
-        crate::usage_events::notify_log_recorded();
-    }
-
     Ok(true)
 }
 
@@ -533,14 +528,42 @@ fn find_model_pricing_for_session(
 pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>, AppError> {
     let conn = lock_conn!(db.conn);
 
-    let effective_filter = effective_usage_log_filter("l");
+    let detail_filter = effective_usage_log_filter("l");
+    let archive_filter = effective_archive_usage_log_filter("a");
+    let archive_distinct_filter = archive_without_live_duplicate_filter("a");
+    // 明细和逐请求归档仍可按请求指纹做跨源去重。分钟/日来源汇总则是同一
+    // savepoint 内从前一层移出的已定稿事实，不能再尝试用聚合行反推指纹；
+    // 维护事务保证四层互不重叠，因此直接累加可保留每个 data_source 的总数。
     let sql = format!(
-        "SELECT COALESCE(l.data_source, 'proxy') as ds, COUNT(*) as cnt,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost
-         FROM proxy_request_logs l
-         WHERE {effective_filter}
+        "SELECT ds, SUM(cnt) AS request_count, SUM(cost) AS total_cost
+         FROM (
+             SELECT COALESCE(l.data_source, 'proxy') as ds, COUNT(*) as cnt,
+                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost
+             FROM proxy_request_logs l
+             WHERE {detail_filter}
+             GROUP BY ds
+             UNION ALL
+             SELECT COALESCE(a.data_source, 'proxy') as ds, COUNT(*) as cnt,
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as cost
+             FROM usage_request_stats_archive a
+             WHERE {archive_filter}
+               AND {archive_distinct_filter}
+             GROUP BY ds
+             UNION ALL
+             SELECT COALESCE(m.data_source, 'proxy') as ds,
+                    COALESCE(SUM(m.request_count), 0) as cnt,
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0) as cost
+             FROM usage_minute_rollups m
+             GROUP BY ds
+             UNION ALL
+             SELECT COALESCE(d.data_source, 'proxy') as ds,
+                    COALESCE(SUM(d.request_count), 0) as cnt,
+                    COALESCE(SUM(CAST(d.total_cost_usd AS REAL)), 0) as cost
+             FROM usage_daily_data_source_rollups d
+             GROUP BY ds
+         )
          GROUP BY ds
-         ORDER BY cnt DESC"
+         ORDER BY request_count DESC, ds ASC"
     );
 
     let mut stmt = conn.prepare(&sql)?;
@@ -693,6 +716,161 @@ mod tests {
             row.get(0)
         })?;
         assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_data_source_breakdown_merges_compacted_facts_without_double_counting(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    "live-proxy",
+                    "provider-live",
+                    "codex",
+                    "gpt-5.4",
+                    100,
+                    20,
+                    10,
+                    0,
+                    "0.10",
+                    20,
+                    200,
+                    1_000,
+                    "proxy",
+                ],
+            )?;
+            // 该会话事实与实时代理请求匹配，必须由其他用量查询也使用的
+            // raw/archive 过滤器排除。
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    "live-session-duplicate",
+                    "_codex_session",
+                    "codex",
+                    "gpt-5.4",
+                    100,
+                    20,
+                    10,
+                    0,
+                    "0.10",
+                    0,
+                    200,
+                    1_030,
+                    "codex_session",
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_request_stats_archive (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, status_code, created_at, data_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    "archive-session",
+                    "_codex_session",
+                    "codex",
+                    "gpt-5.4",
+                    80,
+                    16,
+                    8,
+                    0,
+                    "0.20",
+                    200,
+                    2_000,
+                    "codex_session",
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_minute_rollups (
+                    minute_start, app_type, provider_id, model, data_source,
+                    request_count, total_cost_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    700_i64,
+                    "codex",
+                    "provider-minute",
+                    "gpt-5.4",
+                    "proxy",
+                    7_i64,
+                    "0.70"
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_minute_rollups (
+                    minute_start, app_type, provider_id, model, data_source,
+                    request_count, total_cost_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    760_i64,
+                    "codex",
+                    "provider-minute",
+                    "gpt-5.4",
+                    "proxy",
+                    2_i64,
+                    "0.20"
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_minute_rollups (
+                    minute_start, app_type, provider_id, model, data_source,
+                    request_count, total_cost_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    820_i64,
+                    "codex",
+                    "_codex_session",
+                    "gpt-5.4",
+                    "codex_session",
+                    3_i64,
+                    "0.30"
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_daily_data_source_rollups (
+                    date, data_source, request_count, total_cost_usd
+                ) VALUES (?, ?, ?, ?)",
+                rusqlite::params!["2026-07-20", "proxy", 11_i64, "1.10"],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_daily_data_source_rollups (
+                    date, data_source, request_count, total_cost_usd
+                ) VALUES (?, ?, ?, ?)",
+                rusqlite::params!["2026-07-20", "opencode_session", 4_i64, "0.40"],
+            )?;
+        }
+
+        let breakdown = get_data_source_breakdown(&db)?;
+        let get_source = |name: &str| {
+            breakdown
+                .iter()
+                .find(|entry| entry.data_source == name)
+                .expect("expected data source in usage breakdown")
+        };
+
+        let proxy = get_source("proxy");
+        assert_eq!(proxy.request_count, 21);
+        assert_eq!(proxy.total_cost_usd, "2.100000");
+
+        let codex_session = get_source("codex_session");
+        assert_eq!(codex_session.request_count, 4);
+        assert_eq!(codex_session.total_cost_usd, "0.500000");
+
+        let opencode_session = get_source("opencode_session");
+        assert_eq!(opencode_session.request_count, 4);
+        assert_eq!(opencode_session.total_cost_usd, "0.400000");
 
         Ok(())
     }

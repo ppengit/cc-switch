@@ -22,6 +22,7 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "provider_health",
     "proxy_live_backup",
     "usage_daily_rollups",
+    "usage_request_stats_archive",
 ];
 
 /// Tables whose local data is preserved (restored from local snapshot) during WebDAV import.
@@ -31,6 +32,7 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "stream_check_logs",
     "proxy_live_backup",
     "usage_daily_rollups",
+    "usage_request_stats_archive",
 ];
 
 /// A database backup entry for the UI
@@ -102,12 +104,6 @@ impl Database {
         // 导入前备份现有数据库
         let backup_path = self.backup_database_file()?;
 
-        let local_snapshot = if preserve_tables.is_empty() {
-            None
-        } else {
-            Some(self.snapshot_to_memory()?)
-        };
-
         // 在临时数据库执行导入，确保失败不会污染主库
         let temp_file = NamedTempFile::new().map_err(|e| AppError::IoContext {
             context: "创建临时数据库文件失败".to_string(),
@@ -125,13 +121,14 @@ impl Database {
         Self::create_tables_on_conn(&temp_conn)?;
         Self::apply_schema_migrations_on_conn(&temp_conn)?;
         Self::validate_basic_state(&temp_conn)?;
-        if let Some(local_snapshot) = local_snapshot.as_ref() {
-            Self::restore_tables(local_snapshot, &temp_conn, preserve_tables)?;
-        }
-
-        // 使用 Backup 将临时库原子写回主库
+        // 使用 Backup 将临时库原子写回主库。同步导入需要保留的本地表必须
+        // 在同一把主库锁内读取并恢复；若在构建临时库之前提前快照，期间新写入
+        // 的请求日志会在最终替换时被静默覆盖。
         {
             let mut main_conn = lock_conn!(self.conn);
+            if !preserve_tables.is_empty() {
+                Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?;
+            }
             let backup = Backup::new(&temp_conn, &mut main_conn)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             backup
@@ -234,11 +231,15 @@ impl Database {
 
     /// Periodic backup: create a new backup if the latest one is older than the configured interval
     pub(crate) fn periodic_backup_if_needed(&self) -> Result<(), AppError> {
+        let mut backup_error = None;
         let interval_hours = crate::settings::effective_backup_interval_hours();
         if interval_hours > 0 {
             let backup_dir = get_app_config_dir().join("backups");
             if !backup_dir.exists() {
-                self.backup_database_file()?;
+                if let Err(error) = self.backup_database_file() {
+                    log::warn!("Periodic database backup failed: {error}");
+                    backup_error = Some(error);
+                }
             } else {
                 let latest = fs::read_dir(&backup_dir).ok().and_then(|entries| {
                     entries
@@ -261,7 +262,10 @@ impl Database {
                     log::info!(
                         "Periodic backup: latest backup is older than {interval_hours} hours, creating new backup"
                     );
-                    self.backup_database_file()?;
+                    if let Err(error) = self.backup_database_file() {
+                        log::warn!("Periodic database backup failed: {error}");
+                        backup_error = Some(error);
+                    }
                 }
             }
         }
@@ -291,7 +295,11 @@ impl Database {
             }
         }
 
-        Ok(())
+        if let Some(error) = backup_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 
     /// 生成一致性快照备份，返回备份文件路径（不存在主库时返回 None）
@@ -735,8 +743,23 @@ mod tests {
                  VALUES ('remote-provider', 'claude', 'Remote Provider', '{}', '{}')",
                 [],
             )?;
+            conn.execute(
+                "INSERT INTO usage_request_stats_archive (
+                    request_id, provider_id, app_type, model,
+                    input_tokens, output_tokens, total_cost_usd,
+                    latency_ms, status_code, created_at
+                ) VALUES (
+                    'remote-archive', 'remote-provider', 'claude', 'claude-3',
+                    10, 5, '0.001', 80, 200, 900
+                )",
+                [],
+            )?;
         }
         let remote_sql = remote_db.export_sql_string_for_sync()?;
+        assert!(
+            !remote_sql.contains("INSERT INTO \"usage_request_stats_archive\""),
+            "sync export should omit local usage archive rows"
+        );
 
         let local_db = Database::memory()?;
         {
@@ -763,6 +786,19 @@ mod tests {
                 [],
             )?;
             conn.execute(
+                "INSERT INTO usage_request_stats_archive (
+                    request_id, provider_id, app_type, model, request_model, pricing_model,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    input_token_semantics, total_cost_usd, latency_ms, status_code,
+                    created_at, data_source
+                ) VALUES (
+                    'local-archive', 'local-provider', 'claude', 'claude-3',
+                    'claude-alias', 'claude-3', 100, 50, 10, 5, 2,
+                    '0.02', 120, 200, 1000, 'proxy'
+                )",
+                [],
+            )?;
+            conn.execute(
                 "INSERT INTO stream_check_logs (
                     provider_id, provider_name, app_type, status, success, message,
                     response_time_ms, http_status, model_used, retry_count, tested_at
@@ -786,7 +822,7 @@ mod tests {
             "remote config should be imported"
         );
 
-        let (request_logs, rollups, stream_logs): (i64, i64, i64) = {
+        let (request_logs, rollups, archived_stats, stream_logs): (i64, i64, i64, i64) = {
             let conn = crate::database::lock_conn!(local_db.conn);
             let request_logs =
                 conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
@@ -796,14 +832,23 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
                     row.get(0)
                 })?;
+            let archived_stats = conn.query_row(
+                "SELECT COUNT(*) FROM usage_request_stats_archive",
+                [],
+                |row| row.get(0),
+            )?;
             let stream_logs =
                 conn.query_row("SELECT COUNT(*) FROM stream_check_logs", [], |row| {
                     row.get(0)
                 })?;
-            (request_logs, rollups, stream_logs)
+            (request_logs, rollups, archived_stats, stream_logs)
         };
         assert_eq!(request_logs, 1, "local request logs should be preserved");
         assert_eq!(rollups, 1, "local rollups should be preserved");
+        assert_eq!(
+            archived_stats, 1,
+            "local per-request usage archive should be preserved"
+        );
         assert_eq!(
             stream_logs, 1,
             "local stream check logs should be preserved"

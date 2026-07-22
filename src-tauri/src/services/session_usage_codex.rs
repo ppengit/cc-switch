@@ -661,8 +661,7 @@ fn insert_codex_session_entry(
         ),
     };
 
-    let inserted_rows = conn
-        .execute(
+    conn.execute(
             "INSERT OR IGNORE INTO proxy_request_logs (
             request_id, provider_id, app_type, model, request_model,
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -698,10 +697,6 @@ fn insert_codex_session_entry(
             ],
         )
         .map_err(|e| AppError::Database(format!("插入 Codex 会话日志失败: {e}")))?;
-
-    if inserted_rows > 0 {
-        crate::usage_events::notify_log_recorded();
-    }
 
     Ok(true)
 }

@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { ProxyActivityFloatingWindow } from "./components/proxy/ProxyActivityFloatingWindow";
 import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import "./index.css";
@@ -34,15 +33,6 @@ interface ConfigLoadErrorPayload {
   error?: string;
   /** "db_version_too_new" 表示数据库版本过新，渲染应用内升级恢复界面 */
   kind?: string;
-}
-
-const isProxyActivityFloatingWindow =
-  new URLSearchParams(window.location.search).get("window") ===
-  "proxy-activity-floating";
-
-if (isProxyActivityFloatingWindow) {
-  document.documentElement.classList.add("proxy-activity-floating-window");
-  document.body.classList.add("proxy-activity-floating-window");
 }
 
 /**
@@ -84,15 +74,6 @@ try {
 }
 
 async function bootstrap() {
-  if (isProxyActivityFloatingWindow) {
-    ReactDOM.createRoot(document.getElementById("root")!).render(
-      <React.StrictMode>
-        <ProxyActivityFloatingWindow />
-      </React.StrictMode>,
-    );
-    return;
-  }
-
   // 启动早期主动查询后端初始化错误，避免事件竞态
   try {
     const initError = (await invoke(

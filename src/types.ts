@@ -8,18 +8,6 @@ export type ProviderCategory =
   | "omo" // Oh My OpenCode
   | "omo-slim"; // Oh My OpenCode Slim
 
-export type ProxyActivityFloatingMode = "ball" | "panel";
-
-export interface ProxyActivityFloatingPosition {
-  x: number;
-  y: number;
-}
-
-export interface ProxyActivityFloatingSize {
-  width: number;
-  height: number;
-}
-
 export interface Provider {
   id: string;
   name: string;
@@ -443,20 +431,6 @@ export interface Settings {
   usageDashboardRefreshIntervalMs?: number;
   // Whether to show the failover toggle independently on the main page
   enableFailoverToggle?: boolean;
-  // 是否显示实时请求独立浮窗
-  showProxyActivityFloatingWindow?: boolean;
-  // 实时请求浮窗透明度（0.35-1）
-  proxyActivityFloatingOpacity?: number;
-  // 实时请求 Mini 面板空闲后自动隐藏秒数
-  proxyActivityFloatingIdleHideSeconds?: number;
-  // 实时请求浮窗是否保持在最前
-  proxyActivityFloatingAlwaysOnTop?: boolean;
-  // 实时请求浮窗形态
-  proxyActivityFloatingMode?: ProxyActivityFloatingMode;
-  // 实时请求浮窗上次位置
-  proxyActivityFloatingPosition?: ProxyActivityFloatingPosition | null;
-  // 实时请求 Mini 面板上次尺寸
-  proxyActivityFloatingSize?: ProxyActivityFloatingSize | null;
   // Whether to show the project profile switcher on the main page header
   showProfileSwitcher?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers

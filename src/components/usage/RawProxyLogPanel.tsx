@@ -21,14 +21,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { HtmlErrorPreviewDialog } from "@/components/common/HtmlErrorPreviewDialog";
+import { createHtmlPreviewDocument, isLikelyHtml } from "@/lib/htmlPreview";
 
 interface RawProxyLogPanelProps {
   appType?: string;
   refreshIntervalMs: number;
 }
 
-const LOG_LIMIT = 500;
-const PAGE_SIZE = 50;
+const LOG_LIMIT = 50;
+const PAGE_SIZE = 20;
 
 const EVENT_COLOR_MAP: Record<string, string> = {
   processing:
@@ -77,24 +79,6 @@ const getDisplayEvent = (log: ProxyRawLogEntry) => {
   return "processing";
 };
 
-/**
- * 判断错误文本是否疑似 HTML 页面。
- *
- * 上游 nginx/CDN/网关在 4xx/5xx 时常返回 HTML 错误页（如 413、502、504、
- * Cloudflare 错误页等），这些内容会原样进入 error 字段。命中时提供
- * iframe 沙箱预览，让用户看到排版后的真实错误页。
- */
-const isLikelyHtml = (value?: string | null): boolean => {
-  if (!value) return false;
-  const sample = value.slice(0, 2000).toLowerCase();
-  return (
-    sample.includes("<!doctype html") ||
-    sample.includes("<html") ||
-    (sample.includes("<body") && sample.includes("</body>")) ||
-    (sample.includes("<head") && sample.includes("</head>"))
-  );
-};
-
 export function RawProxyLogPanel({
   appType,
   refreshIntervalMs,
@@ -103,14 +87,10 @@ export function RawProxyLogPanel({
   const [selectedLog, setSelectedLog] = useState<ProxyRawLogEntry | null>(null);
   const [htmlErrorPreview, setHtmlErrorPreview] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const { data, isLoading, error, refetch, isFetching } = useProxyRawLogs(
-    appType,
-    LOG_LIMIT,
-    {
-      refetchInterval:
-        refreshIntervalMs > 0 ? Math.min(refreshIntervalMs, 2000) : false,
-    },
-  );
+  const { data, isLoading, error, refetch, isFetching, isPlaceholderData } =
+    useProxyRawLogs(appType, LOG_LIMIT, {
+      refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
+    });
 
   const locale =
     i18n.resolvedLanguage === "zh"
@@ -179,231 +159,261 @@ export function RawProxyLogPanel({
         </div>
       </div>
 
-      {isLoading ? (
-        <div className="h-[360px] animate-pulse rounded bg-gray-100" />
-      ) : error ? (
-        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {t("usage.rawProxyLogsLoadFailed", {
-            defaultValue: "加载代理原始日志失败：{{error}}",
-            error: error instanceof Error ? error.message : String(error),
-          })}
-        </div>
-      ) : (
-        <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.time", { defaultValue: "时间" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.event", { defaultValue: "事件" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.appType", { defaultValue: "应用" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.provider", { defaultValue: "供应商" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.routeMode", { defaultValue: "路由" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.model", { defaultValue: "模型" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.upstreamUrl", { defaultValue: "上游地址" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.status", { defaultValue: "状态" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.liveRequests", { defaultValue: "活动请求" })}
-                </TableHead>
-                <TableHead className="text-center whitespace-nowrap">
-                  {t("usage.error", { defaultValue: "错误" })}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {logs.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={10}
-                    className="py-10 text-center text-sm text-muted-foreground"
-                  >
-                    {t("usage.rawProxyLogsEmpty", {
-                      defaultValue:
-                        "当前没有代理原始日志。请先开启接管代理并发起请求。",
-                    })}
-                  </TableCell>
+      <div
+        className="min-h-[360px] rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-x-auto"
+        aria-busy={isFetching}
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.time", { defaultValue: "时间" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.event", { defaultValue: "事件" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.appType", { defaultValue: "应用" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.provider", { defaultValue: "供应商" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.routeMode", { defaultValue: "路由" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.model", { defaultValue: "模型" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.upstreamUrl", { defaultValue: "上游地址" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.status", { defaultValue: "状态" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.liveRequests", { defaultValue: "活动请求" })}
+              </TableHead>
+              <TableHead className="text-center whitespace-nowrap">
+                {t("usage.error", { defaultValue: "错误" })}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody
+            className={
+              isPlaceholderData
+                ? "pointer-events-none opacity-60 transition-opacity"
+                : "transition-opacity"
+            }
+          >
+            {isLoading && !data ? (
+              Array.from({ length: 8 }, (_, rowIndex) => (
+                <TableRow
+                  key={`loading-${rowIndex}`}
+                  data-testid="raw-proxy-log-loading-row"
+                >
+                  {Array.from({ length: 10 }, (_, cellIndex) => (
+                    <TableCell key={cellIndex} className="h-11 px-2">
+                      <div className="mx-auto h-3 w-16 animate-pulse rounded bg-muted" />
+                    </TableCell>
+                  ))}
                 </TableRow>
-              ) : (
-                pagedLogs.map((log) => {
-                  const requestModel = normalizeModel(log.requestModel);
-                  const upstreamModel = normalizeModel(log.upstreamModel);
-                  const displayModel = upstreamModel ?? requestModel;
-                  const routeMode = normalizeRouteMode(log.routeMode);
-                  const showRequestModel =
-                    !!requestModel &&
-                    !!displayModel &&
-                    requestModel !== displayModel;
-                  const displayEvent = getDisplayEvent(log);
-                  const statusText =
-                    log.statusCode != null
-                      ? String(log.statusCode)
-                      : log.event === "failed"
-                        ? t("usage.failed", { defaultValue: "失败" })
-                        : log.event === "finished"
-                          ? t("usage.success", { defaultValue: "成功" })
-                          : "-";
-                  return (
-                    <TableRow
-                      key={log.id}
-                      className="cursor-pointer"
-                      onDoubleClick={() => setSelectedLog(log)}
-                    >
-                      <TableCell className="text-center whitespace-nowrap text-xs">
-                        {new Date(log.startedAt).toLocaleString(locale, {
-                          month: "2-digit",
-                          day: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
-                      </TableCell>
-                      <TableCell className="min-w-[220px]">
-                        <div className="flex flex-wrap justify-center gap-1">
-                          <Badge
-                            variant="outline"
-                            className={EVENT_COLOR_MAP[displayEvent] ?? ""}
-                          >
-                            {getEventLabel(displayEvent)}
-                            {displayEvent === "admission_retry" &&
-                            log.retryCount
-                              ? ` ${log.retryCount}`
-                              : ""}
-                          </Badge>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center font-mono text-xs uppercase">
-                        {log.appType}
-                      </TableCell>
-                      <TableCell className="text-center max-w-[220px]">
-                        <div className="truncate" title={log.providerName}>
-                          {log.providerName}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap text-xs">
-                        <Badge variant="outline">
-                          {getRouteModeLabel(routeMode)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-center font-mono text-xs max-w-[220px]">
-                        <div
-                          className="truncate"
-                          title={
-                            showRequestModel
-                              ? `${displayModel} (req: ${requestModel})`
-                              : displayModel || "-"
-                          }
+              ))
+            ) : error && !data ? (
+              <TableRow>
+                <TableCell
+                  colSpan={10}
+                  className="py-10 text-center text-sm text-destructive"
+                >
+                  {t("usage.rawProxyLogsLoadFailed", {
+                    defaultValue: "加载代理原始日志失败：{{error}}",
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  })}
+                </TableCell>
+              </TableRow>
+            ) : logs.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={10}
+                  className="py-10 text-center text-sm text-muted-foreground"
+                >
+                  {t("usage.rawProxyLogsEmpty", {
+                    defaultValue:
+                      "当前没有代理原始日志。请先开启接管代理并发起请求。",
+                  })}
+                </TableCell>
+              </TableRow>
+            ) : (
+              pagedLogs.map((log) => {
+                const requestModel = normalizeModel(log.requestModel);
+                const upstreamModel = normalizeModel(log.upstreamModel);
+                const displayModel = upstreamModel ?? requestModel;
+                const routeMode = normalizeRouteMode(log.routeMode);
+                const showRequestModel =
+                  !!requestModel &&
+                  !!displayModel &&
+                  requestModel !== displayModel;
+                const displayEvent = getDisplayEvent(log);
+                const statusText =
+                  log.statusCode != null
+                    ? String(log.statusCode)
+                    : log.event === "failed"
+                      ? t("usage.failed", { defaultValue: "失败" })
+                      : log.event === "finished"
+                        ? t("usage.success", { defaultValue: "成功" })
+                        : "-";
+                return (
+                  <TableRow
+                    key={log.id}
+                    className={
+                      isPlaceholderData ? "cursor-wait" : "cursor-pointer"
+                    }
+                    aria-disabled={isPlaceholderData || undefined}
+                    onDoubleClick={() => {
+                      if (!isPlaceholderData) setSelectedLog(log);
+                    }}
+                  >
+                    <TableCell className="text-center whitespace-nowrap text-xs">
+                      {new Date(log.startedAt).toLocaleString(locale, {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })}
+                    </TableCell>
+                    <TableCell className="min-w-[220px]">
+                      <div className="flex flex-wrap justify-center gap-1">
+                        <Badge
+                          variant="outline"
+                          className={EVENT_COLOR_MAP[displayEvent] ?? ""}
                         >
-                          <div className="truncate">{displayModel || "-"}</div>
-                          {showRequestModel ? (
-                            <div className="truncate text-[10px] text-muted-foreground">
-                              {t("usage.requestModel", {
-                                defaultValue: "请求模型",
-                              })}
-                              : {requestModel}
-                            </div>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="max-w-[260px] text-center font-mono text-xs">
-                        <div className="truncate" title={log.upstreamUrl || ""}>
-                          {log.upstreamUrl || "-"}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap text-xs">
-                        {statusText}
-                      </TableCell>
-                      <TableCell className="text-center font-mono text-xs">
-                        {log.activeRequestCount}
-                      </TableCell>
-                      <TableCell className="max-w-[280px]">
-                        {log.error && isLikelyHtml(log.error) ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-6 px-2 text-xs text-red-600 dark:text-red-400"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setHtmlErrorPreview(log.error || "");
-                            }}
-                          >
-                            {t("usage.viewErrorPage", {
-                              defaultValue: "查看错误页",
+                          {getEventLabel(displayEvent)}
+                          {displayEvent === "admission_retry" && log.retryCount
+                            ? ` ${log.retryCount}`
+                            : ""}
+                        </Badge>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center font-mono text-xs uppercase">
+                      {log.appType}
+                    </TableCell>
+                    <TableCell className="text-center max-w-[220px]">
+                      <div className="truncate" title={log.providerName}>
+                        {log.providerName}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center whitespace-nowrap text-xs">
+                      <Badge variant="outline">
+                        {getRouteModeLabel(routeMode)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-center font-mono text-xs max-w-[220px]">
+                      <div
+                        className="truncate"
+                        title={
+                          showRequestModel
+                            ? `${displayModel} (req: ${requestModel})`
+                            : displayModel || "-"
+                        }
+                      >
+                        <div className="truncate">{displayModel || "-"}</div>
+                        {showRequestModel ? (
+                          <div className="truncate text-[10px] text-muted-foreground">
+                            {t("usage.requestModel", {
+                              defaultValue: "请求模型",
                             })}
-                          </Button>
-                        ) : (
-                          <div
-                            className="truncate text-xs text-red-600 dark:text-red-400"
-                            title={log.error || ""}
-                          >
-                            {log.error || "-"}
+                            : {requestModel}
                           </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-          {logs.length > PAGE_SIZE && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
-              <span>
-                {t("usage.rawProxyLogsPageInfo", {
-                  defaultValue: "第 {{start}}-{{end}} 条，共 {{total}} 条",
-                  start: pageStart,
-                  end: pageEnd,
-                  total: logs.length,
-                })}
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[260px] text-center font-mono text-xs">
+                      <div className="truncate" title={log.upstreamUrl || ""}>
+                        {log.upstreamUrl || "-"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center whitespace-nowrap text-xs">
+                      {statusText}
+                    </TableCell>
+                    <TableCell className="text-center font-mono text-xs">
+                      {log.activeRequestCount}
+                    </TableCell>
+                    <TableCell className="max-w-[280px]">
+                      {log.error && isLikelyHtml(log.error) ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-xs text-red-600 dark:text-red-400"
+                          onClick={async (event) => {
+                            event.stopPropagation();
+                            setHtmlErrorPreview(
+                              await createHtmlPreviewDocument(log.error || ""),
+                            );
+                          }}
+                        >
+                          {t("usage.viewErrorPage", {
+                            defaultValue: "查看错误页",
+                          })}
+                        </Button>
+                      ) : (
+                        <div
+                          className="truncate text-xs text-red-600 dark:text-red-400"
+                          title={log.error || ""}
+                        >
+                          {log.error || "-"}
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+        {logs.length > PAGE_SIZE && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
+            <span>
+              {t("usage.rawProxyLogsPageInfo", {
+                defaultValue: "第 {{start}}-{{end}} 条，共 {{total}} 条",
+                start: pageStart,
+                end: pageEnd,
+                total: logs.length,
+              })}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={page <= 1}
+              >
+                <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                {t("common.previous", { defaultValue: "上一页" })}
+              </Button>
+              <span className="font-mono">
+                {page} / {totalPages}
               </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
-                  disabled={page <= 1}
-                >
-                  <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-                  {t("common.previous", { defaultValue: "上一页" })}
-                </Button>
-                <span className="font-mono">
-                  {page} / {totalPages}
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-xs"
-                  onClick={() =>
-                    setPage((current) => Math.min(totalPages, current + 1))
-                  }
-                  disabled={page >= totalPages}
-                >
-                  {t("common.next", { defaultValue: "下一页" })}
-                  <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                </Button>
-              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                onClick={() =>
+                  setPage((current) => Math.min(totalPages, current + 1))
+                }
+                disabled={page >= totalPages}
+              >
+                {t("common.next", { defaultValue: "下一页" })}
+                <ChevronRight className="ml-1 h-3.5 w-3.5" />
+              </Button>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       <Dialog
         open={selectedLog !== null}
@@ -438,45 +448,23 @@ export function RawProxyLogPanel({
           </DialogContent>
         )}
       </Dialog>
-      <Dialog
-        open={htmlErrorPreview !== null}
+      <HtmlErrorPreviewDialog
+        document={htmlErrorPreview}
+        title={t("usage.errorPagePreview", {
+          defaultValue: "错误页预览",
+        })}
+        description={t("usage.errorPagePreviewDescription", {
+          defaultValue:
+            "上游返回的 HTML 错误页，在隔离沙箱中静态渲染（禁用脚本与外部请求）。",
+        })}
+        frameTitle={t("usage.errorPagePreview", {
+          defaultValue: "错误页预览",
+        })}
+        closeLabel={t("common.close", { defaultValue: "关闭" })}
         onOpenChange={(open) => {
           if (!open) setHtmlErrorPreview(null);
         }}
-      >
-        {htmlErrorPreview !== null && (
-          <DialogContent
-            zIndex="top"
-            closeOnInteractOutside
-            className="w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] max-h-[calc(100vh-2rem)] overflow-hidden p-0"
-          >
-            <DialogCloseButton
-              label={t("common.close", { defaultValue: "关闭" })}
-            />
-            <DialogHeader>
-              <DialogTitle>
-                {t("usage.errorPagePreview", {
-                  defaultValue: "错误页预览",
-                })}
-              </DialogTitle>
-              <DialogDescription>
-                {t("usage.errorPagePreviewDescription", {
-                  defaultValue:
-                    "上游返回的 HTML 错误页，在隔离沙箱中渲染（禁用脚本与外部请求）。",
-                })}
-              </DialogDescription>
-            </DialogHeader>
-            <iframe
-              srcDoc={htmlErrorPreview}
-              sandbox=""
-              className="min-h-0 flex-1 w-full border-0 bg-white"
-              title={t("usage.errorPagePreview", {
-                defaultValue: "错误页预览",
-              })}
-            />
-          </DialogContent>
-        )}
-      </Dialog>
+      />
     </div>
   );
 }

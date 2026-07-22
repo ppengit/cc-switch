@@ -91,6 +91,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { HtmlErrorPreviewDialog } from "@/components/common/HtmlErrorPreviewDialog";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -101,8 +102,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { createHtmlPreviewDocument, isLikelyHtml } from "@/lib/htmlPreview";
 import { PROVIDER_TYPES } from "@/config/constants";
 import { isHermesReadOnlyProvider } from "@/config/hermesProviderPresets";
 import {
@@ -217,6 +219,15 @@ type AdmissionRetryRequestEvents = Record<
   string,
   Record<string, ProviderAdmissionRetryEvent>
 >;
+
+interface AdmissionRetryCounter {
+  total: number;
+  seenByRequest: Map<string, number>;
+}
+
+type AdmissionRetryCounters = Record<string, AdmissionRetryCounter>;
+
+const MAX_TRACKED_ADMISSION_RETRY_REQUESTS = 4096;
 
 interface AppConfigFileEntry {
   key: string;
@@ -1121,6 +1132,9 @@ export function ProviderList({
   const queryClient = useQueryClient();
   const [admissionRetryRequests, setAdmissionRetryRequests] =
     useState<AdmissionRetryRequestEvents>({});
+  const [admissionRetryTotals, setAdmissionRetryTotals] = useState<
+    Record<string, number>
+  >({});
   const [admissionRetrySuppressedIds, setAdmissionRetrySuppressedIds] =
     useState<Set<string>>(new Set());
   const [admissionRetryUpdatingIds, setAdmissionRetryUpdatingIds] = useState<
@@ -1128,6 +1142,7 @@ export function ProviderList({
   >(new Set());
   const providersRef = useRef(providers);
   providersRef.current = providers;
+  const admissionRetryCountersRef = useRef<AdmissionRetryCounters>({});
   const admissionRetrySuppressedIdsRef = useRef(admissionRetrySuppressedIds);
   admissionRetrySuppressedIdsRef.current = admissionRetrySuppressedIds;
 
@@ -1204,6 +1219,71 @@ export function ProviderList({
     [],
   );
 
+  const resetAdmissionRetryCounters = useCallback(
+    (providerIds: Iterable<string>) => {
+      const ids = Array.from(providerIds);
+      if (ids.length === 0) return;
+
+      for (const providerId of ids) {
+        delete admissionRetryCountersRef.current[providerId];
+      }
+      setAdmissionRetryTotals((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const providerId of ids) {
+          if (!(providerId in next)) continue;
+          delete next[providerId];
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    },
+    [],
+  );
+
+  const trackAdmissionRetryCount = useCallback(
+    (payload: ProviderAdmissionRetryEvent) => {
+      if (payload.event !== "retrying" && payload.event !== "admitted") {
+        return;
+      }
+
+      const counter = admissionRetryCountersRef.current[payload.providerId] ?? {
+        total: 0,
+        seenByRequest: new Map<string, number>(),
+      };
+      const previous = counter.seenByRequest.get(payload.requestId) ?? 0;
+      const nextRequestCount = Math.max(previous, payload.retryCount);
+      const delta = nextRequestCount - previous;
+
+      // Refresh insertion order so the bounded map keeps recently active
+      // requests. The aggregate itself remains monotonic for this enabled
+      // episode even after an individual request fails and is cleared.
+      counter.seenByRequest.delete(payload.requestId);
+      counter.seenByRequest.set(payload.requestId, nextRequestCount);
+      while (
+        counter.seenByRequest.size > MAX_TRACKED_ADMISSION_RETRY_REQUESTS
+      ) {
+        const oldestRequestId = counter.seenByRequest.keys().next().value;
+        if (oldestRequestId === undefined) break;
+        counter.seenByRequest.delete(oldestRequestId);
+      }
+
+      if (delta <= 0) {
+        admissionRetryCountersRef.current[payload.providerId] = counter;
+        return;
+      }
+
+      counter.total += delta;
+      admissionRetryCountersRef.current[payload.providerId] = counter;
+      setAdmissionRetryTotals((current) =>
+        current[payload.providerId] === counter.total
+          ? current
+          : { ...current, [payload.providerId]: counter.total },
+      );
+    },
+    [],
+  );
+
   const suppressAdmissionRetryForProviders = useCallback(
     (providerIds: Iterable<string>) => {
       const ids = Array.from(providerIds);
@@ -1213,12 +1293,15 @@ export function ProviderList({
       admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
       setAdmissionRetrySuppressedIds(nextSuppressedIds);
       clearAdmissionRetryRequests(ids);
+      resetAdmissionRetryCounters(ids);
     },
-    [clearAdmissionRetryRequests],
+    [clearAdmissionRetryRequests, resetAdmissionRetryCounters],
   );
 
   useEffect(() => {
     setAdmissionRetryRequests({});
+    admissionRetryCountersRef.current = {};
+    setAdmissionRetryTotals({});
     const nextSuppressedIds = new Set<string>();
     admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
     setAdmissionRetrySuppressedIds(nextSuppressedIds);
@@ -1236,6 +1319,10 @@ export function ProviderList({
           (payload.event === "retrying" && payload.retryCount === 1))
       ) {
         void queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      }
+
+      if (shouldTrackEvent) {
+        trackAdmissionRetryCount(payload);
       }
 
       setAdmissionRetryRequests((current) => {
@@ -1286,6 +1373,7 @@ export function ProviderList({
         if (disposed) return;
 
         const next: AdmissionRetryRequestEvents = {};
+        const nextCounters: AdmissionRetryCounters = {};
         for (const payload of snapshot) {
           if (
             payload.appType !== appId ||
@@ -1298,7 +1386,26 @@ export function ProviderList({
             ...(next[payload.providerId] ?? {}),
             [payload.requestId]: payload,
           };
+
+          const counter = nextCounters[payload.providerId] ?? {
+            total: 0,
+            seenByRequest: new Map<string, number>(),
+          };
+          const previous = counter.seenByRequest.get(payload.requestId) ?? 0;
+          const nextRequestCount = Math.max(previous, payload.retryCount);
+          counter.total += nextRequestCount - previous;
+          counter.seenByRequest.set(payload.requestId, nextRequestCount);
+          nextCounters[payload.providerId] = counter;
         }
+        admissionRetryCountersRef.current = nextCounters;
+        setAdmissionRetryTotals(
+          Object.fromEntries(
+            Object.entries(nextCounters).map(([providerId, counter]) => [
+              providerId,
+              counter.total,
+            ]),
+          ),
+        );
         setAdmissionRetryRequests(next);
       } catch (error) {
         console.debug("Failed to load admission retry snapshot", error);
@@ -1309,20 +1416,25 @@ export function ProviderList({
       disposed = true;
       unlisten?.();
     };
-  }, [appId, isAdmissionRetryVisible, queryClient]);
+  }, [appId, isAdmissionRetryVisible, queryClient, trackAdmissionRetryCount]);
 
   useEffect(() => {
-    clearAdmissionRetryRequests(
-      Object.keys(admissionRetryRequests).filter(
-        (providerId) => !isAdmissionRetryVisible(providerId),
-      ),
+    const trackedProviderIds = new Set([
+      ...Object.keys(admissionRetryRequests),
+      ...Object.keys(admissionRetryCountersRef.current),
+    ]);
+    const hiddenProviderIds = Array.from(trackedProviderIds).filter(
+      (providerId) => !isAdmissionRetryVisible(providerId),
     );
+    clearAdmissionRetryRequests(hiddenProviderIds);
+    resetAdmissionRetryCounters(hiddenProviderIds);
   }, [
     admissionRetryRequests,
     admissionRetrySuppressedIds,
     clearAdmissionRetryRequests,
     isAdmissionRetryVisible,
     providers,
+    resetAdmissionRetryCounters,
   ]);
 
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
@@ -1760,16 +1872,10 @@ export function ProviderList({
       const retryEvents = Object.values(
         admissionRetryRequests[provider.id] ?? {},
       );
-      const activeRetryEvents = retryEvents.filter(
-        (event) => event.event === "retrying",
-      );
       const admittedEvents = retryEvents.filter(
         (event) => event.event === "admitted",
       );
-      const admissionRetryCount =
-        activeRetryEvents.length > 0
-          ? Math.max(...activeRetryEvents.map((event) => event.retryCount))
-          : 0;
+      const admissionRetryCount = admissionRetryTotals[provider.id] ?? 0;
       const latestAdmissionRetry = retryEvents.reduce<
         ProviderAdmissionRetryEvent | undefined
       >((latest, event) => {
@@ -1905,6 +2011,7 @@ export function ProviderList({
   }, [
     activeProviderId,
     activeRequestProviders,
+    admissionRetryTotals,
     admissionRetrySuppressedIds,
     admissionRetryRequests,
     appId,
@@ -3054,6 +3161,7 @@ export function ProviderList({
       }
       admissionRetrySuppressedIdsRef.current = nextSuppressedIds;
       setAdmissionRetrySuppressedIds(nextSuppressedIds);
+      resetAdmissionRetryCounters(affectedProviderIds);
       clearAdmissionRetryRequests(
         Array.from(affectedProviderIds).filter(
           (id) => !nextEnabled || id !== providerId,
@@ -3707,22 +3815,84 @@ export function ProviderList({
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-default bg-card/40">
         <div className="z-20 flex shrink-0 items-center justify-between gap-2 border-b border-border-default bg-card px-3 py-2 text-[11px] text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-2">
-            <span>
-              {t("provider.searchScopeHint", {
-                defaultValue:
-                  "搜索只负责定位，不会过滤列表或改变故障转移顺序。",
-              })}
-            </span>
-            {searchTerm && searchMatches.length === 0 ? (
-              <span className="text-amber-600 dark:text-amber-400">
-                {t("provider.noSearchResults", {
-                  defaultValue: "没有找到匹配结果",
-                })}
-              </span>
-            ) : null}
+          <div
+            className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+            aria-live="polite"
+          >
+            {(() => {
+              const liveRequests = Object.entries(activeRequestProviders ?? {})
+                .filter(([, activity]) => activity.count > 0)
+                .map(([providerId, activity]) => {
+                  const requestModel = activity.requestModel?.trim();
+                  const upstreamModel = activity.upstreamModel?.trim();
+                  const model =
+                    requestModel &&
+                    upstreamModel &&
+                    requestModel !== upstreamModel
+                      ? `${requestModel} → ${upstreamModel}`
+                      : activity.model?.trim() || upstreamModel || requestModel;
+
+                  return {
+                    count: activity.count,
+                    detail: [providers[providerId]?.name ?? providerId, model]
+                      .filter(Boolean)
+                      .join(" · "),
+                  };
+                });
+              const liveRequestCount = liveRequests.reduce(
+                (total, activity) => total + activity.count,
+                0,
+              );
+              const liveRequestDetail = liveRequests
+                .map(
+                  (activity) =>
+                    `${activity.detail}${activity.count > 1 ? ` ×${activity.count}` : ""}`,
+                )
+                .join(" | ");
+
+              return liveRequestCount > 0 ? (
+                <>
+                  <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 font-medium text-emerald-700 dark:text-emerald-300">
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                    {t("provider.liveRequestSummary", {
+                      defaultValue: "实时请求 {{count}}",
+                      count: liveRequestCount,
+                    })}
+                  </span>
+                  {searchTerm && searchMatches.length === 0 ? (
+                    <span className="min-w-0 truncate text-amber-600 dark:text-amber-400">
+                      {t("provider.noSearchResults", {
+                        defaultValue: "没有找到匹配结果",
+                      })}
+                    </span>
+                  ) : (
+                    <span
+                      className="min-w-0 truncate text-foreground/70"
+                      title={liveRequestDetail}
+                    >
+                      {liveRequestDetail}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="min-w-0 truncate">
+                    {t("provider.noLiveRequests", {
+                      defaultValue: "暂无实时请求",
+                    })}
+                  </span>
+                  {searchTerm && searchMatches.length === 0 ? (
+                    <span className="min-w-0 truncate text-amber-600 dark:text-amber-400">
+                      {t("provider.noSearchResults", {
+                        defaultValue: "没有找到匹配结果",
+                      })}
+                    </span>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <Button
               type="button"
               size="icon"
@@ -4450,6 +4620,7 @@ function SortableProviderTableRow({
   circuitStats,
   t,
 }: SortableProviderTableRowProps) {
+  const [htmlErrorPreview, setHtmlErrorPreview] = useState<string | null>(null);
   const {
     setNodeRef,
     attributes,
@@ -4480,6 +4651,10 @@ function SortableProviderTableRow({
     !suppressFailoverHealth &&
     showFailoverHealth &&
     circuitStats?.state === "half_open";
+  const htmlStatusError =
+    row.isEnabled && isLikelyHtml(health?.last_error)
+      ? health?.last_error
+      : null;
   const failureCount = row.isEnabled ? (health?.consecutive_failures ?? 0) : 0;
   const isDegraded =
     !suppressFailoverHealth &&
@@ -4489,7 +4664,10 @@ function SortableProviderTableRow({
     health?.is_healthy !== false &&
     failureCount > 0;
   const isProcessing = row.activeRequestCount > 0;
-  const isAdmissionRetrying = row.isEnabled && row.admissionRetryCount > 0;
+  const isAdmissionRetrying =
+    row.isEnabled &&
+    row.admissionRetryState === "retrying" &&
+    row.admissionRetryCount > 0;
   const isAdmissionAdmitted =
     row.isEnabled &&
     row.admissionRetryState === "admitted" &&
@@ -4585,7 +4763,11 @@ function SortableProviderTableRow({
     row.isEnabled && health?.last_error
       ? t("provider.statusReasonLastError", {
           defaultValue: "最后错误：{{error}}",
-          error: health.last_error,
+          error: htmlStatusError
+            ? t("provider.htmlStatusErrorAvailable", {
+                defaultValue: "HTML 错误页（点击状态标签查看）",
+              })
+            : health.last_error,
         })
       : null,
     lastFailureAt
@@ -4619,6 +4801,26 @@ function SortableProviderTableRow({
       : null,
   ].filter(Boolean) as string[];
   const hasStatusTooltip = healthDetailLines.length > 0;
+  const renderHtmlErrorBadge = (label: string, className: string) =>
+    htmlStatusError ? (
+      <button
+        type="button"
+        className={cn(className, "cursor-pointer")}
+        aria-label={t("provider.viewCircuitErrorPageFor", {
+          defaultValue: "查看 {{provider}} 的熔断错误页",
+          provider: row.provider.name,
+        })}
+        title={t("provider.viewCircuitErrorPage", {
+          defaultValue: "查看熔断错误页",
+        })}
+        onClick={async (event) => {
+          event.stopPropagation();
+          setHtmlErrorPreview(await createHtmlPreviewDocument(htmlStatusError));
+        }}
+      >
+        {label}
+      </button>
+    ) : null;
 
   // 普通健康错误可能尚未达到熔断阈值；此时没有熔断/降级 badge，仍用“异常”
   // 兜底展示持久化的 last_error。认证错误熔断会继续保留在故障转移队列中，
@@ -4843,22 +5045,62 @@ function SortableProviderTableRow({
                   </Badge>
                 ) : null}
                 {isCircuitOpen ? (
-                  <Badge variant="destructive" className="h-5 px-1.5 text-xs">
-                    {t("provider.circuitOpen", { defaultValue: "熔断" })}
-                  </Badge>
+                  htmlStatusError ? (
+                    renderHtmlErrorBadge(
+                      t("provider.circuitOpen", { defaultValue: "熔断" }),
+                      cn(
+                        badgeVariants({ variant: "destructive" }),
+                        "h-5 px-1.5 py-0 text-xs",
+                      ),
+                    )
+                  ) : (
+                    <Badge variant="destructive" className="h-5 px-1.5 text-xs">
+                      {t("provider.circuitOpen", { defaultValue: "熔断" })}
+                    </Badge>
+                  )
                 ) : isCircuitHalfOpen ? (
-                  <Badge className="h-5 border border-amber-500/40 bg-amber-500/10 px-1.5 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300">
-                    {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
-                  </Badge>
+                  htmlStatusError ? (
+                    renderHtmlErrorBadge(
+                      t("provider.circuitHalfOpen", { defaultValue: "半开" }),
+                      cn(
+                        badgeVariants(),
+                        "h-5 border border-amber-500/40 bg-amber-500/10 px-1.5 py-0 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300",
+                      ),
+                    )
+                  ) : (
+                    <Badge className="h-5 border border-amber-500/40 bg-amber-500/10 px-1.5 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300">
+                      {t("provider.circuitHalfOpen", { defaultValue: "半开" })}
+                    </Badge>
+                  )
                 ) : isDegraded ? (
-                  <Badge className="h-5 border border-yellow-500/40 bg-yellow-500/10 px-1.5 text-xs text-yellow-700 hover:bg-yellow-500/10 dark:text-yellow-300">
-                    {t("provider.degraded", { defaultValue: "降级" })}
-                    {failureCount > 0 ? ` ${failureCount}` : ""}
-                  </Badge>
+                  htmlStatusError ? (
+                    renderHtmlErrorBadge(
+                      `${t("provider.degraded", { defaultValue: "降级" })}${failureCount > 0 ? ` ${failureCount}` : ""}`,
+                      cn(
+                        badgeVariants(),
+                        "h-5 border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0 text-xs text-yellow-700 hover:bg-yellow-500/10 dark:text-yellow-300",
+                      ),
+                    )
+                  ) : (
+                    <Badge className="h-5 border border-yellow-500/40 bg-yellow-500/10 px-1.5 text-xs text-yellow-700 hover:bg-yellow-500/10 dark:text-yellow-300">
+                      {t("provider.degraded", { defaultValue: "降级" })}
+                      {failureCount > 0 ? ` ${failureCount}` : ""}
+                    </Badge>
+                  )
                 ) : hasPersistedError ? (
-                  <Badge variant="destructive" className="h-5 px-1.5 text-xs">
-                    {t("provider.lastErrorBadge", { defaultValue: "异常" })}
-                  </Badge>
+                  htmlStatusError ? (
+                    renderHtmlErrorBadge(
+                      t("provider.lastErrorBadge", { defaultValue: "异常" }),
+                      cn(
+                        badgeVariants({ variant: "destructive" }),
+                        "h-5 px-1.5 py-0 text-xs",
+                      ),
+                    )
+                  ) : (
+                    <Badge variant="destructive" className="h-5 px-1.5 text-xs">
+                      {t("provider.lastErrorBadge", { defaultValue: "异常" })}
+                    </Badge>
+                  )
                 ) : null}
               </div>
             </TooltipTrigger>
@@ -5032,6 +5274,25 @@ function SortableProviderTableRow({
             </Button>
           )}
         </div>
+        <HtmlErrorPreviewDialog
+          document={htmlErrorPreview}
+          title={t("provider.circuitErrorPagePreviewTitle", {
+            defaultValue: "{{provider}} 的熔断错误页",
+            provider: row.provider.name,
+          })}
+          description={t("provider.circuitErrorPagePreviewDescription", {
+            defaultValue:
+              "以下内容是上游返回的 HTML 错误页，已在隔离沙箱中静态渲染，不会执行脚本或发起外部请求。",
+          })}
+          frameTitle={t("provider.circuitErrorPagePreviewTitle", {
+            defaultValue: "{{provider}} 的熔断错误页",
+            provider: row.provider.name,
+          })}
+          closeLabel={t("common.close", { defaultValue: "关闭" })}
+          onOpenChange={(open) => {
+            if (!open) setHtmlErrorPreview(null);
+          }}
+        />
       </TableCell>
     </TableRow>
   );

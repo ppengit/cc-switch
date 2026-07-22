@@ -32,6 +32,10 @@ const mockAddToFailoverQueueMutateAsync = vi.fn();
 const mockRemoveFromFailoverQueueMutateAsync = vi.fn();
 let mockAutoFailoverEnabled: boolean | undefined = false;
 let mockAppProxyConfig: AppProxyConfig | undefined = undefined;
+let mockProviderRuntimeStatuses = {
+  health: {},
+  circuitBreakers: {},
+};
 const mockUpdateAppProxyConfigMutate = vi.fn();
 let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -141,7 +145,7 @@ vi.mock("@/lib/query/failover", () => ({
   }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
   useProviderRuntimeStatuses: () => ({
-    data: { health: {}, circuitBreakers: {} },
+    data: mockProviderRuntimeStatuses,
   }),
 }));
 
@@ -180,6 +184,7 @@ beforeEach(() => {
   mockUpdateAppProxyConfigMutate.mockReset();
   mockAutoFailoverEnabled = false;
   mockAppProxyConfig = undefined;
+  mockProviderRuntimeStatuses = { health: {}, circuitBreakers: {} };
   mockFailoverQueue = [];
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
@@ -516,6 +521,87 @@ describe("ProviderList Component", () => {
         .getAllByRole("row")
         .find((candidate) => candidate.textContent?.includes("Retry Live"));
       expect(row?.textContent).not.toContain("入场 3");
+    });
+  });
+
+  it("keeps the admission retry count cumulative across failed requests in one enabled episode", async () => {
+    const provider = createProvider({
+      id: "retry-cumulative",
+      name: "Retry Cumulative",
+      meta: {
+        upstreamAdmissionRetry: {
+          enabled: true,
+        },
+      },
+    });
+
+    setProviders("claude", { "retry-cumulative": provider });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "retry-cumulative": provider }}
+        currentProviderId="retry-cumulative"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getTauriEventListenerCount("provider-admission-retry")).toBe(1);
+    });
+
+    const baseEvent = {
+      appType: "claude",
+      providerId: "retry-cumulative",
+      providerName: "Retry Cumulative",
+      delayMs: 1000,
+      status: 429,
+      error: "Service Unavailable",
+    };
+
+    await act(async () => {
+      for (let retryCount = 1; retryCount <= 3; retryCount += 1) {
+        emitTauriEvent("provider-admission-retry", {
+          ...baseEvent,
+          requestId: "request-a",
+          event: "retrying",
+          retryCount,
+          updatedAt: `2026-07-04T08:00:0${retryCount}Z`,
+        });
+      }
+      emitTauriEvent("provider-admission-retry", {
+        ...baseEvent,
+        requestId: "request-a",
+        event: "cleared",
+        retryCount: 3,
+        updatedAt: "2026-07-04T08:00:04Z",
+      });
+      emitTauriEvent("provider-admission-retry", {
+        ...baseEvent,
+        requestId: "request-b",
+        event: "retrying",
+        retryCount: 1,
+        updatedAt: "2026-07-04T08:00:05Z",
+      });
+    });
+
+    await waitFor(() => {
+      const row = screen
+        .getAllByRole("row")
+        .find((candidate) =>
+          candidate.textContent?.includes("Retry Cumulative"),
+        );
+      expect(row?.textContent).toContain("入场 4");
+      expect(row?.textContent).not.toContain("入场 1");
     });
   });
 
@@ -868,6 +954,10 @@ describe("ProviderList Component", () => {
 
     const searchInput =
       screen.getByPlaceholderText("按名称、备注、网址或模型定位...");
+    expect(screen.getByText("暂无实时请求")).toBeInTheDocument();
+    expect(
+      screen.queryByText("搜索只负责定位，不会过滤列表或改变故障转移顺序。"),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Alpha Labs")).toBeInTheDocument();
     expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(0);
 
@@ -975,6 +1065,10 @@ describe("ProviderList Component", () => {
 
     expect(screen.getByText("启用")).toBeInTheDocument();
     expect(screen.getByText("请求中")).toBeInTheDocument();
+    expect(screen.getByText("实时请求 1")).toBeInTheDocument();
+    expect(
+      screen.getByText("Active Provider · gpt-5.4 → gpt-5.3-codex"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("处理中")).not.toBeInTheDocument();
 
     const statusSummary = screen.getByTitle((value) => {
@@ -986,6 +1080,139 @@ describe("ProviderList Component", () => {
     });
 
     expect(statusSummary).toBeInTheDocument();
+  });
+
+  it("opens a sandboxed static preview when a circuit-open error is HTML", async () => {
+    const provider = createProvider({
+      id: "provider-html-error",
+      name: "HTML Error Provider",
+    });
+    const htmlError =
+      '上游错误 (状态码 504): Some("<!doctype html>\\n<html><head><script>bad()</script></head><body><h1>Bad gateway</h1><img src=\\"https://bad.example/pixel.png\\"></body></html>")';
+
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [
+      {
+        providerId: "provider-html-error",
+        providerName: "HTML Error Provider",
+      },
+    ];
+    mockProviderRuntimeStatuses = {
+      health: {
+        "provider-html-error": {
+          provider_id: "provider-html-error",
+          app_type: "codex",
+          is_healthy: false,
+          consecutive_failures: 5,
+          last_success_at: null,
+          last_failure_at: "2026-07-22T12:00:00.000Z",
+          last_error: htmlError,
+          updated_at: "2026-07-22T12:00:00.000Z",
+        },
+      },
+      circuitBreakers: {
+        "provider-html-error": {
+          state: "open",
+          consecutiveFailures: 5,
+          consecutiveSuccesses: 0,
+          totalRequests: 5,
+          failedRequests: 5,
+        },
+      },
+    };
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ "provider-html-error": provider }}
+        currentProviderId=""
+        appId="codex"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "查看 HTML Error Provider 的熔断错误页",
+      }),
+    );
+
+    const previewFrame = await screen.findByTitle(
+      "HTML Error Provider 的熔断错误页",
+    );
+    const previewDocument = previewFrame.getAttribute("srcdoc") ?? "";
+    expect(previewFrame).toHaveAttribute("sandbox", "");
+    expect(previewFrame).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(previewDocument).toContain("Content-Security-Policy");
+    expect(previewDocument).toContain("Bad gateway");
+    expect(previewDocument).not.toContain("https://bad.example");
+    expect(previewDocument).not.toMatch(/<script\b/i);
+  });
+
+  it("keeps a persisted HTML error preview available before the runtime breaker is recreated", async () => {
+    const provider = createProvider({
+      id: "provider-persisted-html-error",
+      name: "Persisted HTML Provider",
+    });
+    mockAutoFailoverEnabled = true;
+    mockFailoverQueue = [
+      {
+        providerId: provider.id,
+        providerName: provider.name,
+      },
+    ];
+    mockProviderRuntimeStatuses = {
+      health: {
+        [provider.id]: {
+          provider_id: provider.id,
+          app_type: "codex",
+          is_healthy: false,
+          consecutive_failures: 5,
+          last_success_at: null,
+          last_failure_at: "2026-07-22T12:00:00.000Z",
+          last_error: "上游错误 (429): <html><body>Still blocked</body></html>",
+          updated_at: "2026-07-22T12:00:00.000Z",
+        },
+      },
+      circuitBreakers: {},
+    };
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ [provider.id]: provider }}
+        currentProviderId=""
+        appId="codex"
+        isProxyTakeover
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const errorBadge = screen.getByRole("button", {
+      name: "查看 Persisted HTML Provider 的熔断错误页",
+    });
+    expect(errorBadge).toHaveTextContent("异常");
+    fireEvent.click(errorBadge);
+    expect(
+      await screen.findByTitle("Persisted HTML Provider 的熔断错误页"),
+    ).toHaveAttribute("srcdoc", expect.stringContaining("Still blocked"));
   });
 
   it("preserves existing Codex API key and base URL when applying an incomplete provider template", async () => {

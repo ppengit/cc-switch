@@ -24,16 +24,6 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("framer-motion", () => ({
-  motion: {
-    div: ({ children, ...props }: any) => <div {...props}>{children}</div>,
-  },
-}));
-
-vi.mock("@/hooks/useUsageEventBridge", () => ({
-  useUsageEventBridge: () => {},
-}));
-
 vi.mock("@/lib/query/usage", async () => {
   const actual =
     await vi.importActual<typeof import("@/lib/query/usage")>(

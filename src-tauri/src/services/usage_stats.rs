@@ -9,7 +9,7 @@ use crate::services::sql_helpers::{
     fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH, INPUT_TOKEN_SEMANTICS_TOTAL,
 };
 use chrono::{Local, NaiveDate, TimeZone, Timelike};
-use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -233,6 +233,9 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
 
 pub(crate) const SESSION_PROXY_DEDUP_WINDOW_SECONDS: i64 = 10 * 60;
 
+const SESSION_DATA_SOURCES: &str =
+    "'session_log', 'codex_session', 'gemini_session', 'hermes_session', 'opencode_session'";
+
 /// SQL 片段：把指定别名的 `data_source` 包成 COALESCE，NULL 视作 'proxy'。
 ///
 /// 防御 schema v9 之前可能写入的 NULL data_source 行（见
@@ -307,40 +310,246 @@ fn push_provider_model_filters(
     }
 }
 
-pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
-    let data_source = data_source_expr(log_alias);
-    let proxy_data_source = data_source_expr("proxy_dedup");
+fn correlated_proxy_usage_match_filter(
+    proxy_alias: &str,
+    log_alias: &str,
+    proxy_data_source: &str,
+    log_data_source: &str,
+) -> String {
+    format!(
+        "{proxy_data_source} = 'proxy'
+          AND {proxy_alias}.app_type = {log_alias}.app_type
+          AND {proxy_alias}.status_code >= 200
+          AND {proxy_alias}.status_code < 300
+          AND {proxy_alias}.input_tokens = {log_alias}.input_tokens
+          AND {proxy_alias}.output_tokens = {log_alias}.output_tokens
+          AND {proxy_alias}.cache_read_tokens = {log_alias}.cache_read_tokens
+          AND (
+              {proxy_alias}.cache_creation_tokens = {log_alias}.cache_creation_tokens
+              OR (
+                  {log_alias}.cache_creation_tokens = 0
+                  AND {log_data_source} IN ('codex_session', 'gemini_session', 'hermes_session', 'opencode_session')
+              )
+          )
+          AND {proxy_alias}.created_at BETWEEN
+              {log_alias}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+              AND {log_alias}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+          AND (
+              LOWER({proxy_alias}.model) = LOWER({log_alias}.model)
+              OR LOWER({proxy_alias}.model) = 'unknown'
+              OR LOWER({log_alias}.model) = 'unknown'
+          )"
+    )
+}
+
+fn correlated_proxy_dedup_guard_match_filter(log_alias: &str, log_data_source: &str) -> String {
+    format!(
+        "proxy_guard.app_type = {log_alias}.app_type
+          AND proxy_guard.input_tokens = {log_alias}.input_tokens
+          AND proxy_guard.output_tokens = {log_alias}.output_tokens
+          AND proxy_guard.cache_read_tokens = {log_alias}.cache_read_tokens
+          AND (
+              proxy_guard.cache_creation_tokens = {log_alias}.cache_creation_tokens
+              OR (
+                  {log_alias}.cache_creation_tokens = 0
+                  AND {log_data_source} IN ('codex_session', 'gemini_session', 'hermes_session', 'opencode_session')
+              )
+          )
+          AND proxy_guard.created_at BETWEEN
+              {log_alias}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+              AND {log_alias}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
+          AND proxy_guard.expires_at >= CAST(strftime('%s', 'now') AS INTEGER)
+          AND (
+              LOWER(proxy_guard.model) = LOWER({log_alias}.model)
+              OR LOWER(proxy_guard.model) = 'unknown'
+              OR LOWER({log_alias}.model) = 'unknown'
+          )"
+    )
+}
+
+struct UsageFactQueryParts {
+    where_clause: String,
+    provider_join: String,
+    params: Vec<Box<dyn rusqlite::ToSql>>,
+}
+
+pub(crate) fn archive_without_live_duplicate_filter(log_alias: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM proxy_request_logs detail_same_request
+                    WHERE detail_same_request.request_id = {log_alias}.request_id
+                      AND detail_same_request.created_at = {log_alias}.created_at)"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_usage_fact_query_parts(
+    log_alias: &str,
+    provider_alias: &str,
+    archived: bool,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<&str>,
+    provider_name: Option<&str>,
+    model: Option<&str>,
+) -> UsageFactQueryParts {
+    let mut conditions = vec![if archived {
+        effective_archive_usage_log_filter(log_alias)
+    } else {
+        effective_usage_log_filter(log_alias)
+    }];
+    if archived {
+        // A crash or an old migration may leave the same request in both
+        // tables. Keep the live detail row authoritative and count the archive
+        // copy only when no live row with that request_id remains.
+        conditions.push(archive_without_live_duplicate_filter(log_alias));
+    }
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(start) = start_date {
+        conditions.push(format!("{log_alias}.created_at >= ?"));
+        params.push(Box::new(start));
+    }
+    if let Some(end) = end_date {
+        conditions.push(format!("{log_alias}.created_at <= ?"));
+        params.push(Box::new(end));
+    }
+    if let Some(app_type) = app_type {
+        conditions.push(format!(
+            "{} = ?",
+            folded_app_type_sql(&format!("{log_alias}.app_type"))
+        ));
+        params.push(Box::new(app_type.to_string()));
+    }
+    push_provider_model_filters(
+        &mut conditions,
+        &mut params,
+        log_alias,
+        provider_alias,
+        provider_name,
+        model,
+    );
+
+    UsageFactQueryParts {
+        where_clause: format!("WHERE {}", conditions.join(" AND ")),
+        provider_join: if provider_name.is_some() {
+            providers_join(log_alias, provider_alias)
+        } else {
+            String::new()
+        },
+        params,
+    }
+}
+
+/// Build filters for the minute tier. Frontend range inputs have one-minute
+/// precision, so both endpoints map to their containing minute. The live,
+/// still-open minute remains in raw/archive storage and therefore is never
+/// approximated by this aggregate tier.
+#[allow(clippy::too_many_arguments)]
+fn build_minute_usage_query_parts(
+    minute_alias: &str,
+    provider_alias: &str,
+    start_date: Option<i64>,
+    end_date: Option<i64>,
+    app_type: Option<&str>,
+    provider_name: Option<&str>,
+    model: Option<&str>,
+) -> UsageFactQueryParts {
+    let mut conditions = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(start) = start_date {
+        conditions.push(format!("{minute_alias}.minute_start >= ?"));
+        params.push(Box::new(start.div_euclid(60) * 60));
+    }
+    if let Some(end) = end_date {
+        conditions.push(format!("{minute_alias}.minute_start <= ?"));
+        params.push(Box::new(end.div_euclid(60) * 60));
+    }
+    if let Some(app_type) = app_type {
+        conditions.push(format!(
+            "{} = ?",
+            folded_app_type_sql(&format!("{minute_alias}.app_type"))
+        ));
+        params.push(Box::new(app_type.to_string()));
+    }
+    push_provider_model_filters(
+        &mut conditions,
+        &mut params,
+        minute_alias,
+        provider_alias,
+        provider_name,
+        model,
+    );
+
+    UsageFactQueryParts {
+        where_clause: if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        },
+        provider_join: if provider_name.is_some() {
+            providers_join(minute_alias, provider_alias)
+        } else {
+            String::new()
+        },
+        params,
+    }
+}
+
+fn effective_usage_log_filter_for_source(log_alias: &str, archived: bool) -> String {
+    let data_source = if archived {
+        format!("{log_alias}.data_source")
+    } else {
+        data_source_expr(log_alias)
+    };
+    let detail_match = correlated_proxy_usage_match_filter(
+        "proxy_detail",
+        log_alias,
+        &data_source_expr("proxy_detail"),
+        &data_source,
+    );
+    let archive_match = correlated_proxy_usage_match_filter(
+        "proxy_archive",
+        log_alias,
+        "proxy_archive.data_source",
+        &data_source,
+    );
+    let guard_match = correlated_proxy_dedup_guard_match_filter(log_alias, &data_source);
+
+    // Keep the two EXISTS branches separate. This lets SQLite use the
+    // expression index on live detail rows and the plain data_source index on
+    // archive rows instead of materializing/scanning a UNION for every session
+    // fact.
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'hermes_session', 'opencode_session')
-            AND EXISTS (
-                SELECT 1
-                FROM proxy_request_logs proxy_dedup
-                WHERE {proxy_data_source} = 'proxy'
-                  AND proxy_dedup.app_type = {log_alias}.app_type
-                  AND proxy_dedup.status_code >= 200
-                  AND proxy_dedup.status_code < 300
-                  AND proxy_dedup.input_tokens = {log_alias}.input_tokens
-                  AND proxy_dedup.output_tokens = {log_alias}.output_tokens
-                  AND proxy_dedup.cache_read_tokens = {log_alias}.cache_read_tokens
-                  AND (
-                      proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
-                      OR (
-                          {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'hermes_session', 'opencode_session')
-                      )
-                  )
-                  AND proxy_dedup.created_at BETWEEN
-                      {log_alias}.created_at - {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
-                      AND {log_alias}.created_at + {SESSION_PROXY_DEDUP_WINDOW_SECONDS}
-                  AND (
-                      LOWER(proxy_dedup.model) = LOWER({log_alias}.model)
-                      OR LOWER(proxy_dedup.model) = 'unknown'
-                      OR LOWER({log_alias}.model) = 'unknown'
-                  )
+            {data_source} IN ({SESSION_DATA_SOURCES})
+            AND (
+                EXISTS (
+                    SELECT 1 FROM proxy_request_logs proxy_detail
+                    WHERE {detail_match}
+                )
+                OR EXISTS (
+                    SELECT 1 FROM usage_request_stats_archive proxy_archive
+                    WHERE {archive_match}
+                )
+                OR EXISTS (
+                    SELECT 1 FROM usage_proxy_dedup_guard proxy_guard
+                    WHERE {guard_match}
+                )
             )
         )"
     )
+}
+
+pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
+    effective_usage_log_filter_for_source(log_alias, false)
+}
+
+/// 与 [`effective_usage_log_filter`] 同一跨表去重口径的显式别名。
+///
+/// 归档查询使用独立名称，调用点可以清楚表达当前数据源，也避免后续有人
+/// 只修改明细过滤而遗漏归档过滤。
+pub(crate) fn effective_archive_usage_log_filter(log_alias: &str) -> String {
+    effective_usage_log_filter_for_source(log_alias, true)
 }
 
 /// 跨源去重指纹键。
@@ -367,16 +576,25 @@ pub(crate) fn should_skip_session_insert(
     request_id: &str,
     key: &DedupKey,
 ) -> Result<bool, AppError> {
-    if proxy_request_id_exists(conn, request_id)? {
+    if proxy_request_id_exists(conn, request_id, key.created_at)? {
         return Ok(true);
     }
     has_matching_proxy_usage_log(conn, key)
 }
 
-fn proxy_request_id_exists(conn: &Connection, request_id: &str) -> Result<bool, AppError> {
+fn proxy_request_id_exists(
+    conn: &Connection,
+    request_id: &str,
+    created_at: i64,
+) -> Result<bool, AppError> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM proxy_request_logs WHERE request_id = ?1)",
-        params![request_id],
+        "SELECT EXISTS(
+            SELECT 1 FROM proxy_request_logs WHERE request_id = ?1
+            UNION ALL
+            SELECT 1 FROM usage_request_stats_archive
+            WHERE request_id = ?1 AND created_at = ?2
+        )",
+        params![request_id, created_at],
         |row| row.get::<_, bool>(0),
     )
     .map_err(|e| AppError::Database(format!("查询 request_id 失败: {e}")))
@@ -389,12 +607,12 @@ pub(crate) fn has_matching_proxy_usage_log(
     let allow_missing_cache_creation =
         matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
 
-    let l_data_source = data_source_expr("l");
+    let detail_data_source = data_source_expr("l");
     let sql = format!(
         "SELECT EXISTS (
             SELECT 1
             FROM proxy_request_logs l
-            WHERE {l_data_source} = 'proxy'
+            WHERE {detail_data_source} = 'proxy'
               AND l.app_type = ?1
               AND l.status_code >= 200
               AND l.status_code < 300
@@ -406,6 +624,38 @@ pub(crate) fn has_matching_proxy_usage_log(
               AND (
                   LOWER(l.model) = LOWER(?2)
                   OR LOWER(l.model) = 'unknown'
+                  OR LOWER(?2) = 'unknown'
+              )
+            UNION ALL
+            SELECT 1
+            FROM usage_request_stats_archive a
+            WHERE a.data_source = 'proxy'
+              AND a.app_type = ?1
+              AND a.status_code >= 200
+              AND a.status_code < 300
+              AND a.input_tokens = ?3
+              AND a.output_tokens = ?4
+              AND a.cache_read_tokens = ?5
+              AND (a.cache_creation_tokens = ?6 OR ?9 = 1)
+              AND a.created_at BETWEEN ?7 - ?8 AND ?7 + ?8
+              AND (
+                  LOWER(a.model) = LOWER(?2)
+                  OR LOWER(a.model) = 'unknown'
+                  OR LOWER(?2) = 'unknown'
+              )
+            UNION ALL
+            SELECT 1
+            FROM usage_proxy_dedup_guard g
+            WHERE g.app_type = ?1
+              AND g.input_tokens = ?3
+              AND g.output_tokens = ?4
+              AND g.cache_read_tokens = ?5
+              AND (g.cache_creation_tokens = ?6 OR ?9 = 1)
+              AND g.created_at BETWEEN ?7 - ?8 AND ?7 + ?8
+              AND g.expires_at >= CAST(strftime('%s', 'now') AS INTEGER)
+              AND (
+                  LOWER(g.model) = LOWER(?2)
+                  OR LOWER(g.model) = 'unknown'
                   OR LOWER(?2) = 'unknown'
               )
         )"
@@ -531,47 +781,40 @@ impl Database {
     ) -> Result<UsageSummary, AppError> {
         let conn = lock_conn!(self.conn);
 
-        // Build detail WHERE clause
-        let mut conditions = vec![effective_usage_log_filter("l")];
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        if let Some(start) = start_date {
-            conditions.push("l.created_at >= ?".to_string());
-            params_vec.push(Box::new(start));
-        }
-        if let Some(end) = end_date {
-            conditions.push("l.created_at <= ?".to_string());
-            params_vec.push(Box::new(end));
-        }
-        if let Some(at) = app_type {
-            conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
-            params_vec.push(Box::new(at.to_string()));
-        }
-        push_provider_model_filters(
-            &mut conditions,
-            &mut params_vec,
+        let detail = build_usage_fact_query_parts(
             "l",
             "p",
+            false,
+            start_date,
+            end_date,
+            app_type,
             provider_name,
             model,
         );
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-        let detail_join = if provider_name.is_some() {
-            providers_join("l", "p")
-        } else {
-            String::new()
-        };
+        let archive = build_usage_fact_query_parts(
+            "a",
+            "pa",
+            true,
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
+        let minute = build_minute_usage_query_parts(
+            "m",
+            "pm",
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
 
         // Only include rolled-up rows for full local days that are fully covered by the range.
         let mut rollup_conditions: Vec<String> = Vec::new();
         let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         let rollup_bounds = compute_rollup_date_bounds(start_date, end_date)?;
-
         push_rollup_date_filters(
             &mut rollup_conditions,
             &mut rollup_params,
@@ -603,16 +846,23 @@ impl Database {
         };
 
         let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_archive = fresh_input_sql("a");
         let fresh_input_rollup = fresh_input_sql("r");
+        let detail_join = &detail.provider_join;
+        let detail_where = &detail.where_clause;
+        let archive_join = &archive.provider_join;
+        let archive_where = &archive.where_clause;
+        let minute_join = &minute.provider_join;
+        let minute_where = &minute.where_clause;
         let sql = format!(
             "SELECT
-                COALESCE(d.total_requests, 0) + COALESCE(r.total_requests, 0),
-                COALESCE(d.total_cost, 0) + COALESCE(r.total_cost, 0),
-                COALESCE(d.total_input_tokens, 0) + COALESCE(r.total_input_tokens, 0),
-                COALESCE(d.total_output_tokens, 0) + COALESCE(r.total_output_tokens, 0),
-                COALESCE(d.total_cache_creation_tokens, 0) + COALESCE(r.total_cache_creation_tokens, 0),
-                COALESCE(d.total_cache_read_tokens, 0) + COALESCE(r.total_cache_read_tokens, 0),
-                COALESCE(d.success_count, 0) + COALESCE(r.success_count, 0)
+                COALESCE(d.total_requests, 0) + COALESCE(a.total_requests, 0) + COALESCE(m.total_requests, 0) + COALESCE(r.total_requests, 0),
+                COALESCE(d.total_cost, 0) + COALESCE(a.total_cost, 0) + COALESCE(m.total_cost, 0) + COALESCE(r.total_cost, 0),
+                COALESCE(d.total_input_tokens, 0) + COALESCE(a.total_input_tokens, 0) + COALESCE(m.total_input_tokens, 0) + COALESCE(r.total_input_tokens, 0),
+                COALESCE(d.total_output_tokens, 0) + COALESCE(a.total_output_tokens, 0) + COALESCE(m.total_output_tokens, 0) + COALESCE(r.total_output_tokens, 0),
+                COALESCE(d.total_cache_creation_tokens, 0) + COALESCE(a.total_cache_creation_tokens, 0) + COALESCE(m.total_cache_creation_tokens, 0) + COALESCE(r.total_cache_creation_tokens, 0),
+                COALESCE(d.total_cache_read_tokens, 0) + COALESCE(a.total_cache_read_tokens, 0) + COALESCE(m.total_cache_read_tokens, 0) + COALESCE(r.total_cache_read_tokens, 0),
+                COALESCE(d.success_count, 0) + COALESCE(a.success_count, 0) + COALESCE(m.success_count, 0) + COALESCE(r.success_count, 0)
             FROM
                 (SELECT
                     COUNT(*) as total_requests,
@@ -622,7 +872,25 @@ impl Database {
                     COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
                     COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count
-                 FROM proxy_request_logs l {detail_join} {where_clause}) d,
+                 FROM proxy_request_logs l {detail_join} {detail_where}) d,
+                (SELECT
+                    COUNT(*) as total_requests,
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM({fresh_input_archive}), 0) as total_input_tokens,
+                    COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(a.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(a.cache_read_tokens), 0) as total_cache_read_tokens,
+                    COALESCE(SUM(CASE WHEN a.status_code >= 200 AND a.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count
+                 FROM usage_request_stats_archive a {archive_join} {archive_where}) a,
+                (SELECT
+                    COALESCE(SUM(m.request_count), 0) as total_requests,
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(m.fresh_input_tokens), 0) as total_input_tokens,
+                    COALESCE(SUM(m.output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(m.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(m.cache_read_tokens), 0) as total_cache_read_tokens,
+                    COALESCE(SUM(m.success_count), 0) as success_count
+                 FROM usage_minute_rollups m {minute_join} {minute_where}) m,
                 (SELECT
                     COALESCE(SUM(r.request_count), 0) as total_requests,
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0) as total_cost,
@@ -634,8 +902,9 @@ impl Database {
                  FROM usage_daily_rollups r {rollup_join} {rollup_where}) r"
         );
 
-        // Combine params: detail params first, then rollup params
-        let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = params_vec;
+        let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = detail.params;
+        all_params.extend(archive.params);
+        all_params.extend(minute.params);
         all_params.extend(rollup_params);
         let param_refs: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
 
@@ -691,30 +960,35 @@ impl Database {
     ) -> Result<Vec<UsageSummaryByApp>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
-        let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(start) = start_date {
-            detail_conditions.push("l.created_at >= ?".to_string());
-            detail_params.push(Box::new(start));
-        }
-        if let Some(end) = end_date {
-            detail_conditions.push("l.created_at <= ?".to_string());
-            detail_params.push(Box::new(end));
-        }
-        push_provider_model_filters(
-            &mut detail_conditions,
-            &mut detail_params,
+        let detail = build_usage_fact_query_parts(
             "l",
             "p",
+            false,
+            start_date,
+            end_date,
+            None,
             provider_name,
             model,
         );
-        let detail_where = format!("WHERE {}", detail_conditions.join(" AND "));
-        let detail_join = if provider_name.is_some() {
-            providers_join("l", "p")
-        } else {
-            String::new()
-        };
+        let archive = build_usage_fact_query_parts(
+            "a",
+            "pa",
+            true,
+            start_date,
+            end_date,
+            None,
+            provider_name,
+            model,
+        );
+        let minute = build_minute_usage_query_parts(
+            "m",
+            "pm",
+            start_date,
+            end_date,
+            None,
+            provider_name,
+            model,
+        );
 
         let rollup_bounds = compute_rollup_date_bounds(start_date, end_date)?;
         let mut rollup_conditions: Vec<String> = Vec::new();
@@ -745,10 +1019,19 @@ impl Database {
         };
 
         let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_archive = fresh_input_sql("a");
         let fresh_input_rollup = fresh_input_sql("r");
         // 折叠 claude-desktop → claude：内层投影成同一桶名，外层 GROUP BY 自然合并。
         let detail_app_type = folded_app_type_sql("l.app_type");
+        let archive_app_type = folded_app_type_sql("a.app_type");
+        let minute_app_type = folded_app_type_sql("m.app_type");
         let rollup_app_type = folded_app_type_sql("r.app_type");
+        let detail_join = &detail.provider_join;
+        let detail_where = &detail.where_clause;
+        let archive_join = &archive.provider_join;
+        let archive_where = &archive.where_clause;
+        let minute_join = &minute.provider_join;
+        let minute_where = &minute.where_clause;
 
         let sql = format!(
             "SELECT app_type,
@@ -771,6 +1054,28 @@ impl Database {
                 FROM proxy_request_logs l {detail_join} {detail_where}
                 GROUP BY l.app_type
                 UNION ALL
+                SELECT {archive_app_type} as app_type,
+                    COUNT(*) as req_count,
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as cost,
+                    COALESCE(SUM({fresh_input_archive}), 0) as input_t,
+                    COALESCE(SUM(a.output_tokens), 0) as output_t,
+                    COALESCE(SUM(a.cache_creation_tokens), 0) as cache_create_t,
+                    COALESCE(SUM(a.cache_read_tokens), 0) as cache_read_t,
+                    COALESCE(SUM(CASE WHEN a.status_code >= 200 AND a.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count
+                FROM usage_request_stats_archive a {archive_join} {archive_where}
+                GROUP BY a.app_type
+                UNION ALL
+                SELECT {minute_app_type} as app_type,
+                    COALESCE(SUM(m.request_count), 0),
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0),
+                    COALESCE(SUM(m.fresh_input_tokens), 0),
+                    COALESCE(SUM(m.output_tokens), 0),
+                    COALESCE(SUM(m.cache_creation_tokens), 0),
+                    COALESCE(SUM(m.cache_read_tokens), 0),
+                    COALESCE(SUM(m.success_count), 0)
+                FROM usage_minute_rollups m {minute_join} {minute_where}
+                GROUP BY m.app_type
+                UNION ALL
                 SELECT {rollup_app_type} as app_type,
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
@@ -785,7 +1090,9 @@ impl Database {
             GROUP BY app_type"
         );
 
-        let mut combined: Vec<Box<dyn rusqlite::ToSql>> = detail_params;
+        let mut combined: Vec<Box<dyn rusqlite::ToSql>> = detail.params;
+        combined.extend(archive.params);
+        combined.extend(minute.params);
         combined.extend(rollup_params);
         let refs: Vec<&dyn rusqlite::ToSql> = combined.iter().map(|p| p.as_ref()).collect();
 
@@ -863,7 +1170,12 @@ impl Database {
         }
 
         let duration = end_ts - start_ts;
-        if duration <= 24 * 60 * 60 {
+        // A historical calendar day may already exist only as a daily rollup.
+        // It cannot be reconstructed faithfully into 24 hourly buckets, so
+        // render it through the daily branch instead of returning an all-zero
+        // hourly trend. Partial ranges still stay on detail/archive facts.
+        let rollup_bounds = compute_rollup_date_bounds(Some(start_ts), Some(end_ts))?;
+        if duration <= 24 * 60 * 60 && rollup_bounds.is_empty {
             let bucket_seconds: i64 = 60 * 60;
             let mut bucket_count: i64 = if duration <= 0 {
                 1
@@ -875,46 +1187,91 @@ impl Database {
                 bucket_count = 1;
             }
 
-            let mut extra_conditions: Vec<String> = Vec::new();
-            let mut extra_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-            if let Some(at) = app_type {
-                extra_conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
-                extra_params.push(Box::new(at.to_string()));
-            }
-            push_provider_model_filters(
-                &mut extra_conditions,
-                &mut extra_params,
+            let detail = build_usage_fact_query_parts(
                 "l",
                 "p",
+                false,
+                Some(start_ts),
+                Some(end_ts),
+                app_type,
                 provider_name,
                 model,
             );
-            let extra_filter = extra_conditions
-                .iter()
-                .map(|c| format!("AND {c}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let detail_join = if provider_name.is_some() {
-                providers_join("l", "p")
-            } else {
-                String::new()
-            };
+            let archive = build_usage_fact_query_parts(
+                "a",
+                "pa",
+                true,
+                Some(start_ts),
+                Some(end_ts),
+                app_type,
+                provider_name,
+                model,
+            );
+            let minute = build_minute_usage_query_parts(
+                "m",
+                "pm",
+                Some(start_ts),
+                Some(end_ts),
+                app_type,
+                provider_name,
+                model,
+            );
 
-            let effective_filter = effective_usage_log_filter("l");
-            let fresh_input = fresh_input_sql("l");
+            let fresh_input_detail = fresh_input_sql("l");
+            let fresh_input_archive = fresh_input_sql("a");
+            let detail_join = &detail.provider_join;
+            let detail_where = &detail.where_clause;
+            let archive_join = &archive.provider_join;
+            let archive_where = &archive.where_clause;
+            let minute_join = &minute.provider_join;
+            let minute_where = &minute.where_clause;
             let sql = format!(
                 "SELECT
-                    CAST((l.created_at - ?1) / ?3 AS INTEGER) as bucket_idx,
-                    COUNT(*) as request_count,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
-                    COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
-                    COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
-                    COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
-                    COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
-                    COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens
-                FROM proxy_request_logs l {detail_join}
-                WHERE l.created_at >= ?1 AND l.created_at <= ?2
-                  AND {effective_filter} {extra_filter}
+                    bucket_idx,
+                    SUM(request_count),
+                    SUM(total_cost),
+                    SUM(total_tokens),
+                    SUM(total_input_tokens),
+                    SUM(total_output_tokens),
+                    SUM(total_cache_creation_tokens),
+                    SUM(total_cache_read_tokens)
+                FROM (
+                    SELECT
+                        CAST((l.created_at - ?) / ? AS INTEGER) as bucket_idx,
+                        COUNT(*) as request_count,
+                        COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                        COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                        COALESCE(SUM({fresh_input_detail}), 0) as total_input_tokens,
+                        COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
+                        COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                        COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens
+                    FROM proxy_request_logs l {detail_join} {detail_where}
+                    GROUP BY bucket_idx
+                    UNION ALL
+                    SELECT
+                        CAST((a.created_at - ?) / ? AS INTEGER) as bucket_idx,
+                        COUNT(*) as request_count,
+                        COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as total_cost,
+                        COALESCE(SUM({fresh_input_archive} + a.output_tokens), 0) as total_tokens,
+                        COALESCE(SUM({fresh_input_archive}), 0) as total_input_tokens,
+                        COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
+                        COALESCE(SUM(a.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                        COALESCE(SUM(a.cache_read_tokens), 0) as total_cache_read_tokens
+                    FROM usage_request_stats_archive a {archive_join} {archive_where}
+                    GROUP BY bucket_idx
+                    UNION ALL
+                    SELECT
+                        CAST((m.minute_start - ?) / ? AS INTEGER) as bucket_idx,
+                        COALESCE(SUM(m.request_count), 0) as request_count,
+                        COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0) as total_cost,
+                        COALESCE(SUM(m.fresh_input_tokens + m.output_tokens), 0) as total_tokens,
+                        COALESCE(SUM(m.fresh_input_tokens), 0) as total_input_tokens,
+                        COALESCE(SUM(m.output_tokens), 0) as total_output_tokens,
+                        COALESCE(SUM(m.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                        COALESCE(SUM(m.cache_read_tokens), 0) as total_cache_read_tokens
+                    FROM usage_minute_rollups m {minute_join} {minute_where}
+                    GROUP BY bucket_idx
+                )
                 GROUP BY bucket_idx
                 ORDER BY bucket_idx ASC"
             );
@@ -938,12 +1295,15 @@ impl Database {
 
             let mut map: HashMap<i64, DailyStats> = HashMap::new();
 
-            let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-                Box::new(start_ts),
-                Box::new(end_ts),
-                Box::new(bucket_seconds),
-            ];
-            all_params.extend(extra_params);
+            let mut all_params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(start_ts), Box::new(bucket_seconds)];
+            all_params.extend(detail.params);
+            all_params.push(Box::new(start_ts));
+            all_params.push(Box::new(bucket_seconds));
+            all_params.extend(archive.params);
+            all_params.push(Box::new(start_ts));
+            all_params.push(Box::new(bucket_seconds));
+            all_params.extend(minute.params);
             let param_refs: Vec<&dyn rusqlite::ToSql> =
                 all_params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), row_mapper)?;
@@ -988,52 +1348,97 @@ impl Database {
         let end_day = local_datetime_from_timestamp(end_ts)?.date_naive();
         let bucket_count = (end_day.signed_duration_since(start_day).num_days() + 1) as usize;
 
-        let mut extra_conditions: Vec<String> = Vec::new();
-        let mut extra_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(at) = app_type {
-            extra_conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
-            extra_params.push(Box::new(at.to_string()));
-        }
-        push_provider_model_filters(
-            &mut extra_conditions,
-            &mut extra_params,
+        let detail = build_usage_fact_query_parts(
             "l",
             "p",
+            false,
+            Some(start_ts),
+            Some(end_ts),
+            app_type,
             provider_name,
             model,
         );
-        let extra_filter = extra_conditions
-            .iter()
-            .map(|c| format!("AND {c}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let detail_join = if provider_name.is_some() {
-            providers_join("l", "p")
-        } else {
-            String::new()
-        };
+        let archive = build_usage_fact_query_parts(
+            "a",
+            "pa",
+            true,
+            Some(start_ts),
+            Some(end_ts),
+            app_type,
+            provider_name,
+            model,
+        );
+        let minute = build_minute_usage_query_parts(
+            "m",
+            "pm",
+            Some(start_ts),
+            Some(end_ts),
+            app_type,
+            provider_name,
+            model,
+        );
 
-        let effective_filter = effective_usage_log_filter("l");
-        let fresh_input = fresh_input_sql("l");
-        let detail_sql = format!(
+        let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_archive = fresh_input_sql("a");
+        let detail_join = &detail.provider_join;
+        let detail_where = &detail.where_clause;
+        let archive_join = &archive.provider_join;
+        let archive_where = &archive.where_clause;
+        let minute_join = &minute.provider_join;
+        let minute_where = &minute.where_clause;
+        let facts_sql = format!(
             "SELECT
-                date(l.created_at, 'unixepoch', 'localtime') as bucket_date,
-                COUNT(*) as request_count,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
-                COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
-                COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
-                COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
-                COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
-                COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens
-            FROM proxy_request_logs l {detail_join}
-            WHERE l.created_at >= ?1 AND l.created_at <= ?2
-              AND {effective_filter} {extra_filter}
+                bucket_date,
+                SUM(request_count),
+                SUM(total_cost),
+                SUM(total_tokens),
+                SUM(total_input_tokens),
+                SUM(total_output_tokens),
+                SUM(total_cache_creation_tokens),
+                SUM(total_cache_read_tokens)
+            FROM (
+                SELECT
+                    date(l.created_at, 'unixepoch', 'localtime') as bucket_date,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM({fresh_input_detail} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_detail}), 0) as total_input_tokens,
+                    COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(l.cache_read_tokens), 0) as total_cache_read_tokens
+                FROM proxy_request_logs l {detail_join} {detail_where}
+                GROUP BY bucket_date
+                UNION ALL
+                SELECT
+                    date(a.created_at, 'unixepoch', 'localtime') as bucket_date,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM({fresh_input_archive} + a.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({fresh_input_archive}), 0) as total_input_tokens,
+                    COALESCE(SUM(a.output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(a.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(a.cache_read_tokens), 0) as total_cache_read_tokens
+                FROM usage_request_stats_archive a {archive_join} {archive_where}
+                GROUP BY bucket_date
+                UNION ALL
+                SELECT
+                    date(m.minute_start, 'unixepoch', 'localtime') as bucket_date,
+                    COALESCE(SUM(m.request_count), 0) as request_count,
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(m.fresh_input_tokens + m.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(m.fresh_input_tokens), 0) as total_input_tokens,
+                    COALESCE(SUM(m.output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(m.cache_creation_tokens), 0) as total_cache_creation_tokens,
+                    COALESCE(SUM(m.cache_read_tokens), 0) as total_cache_read_tokens
+                FROM usage_minute_rollups m {minute_join} {minute_where}
+                GROUP BY bucket_date
+            )
             GROUP BY bucket_date
             ORDER BY bucket_date ASC"
         );
 
-        let mut detail_stmt = conn.prepare(&detail_sql)?;
-        let detail_row_mapper = |row: &rusqlite::Row| {
+        let mut facts_stmt = conn.prepare(&facts_sql)?;
+        let facts_row_mapper = |row: &rusqlite::Row| {
             Ok((
                 row.get::<_, String>(0)?,
                 DailyStats {
@@ -1050,21 +1455,20 @@ impl Database {
         };
 
         let mut map: HashMap<NaiveDate, DailyStats> = HashMap::new();
-        let mut detail_all_params: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(start_ts), Box::new(end_ts)];
-        detail_all_params.extend(extra_params);
-        let detail_param_refs: Vec<&dyn rusqlite::ToSql> =
-            detail_all_params.iter().map(|p| p.as_ref()).collect();
-        let detail_rows = detail_stmt.query_map(detail_param_refs.as_slice(), detail_row_mapper)?;
+        let mut facts_params = detail.params;
+        facts_params.extend(archive.params);
+        facts_params.extend(minute.params);
+        let facts_param_refs: Vec<&dyn rusqlite::ToSql> =
+            facts_params.iter().map(|p| p.as_ref()).collect();
+        let facts_rows = facts_stmt.query_map(facts_param_refs.as_slice(), facts_row_mapper)?;
 
-        for row in detail_rows {
+        for row in facts_rows {
             let (bucket_date, stat) = row?;
             let date = NaiveDate::parse_from_str(&bucket_date, "%Y-%m-%d")
                 .map_err(|err| AppError::Database(format!("解析趋势日期失败: {err}")))?;
             map.insert(date, stat);
         }
 
-        let rollup_bounds = compute_rollup_date_bounds(Some(start_ts), Some(end_ts))?;
         let mut rollup_conditions = Vec::new();
         let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         push_rollup_date_filters(
@@ -1195,33 +1599,35 @@ impl Database {
     ) -> Result<Vec<ProviderStats>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
-        let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(start) = start_date {
-            detail_conditions.push("l.created_at >= ?".to_string());
-            detail_params.push(Box::new(start));
-        }
-        if let Some(end) = end_date {
-            detail_conditions.push("l.created_at <= ?".to_string());
-            detail_params.push(Box::new(end));
-        }
-        if let Some(at) = app_type {
-            detail_conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
-            detail_params.push(Box::new(at.to_string()));
-        }
-        push_provider_model_filters(
-            &mut detail_conditions,
-            &mut detail_params,
+        let detail = build_usage_fact_query_parts(
             "l",
             "p",
+            false,
+            start_date,
+            end_date,
+            app_type,
             provider_name,
             model,
         );
-        let detail_where = if detail_conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", detail_conditions.join(" AND "))
-        };
+        let archive = build_usage_fact_query_parts(
+            "a",
+            "pa",
+            true,
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
+        let minute = build_minute_usage_query_parts(
+            "m",
+            "pm",
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
 
         let mut rollup_conditions = Vec::new();
         let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1252,9 +1658,19 @@ impl Database {
 
         // UNION detail logs + rollup data, then aggregate
         let detail_pname = provider_name_coalesce("l", "p");
+        let archive_pname = provider_name_coalesce("a", "pa");
+        let minute_pname = provider_name_coalesce("m", "pm");
         let rollup_pname = provider_name_coalesce("r", "p2");
         let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_archive = fresh_input_sql("a");
         let fresh_input_rollup = fresh_input_sql("r");
+        let detail_where = &detail.where_clause;
+        // Provider stats always project a human-readable name, so keep the
+        // provider join for archive rows even when no provider filter is used.
+        let archive_join = providers_join("a", "pa");
+        let archive_where = &archive.where_clause;
+        let minute_join = providers_join("m", "pm");
+        let minute_where = &minute.where_clause;
         let sql = format!(
             "SELECT
                 provider_id, app_type, provider_name,
@@ -1278,6 +1694,28 @@ impl Database {
                 {detail_where}
                 GROUP BY l.provider_id, l.app_type
                 UNION ALL
+                SELECT a.provider_id, a.app_type,
+                    {archive_pname} as provider_name,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM({fresh_input_archive} + a.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN a.status_code >= 200 AND a.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
+                    COALESCE(SUM(a.latency_ms), 0) as latency_sum
+                FROM usage_request_stats_archive a {archive_join}
+                {archive_where}
+                GROUP BY a.provider_id, a.app_type
+                UNION ALL
+                SELECT m.provider_id, m.app_type,
+                    {minute_pname} as provider_name,
+                    COALESCE(SUM(m.request_count), 0),
+                    COALESCE(SUM(m.fresh_input_tokens + m.output_tokens), 0),
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0),
+                    COALESCE(SUM(m.success_count), 0),
+                    COALESCE(SUM(m.latency_sum_ms), 0)
+                FROM usage_minute_rollups m {minute_join}
+                {minute_where}
+                GROUP BY m.provider_id, m.app_type
+                UNION ALL
                 SELECT r.provider_id, r.app_type,
                     {rollup_pname} as provider_name,
                     COALESCE(SUM(r.request_count), 0),
@@ -1295,7 +1733,9 @@ impl Database {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = detail_params;
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = detail.params;
+        params.extend(archive.params);
+        params.extend(minute.params);
         params.extend(rollup_params);
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let row_mapper = |row: &rusqlite::Row| {
@@ -1339,38 +1779,35 @@ impl Database {
     ) -> Result<Vec<ModelStats>, AppError> {
         let conn = lock_conn!(self.conn);
 
-        let mut detail_conditions = vec![effective_usage_log_filter("l")];
-        let mut detail_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(start) = start_date {
-            detail_conditions.push("l.created_at >= ?".to_string());
-            detail_params.push(Box::new(start));
-        }
-        if let Some(end) = end_date {
-            detail_conditions.push("l.created_at <= ?".to_string());
-            detail_params.push(Box::new(end));
-        }
-        if let Some(at) = app_type {
-            detail_conditions.push(format!("{} = ?", folded_app_type_sql("l.app_type")));
-            detail_params.push(Box::new(at.to_string()));
-        }
-        push_provider_model_filters(
-            &mut detail_conditions,
-            &mut detail_params,
+        let detail = build_usage_fact_query_parts(
             "l",
             "p",
+            false,
+            start_date,
+            end_date,
+            app_type,
             provider_name,
             model,
         );
-        let detail_where = if detail_conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", detail_conditions.join(" AND "))
-        };
-        let detail_join = if provider_name.is_some() {
-            providers_join("l", "p")
-        } else {
-            String::new()
-        };
+        let archive = build_usage_fact_query_parts(
+            "a",
+            "pa",
+            true,
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
+        let minute = build_minute_usage_query_parts(
+            "m",
+            "pm",
+            start_date,
+            end_date,
+            app_type,
+            provider_name,
+            model,
+        );
 
         let mut rollup_conditions = Vec::new();
         let mut rollup_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1411,9 +1848,18 @@ impl Database {
         // 模式下两者相同，行为不变；request 模式 + 路由接管下，钱挂在实际计价
         // 基准名下，而不是上游回显/客户端别名名下。
         let fresh_input_detail = fresh_input_sql("l");
+        let fresh_input_archive = fresh_input_sql("a");
         let fresh_input_rollup = fresh_input_sql("r");
         let detail_model = effective_model_sql("l");
+        let archive_model = effective_model_sql("a");
+        let minute_model = effective_model_sql("m");
         let rollup_model = effective_model_sql("r");
+        let detail_join = &detail.provider_join;
+        let detail_where = &detail.where_clause;
+        let archive_join = &archive.provider_join;
+        let archive_where = &archive.where_clause;
+        let minute_join = &minute.provider_join;
+        let minute_where = &minute.where_clause;
         let sql = format!(
             "SELECT
                 model,
@@ -1430,6 +1876,24 @@ impl Database {
                 {detail_where}
                 GROUP BY {detail_model}
                 UNION ALL
+                SELECT {archive_model},
+                    COUNT(*),
+                    COALESCE(SUM({fresh_input_archive} + a.output_tokens), 0),
+                    COALESCE(SUM(CAST(a.total_cost_usd AS REAL)), 0)
+                FROM usage_request_stats_archive a
+                {archive_join}
+                {archive_where}
+                GROUP BY {archive_model}
+                UNION ALL
+                SELECT {minute_model},
+                    COALESCE(SUM(m.request_count), 0),
+                    COALESCE(SUM(m.fresh_input_tokens + m.output_tokens), 0),
+                    COALESCE(SUM(CAST(m.total_cost_usd AS REAL)), 0)
+                FROM usage_minute_rollups m
+                {minute_join}
+                {minute_where}
+                GROUP BY {minute_model}
+                UNION ALL
                 SELECT {rollup_model},
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
@@ -1444,7 +1908,9 @@ impl Database {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = detail_params;
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = detail.params;
+        params.extend(archive.params);
+        params.extend(minute.params);
         params.extend(rollup_params);
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let row_mapper = |row: &rusqlite::Row| {
@@ -1550,7 +2016,7 @@ impl Database {
              FROM proxy_request_logs l
              LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
              {where_clause}
-             ORDER BY l.created_at DESC
+             ORDER BY l.created_at DESC, l.rowid DESC
              LIMIT ? OFFSET ?"
         );
 
@@ -1803,40 +2269,74 @@ impl Database {
             })
             .unwrap_or((None, None));
 
-        // 计算今日使用量 (detail logs + rollup)
+        // 计算今日使用量 (detail + archive + rollup)。归档是明细清理后的
+        // 精确事实，不能只依赖日汇总，否则当天被清理的请求会从额度中消失。
+        let detail_filter = effective_usage_log_filter("l");
+        let archive_filter = effective_archive_usage_log_filter("a");
+        let archive_distinct_filter = archive_without_live_duplicate_filter("a");
         let daily_usage: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(cost), 0) FROM (
+                &format!("SELECT COALESCE(SUM(cost), 0) FROM (
                     SELECT CAST(total_cost_usd AS REAL) as cost
-                    FROM proxy_request_logs
-                    WHERE provider_id = ? AND app_type = ?
+                    FROM proxy_request_logs l
+                    WHERE l.provider_id = ? AND l.app_type = ?
                       AND date(datetime(created_at, 'unixepoch', 'localtime')) = date('now', 'localtime')
+                      AND {detail_filter}
+                    UNION ALL
+                    SELECT CAST(a.total_cost_usd AS REAL) as cost
+                    FROM usage_request_stats_archive a
+                    WHERE a.provider_id = ? AND a.app_type = ?
+                      AND date(datetime(a.created_at, 'unixepoch', 'localtime')) = date('now', 'localtime')
+                      AND {archive_filter}
+                      AND {archive_distinct_filter}
                     UNION ALL
                     SELECT CAST(total_cost_usd AS REAL)
                     FROM usage_daily_rollups
                     WHERE provider_id = ? AND app_type = ?
                       AND date = date('now', 'localtime')
-                )",
-                params![provider_id, app_type, provider_id, app_type],
+                )"),
+                params![
+                    provider_id,
+                    app_type,
+                    provider_id,
+                    app_type,
+                    provider_id,
+                    app_type
+                ],
                 |row| row.get(0),
             )
             .unwrap_or(0.0);
 
-        // 计算本月使用量 (detail logs + rollup)
+        // 计算本月使用量 (detail + archive + rollup)
         let monthly_usage: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(cost), 0) FROM (
+                &format!("SELECT COALESCE(SUM(cost), 0) FROM (
                     SELECT CAST(total_cost_usd AS REAL) as cost
-                    FROM proxy_request_logs
-                    WHERE provider_id = ? AND app_type = ?
+                    FROM proxy_request_logs l
+                    WHERE l.provider_id = ? AND l.app_type = ?
                       AND strftime('%Y-%m', datetime(created_at, 'unixepoch', 'localtime')) = strftime('%Y-%m', 'now', 'localtime')
+                      AND {detail_filter}
+                    UNION ALL
+                    SELECT CAST(a.total_cost_usd AS REAL) as cost
+                    FROM usage_request_stats_archive a
+                    WHERE a.provider_id = ? AND a.app_type = ?
+                      AND strftime('%Y-%m', datetime(a.created_at, 'unixepoch', 'localtime')) = strftime('%Y-%m', 'now', 'localtime')
+                      AND {archive_filter}
+                      AND {archive_distinct_filter}
                     UNION ALL
                     SELECT CAST(total_cost_usd AS REAL)
                     FROM usage_daily_rollups
                     WHERE provider_id = ? AND app_type = ?
                       AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
-                )",
-                params![provider_id, app_type, provider_id, app_type],
+                )"),
+                params![
+                    provider_id,
+                    app_type,
+                    provider_id,
+                    app_type,
+                    provider_id,
+                    app_type
+                ],
                 |row| row.get(0),
             )
             .unwrap_or(0.0);
@@ -1881,6 +2381,33 @@ struct PricingInfo {
     cache_creation: rust_decimal::Decimal,
 }
 
+/// Limit cost backfill to the rows that are about to leave their detailed
+/// storage. Retention must not turn a small raw-log cleanup into a scan and
+/// rewrite of the entire historical archive.
+#[derive(Clone, Copy)]
+enum UsageCostBackfillScope {
+    All,
+    RawOnly,
+    RawExcess(u32),
+    Before(i64),
+}
+
+fn collect_missing_usage_cost_logs(
+    conn: &Connection,
+    sql: &str,
+    sql_params: &[&dyn ToSql],
+    archived: bool,
+    logs: &mut Vec<(RequestLogDetail, bool)>,
+) -> Result<(), AppError> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(sql_params, row_to_request_log_detail)?;
+    logs.extend(
+        rows.map(|row| row.map(|log| (log, archived)))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    Ok(())
+}
+
 impl Database {
     /// Recalculate stored zero-cost usage rows once pricing becomes available.
     pub(crate) fn backfill_missing_usage_costs(&self) -> Result<u64, AppError> {
@@ -1901,7 +2428,59 @@ impl Database {
         conn: &Connection,
         only_model_id: Option<&str>,
     ) -> Result<u64, AppError> {
-        const BASE_SQL: &str =
+        Self::backfill_missing_usage_costs_scoped_on_conn(
+            conn,
+            only_model_id,
+            UsageCostBackfillScope::All,
+        )
+    }
+
+    /// Backfill only raw request-log rows before a clear operation. Archive
+    /// rows are already historical facts and must not be scanned for every UI
+    /// clear action.
+    pub(crate) fn backfill_missing_raw_usage_costs_on_conn(
+        conn: &Connection,
+    ) -> Result<u64, AppError> {
+        Self::backfill_missing_usage_costs_scoped_on_conn(
+            conn,
+            None,
+            UsageCostBackfillScope::RawOnly,
+        )
+    }
+
+    /// Backfill precisely the raw rows that a count-based retention pass is
+    /// about to archive. This keeps high-throughput cleanup bounded by the
+    /// excess, rather than by the total history length.
+    pub(crate) fn backfill_missing_raw_usage_costs_excess_on_conn(
+        conn: &Connection,
+        retain_count: u32,
+    ) -> Result<u64, AppError> {
+        Self::backfill_missing_usage_costs_scoped_on_conn(
+            conn,
+            None,
+            UsageCostBackfillScope::RawExcess(retain_count),
+        )
+    }
+
+    /// Daily age-based compaction may safely scan only the rows it is going to
+    /// remove from detail/archive storage.
+    pub(crate) fn backfill_missing_usage_costs_before_on_conn(
+        conn: &Connection,
+        cutoff: i64,
+    ) -> Result<u64, AppError> {
+        Self::backfill_missing_usage_costs_scoped_on_conn(
+            conn,
+            None,
+            UsageCostBackfillScope::Before(cutoff),
+        )
+    }
+
+    fn backfill_missing_usage_costs_scoped_on_conn(
+        conn: &Connection,
+        only_model_id: Option<&str>,
+        scope: UsageCostBackfillScope,
+    ) -> Result<u64, AppError> {
+        const DETAIL_SQL: &str =
             "SELECT request_id, provider_id, NULL AS provider_name, app_type, model, request_model,
                         cost_multiplier,
                         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -1914,12 +2493,51 @@ impl Database {
                  WHERE CAST(total_cost_usd AS REAL) <= 0
                    AND (input_tokens > 0 OR output_tokens > 0
                         OR cache_read_tokens > 0 OR cache_creation_tokens > 0)";
+        const ARCHIVE_SQL: &str =
+            "SELECT request_id, provider_id, NULL AS provider_name, app_type, model, request_model,
+                        cost_multiplier,
+                        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                        input_cost_usd, output_cost_usd, cache_read_cost_usd,
+                        cache_creation_cost_usd, total_cost_usd, 0 AS is_streaming, latency_ms,
+                        NULL AS first_token_ms, NULL AS duration_ms, status_code,
+                        NULL AS error_message, NULL AS session_id, NULL AS provider_type,
+                        created_at, data_source, pricing_model, input_token_semantics
+                 FROM usage_request_stats_archive
+                 WHERE CAST(total_cost_usd AS REAL) <= 0
+                   AND (input_tokens > 0 OR output_tokens > 0
+                        OR cache_read_tokens > 0 OR cache_creation_tokens > 0)";
 
-        let mut logs = {
-            let mut stmt = conn.prepare(BASE_SQL)?;
-            let rows = stmt.query_map([], row_to_request_log_detail)?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
+        let mut logs = Vec::new();
+        match scope {
+            UsageCostBackfillScope::All => {
+                collect_missing_usage_cost_logs(conn, DETAIL_SQL, &[], false, &mut logs)?;
+                collect_missing_usage_cost_logs(conn, ARCHIVE_SQL, &[], true, &mut logs)?;
+            }
+            UsageCostBackfillScope::RawOnly => {
+                collect_missing_usage_cost_logs(conn, DETAIL_SQL, &[], false, &mut logs)?;
+            }
+            UsageCostBackfillScope::RawExcess(retain_count) => {
+                let sql = format!(
+                    "{DETAIL_SQL}
+                     AND rowid IN (
+                        SELECT rowid
+                        FROM proxy_request_logs
+                        ORDER BY created_at DESC, rowid DESC
+                        LIMIT -1 OFFSET ?1
+                     )"
+                );
+                let retain_count = i64::from(retain_count);
+                let params: [&dyn ToSql; 1] = [&retain_count];
+                collect_missing_usage_cost_logs(conn, &sql, &params, false, &mut logs)?;
+            }
+            UsageCostBackfillScope::Before(cutoff) => {
+                let detail_sql = format!("{DETAIL_SQL} AND created_at < ?1");
+                let archive_sql = format!("{ARCHIVE_SQL} AND created_at < ?1");
+                let params: [&dyn ToSql; 1] = [&cutoff];
+                collect_missing_usage_cost_logs(conn, &detail_sql, &params, false, &mut logs)?;
+                collect_missing_usage_cost_logs(conn, &archive_sql, &params, true, &mut logs)?;
+            }
+        }
 
         // 精准回填的行筛选必须与查价层共用 candidates 归一化：SQL 精确匹配会漏掉
         // 以原始别名落库的行（如 openrouter/anthropic/claude-sonnet-4.5:free），
@@ -1927,7 +2545,7 @@ impl Database {
         // 历史成本要等下次全量回填才更新。误纳无害——查不到价的行会被跳过。
         if let Some(model_id) = only_model_id {
             let target = model_pricing_candidates(model_id);
-            logs.retain(|log| log_pricing_scope_matches(log, &target));
+            logs.retain(|(log, _)| log_pricing_scope_matches(log, &target));
         }
 
         if logs.is_empty() {
@@ -1940,8 +2558,8 @@ impl Database {
 
         let mut updated = 0u64;
         let mut pricing_cache = HashMap::new();
-        for log in &mut logs {
-            if Self::maybe_backfill_log_costs(&tx, log, &mut pricing_cache)? {
+        for (log, archived) in &mut logs {
+            if Self::maybe_backfill_log_costs_in_table(&tx, log, &mut pricing_cache, *archived)? {
                 updated += 1;
             }
         }
@@ -1960,6 +2578,15 @@ impl Database {
         conn: &Connection,
         log: &mut RequestLogDetail,
         pricing_cache: &mut HashMap<String, PricingInfo>,
+    ) -> Result<bool, AppError> {
+        Self::maybe_backfill_log_costs_in_table(conn, log, pricing_cache, false)
+    }
+
+    fn maybe_backfill_log_costs_in_table(
+        conn: &Connection,
+        log: &mut RequestLogDetail,
+        pricing_cache: &mut HashMap<String, PricingInfo>,
+        archived: bool,
     ) -> Result<bool, AppError> {
         let existing_cost = rust_decimal::Decimal::from_str(&log.total_cost_usd)
             .unwrap_or(rust_decimal::Decimal::ZERO);
@@ -2025,21 +2652,34 @@ impl Database {
         log.cache_creation_cost_usd = format!("{cache_creation_cost:.6}");
         log.total_cost_usd = format!("{total_cost:.6}");
 
-        conn.execute(
+        let update_sql = if archived {
+            "UPDATE usage_request_stats_archive
+             SET input_cost_usd = ?1,
+                 output_cost_usd = ?2,
+                 cache_read_cost_usd = ?3,
+                 cache_creation_cost_usd = ?4,
+                 total_cost_usd = ?5
+             WHERE request_id = ?6 AND created_at = ?7"
+        } else {
             "UPDATE proxy_request_logs
              SET input_cost_usd = ?1,
                  output_cost_usd = ?2,
                  cache_read_cost_usd = ?3,
                  cache_creation_cost_usd = ?4,
                  total_cost_usd = ?5
-             WHERE request_id = ?6",
+             WHERE request_id = ?6 AND created_at = ?7"
+        };
+
+        conn.execute(
+            update_sql,
             params![
                 log.input_cost_usd,
                 log.output_cost_usd,
                 log.cache_read_cost_usd,
                 log.cache_creation_cost_usd,
                 log.total_cost_usd,
-                log.request_id
+                log.request_id,
+                log.created_at
             ],
         )
         .map_err(|e| AppError::Database(format!("更新请求成本失败: {e}")))?;
@@ -2502,6 +3142,410 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn insert_archived_usage_log(
+        conn: &Connection,
+        request_id: &str,
+        app_type: &str,
+        provider_id: &str,
+        model: &str,
+        data_source: &str,
+        created_at: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+        cache_read_tokens: i64,
+        cache_creation_tokens: i64,
+        status_code: i64,
+        total_cost_usd: &str,
+    ) -> Result<(), AppError> {
+        conn.execute(
+            "INSERT INTO usage_request_stats_archive (
+                request_id, provider_id, app_type, model, request_model, pricing_model,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd,
+                total_cost_usd, cost_multiplier, latency_ms, status_code, created_at, data_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', '0', '0', ?, '1.0', 100, ?, ?, ?)",
+            params![
+                request_id,
+                provider_id,
+                app_type,
+                model,
+                model,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                total_cost_usd,
+                status_code,
+                created_at,
+                data_source
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_archive_usage_covers_time_ranges_filters_and_trends() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let day_start = local_ts(2026, 7, 22, 0, 0, 0);
+        let day_end = local_ts(2026, 7, 22, 23, 59, 59);
+        let seven_day_start = local_ts(2026, 7, 16, 0, 0, 0);
+        let thirty_day_start = local_ts(2026, 6, 23, 0, 0, 0);
+
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config) VALUES
+                 ('archive-a', 'claude', 'Archive A', '{}'),
+                 ('archive-b', 'codex', 'Archive B', '{}')",
+                [],
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-today",
+                "claude",
+                "archive-a",
+                "claude-sonnet-4-6",
+                "proxy",
+                local_ts(2026, 7, 22, 10, 15, 0),
+                100,
+                10,
+                0,
+                0,
+                200,
+                "1.0",
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-seven-days",
+                "claude",
+                "archive-a",
+                "claude-sonnet-4-6",
+                "proxy",
+                local_ts(2026, 7, 18, 8, 0, 0),
+                200,
+                20,
+                0,
+                0,
+                200,
+                "2.0",
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-thirty-days",
+                "codex",
+                "archive-b",
+                "gpt-5.4",
+                "proxy",
+                local_ts(2026, 7, 1, 8, 0, 0),
+                300,
+                30,
+                0,
+                0,
+                500,
+                "3.0",
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-unbounded-only",
+                "codex",
+                "archive-b",
+                "gpt-5.4",
+                "proxy",
+                local_ts(2026, 5, 1, 8, 0, 0),
+                400,
+                40,
+                0,
+                0,
+                200,
+                "4.0",
+            )?;
+        }
+
+        assert_eq!(
+            db.get_usage_summary(None, None, None, None, None)?
+                .total_requests,
+            4
+        );
+        assert_eq!(
+            db.get_usage_summary(Some(day_start), Some(day_end), None, None, None)?
+                .total_requests,
+            1
+        );
+        assert_eq!(
+            db.get_usage_summary(Some(seven_day_start), Some(day_end), None, None, None,)?
+                .total_requests,
+            2
+        );
+        assert_eq!(
+            db.get_usage_summary(Some(thirty_day_start), Some(day_end), None, None, None,)?
+                .total_requests,
+            3
+        );
+
+        let filtered = db.get_usage_summary(
+            None,
+            None,
+            Some("codex"),
+            Some("Archive B"),
+            Some("gpt-5.4"),
+        )?;
+        assert_eq!(filtered.total_requests, 2);
+        assert_eq!(filtered.total_cost, "7.000000");
+
+        let by_app = db.get_usage_summary_by_app(None, None, None, None)?;
+        assert_eq!(
+            by_app
+                .iter()
+                .map(|item| item.summary.total_requests)
+                .sum::<u64>(),
+            4
+        );
+        let providers = db.get_provider_stats(None, None, None, None, None)?;
+        assert_eq!(providers.len(), 2);
+        let models = db.get_model_stats(None, None, None, None, None)?;
+        assert_eq!(models.len(), 2);
+
+        let hourly = db.get_daily_trends(
+            Some(day_start),
+            Some(local_ts(2026, 7, 22, 12, 0, 0)),
+            Some("claude"),
+            Some("Archive A"),
+            Some("claude-sonnet-4-6"),
+        )?;
+        assert_eq!(hourly.iter().map(|item| item.request_count).sum::<u64>(), 1);
+        let daily = db.get_daily_trends(Some(seven_day_start), Some(day_end), None, None, None)?;
+        assert_eq!(daily.iter().map(|item| item.request_count).sum::<u64>(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_archive_overlap_and_cross_table_session_dedup_are_exact() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn, "repeat", "codex", "p1", "gpt-5.4", "proxy", 1_000, 100, 20, 10, 0, 200,
+                "0.1",
+            )?;
+            insert_archived_usage_log(
+                &conn, "repeat", "codex", "p1", "gpt-5.4", "proxy", 1_000, 100, 20, 10, 0, 200,
+                "0.1",
+            )?;
+            insert_archived_usage_log(
+                &conn, "repeat", "codex", "p1", "gpt-5.4", "proxy", 5_000, 120, 24, 12, 0, 200,
+                "0.2",
+            )?;
+
+            insert_archived_usage_log(
+                &conn,
+                "archive-proxy",
+                "codex",
+                "p1",
+                "gpt-5.4",
+                "proxy",
+                10_000,
+                200,
+                40,
+                20,
+                0,
+                200,
+                "0.3",
+            )?;
+            insert_usage_log(
+                &conn,
+                "detail-session",
+                "codex",
+                "_codex_session",
+                "gpt-5.4",
+                "codex_session",
+                10_060,
+                200,
+                40,
+                20,
+                0,
+                200,
+                "0.3",
+            )?;
+
+            insert_usage_log(
+                &conn,
+                "detail-proxy",
+                "codex",
+                "p1",
+                "gpt-5.4",
+                "proxy",
+                20_000,
+                300,
+                60,
+                30,
+                0,
+                200,
+                "0.4",
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-session",
+                "codex",
+                "_codex_session",
+                "gpt-5.4",
+                "codex_session",
+                20_060,
+                300,
+                60,
+                30,
+                0,
+                200,
+                "0.4",
+            )?;
+        }
+
+        assert_eq!(
+            db.get_usage_summary(None, None, None, None, None)?
+                .total_requests,
+            4
+        );
+        assert_eq!(
+            db.get_usage_summary(Some(900), Some(1_100), None, None, None)?
+                .total_requests,
+            1,
+            "same request_id + created_at must prefer the live detail row"
+        );
+        assert_eq!(
+            db.get_usage_summary(Some(4_900), Some(5_100), None, None, None)?
+                .total_requests,
+            1,
+            "same request_id at a different time is a separate request"
+        );
+
+        let breakdown = crate::services::session_usage::get_data_source_breakdown(&db)?;
+        assert_eq!(breakdown.len(), 1);
+        assert_eq!(breakdown[0].data_source, "proxy");
+        assert_eq!(breakdown[0].request_count, 4);
+
+        let conn = lock_conn!(db.conn);
+        assert!(should_skip_session_insert(
+            &conn,
+            "new-session-id",
+            &DedupKey {
+                app_type: "codex",
+                model: "gpt-5.4",
+                input_tokens: 200,
+                output_tokens: 40,
+                cache_read_tokens: 20,
+                cache_creation_tokens: 0,
+                created_at: 10_030,
+            },
+        )?);
+        assert!(!should_skip_session_insert(
+            &conn,
+            "archive-proxy",
+            &DedupKey {
+                app_type: "codex",
+                model: "gpt-5.4",
+                input_tokens: 999,
+                output_tokens: 999,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                created_at: 50_000,
+            },
+        )?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_provider_limits_include_archived_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                 VALUES ('limited', 'claude', 'Limited', '{}',
+                         '{\"limitDailyUsd\":\"1.00\",\"limitMonthlyUsd\":\"1.00\"}')",
+                [],
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archived-limit",
+                "claude",
+                "limited",
+                "claude-sonnet-4-6",
+                "proxy",
+                Local::now().timestamp(),
+                100,
+                10,
+                0,
+                0,
+                200,
+                "1.25",
+            )?;
+        }
+
+        let status = db.check_provider_limits("limited", "claude")?;
+        assert_eq!(status.daily_usage, "1.250000");
+        assert_eq!(status.monthly_usage, "1.250000");
+        assert!(status.daily_exceeded);
+        assert!(status.monthly_exceeded);
+        Ok(())
+    }
+
+    #[test]
+    fn test_backfill_missing_usage_costs_updates_archive_rows() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT OR REPLACE INTO model_pricing (
+                    model_id, display_name, input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+                 ) VALUES ('archive-priced', 'Archive Priced', '1', '2', '0', '0')",
+                [],
+            )?;
+            insert_archived_usage_log(
+                &conn,
+                "archive-zero-cost",
+                "claude",
+                "p1",
+                "archive-priced",
+                "proxy",
+                1_000,
+                1_000_000,
+                1_000_000,
+                0,
+                0,
+                200,
+                "0",
+            )?;
+            conn.execute(
+                "UPDATE usage_request_stats_archive
+                 SET cost_multiplier = '2'
+                 WHERE request_id = 'archive-zero-cost' AND created_at = 1000",
+                [],
+            )?;
+        }
+
+        assert_eq!(
+            db.backfill_missing_usage_costs_for_model("archive-priced")?,
+            1
+        );
+        let conn = lock_conn!(db.conn);
+        let costs: (String, String, String) = conn.query_row(
+            "SELECT input_cost_usd, output_cost_usd, total_cost_usd
+             FROM usage_request_stats_archive
+             WHERE request_id = 'archive-zero-cost' AND created_at = 1000",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(
+            costs,
+            ("1.000000".into(), "2.000000".into(), "6.000000".into())
+        );
+        Ok(())
+    }
+
     fn create_legacy_nullable_logs_table(conn: &Connection) -> Result<(), AppError> {
         conn.execute(
             "CREATE TABLE proxy_request_logs (
@@ -2515,6 +3559,38 @@ mod tests {
                 status_code INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 data_source TEXT
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE usage_request_stats_archive (
+                request_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                data_source TEXT NOT NULL DEFAULT 'proxy',
+                PRIMARY KEY (request_id, created_at)
+            )",
+            [],
+        )?;
+        // The production schema creates this table during v24 migration. Keep
+        // the deliberately minimal legacy fixture aligned with every table
+        // referenced by the shared deduplication SQL.
+        conn.execute(
+            "CREATE TABLE usage_proxy_dedup_guard (
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
             )",
             [],
         )?;
@@ -3072,6 +4148,69 @@ mod tests {
         let summary = db.get_usage_summary(None, None, None, None, None)?;
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.success_rate, 100.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn minute_rollups_feed_summary_provider_model_and_trend_queries() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config)
+                 VALUES ('minute-provider', 'claude', 'Minute Provider', '{}')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_minute_rollups (
+                    minute_start, app_type, provider_id, model, data_source,
+                    request_count, success_count, fresh_input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, total_cost_usd, latency_sum_ms
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    10_800_i64,
+                    "claude",
+                    "minute-provider",
+                    "minute-model",
+                    "proxy",
+                    3_i64,
+                    2_i64,
+                    210_i64,
+                    90_i64,
+                    12_i64,
+                    6_i64,
+                    "0.420000",
+                    600_i64,
+                ],
+            )?;
+        }
+
+        let summary =
+            db.get_usage_summary(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
+        assert_eq!(summary.total_requests, 3);
+        assert_eq!(summary.total_input_tokens, 210);
+        assert_eq!(summary.total_output_tokens, 90);
+
+        let providers =
+            db.get_provider_stats(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].provider_name, "Minute Provider");
+        assert_eq!(providers[0].request_count, 3);
+        assert_eq!(providers[0].total_tokens, 300);
+        assert_eq!(providers[0].avg_latency_ms, 200);
+
+        let models = db.get_model_stats(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model, "minute-model");
+        assert_eq!(models[0].request_count, 3);
+        assert_eq!(models[0].total_tokens, 300);
+
+        let trends =
+            db.get_daily_trends(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
+        assert_eq!(trends.len(), 15);
+        assert_eq!(trends[3].request_count, 3);
+        assert_eq!(trends[3].total_tokens, 300);
 
         Ok(())
     }

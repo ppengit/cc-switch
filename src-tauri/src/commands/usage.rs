@@ -111,6 +111,49 @@ pub fn get_request_logs(
     state.db.get_request_logs(&filters, page, page_size)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogRetentionConfig {
+    pub auto_cleanup_enabled: bool,
+    pub retain_count: u32,
+}
+
+/// 获取请求日志自动清理设置。
+#[tauri::command]
+pub fn get_request_log_retention_config(
+    state: State<'_, AppState>,
+) -> Result<RequestLogRetentionConfig, AppError> {
+    let (auto_cleanup_enabled, retain_count) = state.db.get_request_log_retention_config()?;
+    Ok(RequestLogRetentionConfig {
+        auto_cleanup_enabled,
+        retain_count,
+    })
+}
+
+/// 保存请求日志自动清理设置；启用时立即执行一次按数量清理。
+#[tauri::command]
+pub fn set_request_log_retention_config(
+    state: State<'_, AppState>,
+    config: RequestLogRetentionConfig,
+) -> Result<RequestLogRetentionConfig, AppError> {
+    let (auto_cleanup_enabled, retain_count) = state
+        .db
+        .set_request_log_retention_config(config.auto_cleanup_enabled, config.retain_count)?;
+    if auto_cleanup_enabled {
+        state.db.prune_request_logs_to_minimum(retain_count)?;
+    }
+    Ok(RequestLogRetentionConfig {
+        auto_cleanup_enabled,
+        retain_count,
+    })
+}
+
+/// 清空请求日志明细；清空前先写入日汇总，统计数据不会被删除。
+#[tauri::command]
+pub fn clear_request_logs(state: State<'_, AppState>) -> Result<u64, AppError> {
+    state.db.clear_request_logs_preserving_statistics()
+}
+
 /// 获取单个请求详情
 #[tauri::command]
 pub fn get_request_detail(

@@ -15,13 +15,19 @@ use crate::proxy::types::{
 };
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU8, AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
 const DEFAULT_SESSION_ROUTING_IDLE_TTL_SECONDS: u64 = 600;
+const ADMISSION_RETRY_OPEN: u8 = 0;
+const ADMISSION_RETRY_CLOSED_AFTER_SUCCESS: u8 = 1;
+const ADMISSION_RETRY_CLOSED_MANUALLY: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SessionRouteKey {
@@ -188,6 +194,42 @@ impl Drop for SessionRoutingRequestGuard {
     }
 }
 
+#[derive(Debug)]
+struct AdmissionRetryCoordination {
+    gate: Arc<Mutex<()>>,
+    active_participants: AtomicUsize,
+    closure: AtomicU8,
+}
+
+impl AdmissionRetryCoordination {
+    fn new() -> Self {
+        Self {
+            gate: Arc::new(Mutex::new(())),
+            active_participants: AtomicUsize::new(0),
+            closure: AtomicU8::new(ADMISSION_RETRY_OPEN),
+        }
+    }
+}
+
+/// A request that has already entered one provider's admission-retry episode.
+///
+/// The participant keeps its episode alive across media/thinking rectification.
+/// Once another participant succeeds and closes the persisted switch, every
+/// already-waiting request may make one final attempt of its own. A manual
+/// close, by contrast, grants no final attempt.
+pub(crate) struct AdmissionRetryParticipant {
+    state: Arc<AdmissionRetryCoordination>,
+    post_success_attempt_used: bool,
+}
+
+impl Drop for AdmissionRetryParticipant {
+    fn drop(&mut self) {
+        self.state
+            .active_participants
+            .fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// 供应商路由器
 pub struct ProviderRouter {
     /// 数据库连接
@@ -198,6 +240,9 @@ pub struct ProviderRouter {
     api_key_error_counts: Arc<RwLock<HashMap<String, u32>>>,
     /// 会话路由运行态：只保存在内存中，随进程重启释放。
     session_routing: Arc<RwLock<SessionRoutingState>>,
+    /// Provider 级入场重试协调：串行化探测，并区分成功自动关闭与手动关闭。
+    admission_retry_coordination:
+        Arc<RwLock<HashMap<ProviderRouteKey, Arc<AdmissionRetryCoordination>>>>,
     /// AppHandle，用于通知前端刷新故障转移队列
     app_handle: Option<tauri::AppHandle>,
 }
@@ -215,7 +260,131 @@ impl ProviderRouter {
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             api_key_error_counts: Arc::new(RwLock::new(HashMap::new())),
             session_routing: Arc::new(RwLock::new(SessionRoutingState::default())),
+            admission_retry_coordination: Arc::new(RwLock::new(HashMap::new())),
             app_handle,
+        }
+    }
+
+    pub(crate) async fn join_admission_retry(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        automatically_opened: bool,
+    ) -> AdmissionRetryParticipant {
+        let key = ProviderRouteKey {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+        };
+        let mut episodes = self.admission_retry_coordination.write().await;
+        let state = match episodes.get(&key) {
+            Some(existing) => {
+                let closure = existing.closure.load(Ordering::SeqCst);
+                let should_replace = match closure {
+                    ADMISSION_RETRY_OPEN => false,
+                    // An automatic trigger after a completed episode starts a
+                    // new episode. Requests that merely observed the still-open
+                    // persisted switch remain attached to the old episode and
+                    // receive its one final-attempt allowance.
+                    ADMISSION_RETRY_CLOSED_AFTER_SUCCESS => {
+                        automatically_opened
+                            || existing.active_participants.load(Ordering::SeqCst) == 0
+                    }
+                    // Re-enabling after an explicit close is always a new episode;
+                    // old participants keep the old Arc and remain cancelled.
+                    ADMISSION_RETRY_CLOSED_MANUALLY => true,
+                    _ => true,
+                };
+                if should_replace {
+                    let replacement = Arc::new(AdmissionRetryCoordination::new());
+                    episodes.insert(key, replacement.clone());
+                    replacement
+                } else {
+                    existing.clone()
+                }
+            }
+            None => {
+                let state = Arc::new(AdmissionRetryCoordination::new());
+                episodes.insert(key, state.clone());
+                state
+            }
+        };
+        state.active_participants.fetch_add(1, Ordering::SeqCst);
+        AdmissionRetryParticipant {
+            state,
+            post_success_attempt_used: false,
+        }
+    }
+
+    pub(crate) async fn acquire_admission_retry_gate(
+        &self,
+        participant: &AdmissionRetryParticipant,
+    ) -> OwnedMutexGuard<()> {
+        participant.state.gate.clone().lock_owned().await
+    }
+
+    pub(crate) async fn admission_retry_can_continue(
+        &self,
+        participant: &mut AdmissionRetryParticipant,
+        persisted_policy_enabled: bool,
+    ) -> bool {
+        match participant.state.closure.load(Ordering::SeqCst) {
+            ADMISSION_RETRY_OPEN if persisted_policy_enabled => true,
+            ADMISSION_RETRY_OPEN => {
+                let _ = participant.state.closure.compare_exchange(
+                    ADMISSION_RETRY_OPEN,
+                    ADMISSION_RETRY_CLOSED_MANUALLY,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                false
+            }
+            ADMISSION_RETRY_CLOSED_AFTER_SUCCESS if persisted_policy_enabled => true,
+            ADMISSION_RETRY_CLOSED_AFTER_SUCCESS if !participant.post_success_attempt_used => {
+                participant.post_success_attempt_used = true;
+                true
+            }
+            ADMISSION_RETRY_CLOSED_AFTER_SUCCESS | ADMISSION_RETRY_CLOSED_MANUALLY => false,
+            _ => false,
+        }
+    }
+
+    pub(crate) async fn mark_admission_retry_succeeded(&self, app_type: &str, provider_id: &str) {
+        let key = ProviderRouteKey {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+        };
+        let state = self
+            .admission_retry_coordination
+            .read()
+            .await
+            .get(&key)
+            .cloned();
+        if let Some(state) = state {
+            let _ = state.closure.compare_exchange(
+                ADMISSION_RETRY_OPEN,
+                ADMISSION_RETRY_CLOSED_AFTER_SUCCESS,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    async fn mark_admission_retry_manually_disabled(&self, app_type: &str, provider_id: &str) {
+        let key = ProviderRouteKey {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+        };
+        if let Some(state) = self
+            .admission_retry_coordination
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+        {
+            state
+                .closure
+                .store(ADMISSION_RETRY_CLOSED_MANUALLY, Ordering::SeqCst);
         }
     }
 
@@ -1205,6 +1374,79 @@ mod tests {
 
         let breaker = router.get_or_create_circuit_breaker("claude:test").await;
         assert!(breaker.allow_request().await.allowed);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn admission_retry_coordinator_serializes_provider_probes() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db);
+        let first = router
+            .join_admission_retry("claude", "provider-a", false)
+            .await;
+        let second = router
+            .join_admission_retry("claude", "provider-a", false)
+            .await;
+
+        let first_guard = router.acquire_admission_retry_gate(&first).await;
+        let second_wait = router.acquire_admission_retry_gate(&second);
+        tokio::pin!(second_wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut second_wait)
+                .await
+                .is_err(),
+            "a concurrent retry probe must wait for the active provider probe"
+        );
+
+        drop(first_guard);
+        let second_guard = tokio::time::timeout(Duration::from_millis(250), &mut second_wait)
+            .await
+            .expect("queued retry probe should continue after the gate is released");
+        drop(second_guard);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn admission_retry_coordinator_allows_one_post_success_attempt_but_cancels_manual_close()
+    {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db);
+        let mut first = router
+            .join_admission_retry("claude", "provider-a", false)
+            .await;
+        let mut second = router
+            .join_admission_retry("claude", "provider-a", false)
+            .await;
+
+        assert!(router.admission_retry_can_continue(&mut first, true).await);
+        router
+            .mark_admission_retry_succeeded("claude", "provider-a")
+            .await;
+        assert!(
+            router
+                .admission_retry_can_continue(&mut second, false)
+                .await,
+            "a request already in the episode receives one final attempt after a sibling succeeds"
+        );
+        assert!(
+            !router
+                .admission_retry_can_continue(&mut second, false)
+                .await
+        );
+
+        let mut manually_closed = router
+            .join_admission_retry("claude", "provider-a", false)
+            .await;
+        router
+            .mark_admission_retry_manually_disabled("claude", "provider-a")
+            .await;
+        assert!(
+            !router
+                .admission_retry_can_continue(&mut manually_closed, false)
+                .await
+        );
     }
 
     #[tokio::test]

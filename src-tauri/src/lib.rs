@@ -13,7 +13,6 @@ mod config;
 mod database;
 mod deeplink;
 mod error;
-mod floating_activity;
 mod gemini_config;
 mod gemini_mcp;
 mod grok_config;
@@ -39,7 +38,6 @@ mod settings;
 mod store;
 
 mod tray;
-mod usage_events;
 mod usage_script;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
@@ -398,11 +396,6 @@ pub fn run() {
                         .build(),
                 )?;
             }
-
-            // 注入 AppHandle 给 usage_events，让无 AppHandle 持有的写日志路径
-            // 也能向前端推送 `usage-log-recorded`。
-            // 放在日志系统初始化之后，确保 init 的日志能正常输出。
-            usage_events::init(app.handle().clone());
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();
@@ -999,8 +992,6 @@ pub fn run() {
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
-            crate::floating_activity::sync_on_startup(app.handle());
-
             // 从数据库加载日志配置并应用
             {
                 let db = &app.state::<AppState>().db;
@@ -1125,6 +1116,26 @@ pub fn run() {
                         interval.tick().await;
                         if let Err(e) = db_for_timer.periodic_backup_if_needed() {
                             log::warn!("Periodic maintenance timer failed: {e}");
+                        }
+                    }
+                });
+
+                // Automatic raw request-log retention needs a short, lightweight
+                // cadence under sustained traffic. The DAO performs only bounded
+                // excess work and skips the savepoint entirely when no tier is
+                // above its configured limit.
+                let db_for_request_log_retention = state.db.clone();
+                tauri::async_runtime::spawn(async move {
+                    const REQUEST_LOG_RETENTION_INTERVAL_SECS: u64 = 2;
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                        REQUEST_LOG_RETENTION_INTERVAL_SECS,
+                    ));
+                    interval.tick().await; // startup maintenance already checked once
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = db_for_request_log_retention.prune_request_logs_if_needed()
+                        {
+                            log::warn!("Periodic request-log retention failed: {e}");
                         }
                     }
                 });
@@ -1437,13 +1448,6 @@ pub fn run() {
             commands::get_proxy_status,
             commands::get_proxy_raw_logs,
             commands::get_provider_admission_retry_snapshot,
-            commands::get_proxy_activity_floating_settings,
-            commands::set_proxy_activity_floating_window_visible,
-            commands::set_proxy_activity_floating_opacity,
-            commands::set_proxy_activity_floating_always_on_top,
-            commands::set_proxy_activity_floating_mode,
-            commands::set_proxy_activity_floating_position,
-            commands::set_proxy_activity_floating_size,
             commands::get_session_routing_snapshot,
             commands::rebind_session_route,
             commands::get_proxy_config,
@@ -1481,6 +1485,9 @@ pub fn run() {
             commands::get_provider_stats,
             commands::get_model_stats,
             commands::get_request_logs,
+            commands::get_request_log_retention_config,
+            commands::set_request_log_retention_config,
+            commands::clear_request_logs,
             commands::get_request_detail,
             commands::get_model_pricing,
             commands::update_model_pricing,

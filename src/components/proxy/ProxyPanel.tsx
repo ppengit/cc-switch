@@ -9,7 +9,6 @@ import {
   Loader2,
   Zap,
   Power,
-  MonitorDot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -34,7 +33,6 @@ import {
   normalizeActiveRequestTargets,
 } from "@/lib/proxyActivity";
 import type { ProxyStatus } from "@/types/proxy";
-import { proxyApi } from "@/lib/api/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -44,12 +42,6 @@ interface ProxyPanelProps {
   onEnableLocalProxyChange: (checked: boolean) => void;
   onToggleProxy: (checked: boolean) => Promise<void>;
   isProxyPending: boolean;
-  showActivityFloatingWindow?: boolean;
-  activityFloatingOpacity?: number;
-  onActivityFloatingSettingsChange?: (updates: {
-    showProxyActivityFloatingWindow?: boolean;
-    proxyActivityFloatingOpacity?: number;
-  }) => void;
 }
 
 export function ProxyPanel({
@@ -57,9 +49,6 @@ export function ProxyPanel({
   onEnableLocalProxyChange,
   onToggleProxy,
   isProxyPending,
-  showActivityFloatingWindow = false,
-  activityFloatingOpacity = 0.86,
-  onActivityFloatingSettingsChange,
 }: ProxyPanelProps) {
   const { t } = useTranslation();
   const { status, isRunning } = useProxyStatus();
@@ -79,8 +68,6 @@ export function ProxyPanel({
   // 监听地址/端口的本地状态（端口用字符串以支持完全清空）
   const [listenAddress, setListenAddress] = useState("127.0.0.1");
   const [listenPort, setListenPort] = useState("15721");
-  const [floatingVisiblePending, setFloatingVisiblePending] = useState(false);
-  const [floatingOpacityPending, setFloatingOpacityPending] = useState(false);
 
   // 同步全局配置到本地状态
   useEffect(() => {
@@ -142,43 +129,6 @@ export function ProxyPanel({
       toast.error(
         t("proxy.logging.failed", { defaultValue: "切换日志状态失败" }),
       );
-    }
-  };
-
-  const handleFloatingVisibleChange = async (visible: boolean) => {
-    setFloatingVisiblePending(true);
-    try {
-      await proxyApi.setProxyActivityFloatingWindowVisible(visible);
-      onActivityFloatingSettingsChange?.({
-        showProxyActivityFloatingWindow: visible,
-      });
-    } catch (error) {
-      toast.error(
-        t("proxy.floating.toggleFailed", {
-          defaultValue: "切换实时请求浮窗失败",
-        }),
-      );
-    } finally {
-      setFloatingVisiblePending(false);
-    }
-  };
-
-  const handleFloatingOpacityChange = async (opacity: number) => {
-    const nextOpacity = Math.min(1, Math.max(0.35, opacity));
-    onActivityFloatingSettingsChange?.({
-      proxyActivityFloatingOpacity: nextOpacity,
-    });
-    setFloatingOpacityPending(true);
-    try {
-      await proxyApi.setProxyActivityFloatingOpacity(nextOpacity);
-    } catch (error) {
-      toast.error(
-        t("proxy.floating.opacityFailed", {
-          defaultValue: "保存实时请求浮窗透明度失败",
-        }),
-      );
-    } finally {
-      setFloatingOpacityPending(false);
     }
   };
 
@@ -517,56 +467,6 @@ export function ProxyPanel({
                     })}
                   </p>
                 )}
-              </div>
-
-              <div className="pt-3 border-t border-border">
-                <div className="rounded-md border border-border bg-background/60 px-3 py-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex items-start gap-3">
-                      <MonitorDot className="mt-0.5 h-4 w-4 text-emerald-500" />
-                      <div className="space-y-0.5">
-                        <Label className="text-sm font-medium">
-                          {t("proxy.floating.title", {
-                            defaultValue: "实时请求浮窗",
-                          })}
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          {t("proxy.floating.description", {
-                            defaultValue:
-                              "在独立透明小窗口中显示当前代理请求数量和目标供应商。",
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={showActivityFloatingWindow}
-                      onCheckedChange={handleFloatingVisibleChange}
-                      disabled={floatingVisiblePending}
-                    />
-                  </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
-                    <input
-                      type="range"
-                      min={35}
-                      max={100}
-                      step={1}
-                      value={Math.round(activityFloatingOpacity * 100)}
-                      onChange={(event) =>
-                        void handleFloatingOpacityChange(
-                          Number(event.target.value) / 100,
-                        )
-                      }
-                      disabled={floatingOpacityPending}
-                      className="w-full accent-emerald-500"
-                      aria-label={t("proxy.floating.opacity", {
-                        defaultValue: "浮窗透明度",
-                      })}
-                    />
-                    <span className="text-right text-xs font-mono text-muted-foreground">
-                      {Math.round(activityFloatingOpacity * 100)}%
-                    </span>
-                  </div>
-                </div>
               </div>
 
               {/* [5] Logging toggle */}

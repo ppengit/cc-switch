@@ -128,15 +128,6 @@ export function ProxyTabContent({
               }
               onToggleProxy={handleToggleProxy}
               isProxyPending={isProxyPending}
-              showActivityFloatingWindow={
-                settings?.showProxyActivityFloatingWindow ?? false
-              }
-              activityFloatingOpacity={
-                settings?.proxyActivityFloatingOpacity ?? 0.86
-              }
-              onActivityFloatingSettingsChange={(updates) => {
-                void onAutoSave(updates);
-              }}
             />
           </AccordionContent>
         </AccordionItem>

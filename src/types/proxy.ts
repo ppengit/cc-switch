@@ -1,15 +1,3 @@
-export type ProxyActivityFloatingMode = "ball" | "panel";
-
-export interface ProxyActivityFloatingPosition {
-  x: number;
-  y: number;
-}
-
-export interface ProxyActivityFloatingSize {
-  width: number;
-  height: number;
-}
-
 export interface ProxyConfig {
   listen_address: string;
   listen_port: number;
@@ -96,16 +84,6 @@ export interface ProviderAdmissionRetryEvent {
   error?: string | null;
   notifyOnSuccess?: boolean;
   updatedAt: string;
-}
-
-export interface ProxyActivityFloatingSettings {
-  visible: boolean;
-  opacity: number;
-  idleHideSeconds: number;
-  alwaysOnTop: boolean;
-  mode: ProxyActivityFloatingMode;
-  position?: ProxyActivityFloatingPosition | null;
-  size?: ProxyActivityFloatingSize | null;
 }
 
 export interface SessionRoutingProviderSnapshot {

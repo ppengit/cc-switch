@@ -40,6 +40,7 @@ import {
   getOpenClawToolsConfigState,
   getProviderStatsState,
   getRequestDetailState,
+  getRequestLogRetentionConfigState,
   getRequestLogsState,
   getStreamCheckConfigState,
   getUsageDataSourcesState,
@@ -108,6 +109,8 @@ import {
   deleteDbBackupState,
   createDbBackupState,
   saveLogConfigState,
+  setRequestLogRetentionConfigState,
+  clearRequestLogsState,
   setAppConfigTemplateState,
   setAppProxyConfigState,
   setAutoFailoverEnabledState,
@@ -1435,6 +1438,22 @@ export const handlers = [
       pageSize,
     });
   }),
+  http.post(`${TAURI_ENDPOINT}/get_request_log_retention_config`, () =>
+    success(getRequestLogRetentionConfigState()),
+  ),
+  http.post(
+    `${TAURI_ENDPOINT}/set_request_log_retention_config`,
+    async ({ request }) => {
+      const { config } = await withJson<{
+        config: { autoCleanupEnabled: boolean; retainCount: number };
+      }>(request);
+      setRequestLogRetentionConfigState(config);
+      return success(config);
+    },
+  ),
+  http.post(`${TAURI_ENDPOINT}/clear_request_logs`, () =>
+    success(clearRequestLogsState()),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_request_detail`, async ({ request }) => {
     const { requestId } = await withJson<{ requestId: string }>(request);
     return success(getRequestDetailState(requestId));

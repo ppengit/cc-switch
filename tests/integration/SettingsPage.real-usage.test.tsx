@@ -45,7 +45,9 @@ vi.mock("@/components/settings/AppVisibilitySettings", () => ({
 }));
 
 vi.mock("@/components/settings/SkillStorageLocationSettings", () => ({
-  SkillStorageLocationSettings: () => <div>skill-storage-location-settings</div>,
+  SkillStorageLocationSettings: () => (
+    <div>skill-storage-location-settings</div>
+  ),
 }));
 
 vi.mock("@/components/settings/SkillSyncMethodSettings", () => ({
@@ -75,7 +77,6 @@ vi.mock("@/components/settings/WebdavSyncSection", () => ({
 vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: () => <div>about-section</div>,
 }));
-
 
 vi.mock("@/components/settings/ProxyTabContent", () => ({
   ProxyTabContent: () => <div>proxy-tab-content</div>,
@@ -337,9 +338,7 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
     await user.click(
       screen.getByRole("button", { name: "usage.appFilter.codex" }),
     );
-    await waitFor(() =>
-      expect(screen.getByText("1,300")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("1,300")).toBeInTheDocument());
 
     await user.click(screen.getByRole("tab", { name: "usage.providerStats" }));
     expect(await screen.findByText("Claude Alpha")).toBeInTheDocument();
@@ -366,9 +365,7 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
       }),
     );
     expect(consoleWarnSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining(
-        "The width(",
-      ),
+      expect.stringContaining("The width("),
     );
   });
 
@@ -385,8 +382,12 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
         rawLogRequests.push(body);
         const appType =
           typeof body.appType === "string" ? body.appType : undefined;
+        const limit = typeof body.limit === "number" ? body.limit : 50;
+        const filtered = rawLogs.filter(
+          (item) => !appType || item.appType === appType,
+        );
         return HttpResponse.json(
-          rawLogs.filter((item) => !appType || item.appType === appType),
+          filtered.slice(Math.max(0, filtered.length - limit)),
         );
       }),
     );
@@ -410,7 +411,7 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
     await waitFor(() =>
       expect(
         rawLogRequests.some(
-          (request) => request.appType === "codex" && request.limit === 500,
+          (request) => request.appType === "codex" && request.limit === 50,
         ),
       ).toBe(true),
     );
@@ -421,14 +422,16 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
       screen.getByRole("button", { name: /^(common\.next|下一页)$/ }),
     );
 
-    expect(await screen.findByText("Proxy Provider 5")).toBeInTheDocument();
+    expect(await screen.findByText("Proxy Provider 35")).toBeInTheDocument();
     expect(screen.queryByText("Proxy Provider 55")).not.toBeInTheDocument();
 
-    await user.dblClick(screen.getByText("Proxy Provider 5"));
+    await user.dblClick(screen.getByText("Proxy Provider 35"));
 
     await waitFor(() =>
       expect(
-        screen.getByText((content) => content.includes('"requestId": "req-5"')),
+        screen.getByText((content) =>
+          content.includes('"requestId": "req-35"'),
+        ),
       ).toBeInTheDocument(),
     );
   });
@@ -471,32 +474,53 @@ describe("SettingsPage usage tab with real UsageDashboard", () => {
       http.post(`${TAURI_ENDPOINT}/get_model_pricing`, () =>
         HttpResponse.json(pricing),
       ),
-      http.post(`${TAURI_ENDPOINT}/delete_model_pricing`, async ({ request }) => {
-        const body = (await request.json()) as { modelId: string };
-        deleteCalls.push(body.modelId);
-        pricing = pricing.filter((item) => item.modelId !== body.modelId);
-        return HttpResponse.json(null);
-      }),
-      http.post(`${TAURI_ENDPOINT}/get_default_cost_multiplier`, async ({ request }) => {
-        const body = (await request.json()) as { appType: string };
-        return HttpResponse.json(multipliers[body.appType] ?? "1");
-      }),
-      http.post(`${TAURI_ENDPOINT}/set_default_cost_multiplier`, async ({ request }) => {
-        const body = (await request.json()) as { appType: string; value: string };
-        multipliers[body.appType] = body.value;
-        setMultiplierCalls.push(body);
-        return HttpResponse.json(null);
-      }),
-      http.post(`${TAURI_ENDPOINT}/get_pricing_model_source`, async ({ request }) => {
-        const body = (await request.json()) as { appType: string };
-        return HttpResponse.json(modelSources[body.appType] ?? "response");
-      }),
-      http.post(`${TAURI_ENDPOINT}/set_pricing_model_source`, async ({ request }) => {
-        const body = (await request.json()) as { appType: string; value: string };
-        modelSources[body.appType] = body.value;
-        setSourceCalls.push(body);
-        return HttpResponse.json(null);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/delete_model_pricing`,
+        async ({ request }) => {
+          const body = (await request.json()) as { modelId: string };
+          deleteCalls.push(body.modelId);
+          pricing = pricing.filter((item) => item.modelId !== body.modelId);
+          return HttpResponse.json(null);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/get_default_cost_multiplier`,
+        async ({ request }) => {
+          const body = (await request.json()) as { appType: string };
+          return HttpResponse.json(multipliers[body.appType] ?? "1");
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/set_default_cost_multiplier`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            appType: string;
+            value: string;
+          };
+          multipliers[body.appType] = body.value;
+          setMultiplierCalls.push(body);
+          return HttpResponse.json(null);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/get_pricing_model_source`,
+        async ({ request }) => {
+          const body = (await request.json()) as { appType: string };
+          return HttpResponse.json(modelSources[body.appType] ?? "response");
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/set_pricing_model_source`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            appType: string;
+            value: string;
+          };
+          modelSources[body.appType] = body.value;
+          setSourceCalls.push(body);
+          return HttpResponse.json(null);
+        },
+      ),
     );
 
     renderSettingsPage();

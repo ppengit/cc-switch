@@ -235,6 +235,7 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Self::create_request_logs_usage_indexes_if_supported(conn)?;
+        Self::create_usage_request_stats_archive(conn)?;
 
         // 11. Model Pricing 表
         conn.execute(
@@ -300,6 +301,15 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 17.1. Usage Retention Support 表（分钟聚合、跨源去重、按来源日汇总）
+        //
+        // 该表只保存已归一化的新鲜输入 token，因此不会再依赖每条请求的
+        // input_token_semantics。data_source 必须处于主键中，避免代理与会话
+        // 同一分钟、同一模型的统计被错误合并。
+        Self::create_usage_minute_rollups(conn)?;
+        Self::create_usage_proxy_dedup_guard(conn)?;
+        Self::create_usage_daily_data_source_rollups(conn)?;
 
         // 18. Session Log Sync 表 (会话日志同步状态)
         conn.execute(
@@ -579,6 +589,16 @@ impl Database {
                         );
                         Self::migrate_v21_to_v22(conn)?;
                         Self::set_user_version(conn, 22)?;
+                    }
+                    22 => {
+                        log::info!("迁移数据库从 v22 到 v23（新增清空请求日志后的精确统计归档）");
+                        Self::migrate_v22_to_v23(conn)?;
+                        Self::set_user_version(conn, 23)?;
+                    }
+                    23 => {
+                        log::info!("迁移数据库从 v23 到 v24（新增分钟聚合、跨源去重与来源日汇总）");
+                        Self::migrate_v23_to_v24(conn)?;
+                        Self::set_user_version(conn, 24)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1694,6 +1714,29 @@ impl Database {
         }
         Self::cleanup_removed_schema_objects(conn)?;
         log::info!("v21 -> v22 迁移完成：已补齐上游语义列与 Grok Build 支持");
+        Ok(())
+    }
+
+    /// v22 -> v23：新增逐请求统计归档。
+    ///
+    /// 清空原始请求日志时，只把统计和跨来源去重所需字段移入该表；错误正文、
+    /// 会话路径等原始日志内容不会保留。逐请求粒度允许任意时间范围和筛选条件
+    /// 继续得到精确结果，后续定期维护再将过期归档合入日汇总。
+    fn migrate_v22_to_v23(conn: &Connection) -> Result<(), AppError> {
+        Self::create_usage_request_stats_archive(conn)?;
+        log::info!("v22 -> v23 迁移完成：已新增逐请求使用统计归档");
+        Ok(())
+    }
+
+    /// v23 -> v24：新增分钟级使用统计聚合、跨源去重守卫和来源日汇总。
+    ///
+    /// 表和索引均使用 `IF NOT EXISTS`，因此迁移可在上一次中断后安全重试，
+    /// 也可兼容已由开发构建提前创建该表的数据库。
+    fn migrate_v23_to_v24(conn: &Connection) -> Result<(), AppError> {
+        Self::create_usage_minute_rollups(conn)?;
+        Self::create_usage_proxy_dedup_guard(conn)?;
+        Self::create_usage_daily_data_source_rollups(conn)?;
+        log::info!("v23 -> v24 迁移完成：已新增分钟聚合、跨源去重与来源日汇总");
         Ok(())
     }
 
@@ -3173,6 +3216,148 @@ impl Database {
         Ok(())
     }
 
+    fn create_usage_request_stats_archive(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_request_stats_archive (
+                request_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_model TEXT,
+                pricing_model TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0,
+                input_cost_usd TEXT NOT NULL DEFAULT '0',
+                output_cost_usd TEXT NOT NULL DEFAULT '0',
+                cache_read_cost_usd TEXT NOT NULL DEFAULT '0',
+                cache_creation_cost_usd TEXT NOT NULL DEFAULT '0',
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                cost_multiplier TEXT NOT NULL DEFAULT '1.0',
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                data_source TEXT NOT NULL DEFAULT 'proxy',
+                PRIMARY KEY (request_id, created_at)
+            );",
+        )
+        .map_err(|e| AppError::Database(format!("创建逐请求使用统计归档失败: {e}")))?;
+
+        // Keep the helper idempotent for databases created by development builds of v23.
+        for (column, definition) in [
+            ("input_cost_usd", "TEXT NOT NULL DEFAULT '0'"),
+            ("output_cost_usd", "TEXT NOT NULL DEFAULT '0'"),
+            ("cache_read_cost_usd", "TEXT NOT NULL DEFAULT '0'"),
+            ("cache_creation_cost_usd", "TEXT NOT NULL DEFAULT '0'"),
+            ("cost_multiplier", "TEXT NOT NULL DEFAULT '1.0'"),
+        ] {
+            Self::add_column_if_missing(conn, "usage_request_stats_archive", column, definition)?;
+        }
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_usage_request_stats_archive_created_at
+                ON usage_request_stats_archive(created_at);
+            CREATE INDEX IF NOT EXISTS idx_usage_request_stats_archive_provider
+                ON usage_request_stats_archive(provider_id, app_type);
+            CREATE INDEX IF NOT EXISTS idx_usage_request_stats_archive_app_created_at
+                ON usage_request_stats_archive(app_type, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_request_stats_archive_dedup_lookup
+                ON usage_request_stats_archive(
+                    app_type, data_source, input_tokens, output_tokens,
+                    cache_read_tokens, created_at, cache_creation_tokens
+                );",
+        )
+        .map_err(|e| AppError::Database(format!("创建逐请求使用统计归档索引失败: {e}")))?;
+        Ok(())
+    }
+
+    fn create_usage_minute_rollups(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_minute_rollups (
+                minute_start INTEGER NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_model TEXT NOT NULL DEFAULT '',
+                pricing_model TEXT NOT NULL DEFAULT '',
+                data_source TEXT NOT NULL DEFAULT 'proxy',
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                fresh_input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                cost_multiplier TEXT NOT NULL DEFAULT '1.0',
+                cost_pending INTEGER NOT NULL DEFAULT 0,
+                latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    minute_start, app_type, provider_id, model,
+                    request_model, pricing_model, data_source,
+                    cost_multiplier, cost_pending
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_minute_rollups_app_start
+                ON usage_minute_rollups(app_type, minute_start DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_minute_rollups_provider_start
+                ON usage_minute_rollups(app_type, provider_id, minute_start DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_minute_rollups_model_start
+                ON usage_minute_rollups(app_type, model, minute_start DESC);",
+        )
+        .map_err(|e| AppError::Database(format!("创建分钟级使用统计聚合失败: {e}")))?;
+        Ok(())
+    }
+
+    /// A short-lived proxy fact guard lets session-log imports continue to
+    /// detect a matching proxy request after detailed rows have been compacted.
+    /// Its primary key is the complete matching tuple, avoiding a hash-collision
+    /// contract between compaction and session-log import paths.
+    fn create_usage_proxy_dedup_guard(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_proxy_dedup_guard (
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                cache_creation_tokens INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (
+                    app_type, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, created_at
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_proxy_dedup_guard_expires_at
+                ON usage_proxy_dedup_guard(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_usage_proxy_dedup_guard_match
+                ON usage_proxy_dedup_guard(
+                    app_type, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, created_at, expires_at
+                );",
+        )
+        .map_err(|e| AppError::Database(format!("创建代理请求跨源去重守卫失败: {e}")))?;
+        Ok(())
+    }
+
+    fn create_usage_daily_data_source_rollups(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_daily_data_source_rollups (
+                date TEXT NOT NULL,
+                data_source TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                PRIMARY KEY (date, data_source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_data_source_rollups_source_date
+                ON usage_daily_data_source_rollups(data_source, date);",
+        )
+        .map_err(|e| AppError::Database(format!("创建按来源日使用统计聚合失败: {e}")))?;
+        Ok(())
+    }
+
     fn validate_identifier(s: &str, kind: &str) -> Result<(), AppError> {
         if s.is_empty() {
             return Err(AppError::Database(format!("{kind} 不能为空")));
@@ -3281,6 +3466,382 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn index_exists(conn: &Connection, index: &str) -> Result<bool, AppError> {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1
+            )",
+            [index],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::Database(format!("查询索引 {index} 失败: {e}")))
+    }
+
+    #[test]
+    fn fresh_schema_creates_usage_request_stats_archive() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+
+        Database::create_tables_on_conn(&conn)?;
+        Database::create_usage_request_stats_archive(&conn)?;
+
+        assert!(Database::table_exists(
+            &conn,
+            "usage_request_stats_archive"
+        )?);
+        for column in [
+            "request_id",
+            "provider_id",
+            "app_type",
+            "model",
+            "request_model",
+            "pricing_model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "input_token_semantics",
+            "input_cost_usd",
+            "output_cost_usd",
+            "cache_read_cost_usd",
+            "cache_creation_cost_usd",
+            "total_cost_usd",
+            "cost_multiplier",
+            "latency_ms",
+            "status_code",
+            "created_at",
+            "data_source",
+        ] {
+            assert!(
+                Database::has_column(&conn, "usage_request_stats_archive", column)?,
+                "archive should contain {column}"
+            );
+        }
+        for index in [
+            "idx_usage_request_stats_archive_created_at",
+            "idx_usage_request_stats_archive_provider",
+            "idx_usage_request_stats_archive_app_created_at",
+            "idx_usage_request_stats_archive_dedup_lookup",
+        ] {
+            assert!(
+                index_exists(&conn, index)?,
+                "archive should contain {index}"
+            );
+        }
+
+        conn.execute(
+            "INSERT INTO usage_request_stats_archive (
+                request_id, provider_id, app_type, model, status_code, created_at
+             ) VALUES ('fresh-archive', 'provider-1', 'codex', 'gpt-5', 200, 1000)",
+            [],
+        )?;
+        let defaults: (i64, String, String, String, String, String, String, String) = conn
+            .query_row(
+                "SELECT input_token_semantics,
+                    input_cost_usd, output_cost_usd,
+                    cache_read_cost_usd, cache_creation_cost_usd,
+                    total_cost_usd, cost_multiplier, data_source
+             FROM usage_request_stats_archive WHERE request_id = 'fresh-archive'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )?;
+        assert_eq!(
+            defaults,
+            (
+                0,
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "1.0".to_string(),
+                "proxy".to_string(),
+            )
+        );
+
+        conn.execute(
+            "INSERT INTO usage_request_stats_archive (
+                request_id, provider_id, app_type, model, status_code, created_at
+             ) VALUES ('fresh-archive', 'provider-2', 'codex', 'gpt-5', 200, 1001)",
+            [],
+        )?;
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM usage_request_stats_archive
+                 WHERE request_id = 'fresh-archive'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            2,
+            "the same upstream request id may be reused at another timestamp"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO usage_request_stats_archive (
+                    request_id, provider_id, app_type, model, status_code, created_at
+                 ) VALUES ('fresh-archive', 'provider-3', 'codex', 'gpt-5', 200, 1000)",
+                [],
+            )
+            .is_err(),
+            "the same request id and timestamp must remain idempotent"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v22_to_v23_creates_usage_request_stats_archive() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::set_user_version(&conn, 22)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        assert!(Database::table_exists(
+            &conn,
+            "usage_request_stats_archive"
+        )?);
+        assert!(index_exists(
+            &conn,
+            "idx_usage_request_stats_archive_dedup_lookup"
+        )?);
+        for column in [
+            "input_cost_usd",
+            "output_cost_usd",
+            "cache_read_cost_usd",
+            "cache_creation_cost_usd",
+            "cost_multiplier",
+        ] {
+            assert!(Database::has_column(
+                &conn,
+                "usage_request_stats_archive",
+                column
+            )?);
+        }
+        let primary_key: (i64, i64) = conn.query_row(
+            "SELECT
+                MAX(CASE WHEN name = 'request_id' THEN pk ELSE 0 END),
+                MAX(CASE WHEN name = 'created_at' THEN pk ELSE 0 END)
+             FROM pragma_table_info('usage_request_stats_archive')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(primary_key, (1, 2));
+
+        // Migration helpers must tolerate create_tables having already created the table.
+        Database::migrate_v22_to_v23(&conn)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_schema_creates_usage_retention_support_tables() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::create_tables_on_conn(&conn)?;
+
+        for table in [
+            "usage_minute_rollups",
+            "usage_proxy_dedup_guard",
+            "usage_daily_data_source_rollups",
+        ] {
+            assert!(Database::table_exists(&conn, table)?, "missing {table}");
+        }
+
+        for column in [
+            "minute_start",
+            "app_type",
+            "provider_id",
+            "model",
+            "request_model",
+            "pricing_model",
+            "data_source",
+            "request_count",
+            "success_count",
+            "fresh_input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "total_cost_usd",
+            "cost_multiplier",
+            "cost_pending",
+            "latency_sum_ms",
+        ] {
+            assert!(
+                Database::has_column(&conn, "usage_minute_rollups", column)?,
+                "minute rollup should contain {column}"
+            );
+        }
+        for index in [
+            "idx_usage_minute_rollups_app_start",
+            "idx_usage_minute_rollups_provider_start",
+            "idx_usage_minute_rollups_model_start",
+            "idx_usage_proxy_dedup_guard_expires_at",
+            "idx_usage_proxy_dedup_guard_match",
+            "idx_usage_daily_data_source_rollups_source_date",
+        ] {
+            assert!(index_exists(&conn, index)?, "missing {index}");
+        }
+
+        let minute_primary_key: String = conn.query_row(
+            "SELECT group_concat(name, ',')
+             FROM (
+                 SELECT name FROM pragma_table_info('usage_minute_rollups')
+                 WHERE pk > 0 ORDER BY pk
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            minute_primary_key,
+            "minute_start,app_type,provider_id,model,request_model,pricing_model,data_source,cost_multiplier,cost_pending"
+        );
+        let guard_primary_key: String = conn.query_row(
+            "SELECT group_concat(name, ',')
+             FROM (
+                 SELECT name FROM pragma_table_info('usage_proxy_dedup_guard')
+                 WHERE pk > 0 ORDER BY pk
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            guard_primary_key,
+            "app_type,model,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,created_at"
+        );
+
+        conn.execute(
+            "INSERT INTO usage_minute_rollups (minute_start, app_type, provider_id, model)
+             VALUES (1700000000, 'codex', 'provider-1', 'gpt-5')",
+            [],
+        )?;
+        let minute_defaults: (String, String, String, i64, i64, String, String, i64, i64) = conn
+            .query_row(
+                "SELECT request_model, pricing_model, data_source, request_count,
+                        fresh_input_tokens, total_cost_usd, cost_multiplier,
+                        cost_pending, latency_sum_ms
+                 FROM usage_minute_rollups",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )?;
+        assert_eq!(
+            minute_defaults,
+            (
+                "".to_string(),
+                "".to_string(),
+                "proxy".to_string(),
+                0,
+                0,
+                "0".to_string(),
+                "1.0".to_string(),
+                0,
+                0,
+            )
+        );
+        conn.execute(
+            "INSERT INTO usage_minute_rollups (
+                minute_start, app_type, provider_id, model, cost_pending
+             ) VALUES (1700000000, 'codex', 'provider-1', 'gpt-5', 1)",
+            [],
+        )?;
+        assert!(
+            conn.execute(
+                "INSERT INTO usage_minute_rollups (
+                    minute_start, app_type, provider_id, model, cost_pending
+                 ) VALUES (1700000000, 'codex', 'provider-1', 'gpt-5', 1)",
+                [],
+            )
+            .is_err(),
+            "minute rollup primary key must include the cost state"
+        );
+
+        conn.execute(
+            "INSERT INTO usage_proxy_dedup_guard (
+                app_type, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, created_at, expires_at
+             ) VALUES ('claude', 'claude-sonnet', 100, 20, 30, 4, 1000, 1600)",
+            [],
+        )?;
+        assert!(
+            conn.execute(
+                "INSERT INTO usage_proxy_dedup_guard (
+                    app_type, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, created_at, expires_at
+                 ) VALUES ('claude', 'claude-sonnet', 100, 20, 30, 4, 1000, 1600)",
+                [],
+            )
+            .is_err(),
+            "dedup guard matching tuple must be unique"
+        );
+
+        conn.execute(
+            "INSERT INTO usage_daily_data_source_rollups (date, data_source)
+             VALUES ('2026-07-23', 'proxy')",
+            [],
+        )?;
+        let source_defaults: (i64, String) = conn.query_row(
+            "SELECT request_count, total_cost_usd
+             FROM usage_daily_data_source_rollups
+             WHERE date = '2026-07-23' AND data_source = 'proxy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(source_defaults, (0, "0".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v23_to_v24_creates_usage_retention_support_tables() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::set_user_version(&conn, 23)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        for table in [
+            "usage_minute_rollups",
+            "usage_proxy_dedup_guard",
+            "usage_daily_data_source_rollups",
+        ] {
+            assert!(Database::table_exists(&conn, table)?, "missing {table}");
+        }
+        for index in [
+            "idx_usage_minute_rollups_provider_start",
+            "idx_usage_proxy_dedup_guard_match",
+            "idx_usage_daily_data_source_rollups_source_date",
+        ] {
+            assert!(index_exists(&conn, index)?, "missing {index}");
+        }
+
+        // Re-running the helper covers an interrupted pre-version-bump migration.
+        Database::migrate_v23_to_v24(&conn)?;
+        Database::migrate_v23_to_v24(&conn)?;
+
+        Ok(())
+    }
 
     #[test]
     fn migrate_v12_to_v13_adds_input_token_semantics_columns() -> Result<(), AppError> {

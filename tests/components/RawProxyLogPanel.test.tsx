@@ -120,6 +120,49 @@ describe("RawProxyLogPanel", () => {
       error: null,
       refetch: vi.fn(),
       isFetching: false,
+      isPlaceholderData: false,
+    });
+  });
+
+  it("keeps the themed table shell visible during the initial load", () => {
+    useProxyRawLogsMock.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: true,
+      isPlaceholderData: false,
+    });
+
+    render(<RawProxyLogPanel refreshIntervalMs={0} />);
+
+    expect(screen.getByText("时间")).toBeInTheDocument();
+    expect(screen.getAllByTestId("raw-proxy-log-loading-row")).toHaveLength(8);
+  });
+
+  it("keeps placeholder rows visible but disables stale-row interaction", () => {
+    useProxyRawLogsMock.mockReturnValue({
+      data: [createLog({ providerName: "Previous Raw Provider" })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: true,
+      isPlaceholderData: true,
+    });
+
+    render(<RawProxyLogPanel refreshIntervalMs={0} />);
+
+    const row = screen.getByText("Previous Raw Provider").closest("tr");
+    expect(row).toHaveAttribute("aria-disabled", "true");
+    fireEvent.doubleClick(row!);
+    expect(screen.queryByText("代理原始日志详情")).not.toBeInTheDocument();
+  });
+
+  it("uses the dashboard refresh interval instead of polling raw logs per event", () => {
+    render(<RawProxyLogPanel appType="codex" refreshIntervalMs={30_000} />);
+
+    expect(useProxyRawLogsMock).toHaveBeenCalledWith("codex", 50, {
+      refetchInterval: 30_000,
     });
   });
 
@@ -265,6 +308,33 @@ describe("RawProxyLogPanel", () => {
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.queryByText("收到请求")).not.toBeInTheDocument();
     expect(screen.queryByText("开始路由")).not.toBeInTheDocument();
+  });
+
+  it("renders HTML errors in the shared static sandbox preview", async () => {
+    useProxyRawLogsMock.mockReturnValue({
+      data: [
+        createLog({
+          id: 9,
+          event: "failed",
+          error:
+            '<!doctype html><html><body><h1>Gateway error</h1><script>bad()</script><img src="https://bad.example/pixel"></body></html>',
+        }),
+      ],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+
+    render(<RawProxyLogPanel refreshIntervalMs={0} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看错误页" }));
+
+    const previewFrame = await screen.findByTitle("错误页预览");
+    const previewDocument = previewFrame.getAttribute("srcdoc") ?? "";
+    expect(previewFrame).toHaveAttribute("sandbox", "");
+    expect(previewDocument).toContain("Gateway error");
+    expect(previewDocument).not.toContain("https://bad.example");
+    expect(previewDocument).not.toMatch(/<script\b/i);
   });
 
   it("opens the detail dialog on row double click", () => {

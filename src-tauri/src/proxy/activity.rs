@@ -11,7 +11,7 @@ use super::types::{
     DEFAULT_RAW_PROXY_LOG_RETENTION_MINUTES,
 };
 
-const RAW_LOG_CAPACITY: usize = 500;
+const RAW_LOG_CAPACITY: usize = 50;
 
 /// 活动请求自动剪枝阈值。
 ///
@@ -798,11 +798,6 @@ impl ProxyActivityState {
 
 fn emit_activity_event(app_handle: Option<&tauri::AppHandle>, event: &ProxyActivityEvent) {
     if let Some(handle) = app_handle {
-        if event.active_request_count > 0 && crate::floating_activity::current_settings().visible {
-            if let Err(err) = crate::floating_activity::ensure_visible(handle) {
-                log::debug!("show proxy activity floating window failed: {err}");
-            }
-        }
         if let Err(err) = handle.emit("proxy-activity-updated", event) {
             log::debug!("emit proxy-activity-updated failed: {err}");
         }

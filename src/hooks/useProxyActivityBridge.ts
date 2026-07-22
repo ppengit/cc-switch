@@ -278,18 +278,12 @@ export function useProxyActivityBridge() {
               return next;
             },
           );
-          queryClient.invalidateQueries({
-            queryKey: ["usage", "raw-proxy-logs"],
-          });
         }),
         listen<ProviderAdmissionRetryEvent>(
           "provider-admission-retry",
           (event) => {
             const payload = event.payload;
             void maybeNotifyAdmissionRetrySuccess(queryClient, payload);
-            queryClient.invalidateQueries({
-              queryKey: ["usage", "raw-proxy-logs"],
-            });
           },
         ),
       ]);

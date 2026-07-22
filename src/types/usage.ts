@@ -60,6 +60,11 @@ export interface PaginatedLogs {
   pageSize: number;
 }
 
+export interface RequestLogRetentionConfig {
+  autoCleanupEnabled: boolean;
+  retainCount: number;
+}
+
 export interface ModelPricing {
   modelId: string;
   displayName: string;

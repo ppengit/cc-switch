@@ -11,7 +11,10 @@ use super::{
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
-    provider_router::{is_api_key_auth_error, ProviderRouter, SessionRoutingRequestGuard},
+    provider_router::{
+        is_api_key_auth_error, AdmissionRetryParticipant, ProviderRouter,
+        SessionRoutingRequestGuard,
+    },
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -389,6 +392,32 @@ impl RequestForwarder {
         }
     }
 
+    async fn acquire_admission_retry_gate_or_shutdown(
+        &self,
+        participant: &AdmissionRetryParticipant,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, ProxyError> {
+        let shutdown_notified = self.shutdown_notify.notified();
+        tokio::pin!(shutdown_notified);
+        shutdown_notified.as_mut().enable();
+
+        if self.proxy_shutdown_requested() {
+            return Err(self.proxy_shutdown_retry_error());
+        }
+
+        let acquire = self.router.acquire_admission_retry_gate(participant);
+        tokio::pin!(acquire);
+        tokio::select! {
+            guard = &mut acquire => Ok(guard),
+            _ = &mut shutdown_notified => {
+                if self.proxy_shutdown_requested() {
+                    Err(self.proxy_shutdown_retry_error())
+                } else {
+                    Ok(acquire.await)
+                }
+            }
+        }
+    }
+
     async fn record_success_result(
         &self,
         provider_id: &str,
@@ -632,6 +661,10 @@ impl RequestForwarder {
             let mut rectifier_retried = false;
             let mut budget_rectifier_retried = false;
             let mut media_rectifier_retried = false;
+            // A single provider may be attempted again after media/thinking/budget
+            // rectification. Admission retries belong to that provider attempt as a
+            // whole, so keep one counter until routing moves to the next provider.
+            let mut admission_retries_used = 0u32;
 
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
             // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
@@ -743,6 +776,7 @@ impl RequestForwarder {
                     &provider_headers,
                     &extensions,
                     adapter.as_ref(),
+                    &mut admission_retries_used,
                 )
                 .await
             {
@@ -861,6 +895,7 @@ impl RequestForwarder {
                                     &headers,
                                     &extensions,
                                     adapter.as_ref(),
+                                    &mut admission_retries_used,
                                 )
                                 .await
                             {
@@ -1020,6 +1055,7 @@ impl RequestForwarder {
                                         &provider_headers,
                                         &extensions,
                                         adapter.as_ref(),
+                                        &mut admission_retries_used,
                                     )
                                     .await
                                 {
@@ -1202,6 +1238,7 @@ impl RequestForwarder {
                                     &provider_headers,
                                     &extensions,
                                     adapter.as_ref(),
+                                    &mut admission_retries_used,
                                 )
                                 .await
                             {
@@ -1469,10 +1506,16 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
+        retries_used: &mut u32,
     ) -> Result<ForwardAttemptOutput, AdmissionRetryForwardError> {
-        let mut retries_used = 0u32;
         let mut response_replays_used = 0u32;
         let mut auto_admission_retry_opened = false;
+        let mut admission_retry_participant: Option<AdmissionRetryParticipant> = None;
+        let mut admission_retry_policy_snapshot: Option<AdmissionRetryPolicy> = None;
+        // The gate is acquired before the configured delay and held until the
+        // next upstream attempt finishes. This serializes admission probes for
+        // one provider while leaving ordinary failover requests untouched.
+        let mut admission_retry_gate: Option<tokio::sync::OwnedMutexGuard<()>> = None;
         loop {
             if self.proxy_shutdown_requested() {
                 if auto_admission_retry_opened {
@@ -1484,20 +1527,25 @@ impl RequestForwarder {
             }
 
             let attempt_started_at = std::time::Instant::now();
-            match self
+            let attempt_result = self
                 .forward_attempt_or_shutdown(
                     app_type, method, provider, endpoint, body, headers, extensions, adapter,
                 )
-                .await
-            {
+                .await;
+            // Release the provider gate as soon as this attempt has produced a
+            // response. Any response classification and event emission below
+            // must not block the next waiting request from taking its turn.
+            drop(admission_retry_gate.take());
+            match attempt_result {
                 Ok(result) => {
-                    let admission_retry_was_enabled =
-                        self.disable_admission_retry_after_admitted(app_type, provider);
+                    let admission_retry_was_enabled = self
+                        .disable_admission_retry_after_admitted(app_type, provider)
+                        .await;
                     if admission_retry_was_enabled {
                         self.emit_admission_retry_event(
                             app_type,
                             provider,
-                            retries_used,
+                            *retries_used,
                             0,
                             Some(200),
                             None,
@@ -1599,21 +1647,50 @@ impl RequestForwarder {
                     let category =
                         self.categorize_proxy_error(app_type, endpoint, &error, provider);
                     let admission_retryable = should_retry_provider_admission(category, &error);
-                    let mut policy = self.current_admission_retry_policy(app_type, provider);
-                    if policy.is_none() && admission_retryable {
+                    let current_policy = self.current_admission_retry_policy(app_type, provider);
+                    if let Some(current_policy) = current_policy.as_ref() {
+                        admission_retry_policy_snapshot = Some(current_policy.clone());
+                        if admission_retry_participant.is_none() {
+                            admission_retry_participant = Some(
+                                self.router
+                                    .join_admission_retry(app_type.as_str(), &provider.id, false)
+                                    .await,
+                            );
+                        }
+                    }
+
+                    // A participant may outlive the persisted switch after a
+                    // sibling request succeeds. Keep the last known policy only
+                    // long enough for the coordinator to grant its one final
+                    // attempt; do not auto-open a second episode from this path.
+                    let mut policy = current_policy.or_else(|| {
+                        admission_retry_participant
+                            .as_ref()
+                            .and(admission_retry_policy_snapshot.clone())
+                    });
+                    if policy.is_none()
+                        && admission_retry_participant.is_none()
+                        && admission_retryable
+                    {
                         if let Some(auto_policy) =
                             self.try_auto_enable_admission_retry(app_type, provider, &error)
                         {
                             auto_admission_retry_opened = true;
+                            admission_retry_policy_snapshot = Some(auto_policy.clone());
+                            admission_retry_participant = Some(
+                                self.router
+                                    .join_admission_retry(app_type.as_str(), &provider.id, true)
+                                    .await,
+                            );
                             policy = Some(auto_policy);
                         }
                     }
                     let Some(policy) = policy else {
-                        if retries_used > 0 {
+                        if *retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
                                 provider,
-                                retries_used,
+                                *retries_used,
                                 0,
                                 None,
                                 Some(&error),
@@ -1637,11 +1714,11 @@ impl RequestForwarder {
                     //      “死磕同一家 100% 不会成功”的上游响应，避免无限空等。
                     // 命中任一闸门即中性返回，交回原有流程（含整流器 4xx 修复）。
                     if !admission_retryable {
-                        if retries_used > 0 {
+                        if *retries_used > 0 {
                             self.emit_admission_retry_event(
                                 app_type,
                                 provider,
-                                retries_used,
+                                *retries_used,
                                 0,
                                 None,
                                 Some(&error),
@@ -1655,11 +1732,11 @@ impl RequestForwarder {
                         return Err(AdmissionRetryForwardError::Neutral(error));
                     }
 
-                    if policy.retry_limit_reached(retries_used) {
+                    if policy.retry_limit_reached(*retries_used) {
                         self.emit_admission_retry_event(
                             app_type,
                             provider,
-                            retries_used,
+                            *retries_used,
                             0,
                             None,
                             Some(&error),
@@ -1670,7 +1747,7 @@ impl RequestForwarder {
                             "[{}] 上游入场重试达到阈值，中性返回: provider={}, retries={}, error={}",
                             app_type.as_str(),
                             provider.name,
-                            retries_used,
+                            *retries_used,
                             summarize_proxy_error(&error)
                         );
                         if auto_admission_retry_opened {
@@ -1679,9 +1756,9 @@ impl RequestForwarder {
                         return Err(AdmissionRetryForwardError::Neutral(error));
                     }
 
-                    retries_used = retries_used.saturating_add(1);
+                    *retries_used = retries_used.saturating_add(1);
                     let delay_plan = policy.plan_delay(
-                        retries_used,
+                        *retries_used,
                         proxy_error_retry_after_ms(&error),
                         attempt_elapsed_ms,
                     );
@@ -1690,7 +1767,7 @@ impl RequestForwarder {
                             "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, wait_ms={}, retry_after_ms={}, attempt_ms={}, error={}",
                             app_type.as_str(),
                             provider.name,
-                            retries_used,
+                            *retries_used,
                             delay_plan.sleep_ms,
                             delay_plan.target_interval_ms,
                             attempt_elapsed_ms,
@@ -1701,7 +1778,7 @@ impl RequestForwarder {
                             "[{}] 上游临时失败，入场重试持续重放同一 Provider: provider={}, retry={}, wait_ms={}, target_interval_ms={}, attempt_ms={}, error={}",
                             app_type.as_str(),
                             provider.name,
-                            retries_used,
+                            *retries_used,
                             delay_plan.sleep_ms,
                             delay_plan.target_interval_ms,
                             attempt_elapsed_ms,
@@ -1711,21 +1788,53 @@ impl RequestForwarder {
                     self.emit_admission_retry_event(
                         app_type,
                         provider,
-                        retries_used,
+                        *retries_used,
                         delay_plan.sleep_ms,
                         None,
                         Some(&error),
                         "retrying",
                     )
                     .await;
+
+                    // A high-concurrency client can otherwise wake many retrying
+                    // requests at once and immediately recreate the upstream
+                    // overload. Serialize only retry probes for this provider.
+                    // Holding the gate through the configured delay also spaces
+                    // probes at a provider-wide cadence instead of per request.
+                    let participant = admission_retry_participant
+                        .as_mut()
+                        .expect("an admission retry policy always has a participant");
+                    let gate = match self
+                        .acquire_admission_retry_gate_or_shutdown(participant)
+                        .await
+                    {
+                        Ok(gate) => gate,
+                        Err(shutdown_error) => {
+                            self.emit_admission_retry_event(
+                                app_type,
+                                provider,
+                                *retries_used,
+                                0,
+                                None,
+                                Some(&shutdown_error),
+                                "cleared",
+                            )
+                            .await;
+                            if auto_admission_retry_opened {
+                                self.disable_auto_admission_retry_after_exit(app_type, provider);
+                            }
+                            return Err(AdmissionRetryForwardError::Neutral(shutdown_error));
+                        }
+                    };
                     if delay_plan.sleep_ms > 0 {
                         if let Err(shutdown_error) =
                             self.wait_retry_delay_or_shutdown(delay_plan.sleep_ms).await
                         {
+                            drop(gate);
                             self.emit_admission_retry_event(
                                 app_type,
                                 provider,
-                                retries_used,
+                                *retries_used,
                                 0,
                                 None,
                                 Some(&shutdown_error),
@@ -1738,14 +1847,19 @@ impl RequestForwarder {
                             return Err(AdmissionRetryForwardError::Neutral(shutdown_error));
                         }
                     }
-                    if self
+                    let persisted_policy_enabled = self
                         .current_admission_retry_policy(app_type, provider)
-                        .is_none()
+                        .is_some();
+                    if !self
+                        .router
+                        .admission_retry_can_continue(participant, persisted_policy_enabled)
+                        .await
                     {
+                        drop(gate);
                         self.emit_admission_retry_event(
                             app_type,
                             provider,
-                            retries_used,
+                            *retries_used,
                             0,
                             None,
                             Some(&error),
@@ -1757,16 +1871,37 @@ impl RequestForwarder {
                         }
                         return Err(AdmissionRetryForwardError::Normal(error));
                     }
+                    admission_retry_gate = Some(gate);
                 }
             }
         }
     }
 
-    fn disable_admission_retry_after_admitted(
+    async fn disable_admission_retry_after_admitted(
         &self,
         app_type: &AppType,
         provider: &Provider,
     ) -> bool {
+        // Read the latest persisted flag before classifying this close as a
+        // successful admission. This prevents a stale request snapshot from
+        // granting a final retry after the user has already switched the mode
+        // off manually.
+        let latest_enabled = self
+            .latest_provider_for_policy(app_type, provider)
+            .map(|latest| latest.upstream_admission_retry_enabled())
+            .unwrap_or_else(|| provider.upstream_admission_retry_enabled());
+        if !latest_enabled {
+            return false;
+        }
+
+        // Mark the in-memory episode before touching the database. Other
+        // requests that observe the persisted switch turning off will then
+        // receive the one post-success attempt allowance instead of treating
+        // the close as an explicit manual cancellation.
+        self.router
+            .mark_admission_retry_succeeded(app_type.as_str(), &provider.id)
+            .await;
+
         let Some(app_handle) = self.app_handle.as_ref() else {
             return provider.upstream_admission_retry_enabled();
         };
@@ -3837,7 +3972,9 @@ impl AdmissionRetryPolicy {
         }
 
         let keywords = normalized_admission_retry_keywords(&config.auto_keywords);
-        if keywords.is_empty() || !admission_retry_keywords_match_error(&keywords, error) {
+        let keyword_matches =
+            !keywords.is_empty() && admission_retry_keywords_match_error(&keywords, error);
+        if !keyword_matches && !is_explicit_auto_admission_retryable(error) {
             return None;
         }
 
@@ -3926,6 +4063,24 @@ fn admission_retry_keywords_match_error(keywords: &[String], error: &ProxyError)
     keywords.iter().any(|keyword| haystack.contains(keyword))
 }
 
+/// Statuses that unambiguously describe a temporary transport/capacity failure.
+/// These are allowed to open automatic admission retry even when a gateway did
+/// not include one of the user's optional body keywords. Permanent body signals
+/// still win, so a 429 quota/account rejection never loops automatically.
+fn is_explicit_auto_admission_retryable(error: &ProxyError) -> bool {
+    let ProxyError::UpstreamError { status, body, .. } = error else {
+        return false;
+    };
+    if body_signals_permanent_failure(&body.as_deref().unwrap_or("").to_ascii_lowercase()) {
+        return false;
+    }
+    // New API intentionally does not internally replay 408/504/524: at that
+    // point its downstream channel may still be processing the request. Keep
+    // an explicitly enabled admission-retry switch authoritative, but do not
+    // automatically open a new retry episode for that ambiguous outcome.
+    matches!(*status, 425 | 429 | 502 | 503 | 529)
+}
+
 fn proxy_error_retry_after_ms(error: &ProxyError) -> Option<u64> {
     match error {
         ProxyError::UpstreamError { retry_after_ms, .. } => *retry_after_ms,
@@ -3934,19 +4089,125 @@ fn proxy_error_retry_after_ms(error: &ProxyError) -> Option<u64> {
 }
 
 fn retry_after_ms_from_headers(headers: &http::HeaderMap) -> Option<u64> {
-    let value = headers
-        .get(http::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())?
-        .trim();
+    // Retry-After is authoritative when an upstream sends it. A number of
+    // OpenAI-compatible gateways instead expose the same signal through an
+    // millisecond or rate-limit-reset header, so use those as conservative
+    // fallbacks rather than immediately retrying into a known cooldown.
+    if let Some(value) = header_value(headers, "retry-after") {
+        if let Some(delay) = parse_retry_after_value(value) {
+            return Some(delay);
+        }
+    }
+
+    for name in ["retry-after-ms", "x-retry-after-ms"] {
+        if let Some(value) = header_value(headers, name) {
+            if let Some(delay) = parse_non_negative_millis(value) {
+                return Some(delay);
+            }
+        }
+    }
+
+    let reset_delays = [
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+        "ratelimit-reset",
+        "x-ratelimit-reset-after",
+    ]
+    .into_iter()
+    .filter_map(|name| header_value(headers, name))
+    .filter_map(parse_rate_limit_duration_ms)
+    .collect::<Vec<_>>();
+    if let Some(delay) = reset_delays.into_iter().max() {
+        return Some(delay);
+    }
+
+    header_value(headers, "x-ratelimit-reset").and_then(parse_rate_limit_reset_ms)
+}
+
+fn header_value<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+}
+
+fn parse_retry_after_value(value: &str) -> Option<u64> {
     if value.is_empty() {
         return None;
     }
-
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(seconds.saturating_mul(1000));
     }
 
+    parse_http_date_delay_ms(value)
+}
+
+fn parse_non_negative_millis(value: &str) -> Option<u64> {
+    let millis = value.trim().parse::<u64>().ok()?;
+    Some(millis)
+}
+
+fn parse_rate_limit_duration_ms(value: &str) -> Option<u64> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1u64)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000u64)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60_000u64)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 3_600_000u64)
+    } else {
+        (value.as_str(), 1_000u64)
+    };
+
+    let seconds_or_units = number.trim().parse::<f64>().ok()?;
+    if !seconds_or_units.is_finite() || seconds_or_units.is_sign_negative() {
+        return None;
+    }
+    let millis = seconds_or_units * multiplier as f64;
+    if millis >= u64::MAX as f64 {
+        Some(u64::MAX)
+    } else {
+        Some(millis.round() as u64)
+    }
+}
+
+fn parse_rate_limit_reset_ms(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(delay) = parse_rate_limit_duration_ms(value) {
+        // x-ratelimit-reset is often a relative duration. Large bare integer
+        // values are commonly Unix timestamps (seconds or milliseconds).
+        let bare_number = value.chars().all(|character| character.is_ascii_digit());
+        if !bare_number {
+            return Some(delay);
+        }
+
+        let numeric = value.parse::<u64>().ok()?;
+        if numeric >= 10_000_000_000 {
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            return Some(numeric.saturating_sub(now_ms));
+        }
+        if numeric >= 1_000_000_000 {
+            let now_seconds = chrono::Utc::now().timestamp().max(0) as u64;
+            return Some(numeric.saturating_sub(now_seconds).saturating_mul(1000));
+        }
+        return Some(delay);
+    }
+
+    parse_http_date_delay_ms(value)
+}
+
+fn parse_http_date_delay_ms(value: &str) -> Option<u64> {
     let target = chrono::DateTime::parse_from_rfc2822(value)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(value))
         .ok()?
         .with_timezone(&chrono::Utc);
     let now = chrono::Utc::now();
@@ -3965,8 +4226,13 @@ fn body_signals_permanent_failure(text: &str) -> bool {
         &[
             "insufficient_quota",
             "insufficient quota",
+            "insufficient_user_quota",
+            "pre_consume_token_quota_failed",
             "quota_exceeded",
             "quota exceeded",
+            "token quota is exhausted",
+            "token quota exhausted",
+            "you exceeded your current quota",
             "billing",
             "billing_hard_limit",
             "credit",
@@ -3974,8 +4240,21 @@ fn body_signals_permanent_failure(text: &str) -> bool {
             "payment_required",
             "account deactivated",
             "account_deactivated",
+            "this organization has been disabled",
             "invalid_api_key",
             "invalid api key",
+            "invalid token",
+            "token has expired",
+            "token expired",
+            "auth_token_expired",
+            "auth_session_revoked",
+            "auth_unauthorized",
+            "the security token included in the request is invalid",
+            "user has been banned",
+            "operation not allowed",
+            "your account is not authorized",
+            "no access to",
+            "no permission to",
             "authentication",
             "unauthorized",
             "forbidden",
@@ -3989,6 +4268,33 @@ fn body_signals_permanent_failure(text: &str) -> bool {
             "unsupported",
             "invalid_request",
             "bad request",
+            "bad_response_body",
+            // New API's local billing/auth messages. These are permanent for
+            // the same API key and must not keep an admission retry episode
+            // open just because they arrive as a 403/429-compatible body.
+            "用户额度不足",
+            "额度不足",
+            "余额不足",
+            "订阅额度不足",
+            "未配置订阅",
+            "预扣费额度失败",
+            "令牌可用额度已用尽",
+            "令牌额度已用尽",
+            "无效的令牌",
+            "该令牌已过期",
+            "用户已被封禁",
+            "该令牌无权访问",
+            "无权访问",
+            "无权访问该分组",
+            "该渠道已被禁用",
+            "使用者額度不足",
+            "額度不足",
+            "餘額不足",
+            "訂閱額度不足",
+            "未配置訂閱",
+            "無效的令牌",
+            "該令牌已過期",
+            "使用者已被封禁",
         ],
     )
 }
@@ -5977,6 +6283,137 @@ mod tests {
     }
 
     #[test]
+    fn admission_retry_reads_standard_and_gateway_cooldown_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("2"));
+        headers.insert("x-ratelimit-reset-requests", HeaderValue::from_static("8s"));
+        assert_eq!(retry_after_ms_from_headers(&headers), Some(2_000));
+
+        let mut gateway_headers = HeaderMap::new();
+        gateway_headers.insert(
+            "x-ratelimit-reset-requests",
+            HeaderValue::from_static("1.25s"),
+        );
+        gateway_headers.insert("x-ratelimit-reset-tokens", HeaderValue::from_static("2s"));
+        assert_eq!(retry_after_ms_from_headers(&gateway_headers), Some(2_000));
+
+        let mut millisecond_headers = HeaderMap::new();
+        millisecond_headers.insert("retry-after-ms", HeaderValue::from_static("275"));
+        assert_eq!(retry_after_ms_from_headers(&millisecond_headers), Some(275));
+    }
+
+    #[test]
+    fn admission_retry_new_api_model_limit_uses_configured_delay_without_header() {
+        let success_limit = r#"{"error":{"message":"您已达到请求数限制：2分钟内最多请求30次","type":"new_api_error","code":""}}"#;
+        let error = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(success_limit.to_string()),
+            retry_after_ms: None,
+        };
+        assert_eq!(proxy_error_retry_after_ms(&error), None);
+        assert!(should_retry_provider_admission(
+            ErrorCategory::Retryable,
+            &error
+        ));
+
+        let header_wins = ProxyError::UpstreamError {
+            status: 429,
+            body: Some(success_limit.to_string()),
+            retry_after_ms: Some(3_000),
+        };
+        assert_eq!(proxy_error_retry_after_ms(&header_wins), Some(3_000));
+    }
+
+    #[test]
+    fn admission_retry_recognizes_new_api_permanent_quota_and_auth_errors() {
+        for body in [
+            r#"{"error":{"code":"insufficient_user_quota","message":"用户额度不足"}}"#,
+            r#"{"error":{"code":"pre_consume_token_quota_failed","message":"预扣费额度失败"}}"#,
+            r#"{"error":{"message":"订阅额度不足或未配置订阅"}}"#,
+            r#"{"error":{"message":"无效的令牌"}}"#,
+            r#"{"code":"AUTH_TOKEN_EXPIRED","message":"Unauthorized"}"#,
+            r#"{"error":{"code":"bad_response_body","message":"invalid upstream response"}}"#,
+            r#"{"error":{"message":"This organization has been disabled."}}"#,
+            r#"{"error":{"message":"You exceeded your current quota"}}"#,
+            r#"{"error":{"message":"The security token included in the request is invalid"}}"#,
+            r#"{"error":{"message":"Operation not allowed"}}"#,
+            r#"{"error":{"message":"Your account is not authorized"}}"#,
+            r#"{"error":{"message":"该渠道已被禁用"}}"#,
+        ] {
+            let normalized = body.to_ascii_lowercase();
+            assert!(body_signals_permanent_failure(&normalized), "{body}");
+            let error = ProxyError::UpstreamError {
+                status: 429,
+                body: Some(body.to_string()),
+                retry_after_ms: None,
+            };
+            assert!(!should_retry_provider_admission(
+                ErrorCategory::Retryable,
+                &error
+            ));
+        }
+    }
+
+    #[test]
+    fn automatic_admission_retry_accepts_explicit_temporary_statuses() {
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: false,
+                auto_enabled: true,
+                auto_keywords: vec![],
+                ..Default::default()
+            }),
+            ..ProviderMeta::default()
+        });
+
+        let temporary_gateway = ProxyError::UpstreamError {
+            status: 503,
+            body: Some("temporary upstream failure".to_string()),
+            retry_after_ms: None,
+        };
+        assert!(
+            AdmissionRetryPolicy::auto_from_provider_for_error(&provider, &temporary_gateway)
+                .is_some()
+        );
+
+        let quota = ProxyError::UpstreamError {
+            status: 429,
+            body: Some("insufficient_quota".to_string()),
+            retry_after_ms: None,
+        };
+        assert!(AdmissionRetryPolicy::auto_from_provider_for_error(&provider, &quota).is_none());
+
+        let ambiguous_server_error = ProxyError::UpstreamError {
+            status: 500,
+            body: Some("internal error".to_string()),
+            retry_after_ms: None,
+        };
+        assert!(AdmissionRetryPolicy::auto_from_provider_for_error(
+            &provider,
+            &ambiguous_server_error
+        )
+        .is_none());
+
+        for status in [408, 504, 524] {
+            let ambiguous_timeout = ProxyError::UpstreamError {
+                status,
+                body: None,
+                retry_after_ms: None,
+            };
+            assert!(AdmissionRetryPolicy::auto_from_provider_for_error(
+                &provider,
+                &ambiguous_timeout
+            )
+            .is_none());
+            assert!(should_retry_provider_admission(
+                ErrorCategory::Retryable,
+                &ambiguous_timeout
+            ));
+        }
+    }
+
+    #[test]
     fn admission_retry_policy_honors_finite_retry_limit() {
         let mut provider = test_provider_with_type(None);
         provider.meta = Some(ProviderMeta {
@@ -6097,7 +6534,7 @@ mod tests {
         });
 
         let matched_error = ProxyError::UpstreamError {
-            status: 503,
+            status: 500,
             body: Some(r#"{"error":{"message":"负载已经达到上限，请稍后重试"}}"#.to_string()),
             retry_after_ms: None,
         };
@@ -6107,7 +6544,7 @@ mod tests {
         );
 
         let unmatched_error = ProxyError::UpstreamError {
-            status: 503,
+            status: 500,
             body: Some(r#"{"error":{"message":"maintenance window"}}"#.to_string()),
             retry_after_ms: None,
         };
@@ -7117,6 +7554,7 @@ mod tests {
 
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let adapter = get_adapter(&AppType::Codex);
+        let mut admission_retries_used = 0u32;
         let result = forwarder
             .forward_with_admission_retry(
                 &AppType::Codex,
@@ -7127,6 +7565,7 @@ mod tests {
                 &HeaderMap::new(),
                 &Extensions::new(),
                 adapter.as_ref(),
+                &mut admission_retries_used,
             )
             .await
             .expect("first successful response should pass through");
@@ -7143,6 +7582,151 @@ mod tests {
         assert_eq!(snapshot[0].retry_count, 0);
         assert_eq!(snapshot[0].status, Some(200));
         assert!(snapshot[0].notify_on_success);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admission_retry_count_is_shared_across_media_rectification() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let captured_bodies = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let handler_bodies = captured_bodies.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let handler_count = handler_count.clone();
+                let handler_bodies = handler_bodies.clone();
+                async move {
+                    handler_bodies
+                        .lock()
+                        .expect("lock captured request bodies")
+                        .push(body);
+                    let attempt = handler_count.fetch_add(1, Ordering::SeqCst);
+                    let (status, response_body) = match attempt {
+                        0 | 2 => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            r#"{"error":{"message":"temporarily overloaded"}}"#,
+                        ),
+                        1 => (
+                            StatusCode::BAD_REQUEST,
+                            r#"{"error":{"message":"This model does not support image input"}}"#,
+                        ),
+                        _ => (StatusCode::OK, r#"{"id":"resp_rectified","output":[]}"#),
+                    };
+
+                    axum::response::Response::builder()
+                        .status(status)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(response_body))
+                        .expect("build mock upstream response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("run mock upstream server");
+        });
+
+        let mut provider = test_provider_with_type(None);
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(2),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
+        let adapter = get_adapter(&AppType::Codex);
+        let original_body = body_with_codex_input_image("gpt-5.5");
+        let mut admission_retries_used = 0u32;
+        let first_result = forwarder
+            .forward_with_admission_retry(
+                &AppType::Codex,
+                &http::Method::POST,
+                &provider,
+                "/responses",
+                &original_body,
+                &HeaderMap::new(),
+                &Extensions::new(),
+                adapter.as_ref(),
+                &mut admission_retries_used,
+            )
+            .await;
+        assert!(matches!(
+            first_result,
+            Err(AdmissionRetryForwardError::Neutral(
+                ProxyError::UpstreamError { status: 400, .. }
+            ))
+        ));
+        assert_eq!(admission_retries_used, 1);
+
+        let mut media_body = original_body;
+        assert_eq!(
+            crate::proxy::media_sanitizer::replace_image_blocks_with_marker(&mut media_body),
+            1
+        );
+        let result = forwarder
+            .forward_with_admission_retry(
+                &AppType::Codex,
+                &http::Method::POST,
+                &provider,
+                "/responses",
+                &media_body,
+                &HeaderMap::new(),
+                &Extensions::new(),
+                adapter.as_ref(),
+                &mut admission_retries_used,
+            )
+            .await
+            .expect("rectified request should finish the shared admission retry");
+
+        assert_eq!(result.0.status(), StatusCode::OK);
+        assert_eq!(admission_retries_used, 2);
+        assert_eq!(request_count.load(Ordering::SeqCst), 4);
+
+        let bodies = captured_bodies
+            .lock()
+            .expect("lock captured request bodies");
+        assert_eq!(bodies.len(), 4);
+        assert_eq!(bodies[0]["input"][0]["content"][0]["type"], "input_image");
+        assert_eq!(bodies[1]["input"][0]["content"][0]["type"], "input_image");
+        assert_eq!(bodies[2]["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(bodies[3]["input"][0]["content"][0]["type"], "input_text");
+        drop(bodies);
+
+        let retry_counts =
+            crate::proxy::activity::raw_logs(&forwarder.proxy_activity, 50, Some("codex"))
+                .await
+                .into_iter()
+                .filter(|entry| entry.event == "admission_retry")
+                .filter_map(|entry| entry.retry_count)
+                .collect::<Vec<_>>();
+        assert_eq!(retry_counts, vec![1, 2]);
+
+        let snapshot = crate::proxy::activity::admission_retry_snapshot(
+            &forwarder.proxy_activity,
+            Some("codex"),
+        )
+        .await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].event, "admitted");
+        assert_eq!(snapshot[0].retry_count, 2);
+        assert_eq!(snapshot[0].status, Some(200));
 
         server.abort();
     }
@@ -7204,6 +7788,7 @@ mod tests {
 
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let adapter = get_adapter(&AppType::Codex);
+        let mut admission_retries_used = 0u32;
         let result = forwarder
             .forward_with_admission_retry(
                 &AppType::Codex,
@@ -7214,6 +7799,7 @@ mod tests {
                 &HeaderMap::new(),
                 &Extensions::new(),
                 adapter.as_ref(),
+                &mut admission_retries_used,
             )
             .await
             .expect("transient 400 should be hidden by replay");
@@ -7283,6 +7869,7 @@ mod tests {
 
         let forwarder = test_forwarder(Duration::from_secs(1), Duration::from_secs(1));
         let adapter = get_adapter(&AppType::Codex);
+        let mut admission_retries_used = 0u32;
         let result = forwarder
             .forward_with_admission_retry(
                 &AppType::Codex,
@@ -7293,6 +7880,7 @@ mod tests {
                 &HeaderMap::new(),
                 &Extensions::new(),
                 adapter.as_ref(),
+                &mut admission_retries_used,
             )
             .await
             .expect("HTTP 429 should be hidden by replay");
@@ -7355,6 +7943,7 @@ mod tests {
         let proxy_activity = forwarder.proxy_activity.clone();
         let adapter = get_adapter(&AppType::Codex);
         let task = tokio::spawn(async move {
+            let mut admission_retries_used = 0u32;
             forwarder
                 .forward_with_admission_retry(
                     &AppType::Codex,
@@ -7365,6 +7954,7 @@ mod tests {
                     &HeaderMap::new(),
                     &Extensions::new(),
                     adapter.as_ref(),
+                    &mut admission_retries_used,
                 )
                 .await
         });
@@ -7443,6 +8033,7 @@ mod tests {
         let shutdown_notify = forwarder.shutdown_notify.clone();
         let adapter = get_adapter(&AppType::Codex);
         let task = tokio::spawn(async move {
+            let mut admission_retries_used = 0u32;
             forwarder
                 .forward_with_admission_retry(
                     &AppType::Codex,
@@ -7453,6 +8044,7 @@ mod tests {
                     &HeaderMap::new(),
                     &Extensions::new(),
                     adapter.as_ref(),
+                    &mut admission_retries_used,
                 )
                 .await
         });

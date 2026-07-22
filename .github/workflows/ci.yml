@@ -56,6 +56,11 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ${{ matrix.os }}
+    env:
+      # CI runs check, clippy, and tests in one fresh workspace. Incremental
+      # artifacts only consume runner disk and make the cached target tree far
+      # larger without improving a clean CI run.
+      CARGO_INCREMENTAL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -81,15 +86,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
             || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
 
-      - name: Cache Cargo registry and build
+      - name: Cache Cargo dependencies
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-deps-v1-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-deps-v1-
 
       - name: Create frontend dist placeholder
         shell: bash
@@ -102,4 +106,7 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        # A subset of tests temporarily changes process-wide HOME/USERPROFILE
+        # and other environment variables. Running them in parallel is racy,
+        # especially on macOS where scheduling exposes the collision reliably.
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1

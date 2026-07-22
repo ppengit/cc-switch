@@ -141,18 +141,6 @@ body {
   color: hsl(var(--foreground));
 }
 
-html.proxy-activity-floating-window,
-body.proxy-activity-floating-window,
-html.proxy-activity-floating-window #root {
-  width: 100%;
-  height: 100%;
-  background: transparent !important;
-}
-
-body.proxy-activity-floating-window {
-  overflow: hidden;
-}
-
 html.dark {
   color-scheme: dark;
 }

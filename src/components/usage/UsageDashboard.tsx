@@ -12,7 +12,6 @@ import {
   type RequestLog,
   type UsageRangeSelection,
 } from "@/types/usage";
-import { motion } from "framer-motion";
 import {
   BarChart3,
   ListFilter,
@@ -31,7 +30,6 @@ import {
 } from "@/components/ui/select";
 import { useQueryClient } from "@tanstack/react-query";
 import { usageKeys, useModelStats, useProviderStats } from "@/lib/query/usage";
-import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import {
   Accordion,
   AccordionContent,
@@ -123,10 +121,6 @@ export function UsageDashboard({
     }
   };
 
-  // 后端写入新日志时 emit `usage-log-recorded`，本 hook 立刻 invalidate 所有
-  // usage 查询，实现实时刷新（仅在 Dashboard 挂载时生效，离开页面自动取消监听）
-  useUsageEventBridge();
-
   const changeRefreshInterval = async (next: number) => {
     const normalized = normalizeRefreshInterval(next);
     const previous = refreshIntervalMs;
@@ -208,12 +202,7 @@ export function UsageDashboard({
   }, [modelOptionsData, model]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
-      className="space-y-8 pb-8"
-    >
+    <div className="space-y-8 pb-8">
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-2">
         <div className="flex flex-col gap-1">
           <h2 className="text-2xl font-bold tracking-tight">
@@ -387,11 +376,7 @@ export function UsageDashboard({
             </TabsList>
           </div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-          >
+          <div>
             <TabsContent value="logs" className="mt-0">
               <RequestLogTable
                 range={range}
@@ -431,7 +416,7 @@ export function UsageDashboard({
                 refreshIntervalMs={refreshIntervalMs}
               />
             </TabsContent>
-          </motion.div>
+          </div>
         </Tabs>
       </div>
 
@@ -458,6 +443,6 @@ export function UsageDashboard({
           </AccordionContent>
         </AccordionItem>
       </Accordion>
-    </motion.div>
+    </div>
   );
 }

@@ -10,6 +10,7 @@ import type {
   ModelPricing,
   ProviderLimitStatus,
   PaginatedLogs,
+  RequestLogRetentionConfig,
   SessionSyncResult,
   DataSourceSummary,
 } from "@/types/usage";
@@ -136,6 +137,21 @@ export const usageApi = {
       page,
       pageSize,
     });
+  },
+
+  getRequestLogRetentionConfig:
+    async (): Promise<RequestLogRetentionConfig> => {
+      return invoke("get_request_log_retention_config");
+    },
+
+  setRequestLogRetentionConfig: async (
+    config: RequestLogRetentionConfig,
+  ): Promise<RequestLogRetentionConfig> => {
+    return invoke("set_request_log_retention_config", { config });
+  },
+
+  clearRequestLogs: async (): Promise<number> => {
+    return invoke("clear_request_logs");
   },
 
   getRequestDetail: async (requestId: string): Promise<RequestLog | null> => {

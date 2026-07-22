@@ -39,6 +39,7 @@ import type {
   ModelStats,
   ProviderStats,
   RequestLog,
+  RequestLogRetentionConfig,
   UsageSummaryByApp,
 } from "@/types/usage";
 import type {
@@ -879,6 +880,10 @@ let providerStatsState = createDefaultProviderStats();
 let modelStatsState = createDefaultModelStats();
 let requestLogsState = createDefaultRequestLogs();
 let requestDetailsState = createDefaultRequestDetails();
+let requestLogRetentionConfigState: RequestLogRetentionConfig = {
+  autoCleanupEnabled: false,
+  retainCount: 1000,
+};
 let modelPricingState = createDefaultModelPricing();
 let usageDataSourcesState = createDefaultUsageDataSources();
 let streamCheckConfigState = {
@@ -1113,6 +1118,10 @@ export const resetProviderState = () => {
   modelStatsState = createDefaultModelStats();
   requestLogsState = createDefaultRequestLogs();
   requestDetailsState = createDefaultRequestDetails();
+  requestLogRetentionConfigState = {
+    autoCleanupEnabled: false,
+    retainCount: 1000,
+  };
   modelPricingState = createDefaultModelPricing();
   usageDataSourcesState = createDefaultUsageDataSources();
   streamCheckConfigState = {
@@ -1725,6 +1734,26 @@ export const getRequestLogsState = () =>
 
 export const setRequestLogsState = (value: RequestLog[]) => {
   requestLogsState = JSON.parse(JSON.stringify(value)) as RequestLog[];
+};
+
+export const clearRequestLogsState = () => {
+  const deleted = requestLogsState.length;
+  requestLogsState = [];
+  requestDetailsState = {};
+  return deleted;
+};
+
+export const getRequestLogRetentionConfigState = () =>
+  JSON.parse(
+    JSON.stringify(requestLogRetentionConfigState),
+  ) as RequestLogRetentionConfig;
+
+export const setRequestLogRetentionConfigState = (
+  value: RequestLogRetentionConfig,
+) => {
+  requestLogRetentionConfigState = JSON.parse(
+    JSON.stringify(value),
+  ) as RequestLogRetentionConfig;
 };
 
 export const getRequestDetailState = (requestId: string) =>

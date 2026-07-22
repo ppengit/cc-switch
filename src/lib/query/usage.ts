@@ -4,6 +4,8 @@ import { proxyApi } from "@/lib/api/proxy";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type {
   LogFilters,
+  PaginatedLogs,
+  RequestLogRetentionConfig,
   UsageRangeSelection,
   UsageScopeFilters,
 } from "@/types/usage";
@@ -144,6 +146,8 @@ export const usageKeys = {
     ] as const,
   detail: (requestId: string) =>
     [...usageKeys.all, "detail", requestId] as const,
+  requestLogRetention: () =>
+    [...usageKeys.all, "request-log-retention"] as const,
   pricing: () => [...usageKeys.all, "pricing"] as const,
   limits: (providerId: string, appType: string) =>
     [...usageKeys.all, "limits", providerId, appType] as const,
@@ -154,7 +158,7 @@ export const usageKeys = {
       ...usageKeys.all,
       "raw-proxy-logs",
       appType ?? "all",
-      limit ?? 200,
+      limit ?? 50,
     ] as const,
 };
 
@@ -343,6 +347,52 @@ export function useRequestLogs({
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+export function useRequestLogRetentionConfig() {
+  return useQuery({
+    queryKey: usageKeys.requestLogRetention(),
+    queryFn: usageApi.getRequestLogRetentionConfig,
+    staleTime: 60_000,
+  });
+}
+
+export function useUpdateRequestLogRetention() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (config: RequestLogRetentionConfig) =>
+      usageApi.setRequestLogRetentionConfig(config),
+    onSuccess: (config) => {
+      queryClient.setQueryData(usageKeys.requestLogRetention(), config);
+      queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    },
+  });
+}
+
+export function useClearRequestLogs() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: usageApi.clearRequestLogs,
+    onSuccess: () => {
+      queryClient.setQueriesData<PaginatedLogs>(
+        {
+          predicate: (query) =>
+            query.queryKey[0] === "usage" && query.queryKey[1] === "logs",
+        },
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                data: [],
+                total: 0,
+                page: 0,
+              }
+            : previous,
+      );
+      queryClient.invalidateQueries({ queryKey: usageKeys.all });
+    },
   });
 }
 
@@ -356,7 +406,7 @@ export function useRequestDetail(requestId: string) {
 
 export function useProxyRawLogs(
   appType?: string,
-  limit = 200,
+  limit = 50,
   options?: UsageQueryOptions,
 ) {
   const effectiveAppType = appType === "all" ? undefined : appType;
@@ -370,6 +420,7 @@ export function useProxyRawLogs(
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 2000,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+    placeholderData: (previousData) => previousData,
   });
 }
 

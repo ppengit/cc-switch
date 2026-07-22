@@ -3,12 +3,8 @@
 //! 提供前端调用的 API 接口
 
 use crate::error::AppError;
-use crate::floating_activity::ProxyActivityFloatingSettings;
 use crate::proxy::types::*;
 use crate::proxy::{CircuitBreakerConfig, CircuitBreakerStats};
-use crate::settings::{
-    ProxyActivityFloatingMode, ProxyActivityFloatingPosition, ProxyActivityFloatingSize,
-};
 use crate::store::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -96,7 +92,7 @@ pub async fn get_proxy_raw_logs(
         .filter(|value| !value.eq_ignore_ascii_case("all"));
     state
         .proxy_service
-        .get_raw_logs(limit.unwrap_or(200), app_filter)
+        .get_raw_logs(limit.unwrap_or(50), app_filter)
         .await
 }
 
@@ -113,67 +109,6 @@ pub async fn get_provider_admission_retry_snapshot(
         .proxy_service
         .get_admission_retry_snapshot(app_filter)
         .await
-}
-
-/// 获取实时请求浮窗设置。
-#[tauri::command]
-pub async fn get_proxy_activity_floating_settings() -> Result<ProxyActivityFloatingSettings, String>
-{
-    Ok(crate::floating_activity::current_settings())
-}
-
-/// 显示或隐藏实时请求独立浮窗，并持久化到本机设置。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_window_visible(
-    app: tauri::AppHandle,
-    visible: bool,
-) -> Result<(), String> {
-    crate::floating_activity::set_visible(&app, visible).map_err(|e| e.to_string())
-}
-
-/// 设置实时请求浮窗透明度。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_opacity(
-    app: tauri::AppHandle,
-    opacity: f64,
-) -> Result<(), String> {
-    crate::floating_activity::set_opacity(&app, opacity).map_err(|e| e.to_string())
-}
-
-/// 设置实时请求浮窗是否保持在最前。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_always_on_top(
-    app: tauri::AppHandle,
-    always_on_top: bool,
-) -> Result<(), String> {
-    crate::floating_activity::set_always_on_top(&app, always_on_top).map_err(|e| e.to_string())
-}
-
-/// 设置实时请求浮窗形态。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_mode(
-    app: tauri::AppHandle,
-    mode: ProxyActivityFloatingMode,
-) -> Result<(), String> {
-    crate::floating_activity::set_mode(&app, mode).map_err(|e| e.to_string())
-}
-
-/// 保存实时请求浮窗当前位置。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_position(
-    app: tauri::AppHandle,
-    position: ProxyActivityFloatingPosition,
-) -> Result<(), String> {
-    crate::floating_activity::set_position(&app, position).map_err(|e| e.to_string())
-}
-
-/// 保存实时请求浮窗当前尺寸。
-#[tauri::command]
-pub async fn set_proxy_activity_floating_size(
-    app: tauri::AppHandle,
-    size: ProxyActivityFloatingSize,
-) -> Result<(), String> {
-    crate::floating_activity::set_size(&app, size).map_err(|e| e.to_string())
 }
 
 /// 获取会话路由运行态快照。
