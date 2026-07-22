@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
