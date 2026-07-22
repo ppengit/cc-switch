@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AreaChart,
@@ -47,6 +48,39 @@ export function UsageTrendChart({
     },
   );
 
+  const durationSeconds = Math.max(endDate - startDate, 0);
+  const isHourly = durationSeconds <= 24 * 60 * 60;
+  const language = i18n.resolvedLanguage || i18n.language || "en";
+  const dateLocale = getLocaleFromLanguage(language);
+  const chartData = useMemo(
+    () =>
+      trends?.map((stat) => {
+        const pointDate = new Date(stat.date);
+        const cost = parseFiniteNumber(stat.totalCost);
+        return {
+          rawDate: stat.date,
+          label: isHourly
+            ? pointDate.toLocaleString(dateLocale, {
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : pointDate.toLocaleDateString(dateLocale, {
+                month: "2-digit",
+                day: "2-digit",
+              }),
+          hour: pointDate.getHours(),
+          inputTokens: stat.totalInputTokens,
+          outputTokens: stat.totalOutputTokens,
+          cacheCreationTokens: stat.totalCacheCreationTokens,
+          cacheReadTokens: stat.totalCacheReadTokens,
+          cost: cost ?? null,
+        };
+      }) || [],
+    [dateLocale, isHourly, trends],
+  );
+
   if (isLoading) {
     return (
       <div className="flex h-[350px] items-center justify-center rounded-xl bg-card/40 border border-border/50">
@@ -54,36 +88,6 @@ export function UsageTrendChart({
       </div>
     );
   }
-
-  const durationSeconds = Math.max(endDate - startDate, 0);
-  const isHourly = durationSeconds <= 24 * 60 * 60;
-  const language = i18n.resolvedLanguage || i18n.language || "en";
-  const dateLocale = getLocaleFromLanguage(language);
-  const chartData =
-    trends?.map((stat) => {
-      const pointDate = new Date(stat.date);
-      const cost = parseFiniteNumber(stat.totalCost);
-      return {
-        rawDate: stat.date,
-        label: isHourly
-          ? pointDate.toLocaleString(dateLocale, {
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : pointDate.toLocaleDateString(dateLocale, {
-              month: "2-digit",
-              day: "2-digit",
-            }),
-        hour: pointDate.getHours(),
-        inputTokens: stat.totalInputTokens,
-        outputTokens: stat.totalOutputTokens,
-        cacheCreationTokens: stat.totalCacheCreationTokens,
-        cacheReadTokens: stat.totalCacheReadTokens,
-        cost: cost ?? null,
-      };
-    }) || [];
 
   const displayData = chartData;
 
@@ -194,6 +198,7 @@ export function UsageTrendChart({
               fillOpacity={1}
               fill="url(#colorInput)"
               strokeWidth={2}
+              isAnimationActive={false}
             />
             <Area
               yAxisId="tokens"
@@ -204,6 +209,7 @@ export function UsageTrendChart({
               fillOpacity={1}
               fill="url(#colorOutput)"
               strokeWidth={2}
+              isAnimationActive={false}
             />
             <Area
               yAxisId="tokens"
@@ -214,6 +220,7 @@ export function UsageTrendChart({
               fillOpacity={1}
               fill="url(#colorCacheCreation)"
               strokeWidth={2}
+              isAnimationActive={false}
             />
             <Area
               yAxisId="tokens"
@@ -224,6 +231,7 @@ export function UsageTrendChart({
               fillOpacity={1}
               fill="url(#colorCacheRead)"
               strokeWidth={2}
+              isAnimationActive={false}
             />
             <Area
               yAxisId="cost"
@@ -234,6 +242,7 @@ export function UsageTrendChart({
               fill="none"
               strokeWidth={2}
               strokeDasharray="4 4"
+              isAnimationActive={false}
             />
           </AreaChart>
         </ResponsiveContainer>

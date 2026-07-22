@@ -165,11 +165,14 @@ const openDataSection = async (
     ).toHaveAttribute("data-state", "active"),
   );
 
-  await user.click(
-    screen.getByRole("button", {
+  const dataSectionTrigger = await screen.findByRole(
+    "button",
+    {
       name: /settings\.advanced\.data\.title/,
-    }),
+    },
+    { timeout: 5000 },
   );
+  await user.click(dataSectionTrigger);
   await waitFor(() =>
     expect(screen.getByText("settings.importExport")).toBeInTheDocument(),
   );

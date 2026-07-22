@@ -51,6 +51,9 @@ export function useResetCircuitBreaker() {
       queryClient.invalidateQueries({
         queryKey: ["proxyStatus"],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["providerRuntimeStatuses", variables.appType],
+      });
     },
   });
 }
@@ -88,6 +91,21 @@ export function useCircuitBreakerStats(providerId: string, appType: string) {
     queryFn: () => failoverApi.getCircuitBreakerStats(providerId, appType),
     enabled: !!providerId && !!appType,
     refetchInterval: 5000, // 每 5 秒刷新一次
+  });
+}
+
+/**
+ * 批量获取 Provider 列表的健康状态和熔断器统计。
+ *
+ * ProviderList 必须共享这一条查询，避免每一行分别创建两条 5 秒轮询。
+ */
+export function useProviderRuntimeStatuses(appType: string, enabled = true) {
+  return useQuery({
+    queryKey: ["providerRuntimeStatuses", appType],
+    queryFn: () => failoverApi.getProviderRuntimeStatuses(appType),
+    enabled: enabled && !!appType,
+    refetchInterval: 5000,
+    retry: false,
   });
 }
 
@@ -152,6 +170,9 @@ export function useAddToFailoverQueue() {
       queryClient.invalidateQueries({
         queryKey: ["proxyStatus"],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["providerRuntimeStatuses", variables.appType],
+      });
     },
   });
 }
@@ -207,6 +228,9 @@ export function useRemoveFromFailoverQueue() {
       });
       queryClient.invalidateQueries({
         queryKey: ["proxyStatus"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["providerRuntimeStatuses", variables.appType],
       });
     },
     onError: (_error, _variables, context) => {

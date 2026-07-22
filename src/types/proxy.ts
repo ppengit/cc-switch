@@ -231,6 +231,11 @@ export interface CircuitBreakerStats {
   failedRequests: number;
 }
 
+export interface ProviderRuntimeStatuses {
+  health: Record<string, ProviderHealth>;
+  circuitBreakers: Record<string, CircuitBreakerStats>;
+}
+
 // 供应商健康状态枚举
 export enum ProviderHealthStatus {
   Healthy = "healthy",

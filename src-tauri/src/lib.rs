@@ -1462,6 +1462,7 @@ pub fn run() {
             commands::switch_proxy_provider,
             // Proxy failover commands
             commands::get_provider_health,
+            commands::get_provider_runtime_statuses,
             commands::reset_circuit_breaker,
             commands::get_circuit_breaker_config,
             commands::update_circuit_breaker_config,

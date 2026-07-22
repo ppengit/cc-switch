@@ -107,6 +107,7 @@ export function useProxyStatus() {
       queryClient.removeQueries({ queryKey: ["providerHealth"] });
       // 彻底删除所有熔断器统计缓存（代理停止后熔断器状态已重置）
       queryClient.removeQueries({ queryKey: ["circuitBreakerStats"] });
+      queryClient.removeQueries({ queryKey: ["providerRuntimeStatuses"] });
       for (const appType of TAKEOVER_APPS) {
         queryClient.invalidateQueries({
           queryKey: ["autoFailoverEnabled", appType],
@@ -182,6 +183,9 @@ export function useProxyStatus() {
       if (!variables.enabled) {
         queryClient.invalidateQueries({ queryKey: ["providerHealth"] });
         queryClient.invalidateQueries({ queryKey: ["circuitBreakerStats"] });
+        queryClient.invalidateQueries({
+          queryKey: ["providerRuntimeStatuses", variables.appType],
+        });
       }
     },
     onError: (error: Error) => {

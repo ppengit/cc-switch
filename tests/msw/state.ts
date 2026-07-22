@@ -47,6 +47,7 @@ import type {
   FailoverQueueItem,
   GlobalProxyConfig,
   ProviderHealth,
+  ProviderRuntimeStatuses,
   ProxyServerInfo,
   ProxyStatus,
 } from "@/types/proxy";
@@ -2413,6 +2414,26 @@ export const getProviderHealthState = (
       updated_at: new Date().toISOString(),
     }
   );
+};
+
+export const getProviderRuntimeStatusesState = (
+  appType: AppId,
+): ProviderRuntimeStatuses => {
+  const providerIds = Object.keys(providers[appType] ?? {});
+  const health = Object.fromEntries(
+    providerIds.map((providerId) => [
+      providerId,
+      getProviderHealthState(appType, providerId),
+    ]),
+  );
+  const circuitBreakers = Object.fromEntries(
+    providerIds.flatMap((providerId) => {
+      const stats = getCircuitBreakerStatsState(appType, providerId);
+      return stats ? [[providerId, stats]] : [];
+    }),
+  );
+
+  return { health, circuitBreakers };
 };
 
 export const setProviderHealthState = (

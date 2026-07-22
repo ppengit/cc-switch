@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   useAddToFailoverQueue,
+  useProviderRuntimeStatuses,
   useRemoveFromFailoverQueue,
 } from "@/lib/query/failover";
 
@@ -47,6 +48,21 @@ describe("failover queue mutations", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
+  });
+
+  it("loads all provider runtime statuses through one batched command", async () => {
+    invokeMock.mockResolvedValue({ health: {}, circuitBreakers: {} });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(
+      () => useProviderRuntimeStatuses("codex", true),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("get_provider_runtime_statuses", {
+      appType: "codex",
+    });
   });
 
   it("refreshes proxy status after adding a provider to the failover queue", async () => {

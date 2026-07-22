@@ -4,16 +4,14 @@
 
 use super::hyper_client::ProxyResponse;
 use super::{
-    activity::{
-        clear_provider, record_admission_retry, route_request_with_metadata, ProxyActivityState,
-    },
+    activity::{record_admission_retry, route_request_with_metadata, ProxyActivityState},
     body_filter::filter_private_params_with_whitelist,
     content_encoding::{decompress_body, get_content_encoding},
     error::*,
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
-    provider_router::{ProviderRouter, SessionRoutingRequestGuard},
+    provider_router::{is_api_key_auth_error, ProviderRouter, SessionRoutingRequestGuard},
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
         AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
@@ -57,9 +55,9 @@ enum AdmissionRetryForwardError {
     /// turned off while retrying, so the caller should resume failover/health
     /// handling exactly as before.
     Normal(ProxyError),
-    /// Admission retry handled this provider attempt. The caller should return
-    /// the error to the client without failover, degradation, circuit breaking,
-    /// or provider disable/error bookkeeping.
+    /// Admission retry handled this provider attempt. The caller returns the
+    /// error without failover; explicit API-key rejection is still recorded so
+    /// the authentication circuit can protect subsequent requests.
     Neutral(ProxyError),
 }
 
@@ -410,16 +408,19 @@ impl RequestForwarder {
             return;
         }
 
+        self.router
+            .record_success_runtime(provider_id, app_type, false)
+            .await;
         let router = self.router.clone();
         let provider_id = provider_id.to_string();
         let app_type = app_type.to_string();
         tokio::spawn(async move {
             if let Err(e) = router
-                .record_result(&provider_id, &app_type, false, true, None)
+                .persist_provider_success(&provider_id, &app_type)
                 .await
             {
                 log::warn!(
-                    "[{app_type}] 异步记录 Provider 成功结果失败: provider_id={provider_id}, error={e}"
+                    "[{app_type}] 异步持久化 Provider 成功健康状态失败: provider_id={provider_id}, error={e}"
                 );
             }
         });
@@ -432,15 +433,44 @@ impl RequestForwarder {
         used_half_open_permit: bool,
         error: ProxyError,
     ) -> ForwardError {
-        self.router
-            .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
-            .await;
-        log::warn!(
-            "[{}] 上游入场重试中性结束，不触发故障转移/降级/熔断: provider={}, error={}",
-            app_type_str,
-            provider.name,
-            summarize_proxy_error(&error)
-        );
+        let error_message = error.to_string();
+        if is_api_key_auth_error(Some(&error_message)) {
+            if let Err(record_error) = self
+                .router
+                .record_result(
+                    &provider.id,
+                    app_type_str,
+                    used_half_open_permit,
+                    false,
+                    Some(error_message),
+                )
+                .await
+            {
+                log::warn!(
+                    "[{app_type_str}] 记录入场重试 API Key 认证失败时出错: provider={}, error={record_error}",
+                    provider.name
+                );
+            }
+            log::warn!(
+                "[{}] 上游入场重试因 API Key 认证失败中性结束；记录认证熔断但不触发故障转移: provider={}, error={}",
+                app_type_str,
+                provider.name,
+                summarize_proxy_error(&error)
+            );
+        } else {
+            self.router
+                .reset_untripped_api_key_auth_streak(&provider.id, app_type_str)
+                .await;
+            self.router
+                .release_permit_neutral(&provider.id, app_type_str, used_half_open_permit)
+                .await;
+            log::warn!(
+                "[{}] 上游入场重试中性结束，不触发故障转移/降级/熔断: provider={}, error={}",
+                app_type_str,
+                provider.name,
+                summarize_proxy_error(&error)
+            );
+        }
         ForwardError {
             error,
             provider: Some(provider.clone()),
@@ -588,9 +618,6 @@ impl RequestForwarder {
 
         let provider_count = providers.len();
         let mut providers = providers.into_iter();
-
-        // 非故障转移的单 Provider 场景下跳过熔断器检查，避免普通接管模式被熔断器彻底阻塞。
-        // 故障转移开启时，即使队列只有 1 个 Provider，也默认尊重 HalfOpen 探测名额。
         let bypass_circuit_breaker_for_single_takeover =
             provider_count == 1 && !self.auto_failover_enabled_at_start;
 
@@ -619,14 +646,19 @@ impl RequestForwarder {
             }
 
             // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）。
-            // 入场重试是用户显式临时开启的“挤入上游”模式：开启后不应被既有熔断
-            // 拦截，也不应占用 HalfOpen 探测名额；拥挤类失败会在同一 provider
-            // 内部持续重试，直到成功、关闭开关或遇到非入场类错误。
+            // 入场重试是用户显式临时开启的“挤入上游”模式：开启后可绕过普通
+            // 拥挤类熔断且不占用 HalfOpen 探测名额。认证错误熔断不能绕过，
+            // 必须等冷却后按正常 HalfOpen 许可探测，避免持续请求已知无效的 Key。
             let admission_retry_enabled_at_attempt = self
                 .current_admission_retry_policy(app_type, &provider)
                 .is_some();
-            let bypass_circuit_breaker =
-                bypass_circuit_breaker_for_single_takeover || admission_retry_enabled_at_attempt;
+            let auth_circuit_tripped = self
+                .router
+                .is_api_key_auth_circuit_tripped(&provider.id, app_type_str)
+                .await;
+            let bypass_circuit_breaker = (bypass_circuit_breaker_for_single_takeover
+                || admission_retry_enabled_at_attempt)
+                && !auth_circuit_tripped;
             let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
                 (true, false)
             } else {
@@ -1327,68 +1359,14 @@ impl RequestForwarder {
                         }
                         ErrorCategory::Retryable => {
                             // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
-                            let current_providers = self.current_providers.clone();
-                            let proxy_activity = self.proxy_activity.clone();
-                            let app_handle = self.app_handle.clone();
-                            let switch_epoch = self.switch_epoch.clone();
-                            let status_for_disable_hook = self.status.clone();
                             let _ = self
                                 .router
-                                .record_result_with_disable_hook(
+                                .record_result(
                                     &provider.id,
                                     app_type_str,
                                     used_half_open_permit,
                                     false,
                                     Some(e.to_string()),
-                                    move |disabled_app_type, disabled_provider_id| {
-                                        let current_providers = current_providers.clone();
-                                        let proxy_activity = proxy_activity.clone();
-                                        let app_handle = app_handle.clone();
-                                        let switch_epoch = switch_epoch.clone();
-                                        let status_for_disable_hook =
-                                            status_for_disable_hook.clone();
-                                        async move {
-                                            clear_provider(
-                                                &proxy_activity,
-                                                app_handle.as_ref(),
-                                                &disabled_app_type,
-                                                &disabled_provider_id,
-                                            )
-                                            .await;
-
-                                            {
-                                                let mut current_providers =
-                                                    current_providers.write().await;
-                                                let should_clear = current_providers
-                                                    .get(&disabled_app_type)
-                                                    .map(|(current_id, _)| {
-                                                        current_id == &disabled_provider_id
-                                                    })
-                                                    .unwrap_or(false);
-                                                if should_clear {
-                                                    current_providers.remove(&disabled_app_type);
-                                                }
-                                            }
-
-                                            {
-                                                let mut status =
-                                                    status_for_disable_hook.write().await;
-                                                if status.current_provider_id.as_deref()
-                                                    == Some(disabled_provider_id.as_str())
-                                                {
-                                                    status.current_provider = None;
-                                                    status.current_provider_id = None;
-                                                }
-                                            }
-
-                                            {
-                                                let mut epochs = switch_epoch.write().await;
-                                                let entry =
-                                                    epochs.entry(disabled_app_type).or_insert(0);
-                                                *entry = entry.saturating_add(1);
-                                            }
-                                        }
-                                    },
                                 )
                                 .await;
 
@@ -5352,7 +5330,7 @@ mod tests {
         LocalProxyRequestOverrides, ProviderMeta, UpstreamAdmissionRetryConfig,
         UpstreamAdmissionRetryScheduleMode, UpstreamResponseReplayConfig,
     };
-    use crate::proxy::CircuitBreakerConfig;
+    use crate::proxy::{CircuitBreakerConfig, CircuitState};
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
     use bytes::Bytes;
@@ -6664,6 +6642,441 @@ mod tests {
             !matches!(err.error, ProxyError::NoAvailableProvider),
             "admission retry must not degrade into circuit-open no-provider before trying provider"
         );
+    }
+
+    #[tokio::test]
+    async fn upstream_admission_retry_does_not_bypass_auth_circuit() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+
+        let mut provider = test_provider_with_type(None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude", &provider).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 20;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        for _ in 0..3 {
+            router
+                .record_result(
+                    &provider.id,
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        let forwarder = test_forwarder_with_router(router, db, true);
+        let err = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Claude,
+                http::Method::POST,
+                "/v1/messages",
+                json!({ "messages": [] }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider],
+            )
+            .await
+        {
+            Ok(_) => panic!("authentication circuit should block the provider before forwarding"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err.error, ProxyError::NoAvailableProvider));
+    }
+
+    #[tokio::test]
+    async fn single_takeover_bypasses_generic_open_breaker() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    handler_count.fetch_add(1, Ordering::SeqCst);
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"id":"resp_single","output":[]}"#,
+                        ))
+                        .expect("build upstream response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("run mock upstream");
+        });
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut provider = test_provider_with_type(None);
+        provider.id = "single-generic-open".to_string();
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        db.save_provider("codex", &provider).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = false;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        router
+            .record_result(
+                &provider.id,
+                "codex",
+                false,
+                false,
+                Some("connection reset".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats(&provider.id, "codex")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Open
+        );
+
+        let forwarder = test_forwarder_with_router(router, db, false);
+        let result = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                json!({ "model": "gpt-5.5", "input": "ping" }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider],
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => panic!(
+                "single takeover should keep trying its only provider: {}",
+                error.error
+            ),
+        };
+        assert_eq!(result.response.status(), StatusCode::OK);
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admission_retry_records_auth_rejections_and_recovers_after_cooldown() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let handler_count = request_count.clone();
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move || {
+                let handler_count = handler_count.clone();
+                async move {
+                    let attempt = handler_count.fetch_add(1, Ordering::SeqCst);
+                    if attempt < 3 {
+                        return axum::response::Response::builder()
+                            .status(StatusCode::UNAUTHORIZED)
+                            .header(axum::http::header::CONTENT_TYPE, "application/json")
+                            .body(axum::body::Body::from(
+                                r#"{"error":{"message":"Incorrect API key provided","code":"invalid_api_key"}}"#,
+                            ))
+                            .expect("build auth rejection");
+                    }
+
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(r#"{"id":"resp_recovered","output":[]}"#))
+                        .expect("build recovered response")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("run mock upstream");
+        });
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut provider = test_provider_with_type(None);
+        provider.id = "auth-admission".to_string();
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("codex", &provider).unwrap();
+        db.add_to_failover_queue("codex", &provider.id).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 20;
+        config.circuit_success_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        let forwarder = test_forwarder_with_router(router.clone(), db.clone(), true);
+        for _ in 0..3 {
+            let err = match forwarder
+                .forward_with_retry_inner(
+                    &AppType::Codex,
+                    http::Method::POST,
+                    "/v1/responses",
+                    json!({ "model": "gpt-5.5", "input": "ping" }),
+                    HeaderMap::new(),
+                    Extensions::new(),
+                    vec![provider.clone()],
+                )
+                .await
+            {
+                Ok(_) => panic!("auth rejection should be returned to the client"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                err.error,
+                ProxyError::UpstreamError { status: 401, .. }
+            ));
+        }
+
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+        assert!(
+            router
+                .is_api_key_auth_circuit_tripped(&provider.id, "codex")
+                .await
+        );
+        assert!(db.is_in_failover_queue("codex", &provider.id).unwrap());
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats(&provider.id, "codex")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Open
+        );
+
+        let blocked = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                json!({ "model": "gpt-5.5", "input": "ping" }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider.clone()],
+            )
+            .await
+        {
+            Ok(_) => panic!("authentication circuit should block the fourth request"),
+            Err(error) => error,
+        };
+        assert!(matches!(blocked.error, ProxyError::NoAvailableProvider));
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        router
+            .update_app_configs("codex", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let recovered = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                json!({ "model": "gpt-5.5", "input": "ping" }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider.clone()],
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => panic!(
+                "cooled auth circuit should permit one recovery probe: {}",
+                error.error
+            ),
+        };
+        assert_eq!(recovered.response.status(), StatusCode::OK);
+        assert_eq!(request_count.load(Ordering::SeqCst), 4);
+        assert!(
+            !router
+                .is_api_key_auth_circuit_tripped(&provider.id, "codex")
+                .await
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admission_retry_neutral_non_auth_error_resets_untripped_auth_streak() {
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(|| async move {
+                axum::response::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"error":{"message":"invalid request","code":"invalid_request"}}"#,
+                    ))
+                    .expect("build client error")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("run mock upstream");
+        });
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut provider = test_provider_with_type(None);
+        provider.id = "neutral-reset".to_string();
+        provider.settings_config = json!({
+            "base_url": format!("http://{addr}"),
+            "apiKey": "test-key"
+        });
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("codex", &provider).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("codex").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 20;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = Arc::new(ProviderRouter::new(db.clone()));
+        for _ in 0..2 {
+            router
+                .record_result(
+                    &provider.id,
+                    "codex",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        let health_before = db.get_provider_health(&provider.id, "codex").await.unwrap();
+        let stats_before = router
+            .get_circuit_breaker_stats(&provider.id, "codex")
+            .await
+            .unwrap();
+
+        let forwarder = test_forwarder_with_router(router.clone(), db.clone(), true);
+        let err = match forwarder
+            .forward_with_retry_inner(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                json!({ "model": "gpt-5.5", "input": "ping" }),
+                HeaderMap::new(),
+                Extensions::new(),
+                vec![provider.clone()],
+            )
+            .await
+        {
+            Ok(_) => panic!("client error should remain neutral"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            err.error,
+            ProxyError::UpstreamError { status: 400, .. }
+        ));
+
+        let health_after = db.get_provider_health(&provider.id, "codex").await.unwrap();
+        let stats_after = router
+            .get_circuit_breaker_stats(&provider.id, "codex")
+            .await
+            .unwrap();
+        assert_eq!(
+            health_after.consecutive_failures,
+            health_before.consecutive_failures
+        );
+        assert_eq!(health_after.last_error, health_before.last_error);
+        assert_eq!(stats_after.total_requests, stats_before.total_requests);
+
+        for _ in 0..2 {
+            router
+                .record_result(
+                    &provider.id,
+                    "codex",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            !router
+                .is_api_key_auth_circuit_tripped(&provider.id, "codex")
+                .await
+        );
+
+        server.abort();
     }
 
     #[tokio::test]

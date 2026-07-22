@@ -75,9 +75,12 @@ vi.mock("@/components/usage/UsageDateRangePicker", () => ({
 }));
 
 vi.mock("@/components/ui/select", () => ({
-  Select: ({ value, onValueChange, children }: any) => (
+  Select: ({ value, onValueChange, onOpenChange, children }: any) => (
     <div data-testid={`select-${value}`}>
       {children}
+      <button type="button" onClick={() => onOpenChange?.(true)}>
+        open-options
+      </button>
       <button type="button" onClick={() => onValueChange?.("5000")}>
         choose-5000
       </button>
@@ -118,6 +121,33 @@ describe("UsageDashboard", () => {
     renderDashboard({ refreshIntervalMs: 5000 });
 
     expect(screen.getByTestId("select-5000")).toBeInTheDocument();
+  });
+
+  it("defers expensive filter-option queries until their menus are opened", () => {
+    renderDashboard();
+
+    expect(useProviderStatsMock).toHaveBeenLastCalledWith(
+      { preset: "today" },
+      { appType: "all" },
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(useModelStatsMock).toHaveBeenLastCalledWith(
+      { preset: "today" },
+      { appType: "all", providerName: undefined },
+      expect.objectContaining({ enabled: false }),
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "open-options" })[0]);
+    expect(useProviderStatsMock).toHaveBeenLastCalledWith(
+      { preset: "today" },
+      { appType: "all" },
+      expect.objectContaining({ enabled: true }),
+    );
+    expect(useModelStatsMock).toHaveBeenLastCalledWith(
+      { preset: "today" },
+      { appType: "all", providerName: undefined },
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it("persists refresh interval changes", async () => {

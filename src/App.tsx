@@ -416,6 +416,9 @@ function App() {
               await queryClient.invalidateQueries({
                 queryKey: ["proxyStatus"],
               });
+              await queryClient.invalidateQueries({
+                queryKey: ["providerRuntimeStatuses", activeApp],
+              });
               if (event.providerId) {
                 await queryClient.invalidateQueries({
                   queryKey: ["providerHealth", event.providerId, activeApp],
@@ -724,6 +727,9 @@ function App() {
     });
     await queryClient.invalidateQueries({ queryKey: ["providerHealth"] });
     await queryClient.invalidateQueries({ queryKey: ["circuitBreakerStats"] });
+    await queryClient.invalidateQueries({
+      queryKey: ["providerRuntimeStatuses", activeApp],
+    });
 
     if (activeApp === "opencode") {
       await queryClient.invalidateQueries({

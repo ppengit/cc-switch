@@ -4828,6 +4828,17 @@ impl ProxyService {
         Ok(None)
     }
 
+    /// 读取运行中代理服务器里指定应用的全部 Provider 熔断器统计。
+    pub async fn get_circuit_breaker_stats_for_app(
+        &self,
+        app_type: &str,
+    ) -> std::collections::HashMap<String, crate::proxy::CircuitBreakerStats> {
+        if let Some(server) = self.server.read().await.as_ref() {
+            return server.get_circuit_breaker_stats_for_app(app_type).await;
+        }
+        std::collections::HashMap::new()
+    }
+
     #[cfg(test)]
     pub async fn record_provider_result_for_test(
         &self,

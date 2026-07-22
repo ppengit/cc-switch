@@ -96,6 +96,9 @@ export function UsageDashboard({
     undefined,
   );
   const [model, setModel] = useState<string | undefined>(undefined);
+  const [providerOptionsRequested, setProviderOptionsRequested] =
+    useState(false);
+  const [modelOptionsRequested, setModelOptionsRequested] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(() =>
     normalizeRefreshInterval(savedRefreshIntervalMs),
   );
@@ -176,12 +179,12 @@ export function UsageDashboard({
   const { data: providerOptionsData } = useProviderStats(
     range,
     { appType },
-    optionsRefetch,
+    { ...optionsRefetch, enabled: providerOptionsRequested },
   );
   const { data: modelOptionsData } = useModelStats(
     range,
     { appType, providerName },
-    optionsRefetch,
+    { ...optionsRefetch, enabled: modelOptionsRequested },
   );
 
   const providerOptions = useMemo(() => {
@@ -256,6 +259,9 @@ export function UsageDashboard({
               providerName != null ? encodeOptionValue(providerName) : "all"
             }
             onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
+            onOpenChange={(open) => {
+              if (open) setProviderOptionsRequested(true);
+            }}
           >
             <SelectTrigger
               className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
@@ -281,6 +287,9 @@ export function UsageDashboard({
           <Select
             value={model != null ? encodeOptionValue(model) : "all"}
             onValueChange={(v) => setModel(decodeOptionValue(v))}
+            onOpenChange={(open) => {
+              if (open) setModelOptionsRequested(true);
+            }}
           >
             <SelectTrigger
               className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"

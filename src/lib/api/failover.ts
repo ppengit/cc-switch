@@ -4,6 +4,7 @@ import type {
   CircuitBreakerConfig,
   CircuitBreakerStats,
   FailoverQueueItem,
+  ProviderRuntimeStatuses,
 } from "@/types/proxy";
 
 export interface Provider {
@@ -57,6 +58,13 @@ export const failoverApi = {
     appType: string,
   ): Promise<CircuitBreakerStats | null> {
     return invoke("get_circuit_breaker_stats", { providerId, appType });
+  },
+
+  // 批量获取 Provider 列表所需的健康与熔断状态
+  async getProviderRuntimeStatuses(
+    appType: string,
+  ): Promise<ProviderRuntimeStatuses> {
+    return invoke("get_provider_runtime_statuses", { appType });
   },
 
   // ========== 故障转移队列 API（新） ==========

@@ -27,14 +27,13 @@ import {
 
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
+const useVirtualizerMock = vi.fn();
 const mockAddToFailoverQueueMutateAsync = vi.fn();
 const mockRemoveFromFailoverQueueMutateAsync = vi.fn();
 let mockAutoFailoverEnabled: boolean | undefined = false;
 let mockAppProxyConfig: AppProxyConfig | undefined = undefined;
 const mockUpdateAppProxyConfigMutate = vi.fn();
 let mockFailoverQueue: Array<{ providerId: string; providerName: string }> = [];
-let mockProviderHealth: unknown = undefined;
-let mockCircuitBreakerStats: unknown = undefined;
 const TAURI_ENDPOINT = "http://tauri.local";
 
 vi.mock("@/hooks/useDragSort", () => ({
@@ -78,6 +77,10 @@ vi.mock("@/hooks/useStreamCheck", () => ({
     checkProvider: vi.fn(),
     isChecking: () => false,
   }),
+}));
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: (...args: unknown[]) => useVirtualizerMock(...args),
 }));
 
 vi.mock("@/hooks/useProxyStatus", () => ({
@@ -137,8 +140,9 @@ vi.mock("@/lib/query/failover", () => ({
     mutateAsync: mockRemoveFromFailoverQueueMutateAsync,
   }),
   useReorderFailoverQueue: () => ({ mutate: vi.fn() }),
-  useProviderHealth: () => ({ data: mockProviderHealth }),
-  useCircuitBreakerStats: () => ({ data: mockCircuitBreakerStats }),
+  useProviderRuntimeStatuses: () => ({
+    data: { health: {}, circuitBreakers: {} },
+  }),
 }));
 
 function createProvider(overrides: Partial<Provider> = {}): Provider {
@@ -168,6 +172,7 @@ beforeEach(() => {
   resetTauriEventListeners();
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
+  useVirtualizerMock.mockReset();
   mockAddToFailoverQueueMutateAsync.mockReset();
   mockAddToFailoverQueueMutateAsync.mockResolvedValue(undefined);
   mockRemoveFromFailoverQueueMutateAsync.mockReset();
@@ -176,8 +181,6 @@ beforeEach(() => {
   mockAutoFailoverEnabled = false;
   mockAppProxyConfig = undefined;
   mockFailoverQueue = [];
-  mockProviderHealth = undefined;
-  mockCircuitBreakerStats = undefined;
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -186,6 +189,17 @@ beforeEach(() => {
     transform: null,
     transition: null,
     isDragging: false,
+  }));
+  useVirtualizerMock.mockImplementation(({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: Math.min(count, 10) }, (_, index) => ({
+        key: index,
+        index,
+        start: index * 48,
+        end: (index + 1) * 48,
+      })),
+    getTotalSize: () => count * 48,
+    scrollToIndex: vi.fn(),
   }));
 
   useDragSortMock.mockReturnValue({
@@ -219,7 +233,7 @@ describe("ProviderList Component", () => {
 
   it("should show empty state and trigger create callback when no providers exist", () => {
     const handleCreate = vi.fn();
-    useDragSortMock.mockReturnValueOnce({
+    useDragSortMock.mockReturnValue({
       sortedProviders: [],
       sensors: [],
       handleDragEnd: vi.fn(),
@@ -245,6 +259,51 @@ describe("ProviderList Component", () => {
     fireEvent.click(addButton);
 
     expect(handleCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("only mounts the visible rows for large provider lists", async () => {
+    const providerRows = Array.from({ length: 65 }, (_, index) =>
+      createProvider({
+        id: `provider-${index + 1}`,
+        name: `Provider ${index + 1}`,
+        sortIndex: index,
+      }),
+    );
+    const providers = Object.fromEntries(
+      providerRows.map((provider) => [provider.id, provider]),
+    );
+    useDragSortMock.mockReturnValue({
+      sortedProviders: providerRows,
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={providers}
+        currentProviderId="provider-1"
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(useSortableMock).toHaveBeenCalled());
+    const mountedIds = new Set(
+      useSortableMock.mock.calls.map(([args]) => args.id as string),
+    );
+    expect(mountedIds.size).toBeGreaterThan(0);
+    expect(mountedIds.size).toBeLessThan(providerRows.length);
+    expect(screen.getByRole("table")).toHaveAttribute("aria-rowcount", "66");
+    expect(screen.getByText("Provider 1")).toBeInTheDocument();
+    expect(screen.getByText("Provider 1").closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      "2",
+    );
+    expect(screen.queryByText("Provider 65")).not.toBeInTheDocument();
   });
 
   it("should render in order returned by useDragSort and pass through action callbacks", () => {
@@ -428,9 +487,7 @@ describe("ProviderList Component", () => {
       expect(row).toBeTruthy();
     });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "关闭上游入场重试" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭上游入场重试" }));
 
     await waitFor(() => {
       expect(

@@ -64,6 +64,7 @@ import {
   getAppConfigDirOverride,
   getMcpConfig,
   getProviderHealthState,
+  getProviderRuntimeStatusesState,
   getSessionMessages,
   getSettings,
   getProviders,
@@ -1323,6 +1324,13 @@ export const handlers = [
     }>(request);
     return success(getProviderHealthState(appType, providerId));
   }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_provider_runtime_statuses`,
+    async ({ request }) => {
+      const { appType } = await withJson<{ appType: AppId }>(request);
+      return success(getProviderRuntimeStatusesState(appType));
+    },
+  ),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
   http.post(
     `${TAURI_ENDPOINT}/get_circuit_breaker_stats`,

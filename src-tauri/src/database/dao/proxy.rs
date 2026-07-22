@@ -607,6 +607,39 @@ impl Database {
         }
     }
 
+    /// 批量获取指定应用的 Provider 健康状态。
+    ///
+    /// Provider 列表会周期性展示所有故障转移目标的状态。逐行查询会随着供应商数量
+    /// 线性增加 IPC 和数据库锁竞争，因此这里用单条查询返回已有的健康记录；缺少记录
+    /// 仍由调用方按默认健康状态解释。
+    pub async fn list_provider_health_for_app(
+        &self,
+        app_type: &str,
+    ) -> Result<Vec<ProviderHealth>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn.prepare(
+            "SELECT provider_id, app_type, is_healthy, consecutive_failures,
+                    last_success_at, last_failure_at, last_error, updated_at
+             FROM provider_health
+             WHERE app_type = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![app_type], |row| {
+            Ok(ProviderHealth {
+                provider_id: row.get(0)?,
+                app_type: row.get(1)?,
+                is_healthy: row.get::<_, i64>(2)? != 0,
+                consecutive_failures: row.get::<_, i64>(3)? as u32,
+                last_success_at: row.get(4)?,
+                last_failure_at: row.get(5)?,
+                last_error: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     /// 更新Provider健康状态
     ///
     /// 使用默认阈值（5）判断是否健康，建议使用 `update_provider_health_with_threshold` 传入配置的阈值
@@ -951,7 +984,9 @@ impl Database {
 mod tests {
     use crate::database::Database;
     use crate::error::AppError;
+    use crate::provider::Provider;
     use crate::proxy::types::AppProxyConfig;
+    use serde_json::json;
 
     #[tokio::test]
     async fn test_default_cost_multiplier_round_trip() -> Result<(), AppError> {
@@ -1022,6 +1057,46 @@ mod tests {
                 ..
             }
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_provider_health_for_app_is_batched_and_app_scoped() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.save_provider(
+            "claude",
+            &Provider::with_id(
+                "claude-a".to_string(),
+                "Claude A".to_string(),
+                json!({}),
+                None,
+            ),
+        )?;
+        db.save_provider(
+            "codex",
+            &Provider::with_id(
+                "codex-a".to_string(),
+                "Codex A".to_string(),
+                json!({}),
+                None,
+            ),
+        )?;
+
+        db.update_provider_health("claude-a", "claude", false, Some("boom".into()))
+            .await?;
+        db.update_provider_health("codex-a", "codex", false, Some("other".into()))
+            .await?;
+
+        let claude_health = db.list_provider_health_for_app("claude").await?;
+        assert_eq!(claude_health.len(), 1);
+        assert_eq!(claude_health[0].provider_id, "claude-a");
+        assert_eq!(claude_health[0].app_type, "claude");
+        assert_eq!(claude_health[0].last_error.as_deref(), Some("boom"));
+
+        let codex_health = db.list_provider_health_for_app("codex").await?;
+        assert_eq!(codex_health.len(), 1);
+        assert_eq!(codex_health[0].provider_id, "codex-a");
 
         Ok(())
     }

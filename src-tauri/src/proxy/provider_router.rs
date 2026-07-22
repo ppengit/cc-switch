@@ -6,7 +6,9 @@ use crate::app_config::AppType;
 use crate::database::Database;
 use crate::error::AppError;
 use crate::provider::Provider;
-use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
+use crate::proxy::circuit_breaker::{
+    AllowResult, CircuitBreaker, CircuitBreakerConfig, CircuitState,
+};
 use crate::proxy::types::{
     AppProxyConfig, SessionRoutingBindingSnapshot, SessionRoutingProviderSnapshot,
     SessionRoutingSnapshot,
@@ -15,7 +17,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 use tokio::sync::RwLock;
 
 const API_KEY_ERROR_DISABLE_THRESHOLD: u32 = 3;
@@ -261,6 +263,7 @@ impl ProviderRouter {
                 .collect();
 
             total_providers = ordered_ids.len();
+            let mut half_open_provider_ids = Vec::new();
 
             for provider_id in ordered_ids {
                 let Some(provider) = all_providers.get(&provider_id).cloned() else {
@@ -269,10 +272,23 @@ impl ProviderRouter {
 
                 let circuit_key = format!("{app_type}:{}", provider.id);
                 let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+                let admission_retry_enabled = provider_upstream_admission_retry_enabled(&provider);
+                let admission_retry_can_bypass = admission_retry_enabled
+                    && !self
+                        .is_api_key_auth_circuit_tripped(&provider.id, app_type)
+                        .await;
+                let available = if admission_retry_can_bypass {
+                    true
+                } else {
+                    breaker.is_available().await
+                };
 
-                if provider_upstream_admission_retry_enabled(&provider)
-                    || breaker.is_available().await
-                {
+                if available {
+                    if !admission_retry_can_bypass
+                        && breaker.get_state().await == CircuitState::HalfOpen
+                    {
+                        half_open_provider_ids.push(provider.id.clone());
+                    }
                     result.push(provider);
                 } else {
                     circuit_open_count += 1;
@@ -287,14 +303,14 @@ impl ProviderRouter {
                         session_client_provided,
                         &app_config,
                         result,
+                        &half_open_provider_ids,
                     )
                     .await;
             }
         } else {
             // 故障转移关闭：仅使用当前供应商。
-            // 但如果该供应商已经因为认证错误或熔断策略被打开断路器，
-            // 不能继续把新请求路由给它，否则会在单供应商模式下无限重复打到
-            // 一个已知不可用的 key。
+            // 普通单供应商接管沿用既有语义，不因通用熔断而停摆；只有已经达到
+            // 认证错误阈值时才等待冷却并走 HalfOpen 探测，避免持续请求坏 Key。
             let current_id = AppType::from_str(app_type).ok().and_then(|app_enum| {
                 crate::settings::get_effective_current_provider(&self.db, &app_enum)
                     .ok()
@@ -305,10 +321,11 @@ impl ProviderRouter {
                 if let Some(current) = self.db.get_provider_by_id(&current_id, app_type)? {
                     total_providers = 1;
                     let circuit_key = format!("{app_type}:{}", current.id);
-                    if !provider_upstream_admission_retry_enabled(&current)
-                        && self.api_key_error_count(&circuit_key).await
-                            >= API_KEY_ERROR_DISABLE_THRESHOLD
-                    {
+                    let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+                    let auth_circuit_tripped = self
+                        .is_api_key_auth_circuit_tripped(&current.id, app_type)
+                        .await;
+                    if auth_circuit_tripped && !breaker.is_available().await {
                         circuit_open_count = 1;
                     } else {
                         result.push(current);
@@ -594,58 +611,6 @@ impl ProviderRouter {
         Ok(())
     }
 
-    /// 记录供应商请求结果，并在认证错误熔断禁用时执行运行时清理。
-    pub async fn record_result_with_disable_hook<F, Fut>(
-        &self,
-        provider_id: &str,
-        app_type: &str,
-        used_half_open_permit: bool,
-        success: bool,
-        error_msg: Option<String>,
-        on_disabled: F,
-    ) -> Result<(), AppError>
-    where
-        F: FnOnce(String, String) -> Fut,
-        Fut: std::future::Future<Output = ()>,
-    {
-        let disabled = self
-            .record_result_inner(
-                provider_id,
-                app_type,
-                used_half_open_permit,
-                success,
-                error_msg,
-            )
-            .await?;
-
-        if disabled {
-            on_disabled(app_type.to_string(), provider_id.to_string()).await;
-            if let Ok(Some(())) = self
-                .db
-                .get_proxy_config_for_app(app_type)
-                .await
-                .map(|config| {
-                    if config.enabled && config.auto_failover_enabled {
-                        Some(())
-                    } else {
-                        None
-                    }
-                })
-            {
-                if let Some(app_handle) = &self.app_handle {
-                    if let Some(app_state) = app_handle.try_state::<crate::store::AppState>() {
-                        let _ = app_state
-                            .proxy_service
-                            .reconcile_failover_after_provider_removal(provider_id, app_type)
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     async fn record_result_inner(
         &self,
         provider_id: &str,
@@ -653,7 +618,7 @@ impl ProviderRouter {
         used_half_open_permit: bool,
         success: bool,
         error_msg: Option<String>,
-    ) -> Result<bool, AppError> {
+    ) -> Result<(), AppError> {
         // 1. 按应用独立获取熔断器配置
         let failure_threshold = match self.db.get_proxy_config_for_app(app_type).await {
             Ok(app_config) => app_config.circuit_failure_threshold,
@@ -663,12 +628,20 @@ impl ProviderRouter {
         // 2. 更新熔断器状态
         let circuit_key = format!("{app_type}:{provider_id}");
         let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+        let is_api_key_auth_failure = !success && is_api_key_auth_error(error_msg.as_deref());
+        let auth_circuit_was_tripped =
+            self.api_key_error_count(&circuit_key).await >= API_KEY_ERROR_DISABLE_THRESHOLD;
 
         if success {
             breaker.record_success(used_half_open_permit).await;
-            self.reset_api_key_error_count(&circuit_key).await;
+            if !auth_circuit_was_tripped || breaker.get_state().await == CircuitState::Closed {
+                self.reset_api_key_error_count(&circuit_key).await;
+            }
         } else {
             breaker.record_failure(used_half_open_permit).await;
+            if !is_api_key_auth_failure && !auth_circuit_was_tripped {
+                self.reset_api_key_error_count(&circuit_key).await;
+            }
         }
 
         // 3. 更新数据库健康状态（使用配置的阈值）
@@ -682,24 +655,49 @@ impl ProviderRouter {
             )
             .await?;
 
-        let mut disabled = false;
-        if !success && is_api_key_auth_error(error_msg.as_deref()) {
+        if is_api_key_auth_failure {
             let count = self.increment_api_key_error_count(&circuit_key).await;
             if count >= API_KEY_ERROR_DISABLE_THRESHOLD {
                 breaker.force_open().await;
-                // 被动禁用（认证错误熔断）时保留 provider_health 记录，
-                // 让 last_error 仍可在供应商列表展示；仅移出故障转移队列。
-                self.db
-                    .remove_from_failover_queue_keep_health(app_type, provider_id)?;
                 log::warn!(
-                    "[{app_type}] Provider {provider_id} 出现 {count} 次 API Key 认证错误，已熔断并从故障转移队列禁用"
+                    "[{app_type}] Provider {provider_id} 出现 {count} 次 API Key 认证错误，已熔断；保留故障转移队列位置并在冷却后自动探测"
                 );
-                self.emit_provider_disabled(app_type, provider_id);
-                disabled = true;
+                if count == API_KEY_ERROR_DISABLE_THRESHOLD {
+                    self.emit_provider_auth_circuit_opened(app_type, provider_id);
+                }
             }
         }
 
-        Ok(disabled)
+        Ok(())
+    }
+
+    /// 同步更新成功请求的内存态，供转发器在返回首包前确定性地释放 HalfOpen
+    /// permit 并更新认证错误 streak；数据库健康状态可随后异步持久化。
+    pub(crate) async fn record_success_runtime(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+        used_half_open_permit: bool,
+    ) {
+        let circuit_key = format!("{app_type}:{provider_id}");
+        let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+        let auth_circuit_was_tripped =
+            self.api_key_error_count(&circuit_key).await >= API_KEY_ERROR_DISABLE_THRESHOLD;
+
+        breaker.record_success(used_half_open_permit).await;
+        if !auth_circuit_was_tripped || breaker.get_state().await == CircuitState::Closed {
+            self.reset_api_key_error_count(&circuit_key).await;
+        }
+    }
+
+    pub(crate) async fn persist_provider_success(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> Result<(), AppError> {
+        self.db
+            .update_provider_health(provider_id, app_type, true, None)
+            .await
     }
 
     /// 重置熔断器（手动恢复）
@@ -715,6 +713,33 @@ impl ProviderRouter {
         let circuit_key = format!("{app_type}:{provider_id}");
         self.reset_circuit_breaker(&circuit_key).await;
         self.reset_api_key_error_count(&circuit_key).await;
+    }
+
+    /// 入场重试只绕过普通拥挤类熔断；认证错误达到阈值后必须等待冷却探测。
+    pub(crate) async fn is_api_key_auth_circuit_tripped(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) -> bool {
+        let circuit_key = format!("{app_type}:{provider_id}");
+        self.api_key_error_count(&circuit_key).await >= API_KEY_ERROR_DISABLE_THRESHOLD
+    }
+
+    /// 非认证的中性结果只打断尚未达到阈值的认证错误 streak；已经触发的认证
+    /// 熔断必须保持锁存，直到 HalfOpen 成功次数满足配置并真正回到 Closed。
+    pub(crate) async fn reset_untripped_api_key_auth_streak(
+        &self,
+        provider_id: &str,
+        app_type: &str,
+    ) {
+        let circuit_key = format!("{app_type}:{provider_id}");
+        let mut counts = self.api_key_error_counts.write().await;
+        if counts
+            .get(&circuit_key)
+            .is_some_and(|count| *count < API_KEY_ERROR_DISABLE_THRESHOLD)
+        {
+            counts.remove(&circuit_key);
+        }
     }
 
     /// 仅释放 HalfOpen permit，不影响健康统计（neutral 接口）
@@ -769,6 +794,33 @@ impl ProviderRouter {
         } else {
             None
         }
+    }
+
+    /// 批量获取指定应用已创建的熔断器统计。
+    ///
+    /// 先克隆匹配的熔断器，再释放全局 map 的读锁，避免读取各熔断器状态时长期占用
+    /// map 锁而阻塞路由侧创建或清理熔断器。
+    pub async fn get_circuit_breaker_stats_for_app(
+        &self,
+        app_type: &str,
+    ) -> HashMap<String, crate::proxy::circuit_breaker::CircuitBreakerStats> {
+        let prefix = format!("{app_type}:");
+        let matching_breakers: Vec<(String, Arc<CircuitBreaker>)> = {
+            let breakers = self.circuit_breakers.read().await;
+            breakers
+                .iter()
+                .filter_map(|(key, breaker)| {
+                    key.strip_prefix(&prefix)
+                        .map(|provider_id| (provider_id.to_string(), breaker.clone()))
+                })
+                .collect()
+        };
+
+        let mut stats = HashMap::with_capacity(matching_breakers.len());
+        for (provider_id, breaker) in matching_breakers {
+            stats.insert(provider_id, breaker.get_stats().await);
+        }
+        stats
     }
 
     /// 获取或创建熔断器
@@ -827,7 +879,7 @@ impl ProviderRouter {
         counts.get(key).copied().unwrap_or(0)
     }
 
-    fn emit_provider_disabled(&self, app_type: &str, provider_id: &str) {
+    fn emit_provider_auth_circuit_opened(&self, app_type: &str, provider_id: &str) {
         let Some(app_handle) = &self.app_handle else {
             return;
         };
@@ -838,7 +890,7 @@ impl ProviderRouter {
             "source": "apiKeyAuthCircuitBreaker"
         });
         if let Err(e) = app_handle.emit("provider-switched", event_data) {
-            log::debug!("发射 API Key 熔断禁用事件失败: {e}");
+            log::debug!("发射 API Key 认证熔断事件失败: {e}");
         }
     }
 
@@ -849,6 +901,7 @@ impl ProviderRouter {
         session_client_provided: bool,
         config: &AppProxyConfig,
         providers: Vec<Provider>,
+        half_open_provider_ids: &[String],
     ) -> Vec<Provider> {
         if providers.len() <= 1 {
             return providers;
@@ -875,6 +928,15 @@ impl ProviderRouter {
                     .find(|provider| provider.id.as_str() == bound_provider_id.as_str())
                 {
                     if provider_has_capacity(&state, app_type, bound_provider) {
+                        if let Some(probe_provider_id) = higher_priority_half_open_provider_id(
+                            &state,
+                            app_type,
+                            &providers,
+                            &bound_provider_id,
+                            half_open_provider_ids,
+                        ) {
+                            return move_provider_to_front(providers, &probe_provider_id);
+                        }
                         return move_provider_to_front(providers, &bound_provider_id);
                     }
                 }
@@ -893,6 +955,15 @@ impl ProviderRouter {
             });
 
         if let Some(selected_id) = selected_id {
+            if let Some(probe_provider_id) = higher_priority_half_open_provider_id(
+                &state,
+                app_type,
+                &providers,
+                &selected_id,
+                half_open_provider_ids,
+            ) {
+                return move_provider_to_front(providers, &probe_provider_id);
+            }
             if should_bind_session {
                 state.bind_session(app_type, session_id, &selected_id, now, None, None);
             }
@@ -980,13 +1051,50 @@ fn move_provider_to_front(mut providers: Vec<Provider>, provider_id: &str) -> Ve
     providers
 }
 
-fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
+fn higher_priority_half_open_provider_id(
+    state: &SessionRoutingState,
+    app_type: &str,
+    providers: &[Provider],
+    selected_provider_id: &str,
+    half_open_provider_ids: &[String],
+) -> Option<String> {
+    let selected_index = providers
+        .iter()
+        .position(|provider| provider.id == selected_provider_id)?;
+
+    providers[..selected_index]
+        .iter()
+        .find(|provider| {
+            half_open_provider_ids.contains(&provider.id)
+                && provider_has_capacity(state, app_type, provider)
+        })
+        .map(|provider| provider.id.clone())
+}
+
+pub(crate) fn is_api_key_auth_error(error_msg: Option<&str>) -> bool {
     let Some(error_msg) = error_msg else {
         return false;
     };
 
     let lower = error_msg.to_ascii_lowercase();
-    lower.contains("invalid api key") || lower.contains("api key is disabled")
+    [
+        "invalid_api_key",
+        "invalid api key",
+        "incorrect api key",
+        "invalid x-api-key",
+        "x-api-key is invalid",
+        "api key is disabled",
+        "api key is invalid",
+        "api key not valid",
+        "api key has expired",
+        "api key expired",
+        "expired api key",
+        "api key has been revoked",
+        "api key revoked",
+        "revoked api key",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
 }
 
 fn provider_upstream_admission_retry_enabled(provider: &Provider) -> bool {
@@ -1646,6 +1754,260 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn half_open_higher_priority_provider_preempts_sticky_fallback_session() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.session_routing_enabled = true;
+        config.session_routing_client_session_only = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_success_threshold = 2;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        router
+            .record_result("a", "claude", false, false, Some("unavailable".to_string()))
+            .await
+            .unwrap();
+
+        let fallback = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            fallback
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+
+        let guard = router
+            .acquire_session_route_request("claude", "session-1", true, &fallback[0], None, None)
+            .await;
+        drop(guard);
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        router
+            .update_app_configs("claude", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let recovered = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"],
+            "a higher-priority HalfOpen provider must receive a probe before the sticky fallback"
+        );
+
+        let permit = router.allow_provider_request("a", "claude").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        router
+            .record_result("a", "claude", permit.used_half_open_permit, true, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::HalfOpen,
+            "the configured success threshold requires a second recovery probe"
+        );
+
+        let second_recovery = router
+            .select_providers_for_session("claude", "session-1", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            second_recovery
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"],
+            "the recovering provider must keep preempting the sticky fallback until Closed"
+        );
+
+        let second_permit = router.allow_provider_request("a", "claude").await;
+        assert!(second_permit.allowed);
+        assert!(second_permit.used_half_open_permit);
+        router
+            .record_result(
+                "a",
+                "claude",
+                second_permit.used_half_open_permit,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Closed
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn full_half_open_provider_does_not_preempt_sticky_fallback_session() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider_a =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider_a.meta = Some(ProviderMeta {
+            max_concurrent_requests: Some(1),
+            ..Default::default()
+        });
+        let provider_b =
+            Provider::with_id("b".to_string(), "Provider B".to_string(), json!({}), None);
+        db.save_provider("claude", &provider_a).unwrap();
+        db.save_provider("claude", &provider_b).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+        db.add_to_failover_queue("claude", "b").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.session_routing_enabled = true;
+        config.session_routing_client_session_only = true;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        router
+            .record_result("a", "claude", false, false, Some("unavailable".to_string()))
+            .await
+            .unwrap();
+
+        let fallback = router
+            .select_providers_for_session("claude", "sticky-session", true)
+            .await
+            .unwrap();
+        assert_eq!(fallback[0].id, "b");
+        let fallback_guard = router
+            .acquire_session_route_request(
+                "claude",
+                "sticky-session",
+                true,
+                &fallback[0],
+                None,
+                None,
+            )
+            .await;
+        drop(fallback_guard);
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        router
+            .update_app_configs("claude", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let probe_candidates = router
+            .select_providers_for_session("claude", "probe-session", true)
+            .await
+            .unwrap();
+        assert_eq!(probe_candidates[0].id, "a");
+        let permit = router.allow_provider_request("a", "claude").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        let probe_guard = router
+            .acquire_session_route_request(
+                "claude",
+                "probe-session",
+                true,
+                &probe_candidates[0],
+                None,
+                None,
+            )
+            .await;
+
+        let sticky_candidates = router
+            .select_providers_for_session("claude", "sticky-session", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            sticky_candidates[0].id, "b",
+            "a full HalfOpen provider must not steal traffic from a healthy sticky fallback"
+        );
+
+        drop(probe_guard);
+        router
+            .release_permit_neutral("a", "claude", permit.used_half_open_permit)
+            .await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn batched_circuit_stats_are_scoped_without_creating_breakers() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let router = ProviderRouter::new(db);
+
+        assert!(
+            router
+                .allow_provider_request("claude-a", "claude")
+                .await
+                .allowed
+        );
+        assert!(
+            router
+                .allow_provider_request("codex-a", "codex")
+                .await
+                .allowed
+        );
+
+        let claude_stats = router.get_circuit_breaker_stats_for_app("claude").await;
+        assert_eq!(claude_stats.len(), 1);
+        assert!(claude_stats.contains_key("claude-a"));
+        assert!(!claude_stats.contains_key("codex-a"));
+
+        let unknown_stats = router.get_circuit_breaker_stats_for_app("unknown").await;
+        assert!(unknown_stats.is_empty());
+        assert!(router
+            .get_circuit_breaker_stats("missing", "unknown")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn admission_retry_provider_is_selected_even_when_circuit_open() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());
@@ -1699,6 +2061,114 @@ mod tests {
         let providers = router.select_providers("claude").await.unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "a");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn admission_retry_waits_for_auth_circuit_cooldown() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let mut provider =
+            Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
+        provider.meta = Some(ProviderMeta {
+            upstream_admission_retry: Some(UpstreamAdmissionRetryConfig {
+                enabled: true,
+                max_retries: Some(1),
+                initial_delay_ms: Some(0),
+                max_delay_ms: Some(0),
+                jitter_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        db.save_provider("claude", &provider).unwrap();
+        db.add_to_failover_queue("claude", "a").unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.enabled = true;
+        config.auto_failover_enabled = true;
+        config.circuit_failure_threshold = 20;
+        config.circuit_success_threshold = 2;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+
+        let router = ProviderRouter::new(db.clone());
+        for _ in 0..3 {
+            router
+                .record_result(
+                    "a",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(router.is_api_key_auth_circuit_tripped("a", "claude").await);
+        assert!(matches!(
+            router.select_providers("claude").await,
+            Err(AppError::AllProvidersCircuitOpen)
+        ));
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        router
+            .update_app_configs("claude", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let recovered = router.select_providers("claude").await.unwrap();
+        assert_eq!(recovered[0].id, "a");
+        let permit = router.allow_provider_request("a", "claude").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        router
+            .record_result("a", "claude", permit.used_half_open_permit, true, None)
+            .await
+            .unwrap();
+
+        assert!(router.is_api_key_auth_circuit_tripped("a", "claude").await);
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::HalfOpen,
+            "the authentication latch must remain until the configured success threshold closes the circuit"
+        );
+
+        let second_permit = router.allow_provider_request("a", "claude").await;
+        assert!(second_permit.allowed);
+        assert!(second_permit.used_half_open_permit);
+        router
+            .record_result(
+                "a",
+                "claude",
+                second_permit.used_half_open_permit,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(!router.is_api_key_auth_circuit_tripped("a", "claude").await);
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("a", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Closed
+        );
     }
 
     #[tokio::test]
@@ -1757,7 +2227,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn api_key_auth_errors_trip_breaker_and_disable_provider_after_three_failures() {
+    async fn api_key_auth_errors_trip_breaker_but_keep_provider_in_failover_queue() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().unwrap());
 
@@ -1774,8 +2244,12 @@ mod tests {
         config.enabled = true;
         config.auto_failover_enabled = true;
         config.circuit_failure_threshold = 8;
+        config.circuit_success_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
         config.circuit_min_requests = 100;
-        db.update_proxy_config_for_app(config).await.unwrap();
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
 
         let router = ProviderRouter::new(db.clone());
 
@@ -1813,7 +2287,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!db.is_in_failover_queue("claude", "auth-bad").unwrap());
+        assert!(
+            db.is_in_failover_queue("claude", "auth-bad").unwrap(),
+            "authentication failures must not silently remove a configured failover provider"
+        );
         assert_eq!(
             router
                 .get_circuit_breaker_stats("auth-bad", "claude")
@@ -1821,6 +2298,43 @@ mod tests {
                 .unwrap()
                 .state,
             crate::proxy::circuit_breaker::CircuitState::Open
+        );
+
+        assert!(matches!(
+            router.select_providers("claude").await,
+            Err(AppError::AllProvidersCircuitOpen)
+        ));
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .unwrap();
+        router
+            .update_app_configs("claude", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let recovered = router.select_providers("claude").await.unwrap();
+        assert_eq!(recovered[0].id, "auth-bad");
+        let permit = router.allow_provider_request("auth-bad", "claude").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        router
+            .record_result(
+                "auth-bad",
+                "claude",
+                permit.used_half_open_permit,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-bad", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Closed
         );
     }
 
@@ -1890,7 +2404,160 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_advances_failover_active_target_when_proxy_is_running() {
+    async fn api_key_auth_error_count_resets_after_non_auth_failure() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+
+        let provider = Provider::with_id(
+            "auth-reset-non-auth".to_string(),
+            "Auth Reset Non Auth".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("claude", &provider).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.circuit_failure_threshold = 20;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db);
+
+        for _ in 0..2 {
+            router
+                .record_result(
+                    "auth-reset-non-auth",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        router
+            .record_result(
+                "auth-reset-non-auth",
+                "claude",
+                false,
+                false,
+                Some("rate limit exceeded".to_string()),
+            )
+            .await
+            .unwrap();
+
+        for _ in 0..2 {
+            router
+                .record_result(
+                    "auth-reset-non-auth",
+                    "claude",
+                    false,
+                    false,
+                    Some("Invalid API Key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-reset-non-auth", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Closed,
+            "a different failure between authentication errors must restart the consecutive count"
+        );
+
+        router
+            .record_result(
+                "auth-reset-non-auth",
+                "claude",
+                false,
+                false,
+                Some("API Key is disabled".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-reset-non-auth", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Open
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auth_circuit_half_open_non_auth_failure_keeps_latch() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider = Provider::with_id(
+            "auth-half-open".to_string(),
+            "Auth Half Open".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("claude", &provider).unwrap();
+
+        let mut config = db.get_proxy_config_for_app("claude").await.unwrap();
+        config.circuit_failure_threshold = 20;
+        config.circuit_timeout_seconds = 0;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config).await.unwrap();
+
+        let router = ProviderRouter::new(db);
+        for _ in 0..3 {
+            router
+                .record_result(
+                    "auth-half-open",
+                    "claude",
+                    false,
+                    false,
+                    Some("invalid_api_key".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+
+        let permit = router
+            .allow_provider_request("auth-half-open", "claude")
+            .await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        router
+            .record_result(
+                "auth-half-open",
+                "claude",
+                permit.used_half_open_permit,
+                false,
+                Some("rate limit exceeded".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            router
+                .is_api_key_auth_circuit_tripped("auth-half-open", "claude")
+                .await
+        );
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-half-open", "claude")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Open
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_auth_circuit_keeps_failover_queue_and_active_target_when_proxy_is_running() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -1942,28 +2609,18 @@ mod tests {
 
         for _ in 0..3 {
             router
-                .record_result_with_disable_hook(
+                .record_result(
                     "a",
                     "claude",
                     false,
                     false,
                     Some("Invalid API Key".to_string()),
-                    {
-                        let state = &state;
-                        move |app_type, provider_id| async move {
-                            state
-                                .proxy_service
-                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
-                                .await
-                                .expect("reconcile after disable");
-                        }
-                    },
                 )
                 .await
                 .expect("record auth failure");
         }
 
-        assert!(!db.is_in_failover_queue("claude", "a").unwrap());
+        assert!(db.is_in_failover_queue("claude", "a").unwrap());
         let status = state
             .proxy_service
             .get_status()
@@ -1975,8 +2632,8 @@ mod tests {
             .find(|target| target.app_type == "claude")
             .expect("claude active target should remain");
         assert_eq!(
-            active.provider_id, "b",
-            "disabling queue head must immediately promote next failover target"
+            active.provider_id, "a",
+            "authentication circuit opening must preserve the configured active target until normal routing fails over"
         );
 
         if state.proxy_service.is_running().await {
@@ -1990,7 +2647,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_last_failover_provider_keeps_takeover_live_when_queue_becomes_empty() {
+    async fn api_key_auth_circuit_last_failover_provider_keeps_takeover_live() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -2053,31 +2710,18 @@ mod tests {
 
         for _ in 0..3 {
             router
-                .record_result_with_disable_hook(
+                .record_result(
                     "solo",
                     "claude",
                     false,
                     false,
                     Some("Invalid API Key".to_string()),
-                    {
-                        let state = &state;
-                        move |app_type, provider_id| async move {
-                            state
-                                .proxy_service
-                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
-                                .await
-                                .expect("reconcile after disable");
-                        }
-                    },
                 )
                 .await
                 .expect("record auth failure");
         }
 
-        assert!(
-            !db.is_in_failover_queue("claude", "solo").unwrap(),
-            "last provider should be removed from failover queue after auth disable"
-        );
+        assert!(db.is_in_failover_queue("claude", "solo").unwrap());
 
         let live: serde_json::Value =
             read_json_file(&get_claude_settings_path()).expect("read claude live");
@@ -2103,8 +2747,8 @@ mod tests {
             status
                 .active_targets
                 .iter()
-                .all(|target| target.app_type != "claude"),
-            "empty queue after auth disable should clear active target"
+                .any(|target| target.app_type == "claude" && target.provider_id == "solo"),
+            "authentication circuit opening must not rewrite the configured active target"
         );
 
         if state.proxy_service.is_running().await {
@@ -2118,8 +2762,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_last_codex_failover_provider_keeps_takeover_live_when_queue_becomes_empty(
-    ) {
+    async fn api_key_auth_circuit_last_codex_failover_provider_keeps_takeover_live() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -2186,31 +2829,18 @@ wire_api = "responses"
 
         for _ in 0..3 {
             router
-                .record_result_with_disable_hook(
+                .record_result(
                     "codex-solo",
                     "codex",
                     false,
                     false,
                     Some("Invalid API Key".to_string()),
-                    {
-                        let state = &state;
-                        move |app_type, provider_id| async move {
-                            state
-                                .proxy_service
-                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
-                                .await
-                                .expect("reconcile after disable");
-                        }
-                    },
                 )
                 .await
                 .expect("record auth failure");
         }
 
-        assert!(
-            !db.is_in_failover_queue("codex", "codex-solo").unwrap(),
-            "last Codex provider should be removed from failover queue after auth disable"
-        );
+        assert!(db.is_in_failover_queue("codex", "codex-solo").unwrap());
 
         let auth: Value = read_json_file(&get_codex_auth_path()).expect("read Codex auth live");
         assert_eq!(
@@ -2239,8 +2869,8 @@ wire_api = "responses"
             status
                 .active_targets
                 .iter()
-                .all(|target| target.app_type != "codex"),
-            "empty Codex queue after auth disable should clear active target"
+                .any(|target| target.app_type == "codex" && target.provider_id == "codex-solo"),
+            "authentication circuit opening must not rewrite the configured active target"
         );
 
         if state.proxy_service.is_running().await {
@@ -2254,8 +2884,7 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn api_key_disable_last_gemini_failover_provider_keeps_takeover_live_when_queue_becomes_empty(
-    ) {
+    async fn api_key_auth_circuit_last_gemini_failover_provider_keeps_takeover_live() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -2318,31 +2947,18 @@ wire_api = "responses"
 
         for _ in 0..3 {
             router
-                .record_result_with_disable_hook(
+                .record_result(
                     "gemini-solo",
                     "gemini",
                     false,
                     false,
                     Some("Invalid API Key".to_string()),
-                    {
-                        let state = &state;
-                        move |app_type, provider_id| async move {
-                            state
-                                .proxy_service
-                                .reconcile_failover_after_provider_removal(&provider_id, &app_type)
-                                .await
-                                .expect("reconcile after disable");
-                        }
-                    },
                 )
                 .await
                 .expect("record auth failure");
         }
 
-        assert!(
-            !db.is_in_failover_queue("gemini", "gemini-solo").unwrap(),
-            "last Gemini provider should be removed from failover queue after auth disable"
-        );
+        assert!(db.is_in_failover_queue("gemini", "gemini-solo").unwrap());
 
         let env = read_gemini_env().expect("read Gemini env live");
         assert_eq!(
@@ -2370,8 +2986,8 @@ wire_api = "responses"
             status
                 .active_targets
                 .iter()
-                .all(|target| target.app_type != "gemini"),
-            "empty Gemini queue after auth disable should clear active target"
+                .any(|target| target.app_type == "gemini" && target.provider_id == "gemini-solo"),
+            "authentication circuit opening must not rewrite the configured active target"
         );
 
         if state.proxy_service.is_running().await {
@@ -2826,7 +3442,68 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn single_provider_mode_stops_selecting_auth_disabled_current_provider() {
+    async fn single_provider_mode_keeps_generic_breaker_bypass() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let provider = Provider::with_id(
+            "generic-open".to_string(),
+            "Generic Open".to_string(),
+            json!({}),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", "generic-open")
+            .expect("set db current");
+        crate::settings::set_current_provider(&AppType::Codex, Some("generic-open"))
+            .expect("set local current");
+
+        let mut config = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("get proxy config");
+        config.enabled = true;
+        config.auto_failover_enabled = false;
+        config.circuit_failure_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
+        config.circuit_min_requests = 100;
+        db.update_proxy_config_for_app(config)
+            .await
+            .expect("save proxy config");
+
+        let router = ProviderRouter::new(db);
+        router
+            .record_result(
+                "generic-open",
+                "codex",
+                false,
+                false,
+                Some("connection reset".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("generic-open", "codex")
+                .await
+                .unwrap()
+                .state,
+            CircuitState::Open
+        );
+        assert!(
+            !router
+                .is_api_key_auth_circuit_tripped("generic-open", "codex")
+                .await
+        );
+        let selected = router.select_providers("codex").await.unwrap();
+        assert_eq!(selected[0].id, "generic-open");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn single_provider_auth_circuit_recovers_after_cooldown() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -2850,8 +3527,10 @@ wire_api = "responses"
         config.enabled = true;
         config.auto_failover_enabled = false;
         config.circuit_failure_threshold = 8;
+        config.circuit_success_threshold = 1;
+        config.circuit_timeout_seconds = 3600;
         config.circuit_min_requests = 100;
-        db.update_proxy_config_for_app(config)
+        db.update_proxy_config_for_app(config.clone())
             .await
             .expect("save proxy config");
 
@@ -2878,14 +3557,57 @@ wire_api = "responses"
             matches!(error, AppError::AllProvidersCircuitOpen),
             "expected current auth-disabled provider to be treated as unavailable, got {error:?}"
         );
+
+        config.circuit_timeout_seconds = 0;
+        db.update_proxy_config_for_app(config.clone())
+            .await
+            .expect("enable immediate recovery probe");
+        router
+            .update_app_configs("codex", CircuitBreakerConfig::from(&config))
+            .await;
+
+        let recovered = router
+            .select_providers("codex")
+            .await
+            .expect("cooled authentication circuit should be eligible for a probe");
+        assert_eq!(recovered[0].id, "auth-bad");
+        let permit = router.allow_provider_request("auth-bad", "codex").await;
+        assert!(permit.allowed);
+        assert!(permit.used_half_open_permit);
+        router
+            .record_result(
+                "auth-bad",
+                "codex",
+                permit.used_half_open_permit,
+                true,
+                None,
+            )
+            .await
+            .expect("successful probe should close the circuit");
+        assert_eq!(
+            router
+                .get_circuit_breaker_stats("auth-bad", "codex")
+                .await
+                .expect("breaker stats")
+                .state,
+            CircuitState::Closed
+        );
     }
 
     #[test]
     fn detects_api_key_auth_error_messages_case_insensitively() {
         assert!(is_api_key_auth_error(Some("Invalid API Key")));
         assert!(is_api_key_auth_error(Some(
+            r#"{"error":{"code":"invalid_api_key","message":"Incorrect API key provided"}}"#
+        )));
+        assert!(is_api_key_auth_error(Some("invalid x-api-key")));
+        assert!(is_api_key_auth_error(Some("API key has expired")));
+        assert!(is_api_key_auth_error(Some("API key has been revoked")));
+        assert!(is_api_key_auth_error(Some(
             r#"{"error":{"message":"api key is disabled"}}"#
         )));
+        assert!(!is_api_key_auth_error(Some("unauthorized model access")));
+        assert!(!is_api_key_auth_error(Some("permission denied")));
         assert!(!is_api_key_auth_error(Some("rate limit exceeded")));
         assert!(!is_api_key_auth_error(None));
     }

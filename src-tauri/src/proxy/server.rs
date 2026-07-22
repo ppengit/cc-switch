@@ -541,6 +541,17 @@ impl ProxyServer {
             .await
     }
 
+    /// 批量获取指定应用的熔断器统计。
+    pub async fn get_circuit_breaker_stats_for_app(
+        &self,
+        app_type: &str,
+    ) -> std::collections::HashMap<String, super::circuit_breaker::CircuitBreakerStats> {
+        self.state
+            .provider_router
+            .get_circuit_breaker_stats_for_app(app_type)
+            .await
+    }
+
     #[cfg(test)]
     pub async fn record_provider_result_for_test(
         &self,

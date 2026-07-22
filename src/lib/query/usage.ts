@@ -13,6 +13,7 @@ const DEFAULT_REFETCH_INTERVAL_MS = 30000;
 type UsageQueryOptions = {
   refetchInterval?: number | false;
   refetchIntervalInBackground?: boolean;
+  enabled?: boolean;
 };
 
 type RequestLogsQueryArgs = {
@@ -191,6 +192,7 @@ export function useUsageSummary(
         effective.model,
       );
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -218,6 +220,7 @@ export function useUsageSummaryByApp(
         filters?.model,
       );
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -247,6 +250,7 @@ export function useUsageTrends(
         effective.model,
       );
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -276,6 +280,7 @@ export function useProviderStats(
         effective.model,
       );
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -305,6 +310,7 @@ export function useModelStats(
         effective.model,
       );
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -334,6 +340,7 @@ export function useRequestLogs({
       const effectiveFilters = { ...filters, ...resolveUsageRange(range) };
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize);
     },
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS, // 每30秒自动刷新
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -360,6 +367,7 @@ export function useProxyRawLogs(
         limit,
         appType: effectiveAppType,
       }),
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 2000,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });

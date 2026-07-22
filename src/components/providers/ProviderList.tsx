@@ -1,5 +1,6 @@
 import { CSS } from "@dnd-kit/utilities";
 import { DndContext, closestCenter } from "@dnd-kit/core";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   SortableContext,
   useSortable,
@@ -46,7 +47,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { Provider, SessionMeta } from "@/types";
-import type { ProviderAdmissionRetryEvent } from "@/types/proxy";
+import type {
+  CircuitBreakerStats,
+  ProviderAdmissionRetryEvent,
+  ProviderHealth,
+} from "@/types/proxy";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { sessionsApi } from "@/lib/api/sessions";
@@ -77,8 +82,7 @@ import {
   useFailoverQueue,
   useAddToFailoverQueue,
   useRemoveFromFailoverQueue,
-  useProviderHealth,
-  useCircuitBreakerStats,
+  useProviderRuntimeStatuses,
 } from "@/lib/query/failover";
 import {
   useCurrentOmoProviderId,
@@ -223,6 +227,9 @@ interface AppConfigFileEntry {
 const URL_WITHOUT_TRAILING_SLASH = /\/+$/;
 const URL_V1_SUFFIX = /\/v1$/i;
 const URL_V1_SEGMENT = /(\/v1)(?=\/|$|[?#])/i;
+const PROVIDER_LIST_VIRTUALIZATION_THRESHOLD = 30;
+const PROVIDER_TABLE_ROW_HEIGHT = 48;
+const PROVIDER_TABLE_COLUMN_COUNT = 7;
 
 const stripTrailingSlash = (value?: string | null) =>
   (value || "").trim().replace(URL_WITHOUT_TRAILING_SLASH, "");
@@ -1329,6 +1336,10 @@ export function ProviderList({
     isProxyTakeover === true && isAutoFailoverEnabled === undefined;
   const isTakeoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled !== true;
+  const { data: providerRuntimeStatuses } = useProviderRuntimeStatuses(
+    appId,
+    Object.keys(providers).length > 0,
+  );
 
   const isAdditiveMode =
     appId === "opencode" || appId === "openclaw" || appId === "hermes";
@@ -1374,6 +1385,7 @@ export function ProviderList({
   const [selectedProviderIds, setSelectedProviderIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [isDraggingProviderRow, setIsDraggingProviderRow] = useState(false);
   const [statusSortDirection, setStatusSortDirection] =
     useState<StatusSortDirection>(null);
   const [modelSortDirection, setModelSortDirection] =
@@ -2002,6 +2014,39 @@ export function ProviderList({
     });
   }, [filteredRows, providerRowViews, statusSortDirection]);
 
+  // Provider 行包含多个交互控件和状态展示。超过阈值时只挂载视口附近的行；
+  // 拖拽期间临时恢复完整列表，确保 dnd-kit 仍能测量并命中任意目标行。
+  const shouldVirtualizeProviderRows =
+    displayRows.length > PROVIDER_LIST_VIRTUALIZATION_THRESHOLD &&
+    !isDraggingProviderRow;
+  const providerVirtualizer = useVirtualizer({
+    count: shouldVirtualizeProviderRows ? displayRows.length : 0,
+    getScrollElement: () => listScrollRef.current,
+    estimateSize: () => PROVIDER_TABLE_ROW_HEIGHT,
+    overscan: 8,
+    enabled: shouldVirtualizeProviderRows,
+    initialRect: { width: 1350, height: 600 },
+    getItemKey: (index) => displayRows[index]?.provider.id ?? index,
+  });
+  const virtualProviderRows = shouldVirtualizeProviderRows
+    ? providerVirtualizer.getVirtualItems()
+    : [];
+  const providerRowsToRender = shouldVirtualizeProviderRows
+    ? virtualProviderRows.map((item) => ({
+        row: displayRows[item.index],
+        rowIndex: item.index,
+      }))
+    : displayRows.map((row, rowIndex) => ({ row, rowIndex }));
+  const virtualPaddingTop =
+    shouldVirtualizeProviderRows && virtualProviderRows.length > 0
+      ? virtualProviderRows[0].start
+      : 0;
+  const virtualPaddingBottom =
+    shouldVirtualizeProviderRows && virtualProviderRows.length > 0
+      ? providerVirtualizer.getTotalSize() -
+        virtualProviderRows[virtualProviderRows.length - 1].end
+      : 0;
+
   const searchMatches = useMemo<SearchMatchInfo[]>(() => {
     if (!deferredSearchTerm) return [];
 
@@ -2052,6 +2097,19 @@ export function ProviderList({
 
   const scrollToProviderRow = useCallback(
     (providerId: string, behavior: ScrollBehavior = "smooth") => {
+      if (shouldVirtualizeProviderRows) {
+        const rowIndex = displayRows.findIndex(
+          (row) => row.provider.id === providerId,
+        );
+        if (rowIndex >= 0) {
+          providerVirtualizer.scrollToIndex(rowIndex, {
+            align: "center",
+            behavior,
+          });
+          return;
+        }
+      }
+
       const node = rowRefs.current[providerId];
       const container = listScrollRef.current;
       if (!node) return;
@@ -2083,7 +2141,7 @@ export function ProviderList({
 
       container.scrollTop = scrollTop;
     },
-    [],
+    [displayRows, providerVirtualizer, shouldVirtualizeProviderRows],
   );
 
   const scrollByPage = useCallback(
@@ -3101,8 +3159,19 @@ export function ProviderList({
   };
 
   const safeHandleDragEnd = (event: any) => {
+    setIsDraggingProviderRow(false);
     if (!canDragRows) return;
     void handleDragEnd(event);
+  };
+
+  const handleProviderDragStart = () => {
+    if (canDragRows) {
+      setIsDraggingProviderRow(true);
+    }
+  };
+
+  const handleProviderDragCancel = () => {
+    setIsDraggingProviderRow(false);
   };
 
   const claudeDesktopStatusMessages = useMemo(() => {
@@ -3713,6 +3782,8 @@ export function ProviderList({
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
+              onDragStart={handleProviderDragStart}
+              onDragCancel={handleProviderDragCancel}
               onDragEnd={safeHandleDragEnd}
             >
               <SortableContext
@@ -3722,6 +3793,7 @@ export function ProviderList({
                 <Table
                   ref={providerTableRef}
                   className="min-w-[1350px] table-fixed text-[13px]"
+                  aria-rowcount={displayRows.length + 1}
                 >
                   <colgroup>
                     <col className="w-[48px]" />
@@ -3733,7 +3805,10 @@ export function ProviderList({
                     <col className="w-[224px]" />
                   </colgroup>
                   <TableHeader className="sticky top-0 z-20 bg-muted">
-                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                    <TableRow
+                      aria-rowindex={1}
+                      className="bg-muted/40 hover:bg-muted/40"
+                    >
                       <TableHead className="h-9 bg-muted px-2 shadow-[inset_0_-1px_0_hsl(var(--border))]">
                         <Checkbox
                           checked={
@@ -3806,11 +3881,23 @@ export function ProviderList({
                   </TableHeader>
 
                   <TableBody>
-                    {displayRows.map((row) => (
+                    {virtualPaddingTop > 0 ? (
+                      <TableRow
+                        aria-hidden="true"
+                        className="border-0 hover:bg-transparent"
+                      >
+                        <TableCell
+                          colSpan={PROVIDER_TABLE_COLUMN_COUNT}
+                          className="p-0"
+                          style={{ height: virtualPaddingTop }}
+                        />
+                      </TableRow>
+                    ) : null}
+                    {providerRowsToRender.map(({ row, rowIndex }) => (
                       <SortableProviderTableRow
                         key={row.provider.id}
                         row={row}
-                        appId={appId}
+                        ariaRowIndex={rowIndex + 2}
                         interactionMode={interactionMode}
                         showFailoverHealth={
                           isFailoverModeActive && Boolean(row.failoverPriority)
@@ -3875,9 +3962,29 @@ export function ProviderList({
                             ? () => onSetAsDefault(row.provider)
                             : undefined
                         }
+                        health={
+                          providerRuntimeStatuses?.health[row.provider.id]
+                        }
+                        circuitStats={
+                          providerRuntimeStatuses?.circuitBreakers[
+                            row.provider.id
+                          ]
+                        }
                         t={t}
                       />
                     ))}
+                    {virtualPaddingBottom > 0 ? (
+                      <TableRow
+                        aria-hidden="true"
+                        className="border-0 hover:bg-transparent"
+                      >
+                        <TableCell
+                          colSpan={PROVIDER_TABLE_COLUMN_COUNT}
+                          className="p-0"
+                          style={{ height: virtualPaddingBottom }}
+                        />
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
               </SortableContext>
@@ -4282,7 +4389,7 @@ export function ProviderList({
 
 interface SortableProviderTableRowProps {
   row: ProviderRowView;
-  appId: AppId;
+  ariaRowIndex: number;
   interactionMode: ProviderInteractionMode;
   showFailoverHealth: boolean;
   canDragRows: boolean;
@@ -4307,12 +4414,14 @@ interface SortableProviderTableRowProps {
   canSetDefault: boolean;
   isDefaultModel: boolean;
   onSetAsDefault?: () => void;
+  health?: ProviderHealth;
+  circuitStats?: CircuitBreakerStats;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
 
 function SortableProviderTableRow({
   row,
-  appId,
+  ariaRowIndex,
   interactionMode,
   showFailoverHealth,
   canDragRows,
@@ -4337,10 +4446,10 @@ function SortableProviderTableRow({
   canSetDefault,
   isDefaultModel,
   onSetAsDefault,
+  health,
+  circuitStats,
   t,
 }: SortableProviderTableRowProps) {
-  const { data: health } = useProviderHealth(row.provider.id, appId);
-  const { data: circuitStats } = useCircuitBreakerStats(row.provider.id, appId);
   const {
     setNodeRef,
     attributes,
@@ -4511,10 +4620,9 @@ function SortableProviderTableRow({
   ].filter(Boolean) as string[];
   const hasStatusTooltip = healthDetailLines.length > 0;
 
-  // 被动禁用（认证错误熔断等）的供应商会被移出故障转移队列，showFailoverHealth
-  // 变为 false，熔断/降级 badge 不再显示。但后端保留了 provider_health.last_error，
-  // 这里在没有其它健康 badge 时兜底显示一个"异常"标记，让用户在列表上直接看到问题，
-  // 具体错误文本仍通过状态列 tooltip 展示。
+  // 普通健康错误可能尚未达到熔断阈值；此时没有熔断/降级 badge，仍用“异常”
+  // 兜底展示持久化的 last_error。认证错误熔断会继续保留在故障转移队列中，
+  // 因而仍走上面的熔断状态展示并能在冷却后自动探测恢复。
   const hasPersistedError =
     !isProcessing &&
     !isCircuitOpen &&
@@ -4550,6 +4658,7 @@ function SortableProviderTableRow({
 
   return (
     <TableRow
+      aria-rowindex={ariaRowIndex}
       ref={(node) => {
         setNodeRef(node);
         rowRef(node);

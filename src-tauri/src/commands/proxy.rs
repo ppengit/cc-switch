@@ -10,6 +10,8 @@ use crate::settings::{
     ProxyActivityFloatingMode, ProxyActivityFloatingPosition, ProxyActivityFloatingSize,
 };
 use crate::store::AppState;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 fn sanitize_app_proxy_config(mut config: AppProxyConfig) -> AppProxyConfig {
@@ -450,6 +452,39 @@ pub async fn get_provider_health(
     db.get_provider_health(&provider_id, &app_type)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Provider 列表所需的批量运行状态。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRuntimeStatuses {
+    pub health: HashMap<String, ProviderHealth>,
+    pub circuit_breakers: HashMap<String, CircuitBreakerStats>,
+}
+
+/// 一次性获取指定应用全部 Provider 的健康状态与熔断器统计。
+#[tauri::command]
+pub async fn get_provider_runtime_statuses(
+    state: tauri::State<'_, AppState>,
+    app_type: String,
+) -> Result<ProviderRuntimeStatuses, String> {
+    let health = state
+        .db
+        .list_provider_health_for_app(&app_type)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|item| (item.provider_id.clone(), item))
+        .collect();
+    let circuit_breakers = state
+        .proxy_service
+        .get_circuit_breaker_stats_for_app(&app_type)
+        .await;
+
+    Ok(ProviderRuntimeStatuses {
+        health,
+        circuit_breakers,
+    })
 }
 
 /// 重置熔断器
