@@ -262,7 +262,9 @@ export function useSessionRoutingSnapshot(appType: string, enabled = true) {
     queryKey: ["sessionRoutingSnapshot", appType],
     queryFn: () => proxyApi.getSessionRoutingSnapshot(appType),
     enabled:
-      enabled && !!appType && (appType === "claude" || appType === "codex"),
+      enabled &&
+      !!appType &&
+      (appType === "claude" || appType === "codex" || appType === "grokbuild"),
     refetchInterval: 2500,
   });
 }

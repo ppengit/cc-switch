@@ -206,10 +206,13 @@ export const handlers = [
     return success(true);
   }),
 
-  http.post(`${TAURI_ENDPOINT}/import_prompt_from_file`, async ({ request }) => {
-    const { app } = await withJson<{ app: AppId }>(request);
-    return success(importPromptFromFileState(app));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/import_prompt_from_file`,
+    async ({ request }) => {
+      const { app } = await withJson<{ app: AppId }>(request);
+      return success(importPromptFromFileState(app));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/get_providers`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
@@ -253,9 +256,7 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/scan_openclaw_config_health`, () => success([])),
 
-  http.post(`${TAURI_ENDPOINT}/get_openclaw_model_catalog`, () =>
-    success({}),
-  ),
+  http.post(`${TAURI_ENDPOINT}/get_openclaw_model_catalog`, () => success({})),
 
   http.post(`${TAURI_ENDPOINT}/set_openclaw_model_catalog`, () =>
     success({ warnings: [] }),
@@ -280,7 +281,9 @@ export const handlers = [
   ),
 
   http.post(`${TAURI_ENDPOINT}/set_openclaw_tools`, async ({ request }) => {
-    const { tools } = await withJson<{ tools: Record<string, unknown> }>(request);
+    const { tools } = await withJson<{ tools: Record<string, unknown> }>(
+      request,
+    );
     setOpenClawToolsConfigState(tools);
     return success({ warnings: [] });
   }),
@@ -289,11 +292,16 @@ export const handlers = [
     success(getOpenClawAgentsDefaultsState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/set_openclaw_agents_defaults`, async ({ request }) => {
-    const { defaults } = await withJson<{ defaults: Record<string, unknown> }>(request);
-    setOpenClawAgentsDefaultsState(defaults as never);
-    return success({ warnings: [] });
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/set_openclaw_agents_defaults`,
+    async ({ request }) => {
+      const { defaults } = await withJson<{
+        defaults: Record<string, unknown>;
+      }>(request);
+      setOpenClawAgentsDefaultsState(defaults as never);
+      return success({ warnings: [] });
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/get_hermes_model_config`, () =>
     success({ provider: null }),
@@ -432,8 +440,9 @@ export const handlers = [
     return success(true);
   }),
 
-  http.post(`${TAURI_ENDPOINT}/import_claude_desktop_providers_from_claude`, () =>
-    success(0),
+  http.post(
+    `${TAURI_ENDPOINT}/import_claude_desktop_providers_from_claude`,
+    () => success(0),
   ),
   http.post(`${TAURI_ENDPOINT}/import_opencode_providers_from_live`, () =>
     success(0),
@@ -516,57 +525,69 @@ export const handlers = [
     );
   }),
 
-  http.post(`${TAURI_ENDPOINT}/set_session_title_mapping`, async ({ request }) => {
-    const { appType, sessionId, sourcePath, customTitle } = await withJson<{
-      appType: string;
-      sessionId: string;
-      sourcePath?: string | null;
-      customTitle: string;
-    }>(request);
-    return success(
-      setSessionTitleMappingState({
-        appType,
-        sessionId,
-        sourcePath,
-        customTitle,
-      }),
-    );
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/set_session_title_mapping`,
+    async ({ request }) => {
+      const { appType, sessionId, sourcePath, customTitle } = await withJson<{
+        appType: string;
+        sessionId: string;
+        sourcePath?: string | null;
+        customTitle: string;
+      }>(request);
+      return success(
+        setSessionTitleMappingState({
+          appType,
+          sessionId,
+          sourcePath,
+          customTitle,
+        }),
+      );
+    },
+  ),
 
-  http.post(`${TAURI_ENDPOINT}/clear_session_title_mapping`, async ({ request }) => {
-    const { appType, sessionId, sourcePath } = await withJson<{
-      appType: string;
-      sessionId: string;
-      sourcePath?: string | null;
-    }>(request);
-    return success(
-      clearSessionTitleMappingState({
-        appType,
-        sessionId,
-        sourcePath,
-      }),
-    );
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/clear_session_title_mapping`,
+    async ({ request }) => {
+      const { appType, sessionId, sourcePath } = await withJson<{
+        appType: string;
+        sessionId: string;
+        sourcePath?: string | null;
+      }>(request);
+      return success(
+        clearSessionTitleMappingState({
+          appType,
+          sessionId,
+          sourcePath,
+        }),
+      );
+    },
+  ),
 
-  http.post(`${TAURI_ENDPOINT}/launch_session_terminal`, async ({ request }) => {
-    const { command, cwd, customConfig } = await withJson<{
-      command: string;
-      cwd?: string | null;
-      customConfig?: string | null;
-    }>(request);
-    return success(
-      recordSessionTerminalLaunch({
-        command,
-        cwd,
-        customConfig,
-      }),
-    );
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/launch_session_terminal`,
+    async ({ request }) => {
+      const { command, cwd, customConfig } = await withJson<{
+        command: string;
+        cwd?: string | null;
+        customConfig?: string | null;
+      }>(request);
+      return success(
+        recordSessionTerminalLaunch({
+          command,
+          cwd,
+          customConfig,
+        }),
+      );
+    },
+  ),
 
-  http.post(`${TAURI_ENDPOINT}/export_session_markdown`, async ({ request }) => {
-    const { session } = await withJson<{ session: SessionMeta }>(request);
-    return success(recordSessionMarkdownExport(session));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/export_session_markdown`,
+    async ({ request }) => {
+      const { session } = await withJson<{ session: SessionMeta }>(request);
+      return success(recordSessionMarkdownExport(session));
+    },
+  ),
 
   // MCP APIs
   http.post(`${TAURI_ENDPOINT}/get_mcp_config`, async ({ request }) => {
@@ -652,14 +673,17 @@ export const handlers = [
     return success(saveLogConfigState(config));
   }),
 
-  http.post(`${TAURI_ENDPOINT}/webdav_sync_save_settings`, async ({ request }) => {
-    const { settings, passwordTouched = false } = await withJson<{
-      settings: Parameters<typeof recordWebdavSaveSettings>[0];
-      passwordTouched?: boolean;
-    }>(request);
-    recordWebdavSaveSettings(settings, passwordTouched);
-    return success({ success: true });
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/webdav_sync_save_settings`,
+    async ({ request }) => {
+      const { settings, passwordTouched = false } = await withJson<{
+        settings: Parameters<typeof recordWebdavSaveSettings>[0];
+        passwordTouched?: boolean;
+      }>(request);
+      recordWebdavSaveSettings(settings, passwordTouched);
+      return success({ success: true });
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/webdav_test_connection`, async ({ request }) => {
     const { settings, preserveEmptyPassword = true } = await withJson<{
@@ -724,12 +748,15 @@ export const handlers = [
     success(getUnmanagedSkillsState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/import_skills_from_apps`, async ({ request }) => {
-    const { imports = [] } = await withJson<{
-      imports?: Parameters<typeof importSkillsFromAppsState>[0];
-    }>(request);
-    return success(importSkillsFromAppsState(imports));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/import_skills_from_apps`,
+    async ({ request }) => {
+      const { imports = [] } = await withJson<{
+        imports?: Parameters<typeof importSkillsFromAppsState>[0];
+      }>(request);
+      return success(importSkillsFromAppsState(imports));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/discover_available_skills`, () =>
     success(getDiscoverableSkillsState()),
@@ -759,10 +786,13 @@ export const handlers = [
     return success(installSkillFromDiscoveryState(skill, currentApp));
   }),
 
-  http.post(`${TAURI_ENDPOINT}/uninstall_skill_unified`, async ({ request }) => {
-    const { id } = await withJson<{ id: string }>(request);
-    return success(uninstallSkillState(id));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/uninstall_skill_unified`,
+    async ({ request }) => {
+      const { id } = await withJson<{ id: string }>(request);
+      return success(uninstallSkillState(id));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/get_skill_repos`, () =>
     success(getSkillReposState()),
@@ -788,16 +818,23 @@ export const handlers = [
     success("/mock/skills.zip"),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/install_skills_from_zip`, async ({ request }) => {
-    const { filePath, currentApp } = await withJson<{
-      filePath: string;
-      currentApp: AppId;
-    }>(request);
-    return success(installSkillsFromZipState(filePath, currentApp));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/install_skills_from_zip`,
+    async ({ request }) => {
+      const { filePath, currentApp } = await withJson<{
+        filePath: string;
+        currentApp: AppId;
+      }>(request);
+      return success(installSkillsFromZipState(filePath, currentApp));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/search_skills_sh`, async ({ request }) => {
-    const { query = "", limit = 20, offset = 0 } = await withJson<{
+    const {
+      query = "",
+      limit = 20,
+      offset = 0,
+    } = await withJson<{
       query?: string;
       limit?: number;
       offset?: number;
@@ -1002,17 +1039,34 @@ export const handlers = [
     success(syncCurrentProvidersLiveState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/read_live_provider_settings`, async ({ request }) => {
-    const { app } = await withJson<{ app: "claude" | "codex" | "gemini" }>(
-      request,
-    );
-    return success(getSwitchLiveSettings(app));
-  }),
+  http.post(`${TAURI_ENDPOINT}/list_profiles`, () =>
+    success({
+      profiles: [],
+      currentIds: {
+        claude: null,
+        claudeDesktop: null,
+        codex: null,
+      },
+    }),
+  ),
 
-  http.post(`${TAURI_ENDPOINT}/get_app_config_template`, async ({ request }) => {
-    const { app } = await withJson<{ app: AppId }>(request);
-    return success(getAppConfigTemplate(app));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/read_live_provider_settings`,
+    async ({ request }) => {
+      const { app } = await withJson<{
+        app: "claude" | "codex" | "gemini" | "grokbuild";
+      }>(request);
+      return success(getSwitchLiveSettings(app));
+    },
+  ),
+
+  http.post(
+    `${TAURI_ENDPOINT}/get_app_config_template`,
+    async ({ request }) => {
+      const { app } = await withJson<{ app: AppId }>(request);
+      return success(getAppConfigTemplate(app));
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/list_app_config_files`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
@@ -1042,14 +1096,17 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/write_app_config_files`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/import_mcp_from_app_live`, () => success(0)),
 
-  http.post(`${TAURI_ENDPOINT}/set_app_config_template`, async ({ request }) => {
-    const { app, files = [] } = await withJson<{
-      app: AppId;
-      files?: { key: string; label: string; content: string }[];
-    }>(request);
-    setAppConfigTemplateState(app, files);
-    return success(true);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/set_app_config_template`,
+    async ({ request }) => {
+      const { app, files = [] } = await withJson<{
+        app: AppId;
+        files?: { key: string; label: string; content: string }[];
+      }>(request);
+      setAppConfigTemplateState(app, files);
+      return success(true);
+    },
+  ),
 
   http.post(
     `${TAURI_ENDPOINT}/get_provider_default_template`,
@@ -1124,16 +1181,22 @@ export const handlers = [
     success(getGlobalProxyConfigState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/update_global_proxy_config`, async ({ request }) => {
-    const { config } = await withJson<{ config: GlobalProxyConfig }>(request);
-    setGlobalProxyConfigState(config);
-    return success(true);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/update_global_proxy_config`,
+    async ({ request }) => {
+      const { config } = await withJson<{ config: GlobalProxyConfig }>(request);
+      setGlobalProxyConfigState(config);
+      return success(true);
+    },
+  ),
 
-  http.post(`${TAURI_ENDPOINT}/get_proxy_config_for_app`, async ({ request }) => {
-    const { appType } = await withJson<{ appType: AppId }>(request);
-    return success(getAppProxyConfigState(appType));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_proxy_config_for_app`,
+    async ({ request }) => {
+      const { appType } = await withJson<{ appType: AppId }>(request);
+      return success(getAppProxyConfigState(appType));
+    },
+  ),
 
   http.post(
     `${TAURI_ENDPOINT}/update_proxy_config_for_app`,
@@ -1176,11 +1239,16 @@ export const handlers = [
     success(getStreamCheckConfigState()),
   ),
 
-  http.post(`${TAURI_ENDPOINT}/save_stream_check_config`, async ({ request }) => {
-    const { config } = await withJson<{ config: ReturnType<typeof getStreamCheckConfigState> }>(request);
-    setStreamCheckConfigState(config);
-    return success(true);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/save_stream_check_config`,
+    async ({ request }) => {
+      const { config } = await withJson<{
+        config: ReturnType<typeof getStreamCheckConfigState>;
+      }>(request);
+      setStreamCheckConfigState(config);
+      return success(true);
+    },
+  ),
 
   // Failover / circuit breaker defaults
   http.post(`${TAURI_ENDPOINT}/get_failover_queue`, async ({ request }) => {
@@ -1204,28 +1272,37 @@ export const handlers = [
     }
     return success(true);
   }),
-  http.post(`${TAURI_ENDPOINT}/remove_from_failover_queue`, async ({ request }) => {
-    const { appType, providerId } = await withJson<{
-      appType: AppId;
-      providerId: string;
-    }>(request);
-    removeFromFailoverQueueState(appType, providerId);
-    return success(true);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/remove_from_failover_queue`,
+    async ({ request }) => {
+      const { appType, providerId } = await withJson<{
+        appType: AppId;
+        providerId: string;
+      }>(request);
+      removeFromFailoverQueueState(appType, providerId);
+      return success(true);
+    },
+  ),
   http.post(`${TAURI_ENDPOINT}/reorder_failover_queue`, () => success(true)),
   http.post(`${TAURI_ENDPOINT}/set_failover_item_enabled`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/get_auto_failover_enabled`, async ({ request }) => {
-    const { appType } = await withJson<{ appType: AppId }>(request);
-    return success(getAutoFailoverEnabled(appType));
-  }),
-  http.post(`${TAURI_ENDPOINT}/set_auto_failover_enabled`, async ({ request }) => {
-    const { appType, enabled } = await withJson<{
-      appType: AppId;
-      enabled: boolean;
-    }>(request);
-    setAutoFailoverEnabledState(appType, enabled);
-    return success(true);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_auto_failover_enabled`,
+    async ({ request }) => {
+      const { appType } = await withJson<{ appType: AppId }>(request);
+      return success(getAutoFailoverEnabled(appType));
+    },
+  ),
+  http.post(
+    `${TAURI_ENDPOINT}/set_auto_failover_enabled`,
+    async ({ request }) => {
+      const { appType, enabled } = await withJson<{
+        appType: AppId;
+        enabled: boolean;
+      }>(request);
+      setAutoFailoverEnabledState(appType, enabled);
+      return success(true);
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_config`, () =>
     success({
@@ -1247,13 +1324,16 @@ export const handlers = [
     return success(getProviderHealthState(appType, providerId));
   }),
   http.post(`${TAURI_ENDPOINT}/reset_circuit_breaker`, () => success(true)),
-  http.post(`${TAURI_ENDPOINT}/get_circuit_breaker_stats`, async ({ request }) => {
-    const { providerId, appType } = await withJson<{
-      providerId: string;
-      appType: AppId;
-    }>(request);
-    return success(getCircuitBreakerStatsState(appType, providerId));
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/get_circuit_breaker_stats`,
+    async ({ request }) => {
+      const { providerId, appType } = await withJson<{
+        providerId: string;
+        appType: AppId;
+      }>(request);
+      return success(getCircuitBreakerStatsState(appType, providerId));
+    },
+  ),
   http.post(`${TAURI_ENDPOINT}/testUsageScript`, async ({ request }) => {
     const {
       providerId,
@@ -1416,14 +1496,17 @@ export const handlers = [
     return success(getManagedAuthStatus(authProvider).accounts);
   }),
 
-  http.post(`${TAURI_ENDPOINT}/auth_set_default_account`, async ({ request }) => {
-    const { authProvider, accountId } = await withJson<{
-      authProvider: "github_copilot" | "codex_oauth";
-      accountId: string;
-    }>(request);
-    setManagedAuthDefaultAccountState(authProvider, accountId);
-    return success(null);
-  }),
+  http.post(
+    `${TAURI_ENDPOINT}/auth_set_default_account`,
+    async ({ request }) => {
+      const { authProvider, accountId } = await withJson<{
+        authProvider: "github_copilot" | "codex_oauth";
+        accountId: string;
+      }>(request);
+      setManagedAuthDefaultAccountState(authProvider, accountId);
+      return success(null);
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/auth_remove_account`, async ({ request }) => {
     const { authProvider, accountId } = await withJson<{

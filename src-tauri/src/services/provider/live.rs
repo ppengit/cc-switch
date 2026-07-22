@@ -1026,8 +1026,7 @@ pub(crate) fn build_proxy_takeover_settings(
         AppType::GrokBuild => {
             let template = get_template_content_by_key(db, app_type, "config");
             // Grok clients talk to the local proxy under /grokbuild/v1 (Responses-compatible).
-            let proxy_grok_base_url =
-                format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
+            let proxy_grok_base_url = format!("{}/grokbuild/v1", proxy_url.trim_end_matches('/'));
             let mut config_text = render_access_template(
                 &template,
                 &proxy_grok_base_url,
@@ -2166,7 +2165,7 @@ pub fn should_import_default_config_on_startup(
         return Ok(false);
     }
 
-    if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
+    if app_type.supports_proxy_takeover()
         && futures::executor::block_on(
             state
                 .proxy_service
@@ -3490,6 +3489,64 @@ wire_api = "responses"
             !should_import_default_config_on_startup(&state, &AppType::Codex)
                 .expect("evaluate startup import guard"),
             "startup live import must skip Codex while takeover/failover recovery state is still active"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn should_import_default_config_on_startup_skips_grok_takeover_live_recovery_state() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = std::sync::Arc::new(Database::memory().expect("create memory db"));
+        let state = crate::store::AppState::new(db.clone());
+
+        db.update_proxy_config(crate::proxy::types::ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("grokbuild")
+            .await
+            .expect("get Grok proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable Grok takeover");
+
+        let provider = Provider::with_id(
+            "grok-recovery".to_string(),
+            "Grok Recovery".to_string(),
+            json!({
+                "config": r#"[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "http://127.0.0.1:15721/grokbuild/v1"
+name = "Grok Recovery"
+api_key = "PROXY_MANAGED"
+api_backend = "responses"
+context_window = 500000
+"#
+            }),
+            None,
+        );
+        write_live_snapshot(&AppType::GrokBuild, &provider).expect("seed Grok takeover-like live");
+        db.save_live_backup(
+            "grokbuild",
+            &serde_json::to_string(&provider.settings_config).expect("serialize backup"),
+        )
+        .await
+        .expect("save Grok live backup");
+
+        assert!(
+            !should_import_default_config_on_startup(&state, &AppType::GrokBuild)
+                .expect("evaluate Grok startup import guard"),
+            "startup live import must skip Grok while takeover/recovery state is active"
         );
     }
 

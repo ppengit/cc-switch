@@ -60,7 +60,7 @@ type LiveProviderIdsByApp = Record<
   string[]
 >;
 type ProxyTakeoverStatusByApp = Record<AppId, boolean>;
-type SwitchModeAppId = "claude" | "codex" | "gemini";
+type SwitchModeAppId = "claude" | "codex" | "gemini" | "grokbuild";
 type AppProxyConfigByApp = Record<AppId, AppProxyConfig>;
 type FailoverQueueByApp = Record<AppId, FailoverQueueItem[]>;
 type SwitchLiveSettingsByApp = Record<SwitchModeAppId, unknown>;
@@ -329,6 +329,23 @@ const createProxyLiveSettings = (appType: SwitchModeAppId, port = 0) => {
       },
     };
   }
+  if (appType === "grokbuild") {
+    return {
+      config: [
+        "[models]",
+        'default = "grok-4.5"',
+        "",
+        '[model."grok-4.5"]',
+        'model = "grok-4.5"',
+        `base_url = "${baseUrl}/grokbuild/v1"`,
+        'name = "Grok 4.5"',
+        'api_key = "PROXY_MANAGED"',
+        'api_backend = "responses"',
+        "context_window = 500000",
+        "",
+      ].join("\n"),
+    };
+  }
   return {
     env: {
       ANTHROPIC_AUTH_TOKEN: "PROXY_MANAGED",
@@ -341,6 +358,7 @@ const createDefaultSwitchLiveSettings = (): SwitchLiveSettingsByApp => ({
   claude: createProxyLiveSettings("claude"),
   codex: createProxyLiveSettings("codex"),
   gemini: createProxyLiveSettings("gemini"),
+  grokbuild: createProxyLiveSettings("grokbuild"),
 });
 
 const createDefaultManagedAuthStatus = (): ManagedAuthStatusByProvider => ({
@@ -1959,7 +1977,10 @@ export const setProxyStatusState = (status: Partial<ProxyStatus>) => {
 };
 
 const isSwitchModeApp = (appType: AppId): appType is SwitchModeAppId =>
-  appType === "claude" || appType === "codex" || appType === "gemini";
+  appType === "claude" ||
+  appType === "codex" ||
+  appType === "gemini" ||
+  appType === "grokbuild";
 
 const syncProxyLiveTemplate = (appType: SwitchModeAppId) => {
   switchLiveSettingsByApp[appType] = createProxyLiveSettings(
@@ -2311,7 +2332,7 @@ export const setAutoFailoverEnabledState = (
 };
 
 export const syncCurrentProvidersLiveState = () => {
-  (["claude", "codex", "gemini"] as const).forEach((appType) => {
+  (["claude", "codex", "gemini", "grokbuild"] as const).forEach((appType) => {
     if (appProxyConfigsByApp[appType]?.enabled) {
       syncProxyLiveTemplate(appType);
       return;

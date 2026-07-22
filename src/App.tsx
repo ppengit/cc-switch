@@ -1564,7 +1564,9 @@ function App() {
                     settingsData?.enableFailoverToggle && (
                       <FailoverToggle activeApp={activeApp} />
                     )}
-                  {(activeApp === "claude" || activeApp === "codex") && (
+                  {(activeApp === "claude" ||
+                    activeApp === "codex" ||
+                    activeApp === "grokbuild") && (
                     <SessionRoutingToggle activeApp={activeApp} />
                   )}
                 </div>

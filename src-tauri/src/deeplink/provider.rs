@@ -609,8 +609,7 @@ fn protect_provider_template_credentials(
             // Preserve non-empty current values when the provider template did not
             // supply {baseUrl}/{apiKey} placeholders (or rendering left them empty).
             if let Some(current_config) = current_settings.get("config").and_then(Value::as_str) {
-                let template_config =
-                    template.get("config").and_then(Value::as_str).unwrap_or("");
+                let template_config = template.get("config").and_then(Value::as_str).unwrap_or("");
                 let mut config_text = rendered
                     .get("config")
                     .and_then(Value::as_str)

@@ -226,7 +226,7 @@ pub struct SessionIdResult {
 /// 2. `metadata.session_id` → 直接使用
 /// 3. 生成新 UUID
 ///
-/// ### Codex 请求
+/// ### Codex / Grok Build 请求
 /// 1. Headers: `session_id`、`x-session-id`、`x-codex-session-id` 或 `x-codex-window-id`
 /// 2. Body: `metadata.session_id`、`metadata.conversation_id`、`session_id` 等稳定字段
 /// 3. Body: `prompt_cache_key`
@@ -249,8 +249,8 @@ pub fn extract_session_id(
         }
     }
 
-    // Codex 请求特殊处理
-    if client_format == "codex" || client_format == "openai" {
+    // Codex / Grok Build 请求特殊处理；两者都使用 Responses 兼容的会话字段。
+    if client_format == "codex" || client_format == "grokbuild" || client_format == "openai" {
         if let Some(result) = extract_codex_session(headers, body) {
             return result;
         }
@@ -685,6 +685,22 @@ mod tests {
 
         assert_eq!(result.session_id, "codex-session-cache-123");
         assert_eq!(result.source, SessionIdSource::PromptCacheKey);
+        assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_extract_grokbuild_session_from_codex_window_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-codex-window-id", "grok-session-123:0".parse().unwrap());
+        let body = json!({
+            "model": "grok-4.5",
+            "input": "Hello"
+        });
+
+        let result = extract_session_id(&headers, &body, "grokbuild");
+
+        assert_eq!(result.session_id, "grok-session-123");
+        assert_eq!(result.source, SessionIdSource::Header);
         assert!(result.client_provided);
     }
 

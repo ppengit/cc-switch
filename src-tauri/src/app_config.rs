@@ -399,12 +399,21 @@ impl AppType {
 
     /// Check if this app uses additive mode
     ///
-    /// - Switch mode (false): Only the current provider is written to live config (Claude, Codex, Gemini)
+    /// - Switch mode (false): Only the current provider is written to live config (Claude, Codex, Gemini, Grok Build)
     /// - Additive mode (true): All providers are written to live config (OpenCode, OpenClaw, Hermes)
     pub fn is_additive_mode(&self) -> bool {
         matches!(
             self,
             AppType::OpenCode | AppType::OpenClaw | AppType::Hermes
+        )
+    }
+
+    /// Whether the app owns a switch-mode Live file that can be managed by the
+    /// local proxy takeover lifecycle.
+    pub fn supports_proxy_takeover(&self) -> bool {
+        matches!(
+            self,
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
         )
     }
 

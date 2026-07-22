@@ -116,4 +116,30 @@ describe("useProxyStatus", () => {
       { closeButton: true },
     );
   });
+
+  it("refreshes Grok Build takeover, proxy config, and provider caches after global restore", async () => {
+    const { wrapper, queryClient } = createWrapper();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useProxyStatus(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.stopWithRestore();
+    });
+
+    await waitFor(() =>
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["appProxyConfig", "grokbuild"],
+      }),
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["autoFailoverEnabled", "grokbuild"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["providers", "grokbuild"],
+    });
+  });
 });

@@ -17,11 +17,19 @@ export function SessionRoutingToggle({
   activeApp,
 }: SessionRoutingToggleProps) {
   const { t } = useTranslation();
-  const isSupported = activeApp === "claude" || activeApp === "codex";
+  const isSupported =
+    activeApp === "claude" ||
+    activeApp === "codex" ||
+    activeApp === "grokbuild";
   const { data: appProxyConfig, isLoading } = useAppProxyConfig(activeApp);
   const { data: isAutoFailoverEnabled = false } =
     useAutoFailoverEnabled(activeApp);
-  const appLabel = activeApp === "claude" ? "Claude" : "Codex";
+  const appLabel =
+    activeApp === "claude"
+      ? "Claude"
+      : activeApp === "codex"
+        ? "Codex"
+        : "Grok Build";
   const updateConfig = useUpdateAppProxyConfig({
     successMessage: (config) =>
       config.sessionRoutingEnabled

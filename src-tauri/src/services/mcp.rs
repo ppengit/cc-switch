@@ -148,7 +148,7 @@ impl McpService {
     }
 
     fn is_proxy_takeover_live_owned(state: &AppState, app: &AppType) -> bool {
-        if !matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        if !app.supports_proxy_takeover() {
             return false;
         }
 
@@ -180,9 +180,9 @@ impl McpService {
                 );
             }
 
-            // Claude MCP is stored in ~/.claude.json, separate from settings.json.
-            // Codex/Gemini receive MCP through the app access template while takeover is active.
-            if matches!(app, AppType::Claude) {
+            // Claude MCP is stored in ~/.claude.json, while Grok Build MCP is
+            // projected directly into config.toml after the provider rebuild.
+            if matches!(app, AppType::Claude | AppType::GrokBuild) {
                 Self::sync_all_for_app_from_db(state, app)?;
             }
 
@@ -214,7 +214,7 @@ impl McpService {
         // For proxy-capable apps we still run the MCP-only path afterwards: Claude MCP is a
         // separate file, and Codex/Gemini need direct live reconciliation when proxy takeover
         // short-circuits the normal provider sync flow.
-        if !provider_synced || matches!(app, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        if !provider_synced || app.supports_proxy_takeover() {
             Self::sync_all_for_app_from_db(state, app)?;
         }
 
@@ -352,6 +352,16 @@ impl McpService {
         Self::project_servers_to_app(state, &servers, app)
     }
 
+    /// Project DB-managed MCP entries without rebuilding the provider Live
+    /// configuration. Grok Build needs this immediately after a provider or
+    /// manual Live rewrite because its MCP entries live in the same TOML file.
+    pub(crate) fn sync_enabled_for_app_without_provider_rebuild(
+        state: &AppState,
+        app: &AppType,
+    ) -> Result<(), AppError> {
+        Self::sync_all_for_app_from_db(state, app)
+    }
+
     fn project_servers_to_app(
         state: &AppState,
         servers: &IndexMap<String, McpServer>,
@@ -368,7 +378,7 @@ impl McpService {
                 crate::services::provider::SyncCurrentProviderOptions { sync_mcp: false },
             )?;
 
-            if matches!(app, AppType::Claude) {
+            if matches!(app, AppType::Claude | AppType::GrokBuild) {
                 Self::sync_all_for_app_from_db(state, app)?;
             }
 
@@ -809,6 +819,60 @@ wire_api = "responses"
             McpService::is_proxy_takeover_live_owned(&state, &AppType::Codex),
             "a takeover placeholder must retain ownership when DB flags lag behind"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn grok_takeover_ownership_includes_pending_backup_or_placeholder() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        assert!(!McpService::is_proxy_takeover_live_owned(
+            &state,
+            &AppType::GrokBuild
+        ));
+
+        let direct_config = r#"[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://direct.example/v1"
+name = "Direct Grok"
+api_key = "direct-key"
+api_backend = "responses"
+context_window = 500000
+"#;
+        db.save_live_backup(
+            "grokbuild",
+            &serde_json::to_string(&json!({ "config": direct_config }))
+                .expect("serialize Grok backup"),
+        )
+        .await
+        .expect("save pending Grok backup");
+        assert!(McpService::is_proxy_takeover_live_owned(
+            &state,
+            &AppType::GrokBuild
+        ));
+
+        db.delete_live_backup("grokbuild")
+            .await
+            .expect("delete pending Grok backup");
+        std::fs::create_dir_all(crate::grok_config::get_grok_config_dir())
+            .expect("create Grok config dir");
+        let takeover_config = direct_config
+            .replace(
+                "https://direct.example/v1",
+                "http://127.0.0.1:15721/grokbuild/v1",
+            )
+            .replace("direct-key", "PROXY_MANAGED");
+        std::fs::write(crate::grok_config::get_grok_config_path(), takeover_config)
+            .expect("write Grok takeover placeholder");
+        assert!(McpService::is_proxy_takeover_live_owned(
+            &state,
+            &AppType::GrokBuild
+        ));
     }
 
     #[tokio::test]

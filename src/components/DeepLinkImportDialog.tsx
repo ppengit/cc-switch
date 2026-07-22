@@ -222,7 +222,7 @@ export function DeepLinkImportDialog() {
 
   // Parse config file content for display
   interface ParsedConfig {
-    type: "claude" | "codex" | "gemini";
+    type: "claude" | "codex" | "gemini" | "grokbuild";
     env?: Record<string, string>;
     auth?: Record<string, string>;
     tomlConfig?: string;
@@ -259,6 +259,13 @@ export function DeepLinkImportDialog() {
         return {
           type: "codex",
           auth: (parsed.auth as Record<string, string>) || {},
+          tomlConfig: (parsed.config as string) || "",
+          raw: parsed,
+        };
+      } else if (request.app === "grokbuild") {
+        // Grok Build 格式: { config: "TOML string" }
+        return {
+          type: "grokbuild",
           tomlConfig: (parsed.config as string) || "",
           raw: parsed,
         };
@@ -302,6 +309,9 @@ export function DeepLinkImportDialog() {
         return t("deeplink.confirmImport");
     }
   };
+
+  const appLabel =
+    request?.app === "grokbuild" ? "Grok Build" : request?.app || "";
 
   const getDescription = () => {
     if (!request) return t("deeplink.confirmImportDescription");
@@ -361,7 +371,7 @@ export function DeepLinkImportDialog() {
                       {t("deeplink.app")}
                     </div>
                     <div className="col-span-2 text-sm font-medium capitalize">
-                      {request.app}
+                      {appLabel}
                     </div>
                   </div>
 
@@ -544,9 +554,11 @@ export function DeepLinkImportDialog() {
                             )}
 
                           {/* Codex config */}
-                          {parsedConfig.type === "codex" && (
+                          {(parsedConfig.type === "codex" ||
+                            parsedConfig.type === "grokbuild") && (
                             <div className="space-y-2">
-                              {parsedConfig.auth &&
+                              {parsedConfig.type === "codex" &&
+                                parsedConfig.auth &&
                                 Object.keys(parsedConfig.auth).length > 0 && (
                                   <div className="space-y-1.5">
                                     <div className="text-xs text-muted-foreground">

@@ -245,6 +245,35 @@ describe("SettingsPage with real Proxy and Failover panels", () => {
     window.sessionStorage.clear();
   });
 
+  it("exposes Grok Build failover and session-routing controls", async () => {
+    const user = userEvent.setup();
+
+    await openProxySection(user);
+    await openFailoverSection(user);
+
+    const failoverGrokTab = screen.getByRole("tab", { name: "Grok Build" });
+    await user.click(failoverGrokTab);
+    expect(failoverGrokTab).toHaveAttribute("data-state", "active");
+    expect(
+      screen.getByRole("switch", { name: "自动故障转移" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: /会话路由/,
+      }),
+    );
+    const grokTabs = screen.getAllByRole("tab", { name: "Grok Build" });
+    expect(grokTabs).toHaveLength(2);
+    await user.click(grokTabs[1]);
+
+    await waitFor(() =>
+      expect(
+        document.querySelector("#session-routing-ttl-grokbuild"),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("keeps proxy takeover live config stable while enabling failover and editing the queue", async () => {
     const user = userEvent.setup();
 

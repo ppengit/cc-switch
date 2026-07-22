@@ -7,7 +7,7 @@ export interface DeepLinkImportRequest {
   resource: ResourceType;
 
   // Common fields
-  app?: "claude" | "codex" | "gemini";
+  app?: "claude" | "codex" | "gemini" | "grokbuild";
   name?: string;
   enabled?: boolean;
 
@@ -27,7 +27,7 @@ export interface DeepLinkImportRequest {
   description?: string;
 
   // MCP fields
-  apps?: string; // "claude,codex,gemini"
+  apps?: string; // "claude,codex,gemini,grokbuild"
 
   // Skill fields
   repo?: string;

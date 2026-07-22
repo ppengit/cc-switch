@@ -386,7 +386,7 @@ impl ProviderRouter {
             .unwrap_or_else(|_| default_app_proxy_config(app_type));
         let enabled = session_routing_applies(app_type, &config);
 
-        if !matches!(app_type, "claude" | "codex") {
+        if !matches!(app_type, "claude" | "codex" | "grokbuild") {
             return Ok(SessionRoutingSnapshot {
                 app_type: app_type.to_string(),
                 enabled: false,
@@ -517,9 +517,9 @@ impl ProviderRouter {
         session_id: &str,
         provider_id: &str,
     ) -> Result<SessionRoutingSnapshot, AppError> {
-        if !matches!(app_type, "claude" | "codex") {
+        if !matches!(app_type, "claude" | "codex" | "grokbuild") {
             return Err(AppError::InvalidInput(
-                "会话路由仅支持 Claude 和 Codex".to_string(),
+                "会话路由仅支持 Claude、Codex 和 Grok Build".to_string(),
             ));
         }
         let session_id = session_id.trim();
@@ -925,7 +925,7 @@ fn default_app_proxy_config(app_type: &str) -> AppProxyConfig {
 }
 
 fn session_routing_applies(app_type: &str, config: &AppProxyConfig) -> bool {
-    matches!(app_type, "claude" | "codex")
+    matches!(app_type, "claude" | "codex" | "grokbuild")
         && config.enabled
         && config.auto_failover_enabled
         && config.session_routing_enabled
@@ -1237,6 +1237,54 @@ mod tests {
 
         assert_eq!(first[0].id, "a");
         assert_eq!(second[0].id, "b");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn grokbuild_session_routing_supports_capacity_snapshot_and_rebind() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().unwrap());
+        let provider_a = limited_provider("a", "Provider A", 1, Some(1));
+        let provider_b = limited_provider("b", "Provider B", 2, Some(1));
+
+        db.save_provider("grokbuild", &provider_a).unwrap();
+        db.save_provider("grokbuild", &provider_b).unwrap();
+        db.add_to_failover_queue("grokbuild", "a").unwrap();
+        db.add_to_failover_queue("grokbuild", "b").unwrap();
+        enable_failover_with_session_routing(&db, "grokbuild").await;
+
+        let router = ProviderRouter::new(db.clone());
+        let first = router
+            .select_providers_for_session("grokbuild", "grok-session-1", true)
+            .await
+            .unwrap();
+        let second = router
+            .select_providers_for_session("grokbuild", "grok-session-2", true)
+            .await
+            .unwrap();
+
+        assert_eq!(first[0].id, "a");
+        assert_eq!(second[0].id, "b");
+
+        let snapshot = router
+            .session_routing_snapshot("grokbuild", HashMap::new())
+            .await
+            .unwrap();
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.bindings.len(), 2);
+
+        let rebound = router
+            .rebind_session_route("grokbuild", "grok-session-1", "b")
+            .await
+            .unwrap();
+        assert_eq!(
+            rebound
+                .bindings
+                .iter()
+                .find(|binding| binding.session_id == "grok-session-1")
+                .map(|binding| binding.provider_id.as_str()),
+            Some("b")
+        );
     }
 
     #[tokio::test]

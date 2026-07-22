@@ -13,7 +13,7 @@ import type {
 } from "@/types/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
-const TAKEOVER_APPS = ["claude", "codex", "gemini"] as const;
+const TAKEOVER_APPS = ["claude", "codex", "gemini", "grokbuild"] as const;
 
 /**
  * 代理服务状态管理

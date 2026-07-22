@@ -362,9 +362,7 @@ export function CodexFormFields({
     (index: number, patch: Partial<CodexModelRouteRow>) => {
       if (!onModelRoutesChange) return;
       onModelRoutesChange(
-        modelRoutes.map((row, i) =>
-          i === index ? { ...row, ...patch } : row,
-        ),
+        modelRoutes.map((row, i) => (i === index ? { ...row, ...patch } : row)),
       );
     },
     [modelRoutes, onModelRoutesChange],
@@ -721,34 +719,36 @@ export function CodexFormFields({
                   </p>
                 </div>
 
-                {/* 需要本地路由映射 —— 模型目录门控，与上游格式无关 */}
-                <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
-                  <div className="space-y-1">
-                    <FormLabel>
-                      {t("codexConfig.localRoutingToggle", {
+                {/* Grok Build 自己维护 config.toml，不生成 Codex CLI 的 /model 目录。 */}
+                {appId !== "grokbuild" && (
+                  <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
+                    <div className="space-y-1">
+                      <FormLabel>
+                        {t("codexConfig.localRoutingToggle", {
+                          defaultValue: "需要本地路由映射",
+                        })}
+                      </FormLabel>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {takeoverEnabled
+                          ? t("codexConfig.localRoutingOnHint", {
+                              defaultValue:
+                                "打开后可在下方配置模型目录，让 Codex 的 /model 菜单显示自定义模型名。",
+                            })
+                          : t("codexConfig.localRoutingOffHint", {
+                              defaultValue:
+                                "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型映射可在下方单独配置。",
+                            })}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={takeoverEnabled}
+                      onCheckedChange={onTakeoverEnabledChange}
+                      aria-label={t("codexConfig.localRoutingToggle", {
                         defaultValue: "需要本地路由映射",
                       })}
-                    </FormLabel>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {takeoverEnabled
-                        ? t("codexConfig.localRoutingOnHint", {
-                            defaultValue:
-                              "打开后可在下方配置模型目录，让 Codex 的 /model 菜单显示自定义模型名。",
-                          })
-                        : t("codexConfig.localRoutingOffHint", {
-                            defaultValue:
-                              "不需要生成 Codex /model 菜单自定义模型目录时，可保持关闭；请求模型映射可在下方单独配置。",
-                          })}
-                    </p>
+                    />
                   </div>
-                  <Switch
-                    checked={takeoverEnabled}
-                    onCheckedChange={onTakeoverEnabledChange}
-                    aria-label={t("codexConfig.localRoutingToggle", {
-                      defaultValue: "需要本地路由映射",
-                    })}
-                  />
-                </div>
+                )}
 
                 {isAnthropicFormat && (
                   <div className="space-y-1.5">
@@ -850,117 +850,120 @@ export function CodexFormFields({
               </div>
             )}
 
-            {takeoverEnabled && isChatFormat && canEditReasoning && (
-              <div
-                className={cn(
-                  "space-y-3",
-                  shouldShowSpeedTest && "border-t border-border-default pt-3",
-                )}
-              >
-                <div className="space-y-2">
-                  <FormLabel>
-                    {t("codexConfig.promptCacheRoutingLabel", {
-                      defaultValue: "提示词缓存路由",
-                    })}
-                  </FormLabel>
-                  <Select
-                    value={promptCacheRouting}
-                    onValueChange={(value) =>
-                      onPromptCacheRoutingChange(
-                        value as PromptCacheRoutingMode,
-                      )
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">
-                        {t("codexConfig.promptCacheRoutingAuto", {
-                          defaultValue: "自动（推荐）",
-                        })}
-                      </SelectItem>
-                      <SelectItem value="enabled">
-                        {t("codexConfig.promptCacheRoutingEnabled", {
-                          defaultValue: "开启",
-                        })}
-                      </SelectItem>
-                      <SelectItem value="disabled">
-                        {t("codexConfig.promptCacheRoutingDisabled", {
-                          defaultValue: "关闭",
-                        })}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("codexConfig.promptCacheRoutingHint", {
-                      defaultValue:
-                        "自动模式仅对已确认兼容的上游发送 prompt_cache_key；开启可用于其他兼容网关，关闭可避免严格网关因未知字段返回 400。只使用客户端提供的稳定会话 ID。",
-                    })}
-                  </p>
-                </div>
+            {(takeoverEnabled || appId === "grokbuild") &&
+              isChatFormat &&
+              canEditReasoning && (
+                <div
+                  className={cn(
+                    "space-y-3",
+                    shouldShowSpeedTest &&
+                      "border-t border-border-default pt-3",
+                  )}
+                >
+                  <div className="space-y-2">
+                    <FormLabel>
+                      {t("codexConfig.promptCacheRoutingLabel", {
+                        defaultValue: "提示词缓存路由",
+                      })}
+                    </FormLabel>
+                    <Select
+                      value={promptCacheRouting}
+                      onValueChange={(value) =>
+                        onPromptCacheRoutingChange(
+                          value as PromptCacheRoutingMode,
+                        )
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">
+                          {t("codexConfig.promptCacheRoutingAuto", {
+                            defaultValue: "自动（推荐）",
+                          })}
+                        </SelectItem>
+                        <SelectItem value="enabled">
+                          {t("codexConfig.promptCacheRoutingEnabled", {
+                            defaultValue: "开启",
+                          })}
+                        </SelectItem>
+                        <SelectItem value="disabled">
+                          {t("codexConfig.promptCacheRoutingDisabled", {
+                            defaultValue: "关闭",
+                          })}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {t("codexConfig.promptCacheRoutingHint", {
+                        defaultValue:
+                          "自动模式仅对已确认兼容的上游发送 prompt_cache_key；开启可用于其他兼容网关，关闭可避免严格网关因未知字段返回 400。只使用客户端提供的稳定会话 ID。",
+                      })}
+                    </p>
+                  </div>
 
-                <div className="space-y-1">
-                  <FormLabel>
-                    {t("codexConfig.reasoningGroupTitle", {
-                      defaultValue: "思考能力",
-                    })}
-                  </FormLabel>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("codexConfig.reasoningSectionHint", {
-                      defaultValue:
-                        "预设供应商已自动配置；自定义供应商会按名称/地址自动推断。仅当自动识别不准时才需手动覆盖。",
-                    })}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
                   <div className="space-y-1">
                     <FormLabel>
-                      {t("codexConfig.reasoningModeToggle", {
+                      {t("codexConfig.reasoningGroupTitle", {
+                        defaultValue: "思考能力",
+                      })}
+                    </FormLabel>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {t("codexConfig.reasoningSectionHint", {
+                        defaultValue:
+                          "预设供应商已自动配置；自定义供应商会按名称/地址自动推断。仅当自动识别不准时才需手动覆盖。",
+                      })}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <FormLabel>
+                        {t("codexConfig.reasoningModeToggle", {
+                          defaultValue: "支持思考模式",
+                        })}
+                      </FormLabel>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t("codexConfig.reasoningModeHint", {
+                          defaultValue:
+                            "上游 Chat Completions 接口支持开启或关闭 thinking 时启用。Kimi、GLM、Qwen 等通常属于这一类。",
+                        })}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={supportsThinking}
+                      onCheckedChange={handleReasoningThinkingChange}
+                      aria-label={t("codexConfig.reasoningModeToggle", {
                         defaultValue: "支持思考模式",
                       })}
-                    </FormLabel>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {t("codexConfig.reasoningModeHint", {
-                        defaultValue:
-                          "上游 Chat Completions 接口支持开启或关闭 thinking 时启用。Kimi、GLM、Qwen 等通常属于这一类。",
-                      })}
-                    </p>
+                    />
                   </div>
-                  <Switch
-                    checked={supportsThinking}
-                    onCheckedChange={handleReasoningThinkingChange}
-                    aria-label={t("codexConfig.reasoningModeToggle", {
-                      defaultValue: "支持思考模式",
-                    })}
-                  />
-                </div>
 
-                <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
-                  <div className="space-y-1">
-                    <FormLabel>
-                      {t("codexConfig.reasoningEffortToggle", {
+                  <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
+                    <div className="space-y-1">
+                      <FormLabel>
+                        {t("codexConfig.reasoningEffortToggle", {
+                          defaultValue: "支持思考等级",
+                        })}
+                      </FormLabel>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t("codexConfig.reasoningEffortHint", {
+                          defaultValue:
+                            "上游支持 low/high/max 等思考深度控制时启用。启用后会自动启用思考模式，并把 Codex 的 reasoning.effort 转成上游 Chat 参数。",
+                        })}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={supportsEffort}
+                      onCheckedChange={handleReasoningEffortChange}
+                      aria-label={t("codexConfig.reasoningEffortToggle", {
                         defaultValue: "支持思考等级",
                       })}
-                    </FormLabel>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {t("codexConfig.reasoningEffortHint", {
-                        defaultValue:
-                          "上游支持 low/high/max 等思考深度控制时启用。启用后会自动启用思考模式，并把 Codex 的 reasoning.effort 转成上游 Chat 参数。",
-                      })}
-                    </p>
+                    />
                   </div>
-                  <Switch
-                    checked={supportsEffort}
-                    onCheckedChange={handleReasoningEffortChange}
-                    aria-label={t("codexConfig.reasoningEffortToggle", {
-                      defaultValue: "支持思考等级",
-                    })}
-                  />
                 </div>
-              </div>
-            )}
+              )}
 
             {/* 模型目录 —— 仅在本地路由开启 + 可编辑时显示（与上游格式解耦，
                 Responses 原生供应商同样可配置）；上方恒有 UA 字段，分隔线无需条件 */}
@@ -1109,7 +1112,9 @@ export function CodexFormFields({
               className={cn(
                 "space-y-3",
                 (shouldShowSpeedTest ||
-                  (takeoverEnabled && isChatFormat && canEditReasoning) ||
+                  ((takeoverEnabled || appId === "grokbuild") &&
+                    isChatFormat &&
+                    canEditReasoning) ||
                   (takeoverEnabled && canEditCatalog)) &&
                   "border-t border-border-default pt-3",
               )}

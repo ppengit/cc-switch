@@ -21,7 +21,11 @@ import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
-import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
+import {
+  extractGrokBuildBaseUrl,
+  GROK_BUILD_DEFAULT_MODEL,
+  parseGrokBuildConfig,
+} from "@/utils/grokBuildConfig";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import { useProvidersQuery } from "@/lib/query";
@@ -56,9 +60,15 @@ const normalizeEndpointForDuplicateCheck = (value?: unknown) =>
     ? value.trim().replace(/\/+$/, "").replace(/\/v1$/i, "")
     : "";
 
+const credentialIdentity = (kind: "inline" | "env", value?: unknown) => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized ? `${kind}:${normalized}` : "";
+};
+
 const defaultProviderTemplateModelForApp = (appId: AppId) => {
   if (appId === "claude") return DEFAULT_CLAUDE_MODEL;
   if (appId === "gemini") return DEFAULT_GEMINI_MODEL;
+  if (appId === "grokbuild") return GROK_BUILD_DEFAULT_MODEL;
   return DEFAULT_PROVIDER_MODEL;
 };
 
@@ -91,7 +101,7 @@ const materializeProviderTemplatePlaceholders = (
   return value;
 };
 
-const getProviderEndpointAndKey = (
+const getProviderDuplicateIdentity = (
   appId: AppId,
   config: Record<string, unknown>,
 ) => {
@@ -99,11 +109,11 @@ const getProviderEndpointAndKey = (
     const env = config.env as Record<string, unknown> | undefined;
     return {
       endpoint: normalizeEndpointForDuplicateCheck(env?.ANTHROPIC_BASE_URL),
-      apiKey:
+      credential:
         typeof env?.ANTHROPIC_AUTH_TOKEN === "string"
-          ? env.ANTHROPIC_AUTH_TOKEN.trim()
+          ? credentialIdentity("inline", env.ANTHROPIC_AUTH_TOKEN)
           : typeof env?.ANTHROPIC_API_KEY === "string"
-            ? env.ANTHROPIC_API_KEY.trim()
+            ? credentialIdentity("inline", env.ANTHROPIC_API_KEY)
             : "",
     };
   }
@@ -116,9 +126,9 @@ const getProviderEndpointAndKey = (
           typeof config.config === "string" ? config.config : "",
         ),
       ),
-      apiKey:
+      credential:
         typeof auth?.OPENAI_API_KEY === "string"
-          ? auth.OPENAI_API_KEY.trim()
+          ? credentialIdentity("inline", auth.OPENAI_API_KEY)
           : "",
     };
   }
@@ -127,9 +137,9 @@ const getProviderEndpointAndKey = (
     const env = config.env as Record<string, unknown> | undefined;
     return {
       endpoint: normalizeEndpointForDuplicateCheck(env?.GOOGLE_GEMINI_BASE_URL),
-      apiKey:
+      credential:
         typeof env?.GEMINI_API_KEY === "string"
-          ? env.GEMINI_API_KEY.trim()
+          ? credentialIdentity("inline", env.GEMINI_API_KEY)
           : "",
     };
   }
@@ -138,25 +148,36 @@ const getProviderEndpointAndKey = (
     const options = config.options as Record<string, unknown> | undefined;
     return {
       endpoint: normalizeEndpointForDuplicateCheck(options?.baseURL),
-      apiKey: typeof options?.apiKey === "string" ? options.apiKey.trim() : "",
+      credential: credentialIdentity("inline", options?.apiKey),
     };
   }
 
   if (appId === "openclaw") {
     return {
       endpoint: normalizeEndpointForDuplicateCheck(config.baseUrl),
-      apiKey: typeof config.apiKey === "string" ? config.apiKey.trim() : "",
+      credential: credentialIdentity("inline", config.apiKey),
+    };
+  }
+
+  if (appId === "grokbuild") {
+    const configToml = typeof config.config === "string" ? config.config : "";
+    const parsed = parseGrokBuildConfig(configToml);
+    return {
+      endpoint: normalizeEndpointForDuplicateCheck(parsed.baseUrl),
+      credential: parsed.apiKey.trim()
+        ? credentialIdentity("inline", parsed.apiKey)
+        : credentialIdentity("env", parsed.envKey),
     };
   }
 
   if (appId === "hermes") {
     return {
       endpoint: normalizeEndpointForDuplicateCheck(config.base_url),
-      apiKey: typeof config.api_key === "string" ? config.api_key.trim() : "",
+      credential: credentialIdentity("inline", config.api_key),
     };
   }
 
-  return { endpoint: "", apiKey: "" };
+  return { endpoint: "", credential: "" };
 };
 
 export function AddProviderDialog({
@@ -293,17 +314,17 @@ export function AddProviderDialog({
         string,
         unknown
       >;
-      const nextCredential = getProviderEndpointAndKey(appId, parsedConfig);
-      if (nextCredential.endpoint && nextCredential.apiKey) {
+      const nextCredential = getProviderDuplicateIdentity(appId, parsedConfig);
+      if (nextCredential.endpoint && nextCredential.credential) {
         const duplicated = Object.values(providersData?.providers ?? {}).find(
           (provider) => {
-            const existing = getProviderEndpointAndKey(
+            const existing = getProviderDuplicateIdentity(
               appId,
               provider.settingsConfig,
             );
             return (
               existing.endpoint === nextCredential.endpoint &&
-              existing.apiKey === nextCredential.apiKey
+              existing.credential === nextCredential.credential
             );
           },
         );

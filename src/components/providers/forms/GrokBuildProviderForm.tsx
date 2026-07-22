@@ -27,6 +27,8 @@ import type {
   PromptCacheRoutingMode,
   ProviderCategory,
   ProviderMeta,
+  ProviderUpstreamAdmissionRetry,
+  ProviderUpstreamResponseReplay,
 } from "@/types";
 import type { ProviderFormProps, ProviderFormValues } from "./ProviderForm";
 import { BasicFormFields } from "./BasicFormFields";
@@ -49,6 +51,22 @@ import {
   validateGrokBuildConfig,
 } from "@/utils/grokBuildConfig";
 import { resolveProviderIcon } from "@/utils/providerIcon";
+import {
+  normalizeResponseReplayConfigForSave,
+  responseReplayEditorConfig,
+} from "@/lib/responseReplay";
+import { isNonNegativeDecimalString } from "@/types/usage";
+import {
+  ProviderAdvancedConfig,
+  ProviderRoutingRetryConfig,
+  type PricingModelSourceOption,
+} from "./ProviderAdvancedConfig";
+import { normalizePricingSource } from "./helpers/opencodeFormUtils";
+import {
+  normalizeAdmissionRetryConfigForSave,
+  normalizeCodexChatReasoningForSave,
+  normalizeMaxConcurrentRequestsForSave,
+} from "./providerMetaConfigUtils";
 
 type GrokBuildProviderFormProps = Omit<ProviderFormProps, "appId">;
 
@@ -65,6 +83,16 @@ export const grokApiBackendFromApiFormat = (format: CodexApiFormat): string => {
   return "responses";
 };
 
+export const grokApiFormatFromApiBackend = (
+  backend: string,
+): CodexApiFormat => {
+  if (backend.trim().toLowerCase() === "chat_completions") {
+    return "openai_chat";
+  }
+  if (backend.trim().toLowerCase() === "messages") return "anthropic";
+  return "openai_responses";
+};
+
 export function GrokBuildProviderForm({
   providerId,
   submitLabel,
@@ -72,13 +100,16 @@ export function GrokBuildProviderForm({
   onCancel,
   onSubmittingChange,
   initialData,
+  providerDefaultSettingsConfig,
   showButtons = true,
 }: GrokBuildProviderFormProps) {
   const { t } = useTranslation();
   const isDarkMode = useDarkMode();
+  const seededSettingsConfig =
+    initialData?.settingsConfig ?? providerDefaultSettingsConfig;
   const initialConfigText =
-    typeof initialData?.settingsConfig?.config === "string"
-      ? initialData.settingsConfig.config
+    typeof seededSettingsConfig?.config === "string"
+      ? seededSettingsConfig.config
       : undefined;
   const initialConfig = useMemo(
     () => parseGrokBuildConfig(initialConfigText, initialData?.name),
@@ -109,8 +140,10 @@ export function GrokBuildProviderForm({
     initialConfigText ?? buildGrokBuildConfig(initialConfig),
   );
   const [apiFormat, setApiFormat] = useState<CodexApiFormat>(
-    (initialData?.meta?.apiFormat as CodexApiFormat | undefined) ??
-      "openai_responses",
+    // config.toml is Grok Build's executable protocol source. Older records
+    // may carry stale meta.apiFormat, so derive the editor state from the
+    // selected model's api_backend instead of letting metadata fork the save.
+    grokApiFormatFromApiBackend(initialConfig.apiBackend),
   );
   const [anthropicAuthField, setAnthropicAuthField] =
     useState<ClaudeApiKeyField>(
@@ -154,6 +187,32 @@ export function GrokBuildProviderForm({
   const [draftCustomEndpoints, setDraftCustomEndpoints] = useState<string[]>(
     [],
   );
+  const [pricingConfig, setPricingConfig] = useState<{
+    enabled: boolean;
+    costMultiplier?: string;
+    pricingModelSource: PricingModelSourceOption;
+  }>(() => ({
+    enabled:
+      initialData?.meta?.costMultiplier !== undefined ||
+      initialData?.meta?.pricingModelSource !== undefined,
+    costMultiplier: initialData?.meta?.costMultiplier,
+    pricingModelSource: normalizePricingSource(
+      initialData?.meta?.pricingModelSource,
+    ),
+  }));
+  const [admissionRetryConfig, setAdmissionRetryConfig] =
+    useState<ProviderUpstreamAdmissionRetry>(() => ({
+      ...(initialData?.meta?.upstreamAdmissionRetry ?? {}),
+      enabled: initialData?.meta?.upstreamAdmissionRetry?.enabled ?? false,
+    }));
+  const [responseReplayConfig, setResponseReplayConfig] =
+    useState<ProviderUpstreamResponseReplay>(() => {
+      const existing = initialData?.meta?.upstreamResponseReplay;
+      return existing ? responseReplayEditorConfig(existing) : {};
+    });
+  const [maxConcurrentRequests, setMaxConcurrentRequests] = useState<
+    number | undefined
+  >(() => initialData?.meta?.maxConcurrentRequests);
 
   const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerSchema),
@@ -286,6 +345,7 @@ export function GrokBuildProviderForm({
     setBaseUrl(parsed.baseUrl);
     setApiKey(parsed.apiKey);
     setApiBackend(parsed.apiBackend);
+    setApiFormat(grokApiFormatFromApiBackend(parsed.apiBackend));
     setContextWindow(String(parsed.contextWindow));
     if (parsed.name) form.setValue("name", parsed.name);
   };
@@ -352,23 +412,64 @@ export function GrokBuildProviderForm({
       ]),
     );
     const parsedMaxOutputTokens = Number.parseInt(maxOutputTokens, 10);
+    const costMultiplier = pricingConfig.costMultiplier?.trim();
+    if (
+      pricingConfig.enabled &&
+      costMultiplier &&
+      !isNonNegativeDecimalString(costMultiplier)
+    ) {
+      toast.error(
+        t("settings.globalProxy.defaultCostMultiplierInvalid", {
+          defaultValue: "成本倍率必须为非负数",
+        }),
+      );
+      return;
+    }
+
     const initialMeta = { ...(initialData?.meta ?? {}) };
     delete initialMeta.custom_endpoints;
     const meta: ProviderMeta = {
       ...initialMeta,
       apiFormat,
-      apiKeyField: anthropicAuthField,
-      isFullUrl,
+      apiKeyField:
+        apiFormat === "anthropic" &&
+        anthropicAuthField !== "ANTHROPIC_AUTH_TOKEN"
+          ? anthropicAuthField
+          : undefined,
+      isFullUrl: isFullUrl ? true : undefined,
       endpointAutoSelect,
       isPartner,
       partnerPromotionKey,
-      impersonateClaudeCode,
-      promptCacheRouting,
-      codexChatReasoning,
+      impersonateClaudeCode:
+        apiFormat === "anthropic" && impersonateClaudeCode ? true : undefined,
+      promptCacheRouting:
+        apiFormat === "openai_chat" && promptCacheRouting !== "auto"
+          ? promptCacheRouting
+          : undefined,
       customUserAgent: customUserAgent.trim() || undefined,
       localProxyRequestOverrides: requestOverrides.overrides,
+      upstreamAdmissionRetry:
+        normalizeAdmissionRetryConfigForSave(admissionRetryConfig),
+      upstreamResponseReplay:
+        normalizeResponseReplayConfigForSave(responseReplayConfig),
+      maxConcurrentRequests: normalizeMaxConcurrentRequestsForSave(
+        maxConcurrentRequests,
+      ),
+      costMultiplier: pricingConfig.enabled
+        ? costMultiplier || undefined
+        : undefined,
+      pricingModelSource:
+        pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
+          ? pricingConfig.pricingModelSource
+          : undefined,
+      codexChatReasoning:
+        apiFormat === "openai_chat"
+          ? normalizeCodexChatReasoningForSave(codexChatReasoning)
+          : undefined,
       maxOutputTokens:
-        Number.isInteger(parsedMaxOutputTokens) && parsedMaxOutputTokens > 0
+        apiFormat === "anthropic" &&
+        Number.isInteger(parsedMaxOutputTokens) &&
+        parsedMaxOutputTokens > 0
           ? parsedMaxOutputTokens
           : undefined,
     };
@@ -439,6 +540,7 @@ export function GrokBuildProviderForm({
               onChange={(event) => {
                 const value = event.target.value;
                 setApiBackend(value);
+                setApiFormat(grokApiFormatFromApiBackend(value));
                 syncStructuredConfig({ apiBackend: value });
               }}
               placeholder="responses"
@@ -550,6 +652,21 @@ export function GrokBuildProviderForm({
             </p>
           )}
         </div>
+
+        <ProviderRoutingRetryConfig
+          admissionRetryConfig={admissionRetryConfig}
+          responseReplayConfig={responseReplayConfig}
+          showResponseReplay
+          maxConcurrentRequests={maxConcurrentRequests}
+          onAdmissionRetryConfigChange={setAdmissionRetryConfig}
+          onResponseReplayConfigChange={setResponseReplayConfig}
+          onMaxConcurrentRequestsChange={setMaxConcurrentRequests}
+        />
+
+        <ProviderAdvancedConfig
+          pricingConfig={pricingConfig}
+          onPricingConfigChange={setPricingConfig}
+        />
 
         <FormField
           control={form.control}

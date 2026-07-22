@@ -336,6 +336,23 @@ mod tests {
         })
     }
 
+    fn grok_settings(profile: &str, model: &str, base_url: &str, api_key: &str) -> Value {
+        json!({
+            "config": format!(
+                "[models]\n\
+                 default = \"{profile}\"\n\
+                 \n\
+                 [model.\"{profile}\"]\n\
+                 model = \"{model}\"\n\
+                 base_url = \"{base_url}\"\n\
+                 name = \"{profile}\"\n\
+                 api_key = \"{api_key}\"\n\
+                 api_backend = \"responses\"\n\
+                 context_window = 500000\n"
+            )
+        })
+    }
+
     fn usage_script_with_credentials(
         api_key: Option<&str>,
         base_url: Option<&str>,
@@ -4119,6 +4136,146 @@ requires_openai_auth = true
             );
         });
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn grok_takeover_switch_and_update_keep_proxy_live_and_mcp_projection() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let provider_a = Provider::with_id(
+            "grok-a".to_string(),
+            "Grok A".to_string(),
+            grok_settings("grok-a", "upstream-a", "https://a.example/v1", "key-a"),
+            None,
+        );
+        let provider_b = Provider::with_id(
+            "grok-b".to_string(),
+            "Grok B".to_string(),
+            grok_settings("grok-b", "upstream-b", "https://b.example/v1", "key-b"),
+            None,
+        );
+        db.save_provider("grokbuild", &provider_a)
+            .expect("save provider A");
+        db.save_provider("grokbuild", &provider_b)
+            .expect("save provider B");
+        db.set_current_provider("grokbuild", &provider_a.id)
+            .expect("set DB current provider");
+        crate::settings::set_current_provider(&AppType::GrokBuild, Some(&provider_a.id))
+            .expect("set local current provider");
+        crate::grok_config::write_grok_provider_live(&provider_a).expect("seed direct Grok Live");
+
+        db.save_mcp_server(&crate::app_config::McpServer {
+            id: "memory".to_string(),
+            name: "Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: crate::app_config::McpApps {
+                grokbuild: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save Grok MCP server");
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy port");
+        let mut app_config = db
+            .get_proxy_config_for_app("grokbuild")
+            .await
+            .expect("get Grok proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable Grok takeover");
+
+        ProviderService::switch(&state, AppType::GrokBuild, &provider_b.id)
+            .expect("hot-switch Grok provider");
+
+        let live_path = crate::grok_config::get_grok_config_path();
+        let switched_live = fs::read_to_string(&live_path).expect("read switched Grok Live");
+        let switched = crate::grok_config::extract_model_config(&switched_live)
+            .expect("parse switched Grok Live");
+        assert_eq!(switched.profile, "grok-b");
+        assert_eq!(switched.model, "upstream-b");
+        assert_eq!(switched.base_url, "http://127.0.0.1:15721/grokbuild/v1");
+        assert_eq!(switched.api_key.as_deref(), Some("PROXY_MANAGED"));
+        assert!(switched_live.contains("[mcp_servers.memory]"));
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::GrokBuild).as_deref(),
+            Some("grok-b")
+        );
+
+        let switch_backup = db
+            .get_live_backup("grokbuild")
+            .await
+            .expect("read switch backup")
+            .expect("switch backup exists");
+        let switch_backup: Value =
+            serde_json::from_str(&switch_backup.original_config).expect("parse switch backup");
+        let switch_backup_config = switch_backup
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("switch backup config");
+        assert_eq!(
+            crate::grok_config::extract_model_config(switch_backup_config)
+                .expect("parse switch backup config")
+                .base_url,
+            "https://b.example/v1"
+        );
+
+        let updated_b = Provider::with_id(
+            "grok-b".to_string(),
+            "Grok B updated".to_string(),
+            grok_settings(
+                "grok-b",
+                "upstream-b-v2",
+                "https://b-v2.example/v1",
+                "key-b-v2",
+            ),
+            None,
+        );
+        ProviderService::update(&state, AppType::GrokBuild, None, updated_b)
+            .expect("update current Grok provider");
+
+        let updated_live = fs::read_to_string(&live_path).expect("read updated Grok Live");
+        let updated = crate::grok_config::extract_model_config(&updated_live)
+            .expect("parse updated Grok Live");
+        assert_eq!(updated.model, "upstream-b-v2");
+        assert_eq!(updated.base_url, "http://127.0.0.1:15721/grokbuild/v1");
+        assert_eq!(updated.api_key.as_deref(), Some("PROXY_MANAGED"));
+        assert!(updated_live.contains("[mcp_servers.memory]"));
+
+        let update_backup = db
+            .get_live_backup("grokbuild")
+            .await
+            .expect("read update backup")
+            .expect("update backup exists");
+        let update_backup: Value =
+            serde_json::from_str(&update_backup.original_config).expect("parse update backup");
+        let update_backup_config = update_backup
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("update backup config");
+        assert_eq!(
+            crate::grok_config::extract_model_config(update_backup_config)
+                .expect("parse update backup config")
+                .base_url,
+            "https://b-v2.example/v1"
+        );
+    }
 }
 
 impl ProviderService {
@@ -4508,8 +4665,7 @@ impl ProviderService {
         // 未指定 sort_index 时追加到当前 app 末尾，避免多个 NULL 在多次增删后
         // 与已有序号交错，导致前端展示队列不稳定。
         if provider.sort_index.is_none() {
-            provider.sort_index =
-                Some(state.db.next_sort_index_for_app(app_type.as_str())?);
+            provider.sort_index = Some(state.db.next_sort_index_for_app(app_type.as_str())?);
         }
 
         // Save to database
@@ -4547,9 +4703,7 @@ impl ProviderService {
             .map(|config| config.auto_failover_enabled)
             .unwrap_or(false);
 
-        if takeover_enabled
-            && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
-        {
+        if takeover_enabled && app_type.supports_proxy_takeover() {
             if auto_failover_enabled {
                 let _ = crate::settings::set_current_provider(&app_type, None);
                 if let Err(error) = state.db.clear_current_provider(app_type.as_str()) {
@@ -4817,9 +4971,8 @@ impl ProviderService {
             // Backup or live placeholders mean the live file is currently owned
             // by proxy takeover, including the short activation window before
             // proxy_config.enabled is committed.
-            let should_sync_via_proxy =
-                matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
-                    && (takeover_enabled || has_live_backup || live_taken_over);
+            let should_sync_via_proxy = app_type.supports_proxy_takeover()
+                && (takeover_enabled || has_live_backup || live_taken_over);
 
             if should_sync_via_proxy {
                 if matches!(app_type, AppType::ClaudeDesktop) {
@@ -4833,7 +4986,7 @@ impl ProviderService {
                     .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
                 }
 
-                if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+                if app_type.supports_proxy_takeover() {
                     futures::executor::block_on(
                         state
                             .proxy_service
@@ -5070,9 +5223,7 @@ impl ProviderService {
             futures::executor::block_on(state.db.get_proxy_config_for_app(app_type.as_str()))
                 .map(|config| config.enabled)
                 .unwrap_or(false);
-        if takeover_enabled
-            && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
-        {
+        if takeover_enabled && app_type.supports_proxy_takeover() {
             Self::sync_current_provider_for_app_with_options(
                 state,
                 app_type.clone(),
@@ -5262,10 +5413,7 @@ impl ProviderService {
         // restore backup. Serialize them per app, then decide from the locked
         // current state so a just-started takeover cannot be overwritten by a
         // normal live write.
-        let _switch_guard = if matches!(
-            app_type,
-            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
-        ) {
+        let _switch_guard = if app_type.supports_proxy_takeover() {
             Some(futures::executor::block_on(
                 state.proxy_service.lock_switch_for_app(app_type.as_str()),
             ))
@@ -5285,9 +5433,8 @@ impl ProviderService {
             .proxy_service
             .detect_takeover_in_live_config_for_app(&app_type);
 
-        let should_hot_switch =
-            matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
-                && (proxy_takeover_enabled || is_app_taken_over || live_taken_over);
+        let should_hot_switch = app_type.supports_proxy_takeover()
+            && (proxy_takeover_enabled || is_app_taken_over || live_taken_over);
 
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.
@@ -5561,8 +5708,7 @@ impl ProviderService {
             .as_ref()
             .map(|config| config.auto_failover_enabled)
             .unwrap_or(false);
-        let proxy_live_active = takeover_enabled
-            && matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini);
+        let proxy_live_active = takeover_enabled && app_type.supports_proxy_takeover();
 
         let providers = state.db.get_all_providers(app_type.as_str())?;
 
@@ -5597,8 +5743,16 @@ impl ProviderService {
                         app_type.as_str()
                     ))
                 })?;
-                if options.sync_mcp && matches!(app_type, AppType::Claude) {
-                    McpService::sync_all_enabled(state)?;
+                if options.sync_mcp {
+                    match app_type {
+                        AppType::Claude => McpService::sync_all_enabled(state)?,
+                        AppType::GrokBuild => {
+                            McpService::sync_enabled_for_app_without_provider_rebuild(
+                                state, &app_type,
+                            )?
+                        }
+                        _ => {}
+                    }
                 }
             }
             return Ok(());
@@ -5627,7 +5781,7 @@ impl ProviderService {
                     .update_live_backup_from_provider(app_type.as_str(), provider),
             )
             .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
-            if matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini) {
+            if app_type.supports_proxy_takeover() {
                 futures::executor::block_on(
                     state
                         .proxy_service
@@ -5637,8 +5791,14 @@ impl ProviderService {
                     AppError::Message(format!("同步 {} Live 配置失败: {e}", app_type.as_str()))
                 })?;
             }
-            if options.sync_mcp && matches!(app_type, AppType::Claude) {
-                McpService::sync_all_enabled(state)?;
+            if options.sync_mcp {
+                match app_type {
+                    AppType::Claude => McpService::sync_all_enabled(state)?,
+                    AppType::GrokBuild => {
+                        McpService::sync_enabled_for_app_without_provider_rebuild(state, &app_type)?
+                    }
+                    _ => {}
+                }
             }
             return Ok(());
         }

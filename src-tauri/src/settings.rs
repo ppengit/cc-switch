@@ -82,17 +82,12 @@ impl VisibleApps {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum ProxyActivityFloatingMode {
     Ball,
+    #[default]
     Panel,
-}
-
-impl Default for ProxyActivityFloatingMode {
-    fn default() -> Self {
-        Self::Panel
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

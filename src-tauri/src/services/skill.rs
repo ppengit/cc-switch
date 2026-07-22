@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 
 use crate::app_config::{AppType, InstalledSkill, SkillApps, UnmanagedSkill};
-use crate::config::{get_app_config_dir, get_home_dir};
+use crate::config::get_app_config_dir;
 use crate::database::Database;
 use crate::error::format_skill_error;
 
@@ -1573,7 +1573,7 @@ impl SkillService {
             use std::os::windows::fs::MetadataExt;
 
             const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-            return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         }
 
         #[cfg(not(windows))]

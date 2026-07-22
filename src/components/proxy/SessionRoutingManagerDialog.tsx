@@ -77,7 +77,10 @@ export function SessionRoutingManagerDialog({
   onOpenChange,
 }: SessionRoutingManagerDialogProps) {
   const { t } = useTranslation();
-  const isSupported = appId === "claude" || appId === "codex";
+  const isSupported =
+    appId === "claude" || appId === "codex" || appId === "grokbuild";
+  const appLabel =
+    appId === "claude" ? "Claude" : appId === "codex" ? "Codex" : "Grok Build";
   const { data, isFetching, refetch } = useSessionRoutingSnapshot(
     appId,
     open && isSupported,
@@ -144,7 +147,7 @@ export function SessionRoutingManagerDialog({
           <DialogDescription>
             {t("sessionRouting.manager.description", {
               defaultValue:
-                "查看 Claude/Codex 当前会话绑定、供应商占用，并把某个会话切换到其它故障转移供应商。",
+                "查看 Claude、Codex、Grok Build 当前会话绑定、供应商占用，并把某个会话切换到其它故障转移供应商。",
             })}
           </DialogDescription>
         </DialogHeader>
@@ -157,9 +160,7 @@ export function SessionRoutingManagerDialog({
                   ? t("common.enabled", { defaultValue: "已启用" })
                   : t("common.disabled", { defaultValue: "未启用" })}
               </Badge>
-              <span className="text-sm text-muted-foreground">
-                {appId === "claude" ? "Claude" : "Codex"}
-              </span>
+              <span className="text-sm text-muted-foreground">{appLabel}</span>
               {data?.proxyRunning === false ? (
                 <Badge variant="outline">
                   {t("sessionRouting.manager.proxyStopped", {

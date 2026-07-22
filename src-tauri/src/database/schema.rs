@@ -1485,17 +1485,9 @@ impl Database {
         // Legacy rollups may predate app_type; adapt SELECT so sequential
         // migrations from ancient schemas (e.g. v12 test fixtures) still work.
         let has_app_type = Self::has_column(conn, "usage_daily_rollups", "app_type")?;
-        let app_type_expr = if has_app_type {
-            "app_type"
-        } else {
-            "''"
-        };
+        let app_type_expr = if has_app_type { "app_type" } else { "''" };
         let has_provider_id = Self::has_column(conn, "usage_daily_rollups", "provider_id")?;
-        let provider_id_expr = if has_provider_id {
-            "provider_id"
-        } else {
-            "''"
-        };
+        let provider_id_expr = if has_provider_id { "provider_id" } else { "''" };
         let has_model = Self::has_column(conn, "usage_daily_rollups", "model")?;
         let model_expr = if has_model { "model" } else { "''" };
         let col = |name: &str, default: &str| -> Result<String, AppError> {

@@ -608,7 +608,10 @@ fn build_live_config_value_from_writes(
                 crate::gemini_config::GEMINI_RENDERED_ENV_TEXT_FIELD: env_text,
             }))
         }
-        _ => Err("当前配置手动保存仅支持 Claude / Codex / Gemini".to_string()),
+        AppType::GrokBuild => Ok(serde_json::json!({
+            "config": lookup("config")?,
+        })),
+        _ => Err("当前配置手动保存仅支持 Claude / Codex / Gemini / Grok Build".to_string()),
     }
 }
 
@@ -666,6 +669,13 @@ async fn write_validated_app_config_files(
     state
         .proxy_service
         .write_live_config_for_app(&app_type, &final_live)?;
+
+    if matches!(app_type, AppType::GrokBuild) {
+        crate::services::McpService::sync_enabled_for_app_without_provider_rebuild(
+            state, &app_type,
+        )
+        .map_err(|e| format!("同步 Grok Build MCP 配置失败: {e}"))?;
+    }
 
     if matches!(app_type, AppType::Claude) {
         if let Some((_, _, path, content)) = writes.iter().find(|(key, _, _, _)| key == "mcp") {
@@ -1479,6 +1489,91 @@ wire_api = "responses"
                 .and_then(Value::as_str),
             Some("npx"),
             "manual current-config save must re-inject DB-managed Gemini MCP entries during takeover normalization"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn write_validated_app_config_files_keeps_grok_takeover_and_mcp_servers() {
+        let _home = TempHome::new();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 15721,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("grokbuild")
+            .await
+            .expect("get Grok proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable Grok takeover");
+
+        db.save_mcp_server(&McpServer {
+            id: "grok-memory".to_string(),
+            name: "Grok Memory".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"]
+            }),
+            apps: McpApps {
+                grokbuild: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("save Grok MCP server");
+
+        let edited_config = r#"[models]
+default = "edited-profile"
+
+[model."edited-profile"]
+model = "edited-upstream-model"
+base_url = "https://real-provider.example/v1"
+name = "Edited Grok"
+api_key = "real-key"
+api_backend = "responses"
+context_window = 262144
+"#;
+
+        write_validated_app_config_files(
+            &state,
+            AppType::GrokBuild,
+            vec![(
+                "config".to_string(),
+                "config.toml".to_string(),
+                crate::grok_config::get_grok_config_path(),
+                edited_config.to_string(),
+            )],
+        )
+        .await
+        .expect("save Grok current config");
+
+        let live = std::fs::read_to_string(crate::grok_config::get_grok_config_path())
+            .expect("read Grok config");
+        let parsed = crate::grok_config::extract_model_config(&live).expect("parse Grok config");
+        assert_eq!(parsed.profile, "edited-profile");
+        assert_eq!(parsed.model, "edited-upstream-model");
+        assert_eq!(parsed.base_url, "http://127.0.0.1:15721/grokbuild/v1");
+        assert_eq!(parsed.api_key.as_deref(), Some("PROXY_MANAGED"));
+        assert!(
+            live.contains("[mcp_servers.grok-memory]"),
+            "manual Grok takeover save must re-project DB-managed MCP entries"
+        );
+        assert!(
+            !live.contains("https://real-provider.example/v1"),
+            "manual Grok takeover save must not expose the direct provider endpoint"
         );
     }
 }

@@ -212,6 +212,30 @@ const geminiProvider = (id: string, name: string): Provider => ({
   },
 });
 
+const grokProvider = (id: string, name: string): Provider => ({
+  id,
+  name,
+  notes: `${name} notes`,
+  category: "custom",
+  sortIndex: 0,
+  createdAt: 1_700_000_300_000,
+  settingsConfig: {
+    config: [
+      "[models]",
+      'default = "grok-4.5"',
+      "",
+      '[model."grok-4.5"]',
+      'model = "grok-4.5"',
+      `base_url = "https://${id}.example.com/v1"`,
+      `name = "${name}"`,
+      `api_key = "${id}-key"`,
+      'api_backend = "responses"',
+      "context_window = 500000",
+      "",
+    ].join("\n"),
+  },
+});
+
 describe("App with real ProviderList current-config interactions", () => {
   beforeEach(() => {
     resetProviderState();
@@ -229,6 +253,10 @@ describe("App with real ProviderList current-config interactions", () => {
       "gemini-base": geminiProvider("gemini-base", "Gemini Base"),
     });
     setCurrentProviderId("gemini", "gemini-base");
+    setProviders("grokbuild", {
+      "grok-base": grokProvider("grok-base", "Grok Base"),
+    });
+    setCurrentProviderId("grokbuild", "grok-base");
     window.localStorage.clear();
     window.sessionStorage.clear();
     Element.prototype.scrollIntoView = vi.fn();
@@ -251,57 +279,69 @@ describe("App with real ProviderList current-config interactions", () => {
     const importBodies: Array<{ app: AppId }> = [];
 
     server.use(
-      http.post(`${TAURI_ENDPOINT}/list_app_config_files`, async ({ request }) => {
-        const { app } = (await request.json()) as { app: AppId };
-        listCalls.push(app);
-        if (app !== "gemini") {
-          return HttpResponse.json([]);
-        }
-        return HttpResponse.json([
-          {
-            key: "env",
-            label: ".env",
-            path: "/mock/gemini/.env",
-          },
-          {
-            key: "settings",
-            label: "settings.json",
-            path: "/mock/gemini/settings.json",
-          },
-        ]);
-      }),
-      http.post(`${TAURI_ENDPOINT}/read_app_config_file`, async ({ request }) => {
-        const { app, fileKey } = (await request.json()) as {
-          app: AppId;
-          fileKey: string;
-        };
-        readCalls.push({ app, fileKey });
-        return HttpResponse.json({
-          key: fileKey,
-          label: fileKey === "env" ? ".env" : "settings.json",
-          path:
-            fileKey === "env"
-              ? `/mock/${app}/.env`
-              : `/mock/${app}/settings.json`,
-          content: configContents[`${app}:${fileKey}`] ?? "",
-        });
-      }),
-      http.post(`${TAURI_ENDPOINT}/write_app_config_files`, async ({ request }) => {
-        const body = (await request.json()) as {
-          app: AppId;
-          files: Array<{ fileKey: string; content: string }>;
-        };
-        writeBodies.push(body);
-        for (const file of body.files) {
-          configContents[`${body.app}:${file.fileKey}`] = file.content;
-        }
-        return HttpResponse.json(true);
-      }),
-      http.post(`${TAURI_ENDPOINT}/import_mcp_from_app_live`, async ({ request }) => {
-        const body = (await request.json()) as { app: AppId };
-        importBodies.push(body);
-        return HttpResponse.json(3);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/list_app_config_files`,
+        async ({ request }) => {
+          const { app } = (await request.json()) as { app: AppId };
+          listCalls.push(app);
+          if (app !== "gemini") {
+            return HttpResponse.json([]);
+          }
+          return HttpResponse.json([
+            {
+              key: "env",
+              label: ".env",
+              path: "/mock/gemini/.env",
+            },
+            {
+              key: "settings",
+              label: "settings.json",
+              path: "/mock/gemini/settings.json",
+            },
+          ]);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/read_app_config_file`,
+        async ({ request }) => {
+          const { app, fileKey } = (await request.json()) as {
+            app: AppId;
+            fileKey: string;
+          };
+          readCalls.push({ app, fileKey });
+          return HttpResponse.json({
+            key: fileKey,
+            label: fileKey === "env" ? ".env" : "settings.json",
+            path:
+              fileKey === "env"
+                ? `/mock/${app}/.env`
+                : `/mock/${app}/settings.json`,
+            content: configContents[`${app}:${fileKey}`] ?? "",
+          });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/write_app_config_files`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            app: AppId;
+            files: Array<{ fileKey: string; content: string }>;
+          };
+          writeBodies.push(body);
+          for (const file of body.files) {
+            configContents[`${body.app}:${file.fileKey}`] = file.content;
+          }
+          return HttpResponse.json(true);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/import_mcp_from_app_live`,
+        async ({ request }) => {
+          const body = (await request.json()) as { app: AppId };
+          importBodies.push(body);
+          return HttpResponse.json(3);
+        },
+      ),
     );
 
     const user = userEvent.setup();
@@ -314,9 +354,7 @@ describe("App with real ProviderList current-config interactions", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "配置" }));
-    await user.click(
-      await screen.findByRole("menuitem", { name: "当前配置" }),
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "当前配置" }));
 
     const envTextarea = (await screen.findByDisplayValue(
       /GOOGLE_GEMINI_BASE_URL=https:\/\/gemini\.live\/v1/,
@@ -341,9 +379,7 @@ describe("App with real ProviderList current-config interactions", () => {
 
     await user.click(screen.getByRole("button", { name: "回显到 MCP 管理" }));
 
-    await waitFor(() =>
-      expect(importBodies).toEqual([{ app: "gemini" }]),
-    );
+    await waitFor(() => expect(importBodies).toEqual([{ app: "gemini" }]));
     await waitFor(() =>
       expect(writeBodies[0]).toEqual({
         app: "gemini",
@@ -364,9 +400,13 @@ describe("App with real ProviderList current-config interactions", () => {
     );
     expect(listCalls.length).toBeGreaterThanOrEqual(1);
     expect(listCalls.every((app) => app === "gemini")).toBe(true);
-    expect(readCalls.filter((item) => item.app === "gemini").length).toBeGreaterThanOrEqual(4);
+    expect(
+      readCalls.filter((item) => item.app === "gemini").length,
+    ).toBeGreaterThanOrEqual(4);
     expect(writeBodies.every((body) => body.app === "gemini")).toBe(true);
-    expect(toastSuccessMock).toHaveBeenCalledWith("已从当前配置回显 MCP 管理：3 项");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "已从当前配置回显 MCP 管理：3 项",
+    );
 
     await waitFor(() =>
       expect(screen.getByDisplayValue(/gemini-2\.0-flash/)).toBeInTheDocument(),
@@ -419,44 +459,56 @@ describe("App with real ProviderList current-config interactions", () => {
     setProxyTakeoverForAppState("claude", true);
 
     server.use(
-      http.post(`${TAURI_ENDPOINT}/list_app_config_files`, async ({ request }) => {
-        const { app } = (await request.json()) as { app: AppId };
-        if (app !== "claude") {
-          return HttpResponse.json([]);
-        }
-        return HttpResponse.json([
-          {
-            key: "settings",
-            label: "claude.json",
-            path: "/mock/claude/settings.json",
-          },
-        ]);
-      }),
-      http.post(`${TAURI_ENDPOINT}/read_app_config_file`, async ({ request }) => {
-        const { app, fileKey } = (await request.json()) as {
-          app: AppId;
-          fileKey: string;
-        };
-        return HttpResponse.json({
-          key: fileKey,
-          label: "claude.json",
-          path: `/mock/${app}/settings.json`,
-          content: '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:15721"}}',
-        });
-      }),
-      http.post(`${TAURI_ENDPOINT}/write_app_config_files`, async ({ request }) => {
-        writeBodies.push(
-          (await request.json()) as {
+      http.post(
+        `${TAURI_ENDPOINT}/list_app_config_files`,
+        async ({ request }) => {
+          const { app } = (await request.json()) as { app: AppId };
+          if (app !== "claude") {
+            return HttpResponse.json([]);
+          }
+          return HttpResponse.json([
+            {
+              key: "settings",
+              label: "claude.json",
+              path: "/mock/claude/settings.json",
+            },
+          ]);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/read_app_config_file`,
+        async ({ request }) => {
+          const { app, fileKey } = (await request.json()) as {
             app: AppId;
-            files: Array<{ fileKey: string; content: string }>;
-          },
-        );
-        return HttpResponse.json(true);
-      }),
-      http.post(`${TAURI_ENDPOINT}/import_mcp_from_app_live`, async ({ request }) => {
-        importBodies.push((await request.json()) as { app: AppId });
-        return HttpResponse.json(1);
-      }),
+            fileKey: string;
+          };
+          return HttpResponse.json({
+            key: fileKey,
+            label: "claude.json",
+            path: `/mock/${app}/settings.json`,
+            content: '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:15721"}}',
+          });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/write_app_config_files`,
+        async ({ request }) => {
+          writeBodies.push(
+            (await request.json()) as {
+              app: AppId;
+              files: Array<{ fileKey: string; content: string }>;
+            },
+          );
+          return HttpResponse.json(true);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/import_mcp_from_app_live`,
+        async ({ request }) => {
+          importBodies.push((await request.json()) as { app: AppId });
+          return HttpResponse.json(1);
+        },
+      ),
     );
 
     const user = userEvent.setup();
@@ -468,9 +520,7 @@ describe("App with real ProviderList current-config interactions", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "配置" }));
-    await user.click(
-      await screen.findByRole("menuitem", { name: "当前配置" }),
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "当前配置" }));
 
     expect(
       await screen.findByText(
@@ -543,60 +593,67 @@ describe("App with real ProviderList current-config interactions", () => {
       });
     }
 
-    expect(getFailoverQueueState("codex").map((item) => item.providerId)).toEqual([
-      "codex-alpha",
-      "codex-beta",
-      "codex-gamma",
-    ]);
-    expect((getSwitchLiveSettings("codex") as { config?: string }).config).toContain(
-      'base_url = "http://127.0.0.1:15721/codex"',
-    );
+    expect(
+      getFailoverQueueState("codex").map((item) => item.providerId),
+    ).toEqual(["codex-alpha", "codex-beta", "codex-gamma"]);
+    expect(
+      (getSwitchLiveSettings("codex") as { config?: string }).config,
+    ).toContain('base_url = "http://127.0.0.1:15721/codex"');
 
     server.use(
-      http.post(`${TAURI_ENDPOINT}/list_app_config_files`, async ({ request }) => {
-        const { app } = (await request.json()) as { app: AppId };
-        if (app !== "codex") {
-          return HttpResponse.json([]);
-        }
-        return HttpResponse.json([
-          {
-            key: "auth",
-            label: "auth.json",
-            path: "/mock/codex/auth.json",
-          },
-          {
-            key: "config",
-            label: "config.toml",
-            path: "/mock/codex/config.toml",
-          },
-        ]);
-      }),
-      http.post(`${TAURI_ENDPOINT}/read_app_config_file`, async ({ request }) => {
-        const { app, fileKey } = (await request.json()) as {
-          app: AppId;
-          fileKey: string;
-        };
-        return HttpResponse.json({
-          key: fileKey,
-          label: fileKey === "auth" ? "auth.json" : "config.toml",
-          path:
-            fileKey === "auth"
-              ? `/mock/${app}/auth.json`
-              : `/mock/${app}/config.toml`,
-          content: configContents[`${app}:${fileKey}`] ?? "",
-        });
-      }),
-      http.post(`${TAURI_ENDPOINT}/write_app_config_files`, async ({ request }) => {
-        const body = (await request.json()) as {
-          app: AppId;
-          files: Array<{ fileKey: string; content: string }>;
-        };
-        writeBodies.push(body);
-        for (const file of body.files) {
-          configContents[`${body.app}:${file.fileKey}`] = file.content;
-        }
-        return HttpResponse.json(true);
-      }),
+      http.post(
+        `${TAURI_ENDPOINT}/list_app_config_files`,
+        async ({ request }) => {
+          const { app } = (await request.json()) as { app: AppId };
+          if (app !== "codex") {
+            return HttpResponse.json([]);
+          }
+          return HttpResponse.json([
+            {
+              key: "auth",
+              label: "auth.json",
+              path: "/mock/codex/auth.json",
+            },
+            {
+              key: "config",
+              label: "config.toml",
+              path: "/mock/codex/config.toml",
+            },
+          ]);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/read_app_config_file`,
+        async ({ request }) => {
+          const { app, fileKey } = (await request.json()) as {
+            app: AppId;
+            fileKey: string;
+          };
+          return HttpResponse.json({
+            key: fileKey,
+            label: fileKey === "auth" ? "auth.json" : "config.toml",
+            path:
+              fileKey === "auth"
+                ? `/mock/${app}/auth.json`
+                : `/mock/${app}/config.toml`,
+            content: configContents[`${app}:${fileKey}`] ?? "",
+          });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/write_app_config_files`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            app: AppId;
+            files: Array<{ fileKey: string; content: string }>;
+          };
+          writeBodies.push(body);
+          for (const file of body.files) {
+            configContents[`${body.app}:${file.fileKey}`] = file.content;
+          }
+          return HttpResponse.json(true);
+        },
+      ),
     );
 
     const user = userEvent.setup();
@@ -609,9 +666,7 @@ describe("App with real ProviderList current-config interactions", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "配置" }));
-    await user.click(
-      await screen.findByRole("menuitem", { name: "当前配置" }),
-    );
+    await user.click(await screen.findByRole("menuitem", { name: "当前配置" }));
 
     expect(
       await screen.findByText(
@@ -672,6 +727,128 @@ describe("App with real ProviderList current-config interactions", () => {
     expect(live.config).not.toContain("https://codex-alpha.example.com/v1");
     expect(live.config).not.toContain("https://codex-beta.example.com/v1");
     expect(live.config).not.toContain("https://codex-gamma.example.com/v1");
+    expect(toastSuccessMock).toHaveBeenCalledWith("当前配置已保存");
+  }, 20_000);
+
+  it("keeps Grok Build current-config editing on the proxy endpoint while takeover is active", async () => {
+    const configContents: Record<string, string> = {
+      "grokbuild:config": [
+        "[models]",
+        'default = "grok-4.5"',
+        "",
+        '[model."grok-4.5"]',
+        'model = "grok-4.5"',
+        'base_url = "http://127.0.0.1:15721/grokbuild/v1"',
+        'name = "Grok 4.5"',
+        'api_key = "PROXY_MANAGED"',
+        'api_backend = "responses"',
+        "context_window = 500000",
+        "",
+      ].join("\n"),
+    };
+    const writeBodies: Array<{
+      app: AppId;
+      files: Array<{ fileKey: string; content: string }>;
+    }> = [];
+
+    startProxyServerState();
+    setProxyTakeoverForAppState("grokbuild", true);
+    expect(
+      (getSwitchLiveSettings("grokbuild") as { config?: string }).config,
+    ).toContain('base_url = "http://127.0.0.1:15721/grokbuild/v1"');
+
+    server.use(
+      http.post(
+        `${TAURI_ENDPOINT}/list_app_config_files`,
+        async ({ request }) => {
+          const { app } = (await request.json()) as { app: AppId };
+          if (app !== "grokbuild") return HttpResponse.json([]);
+          return HttpResponse.json([
+            {
+              key: "config",
+              label: "config.toml",
+              path: "/mock/grokbuild/config.toml",
+            },
+          ]);
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/read_app_config_file`,
+        async ({ request }) => {
+          const { app, fileKey } = (await request.json()) as {
+            app: AppId;
+            fileKey: string;
+          };
+          return HttpResponse.json({
+            key: fileKey,
+            label: "config.toml",
+            path: `/mock/${app}/config.toml`,
+            content: configContents[`${app}:${fileKey}`] ?? "",
+          });
+        },
+      ),
+      http.post(
+        `${TAURI_ENDPOINT}/write_app_config_files`,
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            app: AppId;
+            files: Array<{ fileKey: string; content: string }>;
+          };
+          writeBodies.push(body);
+          for (const file of body.files) {
+            configContents[`${body.app}:${file.fileKey}`] = file.content;
+          }
+          return HttpResponse.json(true);
+        },
+      ),
+    );
+
+    const user = userEvent.setup();
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await clickAppSwitcherButton(user, "Grok Build");
+    await waitFor(() =>
+      expect(screen.getByText("Grok Base")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "配置" }));
+    await user.click(await screen.findByRole("menuitem", { name: "当前配置" }));
+
+    expect(
+      await screen.findByText(
+        /当前应用已开启代理接管。这里展示的是应用实际配置/,
+      ),
+    ).toBeInTheDocument();
+
+    const configTextarea = (await screen.findByDisplayValue(
+      /http:\/\/127\.0\.0\.1:15721\/grokbuild\/v1/,
+    )) as HTMLTextAreaElement;
+    const editedConfig = configContents["grokbuild:config"].replace(
+      'model = "grok-4.5"',
+      'model = "grok-4.5-fast"',
+    );
+    fireEvent.change(configTextarea, { target: { value: editedConfig } });
+
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(writeBodies).toEqual([
+        {
+          app: "grokbuild",
+          files: [{ fileKey: "config", content: editedConfig }],
+        },
+      ]),
+    );
+    expect(configContents["grokbuild:config"]).toContain(
+      'model = "grok-4.5-fast"',
+    );
+    const live = getSwitchLiveSettings("grokbuild") as { config?: string };
+    expect(live.config).toContain(
+      'base_url = "http://127.0.0.1:15721/grokbuild/v1"',
+    );
+    expect(live.config).toContain('api_key = "PROXY_MANAGED"');
+    expect(live.config).not.toContain("https://grok-base.example.com/v1");
     expect(toastSuccessMock).toHaveBeenCalledWith("当前配置已保存");
   }, 20_000);
 });

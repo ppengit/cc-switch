@@ -3357,7 +3357,7 @@ export function ProviderList({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {(appId === "claude" || appId === "codex") && (
+        {(appId === "claude" || appId === "codex" || appId === "grokbuild") && (
           <Button
             size="sm"
             variant="outline"
@@ -3908,7 +3908,7 @@ export function ProviderList({
         }}
       />
 
-      {(appId === "claude" || appId === "codex") && (
+      {(appId === "claude" || appId === "codex" || appId === "grokbuild") && (
         <SessionRoutingManagerDialog
           appId={appId}
           open={sessionRoutingManagerOpen}

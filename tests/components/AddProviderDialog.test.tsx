@@ -284,6 +284,190 @@ describe("AddProviderDialog", () => {
     );
   });
 
+  it("加载 Grok Build 供应商模板时使用 Grok 默认模型", async () => {
+    getProviderDefaultTemplateMock.mockResolvedValue(
+      JSON.stringify({
+        config: `[models]\ndefault = "{model}"\n\n[model."{model}"]\nmodel = "{model}"\nbase_url = "{baseUrl}"\napi_key = "{apiKey}"\napi_backend = "responses"\ncontext_window = 500000\n`,
+      }),
+    );
+
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="grokbuild"
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(providerFormPropsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerDefaultSettingsConfig: expect.objectContaining({
+            config: expect.stringContaining('default = "grok-4.5"'),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("阻止 Grok Build 下相同 API 地址和 API Key 的供应商重复添加", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    mockProvidersData = {
+      providers: {
+        existing: {
+          id: "existing",
+          name: "Existing Grok",
+          settingsConfig: {
+            config: `[models]\ndefault = "grok-4.5"\n\n[model."grok-4.5"]\nmodel = "grok-4.5"\nbase_url = "https://grok.example.com/v1"\napi_key = "same-key"\napi_backend = "responses"\ncontext_window = 500000\n`,
+          },
+        },
+      },
+    };
+    mockFormValues = {
+      name: "Duplicate Grok",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({
+        config: `[models]\ndefault = "grok-4.5"\n\n[model."grok-4.5"]\nmodel = "grok-4.5"\nbase_url = "https://grok.example.com/v1/"\napi_key = "same-key"\napi_backend = "responses"\ncontext_window = 500000\n`,
+      }),
+    };
+
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="grokbuild"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it("阻止 Grok Build 下相同 API 地址和 env_key 的供应商重复添加", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    mockProvidersData = {
+      providers: {
+        existing: {
+          id: "existing",
+          name: "Existing Grok Env",
+          settingsConfig: {
+            config: `[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://grok.example.com/v1"
+name = "Existing Grok Env"
+env_key = "SHARED_GROK_KEY"
+api_backend = "responses"
+context_window = 500000
+`,
+          },
+        },
+      },
+    };
+    mockFormValues = {
+      name: "Duplicate Grok Env",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({
+        config: `[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://grok.example.com/v1/"
+name = "Duplicate Grok Env"
+env_key = "SHARED_GROK_KEY"
+api_backend = "responses"
+context_window = 500000
+`,
+      }),
+    };
+
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="grokbuild"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledTimes(1));
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it("不把 Grok env_key 名称与同文本的内嵌 API Key 误判为重复", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    mockProvidersData = {
+      providers: {
+        existing: {
+          id: "existing",
+          name: "Existing Grok Env",
+          settingsConfig: {
+            config: `[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://grok.example.com/v1"
+name = "Existing Grok Env"
+env_key = "SHARED_GROK_KEY"
+api_backend = "responses"
+context_window = 500000
+`,
+          },
+        },
+      },
+    };
+    mockFormValues = {
+      name: "Inline Grok",
+      websiteUrl: "",
+      settingsConfig: JSON.stringify({
+        config: `[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://grok.example.com/v1"
+name = "Inline Grok"
+api_key = "SHARED_GROK_KEY"
+api_backend = "responses"
+context_window = 500000
+`,
+      }),
+    };
+
+    renderWithQueryClient(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="grokbuild"
+        onSubmit={handleSubmit}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("加载供应商模板中...")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+
+    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
   it("新建 Grok Build 自定义供应商时不补默认 Grok 图标", async () => {
     const handleSubmit = vi.fn().mockResolvedValue(undefined);
 

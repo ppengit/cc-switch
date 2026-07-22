@@ -221,3 +221,56 @@ fn deeplink_import_codex_provider_applies_provider_default_template() {
         Some("Templated Vendor")
     );
 }
+
+#[test]
+fn deeplink_import_grokbuild_provider_applies_provider_default_template() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let url = "ccswitch://v1/import?resource=provider&app=grokbuild&name=Templated%20Grok&homepage=https%3A%2F%2Fgrok.example&endpoint=https%3A%2F%2Fapi.grok-template.example%2Fv1&apiKey=sk-template-grok-key&model=grok-template";
+    let request = parse_deeplink_url(url).expect("parse deeplink url");
+
+    let db = Arc::new(Database::memory().expect("create memory db"));
+    db.set_provider_default_template(
+        "grokbuild",
+        Some(
+            r#"{
+  "config": "[models]\ndefault = \"{model}\"\n\n[model.\"{model}\"]\nmodel = \"{model}\"\nbase_url = \"{baseUrl}\"\nname = \"Templated Grok\"\napi_key = \"{apiKey}\"\napi_backend = \"responses\"\ncontext_window = 500000\n"
+}"#
+            .to_string(),
+        ),
+    )
+    .expect("set provider default template");
+    let state = AppState::new(db.clone());
+
+    let provider_id = import_provider_from_deeplink(&state, request.clone())
+        .expect("import provider from deeplink");
+    let providers = db.get_all_providers("grokbuild").expect("get providers");
+    let provider = providers
+        .get(&provider_id)
+        .expect("provider created via deeplink");
+    let config_text = provider
+        .settings_config
+        .get("config")
+        .and_then(|value| value.as_str())
+        .expect("config text");
+    let parsed: toml::Value = toml::from_str(config_text).expect("valid rendered TOML");
+
+    assert_eq!(
+        parsed.get("models").and_then(|value| value.get("default")),
+        Some(&toml::Value::String("grok-template".to_string()))
+    );
+    let model = parsed
+        .get("model")
+        .and_then(|value| value.get("grok-template"))
+        .expect("rendered Grok model table");
+    assert_eq!(
+        model.get("base_url").and_then(|value| value.as_str()),
+        request.endpoint.as_deref()
+    );
+    assert_eq!(
+        model.get("api_key").and_then(|value| value.as_str()),
+        request.api_key.as_deref()
+    );
+}

@@ -1954,6 +1954,7 @@ impl RequestForwarder {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn emit_admission_retry_event(
         &self,
         app_type: &AppType,
@@ -3616,7 +3617,7 @@ impl ResponseReplayPolicy {
         endpoint: &str,
         error: &ProxyError,
     ) -> Option<ResponseReplayKind> {
-        if !matches!(app_type, AppType::Codex) {
+        if !matches!(app_type, AppType::Codex | AppType::GrokBuild) {
             return None;
         }
 
@@ -4763,11 +4764,7 @@ fn collect_short_texts(value: &Value, limit: usize) -> Vec<String> {
         }
 
         match value {
-            Value::String(text) => {
-                if text.len() <= 16_384 {
-                    out.push(text.clone());
-                }
-            }
+            Value::String(text) if text.len() <= 16_384 => out.push(text.clone()),
             Value::Array(values) => {
                 for value in values {
                     visit(value, limit, out);
@@ -5548,7 +5545,7 @@ mod tests {
     }
 
     #[test]
-    fn response_replay_matches_only_selected_codex_transient_errors() {
+    fn response_replay_matches_only_selected_responses_transient_errors() {
         let mut provider = test_provider_with_type(None);
         provider.meta = Some(ProviderMeta {
             upstream_response_replay: Some(UpstreamResponseReplayConfig {
@@ -5584,6 +5581,10 @@ mod tests {
             policy.match_error(&AppType::Codex, "/responses", &rate_limited),
             Some(ResponseReplayKind::Http429)
         );
+        assert_eq!(
+            policy.match_error(&AppType::GrokBuild, "/responses", &rate_limited),
+            Some(ResponseReplayKind::Http429)
+        );
         assert_eq!(policy.delay_ms(1, Some(900)), 0);
 
         let quota = ProxyError::UpstreamError {
@@ -5605,6 +5606,14 @@ mod tests {
         };
         assert_eq!(
             policy.match_error(&AppType::Codex, "/v1/responses?stream=true", &bad_response),
+            Some(ResponseReplayKind::CodexConfigured)
+        );
+        assert_eq!(
+            policy.match_error(
+                &AppType::GrokBuild,
+                "/v1/responses?stream=true",
+                &bad_response,
+            ),
             Some(ResponseReplayKind::CodexConfigured)
         );
 

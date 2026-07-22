@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionRoutingManagerDialog } from "@/components/proxy/SessionRoutingManagerDialog";
 
 const mockSnapshot = vi.fn();
@@ -37,7 +37,10 @@ vi.mock("@/components/ui/select", () => ({
   SelectItem: ({ children }: any) => <div>{children}</div>,
 }));
 
-const renderDialog = (onOpenChange = vi.fn()) => {
+const renderDialog = (
+  onOpenChange = vi.fn(),
+  appId: "codex" | "grokbuild" = "codex",
+) => {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -48,7 +51,7 @@ const renderDialog = (onOpenChange = vi.fn()) => {
   return render(
     <QueryClientProvider client={client}>
       <SessionRoutingManagerDialog
-        appId="codex"
+        appId={appId}
         open={true}
         onOpenChange={onOpenChange}
       />
@@ -57,6 +60,11 @@ const renderDialog = (onOpenChange = vi.fn()) => {
 };
 
 describe("SessionRoutingManagerDialog", () => {
+  beforeEach(() => {
+    mockSnapshot.mockReset();
+    mockRebind.mockReset();
+  });
+
   it("explains why bindings are empty when proxy is stopped", () => {
     mockSnapshot.mockReturnValue({
       data: {
@@ -131,5 +139,26 @@ describe("SessionRoutingManagerDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("loads and labels Grok Build session bindings", () => {
+    mockSnapshot.mockReturnValue({
+      data: {
+        appType: "grokbuild",
+        enabled: true,
+        proxyRunning: true,
+        clientSessionOnly: false,
+        idleTtlSeconds: 600,
+        bindings: [],
+        providers: [],
+      },
+      isFetching: false,
+      refetch: vi.fn(),
+    });
+
+    renderDialog(vi.fn(), "grokbuild");
+
+    expect(mockSnapshot).toHaveBeenCalledWith("grokbuild", true);
+    expect(screen.getByText("Grok Build")).toBeInTheDocument();
   });
 });

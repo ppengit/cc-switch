@@ -182,43 +182,46 @@ export function ProxyTabContent({
               )}
 
               <Tabs defaultValue="claude" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
+                <TabsList className="grid w-full grid-cols-4">
                   <TabsTrigger value="claude">Claude</TabsTrigger>
                   <TabsTrigger value="codex">Codex</TabsTrigger>
                   <TabsTrigger value="gemini">Gemini</TabsTrigger>
+                  <TabsTrigger value="grokbuild">Grok Build</TabsTrigger>
                 </TabsList>
-                {(["claude", "codex", "gemini"] as const).map((appType) => {
-                  const failoverDisabled =
-                    !isRunning || !(takeoverStatus?.[appType] ?? false);
-                  return (
-                    <TabsContent
-                      key={appType}
-                      value={appType}
-                      className="mt-4 space-y-6"
-                    >
-                      <div className="space-y-4">
-                        <div>
-                          <h4 className="text-sm font-semibold">
-                            {t("proxy.failoverQueue.title")}
-                          </h4>
-                          <p className="text-xs text-muted-foreground">
-                            {t("proxy.failoverQueue.description")}
-                          </p>
+                {(["claude", "codex", "gemini", "grokbuild"] as const).map(
+                  (appType) => {
+                    const failoverDisabled =
+                      !isRunning || !(takeoverStatus?.[appType] ?? false);
+                    return (
+                      <TabsContent
+                        key={appType}
+                        value={appType}
+                        className="mt-4 space-y-6"
+                      >
+                        <div className="space-y-4">
+                          <div>
+                            <h4 className="text-sm font-semibold">
+                              {t("proxy.failoverQueue.title")}
+                            </h4>
+                            <p className="text-xs text-muted-foreground">
+                              {t("proxy.failoverQueue.description")}
+                            </p>
+                          </div>
+                          <FailoverQueueManager
+                            appType={appType}
+                            disabled={failoverDisabled}
+                          />
                         </div>
-                        <FailoverQueueManager
-                          appType={appType}
-                          disabled={failoverDisabled}
-                        />
-                      </div>
-                      <div className="border-t border-border/50 pt-6">
-                        <AutoFailoverConfigPanel
-                          appType={appType}
-                          disabled={failoverDisabled}
-                        />
-                      </div>
-                    </TabsContent>
-                  );
-                })}
+                        <div className="border-t border-border/50 pt-6">
+                          <AutoFailoverConfigPanel
+                            appType={appType}
+                            disabled={failoverDisabled}
+                          />
+                        </div>
+                      </TabsContent>
+                    );
+                  },
+                )}
               </Tabs>
             </div>
           </AccordionContent>
@@ -241,7 +244,7 @@ export function ProxyTabContent({
                 <p className="text-sm text-muted-foreground font-normal">
                   {t("sessionRouting.settings.description", {
                     defaultValue:
-                      "按项目/会话粘性分配 Claude 与 Codex 请求，并按供应商并发上限分流。",
+                      "按项目/会话粘性分配 Claude、Codex 与 Grok Build 请求，并按供应商并发上限分流。",
                   })}
                 </p>
               </div>
@@ -249,11 +252,12 @@ export function ProxyTabContent({
           </AccordionTrigger>
           <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
             <Tabs defaultValue="claude" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="claude">Claude</TabsTrigger>
                 <TabsTrigger value="codex">Codex</TabsTrigger>
+                <TabsTrigger value="grokbuild">Grok Build</TabsTrigger>
               </TabsList>
-              {(["claude", "codex"] as const).map((appType) => (
+              {(["claude", "codex", "grokbuild"] as const).map((appType) => (
                 <TabsContent key={appType} value={appType} className="mt-4">
                   <SessionRoutingConfigPanel appType={appType} />
                 </TabsContent>

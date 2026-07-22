@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAppProxyConfig, useUpdateAppProxyConfig } from "@/lib/query/proxy";
 
 interface SessionRoutingConfigPanelProps {
-  appType: "claude" | "codex";
+  appType: "claude" | "codex" | "grokbuild";
   disabled?: boolean;
 }
 
@@ -89,7 +89,7 @@ export function SessionRoutingConfigPanel({
         <AlertDescription className="text-sm">
           {t("sessionRouting.settings.info", {
             defaultValue:
-              "会话路由仅在本地路由接管和自动故障转移都启用时生效。同一客户端会话优先保持在同一供应商；供应商达到并发上限时会按故障转移队列选择其它可用供应商。开启满载兜底后，所有供应商满载时可能临时超过上限。",
+              "会话路由仅在本地路由接管和自动故障转移都启用时生效。同一客户端会话优先保持在同一供应商；供应商达到并发上限时会按故障转移队列选择其它可用供应商。开启满载兜底后，所有供应商满载时可能临时超过上限。Claude、Codex 与 Grok Build 均支持此功能。",
           })}
         </AlertDescription>
       </Alert>

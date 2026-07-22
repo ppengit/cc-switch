@@ -195,7 +195,7 @@ pub async fn set_auto_failover_enabled(
         .map_err(|e| e.to_string())?;
 
     if enabled {
-        if !matches!(app_enum, AppType::Claude | AppType::Codex | AppType::Gemini) {
+        if !app_enum.supports_proxy_takeover() {
             return Err("该应用暂不支持代理故障转移".to_string());
         }
 
